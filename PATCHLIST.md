@@ -10,6 +10,7 @@
 |---|---|
 | `todo` | не начат |
 | `wip` | в работе (есть коммит в дереве, не доведён) |
+| `queued` | закоммичен в очереди и экспортирован в `patches/android/`, ждёт ворот своей пачки |
 | `built` | пачка собрана, дебаг-apk передан на ручное тестирование |
 | `done` | проверено вручную (тумблер on и off) |
 | `skip` | не переносится или не нужен; причина в последней секции |
@@ -28,11 +29,11 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | wip | готов (коммит + экспорт), ждёт ворот пачки; стоковая пара метится как спам, fallback на сток, `SUPPORTS_PASSKEYS` гасится автоматически |
-| infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db, strings_tele.xml) | todo | образец — `misc/build-support` + `misc/settings-ui` inugram, код свой |
-| infra | секция настроек «tele» (страницы, группы, поиск, deeplinks, экспорт/импорт) | todo | покрывает 0002, 0015, 0060, 0064, 0108, 0112, 0115, 0119, 0123 |
-| 0007, 0091 | переименовать приложение в tele + лончер-иконка | todo | `gradle.properties` (APP_PACKAGE, версия), manifest, mipmap; трей n/a |
-| 0001, 0048 | номер сборки tele рядом с «Telegram» в шапке списка чатов и рядом с версией в настройках | todo | `DialogsActivity` (`actionBar.setTitle(AppName)`), `SettingsActivity` versionView |
+| misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | queued | `0001-misc-support-custom-api-credentials` |
+| infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db) | queued | `0002-misc-enable-kotlin-and-add-the-tele-skeleton` |
+| infra | секция настроек «tele» (страница, строка в главных настройках, deeplinks позже) | queued | `0003-feat-add-the-tele-settings-section` |
+| 0007, 0091 | переименовать приложение в tele + иконка-плейсхолдер | queued | `0004-misc-call-the-app-tele`; полный набор иконок и package rename — позже |
+| 0001, 0048 | номер сборки tele в шапке списка чатов и рядом с версией в настройках | queued | `0005-feat-show-the-tele-build-number`; `TELE_BUILD` из local.properties, 0 = dev |
 
 ## пачка 1 — быстрые тумблеры интерфейса
 
