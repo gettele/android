@@ -8,6 +8,7 @@ how to set up the tree, build a debug apk, make a change and turn it into a patc
 - android sdk with: platform `android-36`, build-tools `36.0.0`, ndk `27.2.12479018`, cmake `3.22.1` (all pinned in `TMessagesProj/build.gradle`).
 - git; enough disk for the sdk, gradle caches and native build artifacts (tens of gb).
 - the first build compiles natives (ffmpeg stack, tgnet, voip) — expect a long, slow build. later java-side rebuilds are fast.
+- **disk space:** the sdk drive needs several gb free for the pinned ndk `27.2.12479018` and cmake `3.22.1` (gradle installs them automatically if the sdk license is accepted). a full c: drive fails the build with `InstallFailedException` / "insufficient disk space" during configuration.
 
 ## layout
 
@@ -32,10 +33,10 @@ from here every patch is a commit on top of `<UPSTREAM>`: `git log <UPSTREAM>..t
 
 ## sdk wiring
 
-point gradle at the sdk once — `TMessagesProj/local.properties` (not committed):
+point gradle at the sdk once — `local.properties` in the **checkout root** (`Telegram/local.properties`, gitignored; the same file carries the api credentials below). use forward slashes — a properties file with windows backslashes needs `\\` escaping and one missed escape fails the build with a cryptic sdk-path error:
 
 ```
-sdk.dir=C\:\\Users\\<user>\\AppData\\Local\\Android\\Sdk
+sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk
 ```
 
 ## submodules
@@ -57,7 +58,7 @@ the first full init downloads gigabytes; it is a one-time cost.
 the pair is read from `local.properties` in the **checkout root** (`Telegram/local.properties`) by the first queue patch (`misc: support custom api credentials`) and baked into `BuildConfig`:
 
 ```
-sdk.dir=C\:\Users\<user>\AppData\Local\Android\Sdk
+sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk
 TELE_API_ID=12345
 TELE_API_HASH=abcdef0123456789abcdef0123456789
 ```
