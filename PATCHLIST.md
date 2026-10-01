@@ -29,13 +29,13 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | built | `0001-misc-support-custom-api-credentials` |
-| infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db) | built | `0002-misc-enable-kotlin-and-add-the-tele-skeleton` |
-| infra | секция настроек «tele» (страница, строка в главных настройках, deeplinks позже) | built | `0003-feat-add-the-tele-settings-section` |
-| 0007, 0091 | переименовать приложение в tele + иконка-плейсхолдер | built | `0004-misc-call-the-app-tele`; оба debug-оверлея манифеста; полный набор иконок и package rename — позже |
-| misc | свой package-суффикс debug-сборок (`.tele` вместо `.beta`) | built | `0006-misc-use-a-fork-package-suffix-for-debug-builds`; не конфликтует с Telegram/Beta на устройстве |
-| misc | отключение google-services (чужой firebase) | built | `0007-misc-disable-google-services-integration`; fcm-push не работает до своей конфигурации |
-| 0001, 0048 | номер сборки tele в шапке списка чатов и рядом с версией в настройках | built | `0005-feat-show-the-tele-build-number`; `TELE_BUILD` из local.properties, 0 = dev |
+| misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | done | `0001-misc-support-custom-api-credentials` |
+| infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db) | done | `0002-misc-enable-kotlin-and-add-the-tele-skeleton` |
+| infra | секция настроек «tele» (страница, строка в главных настройках, deeplinks позже) | done | `0003-feat-add-the-tele-settings-section` |
+| 0007, 0091 | переименовать приложение в tele + иконка-плейсхолдер | done | `0004-misc-call-the-app-tele`; оба debug-оверлея манифеста; полный набор иконок и package rename — позже |
+| misc | свой package-суффикс debug-сборок (`.tele` вместо `.beta`) | done | `0006-misc-use-a-fork-package-suffix-for-debug-builds`; не конфликтует с Telegram/Beta на устройстве |
+| misc | отключение google-services (чужой firebase) | done | `0007-misc-disable-google-services-integration`; fcm-push не работает до своей конфигурации |
+| 0001, 0048 | номер сборки tele в шапке списка чатов и рядом с версией в настройках | done | `0005-feat-show-the-tele-build-number`; `TELE_BUILD` из local.properties, 0 = dev |
 
 ## пачка 1 — быстрые тумблеры интерфейса
 
