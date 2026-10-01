@@ -98,7 +98,7 @@ work is delivered in batches — see `PATCHLIST.md` for the current plan. rules:
 
 ## patch files
 
-- patches live in `patches/android/NNNN-<subject>.patch`, numbered in queue order, exported with `git format-patch <UPSTREAM> -o patches/android/ --zero-commit --no-signature`.
+- patches live in `patches/android/NNNN-<subject>.patch`, numbered in queue order, exported with `git format-patch <UPSTREAM> -o patches/android/ --zero-commit --no-signature --no-numbered` (`--no-numbered` keeps patch subjects stable across exports).
 - a commit inserted in the middle renumbers every later patch — new features go at the end.
 - never edit a `.patch` by hand; change the commit and export again.
 - `.gitattributes` pins `*.patch` as binary (`-text`) so git never rewrites line endings inside patches.

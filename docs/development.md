@@ -93,10 +93,10 @@ all work happens in the telegram tree, as commits on `tele`.
 
    ```bash
    cd ../Telegram
-   git format-patch <UPSTREAM> -o ../main/patches/android/ --zero-commit --no-signature
+   git format-patch <UPSTREAM> -o ../main/patches/android/ --zero-commit --no-signature --no-numbered
    ```
 
-   this rewrites the numbered patch files from the commits. `git status` in `main/` shows exactly which patches changed.
+   this rewrites the numbered patch files from the commits. `git status` in `main/` shows exactly which patches changed. `--no-numbered` keeps subjects stable: without it format-patch stamps `[PATCH n/m]` into every file, so adding one patch rewrites all the others.
 
 5. **update `PATCHLIST.md`** (statuses, new rows) and commit here, one commit per patch:
 
