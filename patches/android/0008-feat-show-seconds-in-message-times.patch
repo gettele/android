@@ -1,0 +1,179 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?t=CE=B1ngenx?= <me@tangenx.dev>
+Date: Thu, 1 Oct 2026 17:00:40 +0300
+Subject: [PATCH] feat: show seconds in message times
+
+---
+ .../telegram/messenger/LocaleController.java  |  3 +-
+ .../src/main/java/tele/TeleConfig.kt          |  8 ++-
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |  8 +++
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 57 ++++++++++++++-----
+ 4 files changed, 59 insertions(+), 17 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java b/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
+index 245a5ab25..18a608a79 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
+@@ -42,6 +42,7 @@ import org.telegram.tgnet.Vector;
+ import org.telegram.ui.Components.TypefaceSpan;
+ import org.telegram.ui.Stars.StarsController;
+ import org.telegram.tgnet.ConnectionsManager;
++import tele.TeleHooks;
+ import org.telegram.tgnet.TLObject;
+ import org.telegram.tgnet.TLRPC;
+ import org.telegram.ui.RestrictedLanguagesSelectActivity;
+@@ -87,7 +88,7 @@ public class LocaleController {
+                         lang = "en";
+                     }
+                     lang = lang.toLowerCase();
+-                    formatterDay = createFormatter(lang.toLowerCase().equals("ar") || lang.toLowerCase().equals("ko") ? locale : Locale.US, is24HourFormat ? getStringInternal("formatterDay24H", R.string.formatterDay24H) : getStringInternal("formatterDay12H", R.string.formatterDay12H), is24HourFormat ? "HH:mm" : "h:mm a");
++                    formatterDay = createFormatter(lang.toLowerCase().equals("ar") || lang.toLowerCase().equals("ko") ? locale : Locale.US, is24HourFormat ? getStringInternal("formatterDay24H", R.string.formatterDay24H) : getStringInternal("formatterDay12H", R.string.formatterDay12H), TeleHooks.secondsPattern(is24HourFormat));
+                 }
+             }
+         }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index fb82bdb8d..79a98de9d 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -42,6 +42,9 @@ class FloatItem(key: String, default: Float) : Item<Float>(key, default)
+ class StringItem(key: String, default: String) : Item<String>(key, default)
+ 
+ object TeleConfig {
++    @JvmField
++    val SHOW_SECONDS = BoolItem("show_seconds", false)
++
+     private var prefs: SharedPreferences? = null
+ 
+     fun init(context: Context) {
+@@ -50,9 +53,10 @@ object TeleConfig {
+         configItems.forEach { it.load(p) }
+     }
+ 
+-    fun <T> set(item: Item<T>, v: T) {
++    fun set(item: Item<*>, v: Any?) {
+         val p = prefs ?: return
+-        item.value = v
++        @Suppress("UNCHECKED_CAST")
++        (item as Item<Any?>).value = v
+         item.save(p)
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 4766ec35a..b82f3546b 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -9,4 +9,12 @@ object TeleHooks {
+         TeleConfig.init(context)
+         TeleDatabaseHelper.init(context)
+     }
++
++    @JvmStatic
++    fun secondsPattern(is24Hour: Boolean): String =
++        if (TeleConfig.SHOW_SECONDS.value) {
++            if (is24Hour) "HH:mm:ss" else "h:mm:ss a"
++        } else {
++            if (is24Hour) "HH:mm" else "h:mm a"
++        }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 3c429037c..afccce386 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -12,12 +12,18 @@ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.TextCheckCell
++import org.telegram.ui.Cells.TextInfoPrivacyCell
+ import org.telegram.ui.Cells.TextSettingsCell
+ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.RecyclerListView
++import tele.Item
++import tele.TeleConfig
+ 
+ class TeleSettingsActivity : BaseFragment() {
+ 
++    private class Row(val type: Int, val title: String? = null, val value: String? = null, val item: Item<*>? = null)
++
+     private var adapter: ListAdapter? = null
+ 
+     override fun createView(context: Context): View {
+@@ -41,41 +47,64 @@ class TeleSettingsActivity : BaseFragment() {
+         listView.setVerticalScrollBarEnabled(false)
+         adapter = ListAdapter(context)
+         listView.setAdapter(adapter)
++        listView.setOnItemClickListener { view, position ->
++            val row = adapter?.rows?.getOrNull(position) ?: return@setOnItemClickListener
++            if (row.type == TYPE_TOGGLE && row.item != null) {
++                val cell = view as TextCheckCell
++                val newValue = !cell.isChecked
++                cell.setChecked(newValue)
++                TeleConfig.set(row.item, newValue)
++            }
++        }
+         frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+         return fragmentView
+     }
+ 
+     private class ListAdapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
+-        override fun getItemCount(): Int = ROW_COUNT
+ 
+-        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = holder.adapterPosition == ROW_BUILD
++        val rows: List<Row> = listOf(
++            Row(TYPE_HEADER, "about"),
++            Row(TYPE_VALUE, "tele", BuildVars.BUILD_VERSION_STRING),
++            Row(TYPE_SHADOW),
++            Row(TYPE_HEADER, "interface"),
++            Row(TYPE_TOGGLE, "show seconds in message times", item = TeleConfig.SHOW_SECONDS)
++        )
++
++        override fun getItemCount(): Int = rows.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean {
++            val row = rows.getOrNull(holder.adapterPosition) ?: return false
++            return row.type == TYPE_VALUE || row.type == TYPE_TOGGLE
++        }
+ 
+         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+-            val view: View = if (viewType == TYPE_HEADER) {
+-                HeaderCell(context)
+-            } else {
+-                TextSettingsCell(context)
++            val view: View = when (viewType) {
++                TYPE_HEADER -> HeaderCell(context)
++                TYPE_TOGGLE -> TextCheckCell(context)
++                TYPE_SHADOW -> TextInfoPrivacyCell(context)
++                else -> TextSettingsCell(context)
+             }
+             view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+             return RecyclerListView.Holder(view)
+         }
+ 
+         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+-            if (getItemViewType(position) == TYPE_HEADER) {
+-                (holder.itemView as HeaderCell).setText("about")
+-            } else {
+-                (holder.itemView as TextSettingsCell).setTextAndValue("tele", BuildVars.BUILD_VERSION_STRING, false)
++            val row = rows[position]
++            when (val cell = holder.itemView) {
++                is HeaderCell -> cell.setText(row.title)
++                is TextCheckCell -> cell.setTextAndCheck(row.title, row.item!!.value as Boolean, true)
++                is TextInfoPrivacyCell -> cell.setText("")
++                else -> (cell as TextSettingsCell).setTextAndValue(row.title, row.value, false)
+             }
+         }
+ 
+-        override fun getItemViewType(position: Int): Int = if (position == ROW_ABOUT_HEADER) TYPE_HEADER else TYPE_VALUE
++        override fun getItemViewType(position: Int): Int = rows[position].type
+     }
+ 
+     companion object {
+-        private const val ROW_ABOUT_HEADER = 0
+-        private const val ROW_BUILD = 1
+-        private const val ROW_COUNT = 2
+         private const val TYPE_HEADER = 0
+         private const val TYPE_VALUE = 1
++        private const val TYPE_TOGGLE = 2
++        private const val TYPE_SHADOW = 3
+     }
+ }
