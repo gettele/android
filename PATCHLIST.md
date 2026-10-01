@@ -2,7 +2,7 @@
 
 план переноса фич [tele](https://github.com/nitreojs/tele) (telegram desktop) на telegram android. основа — [docs/portability.md](docs/portability.md): из 127 патчей tele 98 переносимы, 20 частично, 9 не переносимы. здесь они разбиты на **пачки** (batches): порядок реализации, зависимости и статусы.
 
-анализ исходных патчей: [nitreojs/tele](https://github.com/nitreojs/tele) v7.2.9, патчи 0001–0127. номера в колонке «№» ссылаются на патчи tele (`tele/patches/tdesktop/NNNN-*.patch`); наш патч наследует номер своего исходника, чтобы историю переноса можно было проследить в обе стороны.
+анализ исходных патчей: [nitreojs/tele](https://github.com/nitreojs/tele) v7.2.9, патчи 0001–0127. колонка «№» указывает исходный патч tele (`tele/patches/tdesktop/NNNN-*.patch`); файлы в `patches/android/` нумеруются **по позиции в очереди** (`git format-patch`), соответствие наш→исходный — в таблицах ниже.
 
 ## статусы
 
@@ -28,6 +28,7 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
+| misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | wip | готов (коммит + экспорт), ждёт ворот пачки; стоковая пара метится как спам, fallback на сток, `SUPPORTS_PASSKEYS` гасится автоматически |
 | infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db, strings_tele.xml) | todo | образец — `misc/build-support` + `misc/settings-ui` inugram, код свой |
 | infra | секция настроек «tele» (страницы, группы, поиск, deeplinks, экспорт/импорт) | todo | покрывает 0002, 0015, 0060, 0064, 0108, 0112, 0115, 0119, 0123 |
 | 0007, 0091 | переименовать приложение в tele + лончер-иконка | todo | `gradle.properties` (APP_PACKAGE, версия), manifest, mipmap; трей n/a |

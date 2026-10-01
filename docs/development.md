@@ -38,6 +38,34 @@ point gradle at the sdk once — `TMessagesProj/local.properties` (not committed
 sdk.dir=C\:\\Users\\<user>\\AppData\\Local\\Android\\Sdk
 ```
 
+## submodules
+
+the checkout has 15 submodules; two are required even to configure the build (`TMessagesProj_Modules/media` — androidx media3 fork wired from `settings.gradle`, and `TMessagesProj/lib/jlatexmath`), the `jni/*` ones are required for the native part:
+
+```bash
+cd ../Telegram
+git submodule update --init --depth 1 TMessagesProj_Modules/media TMessagesProj/lib/jlatexmath   # configure
+git submodule update --init --depth 1                                                           # everything, for natives
+```
+
+the first full init downloads gigabytes; it is a one-time cost.
+
+## api credentials
+
+**the stock `APP_ID`/`APP_HASH` shipped in the telegram repo are flagged as spam — logging in with them does not work.** a fork must use its own pair from [my.telegram.org](https://my.telegram.org).
+
+the pair is read from `local.properties` in the **checkout root** (`Telegram/local.properties`) by the first queue patch (`misc: support custom api credentials`) and baked into `BuildConfig`:
+
+```
+sdk.dir=C\:\Users\<user>\AppData\Local\Android\Sdk
+TELE_API_ID=12345
+TELE_API_HASH=abcdef0123456789abcdef0123456789
+```
+
+- `local.properties` is gitignored in the checkout: the values never enter the queue, patches or commits. never put the real pair anywhere tracked, and never send it to anyone.
+- with no pair set, the build falls back to the stock constants (compiles fine, login will not work) and gradle prints a `tele:` warning.
+- a custom api id is not an official one, so `BuildVars.SUPPORTS_PASSKEYS` is disabled automatically when the pair is set.
+
 ## building
 
 ```bash
