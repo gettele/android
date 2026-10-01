@@ -43,16 +43,16 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0017, 0043 | секунды во времени сообщений (+ время в сервисных сообщениях) | todo | `LocaleController`-форматтеры; образец `feature/show-seconds` inugram |
-| 0030 | скрыть папку «Все чаты» | todo | `FilterTabsView`; образец `feature/folders-display-mode` |
-| 0021, 0063 | скрыть кнопки звонков + подтверждение перед звонком | todo | образцы `feature/hide-call-action`, `feature/call-confirmation` |
-| 0025 | открывать ссылки без подтверждения | todo | `AlertsCreator.showOpenUrlAlert` |
-| 0076 | имена вместо номеров в шапке чата | todo | образец `debloat/disable-chat-title-phone` |
-| 0011 | поднять лимит аккаунтов | todo | `UserConfig.MAX_ACCOUNT_COUNT`; образец `feature/multi-account` |
-| 0054 | спойлеры раскрыты всегда | todo | гейт в `MessageObject`/`SpoilerEffect` |
-| 0073, 0125 | скрыть кнопки упоминаний/реакций и их бейджи в списке | todo | `ChatActivitySideControlsButtonsLayout`, `DialogCell` |
-| 0038 | статичные видео-аватары | todo | гейт в `ImageReceiver` |
-| 0100 | не применять счётчики replies к отложенным | todo | guard в `MessageObject`, однострочный фикс |
+| 0017, 0043 | секунды во времени сообщений (+ время в сервисных сообщениях) | built | `0008-feat-show-seconds-in-message-times`; хук `formatterDay` в `LocaleController` |
+| 0030 | скрыть папку «Все чаты» | built | `0009-debloat-hide-the-all-chats-folder`; гейт в `getDialogFilters()` |
+| 0021, 0063 | скрыть кнопки звонков + подтверждение перед звонком | built | `0010-debloat-hide-call-buttons` (ChatActivity+ProfileActivity), `0011-feat-confirm-calls-before-starting` (VoIPHelper) |
+| 0025 | открывать ссылки без подтверждения | built | `0012-feat-open-links-without-confirmation`; условие в `showOpenUrlAlert` |
+| 0076 | имена вместо номеров в шапке чата | built | `0013-feat-show-names-instead-of-phone-numbers-in-chat-hea` |
+| 0011 | поднять лимит аккаунтов (4→8) | built | `0014-feat-remove-the-account-limit`; always on |
+| 0054 | спойлеры раскрыты всегда | built | `0015-feat-reveal-spoilers-automatically`; текст+медиа в `MessageObject` |
+| 0073, 0125 | скрыть кнопки упоминаний/реакций и их бейджи в списке | built | `0016-debloat-hide-mention-and-reaction-badges` |
+| 0038 | статичные видео-аватары | built | `0017-feat-turn-off-animated-userpics`; гейт в `ImageReceiver` |
+| 0100 | не применять счётчики replies к отложенным | built | `0018-fix-ignore-reply-counters-on-scheduled-messages`; always on |
 
 ## пачка 2 — приватность
 
