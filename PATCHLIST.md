@@ -53,6 +53,7 @@
 | 0073, 0125 | скрыть кнопки упоминаний/реакций и их бейджи в списке | built | `0016-debloat-hide-mention-and-reaction-badges`; гейт на `mentionString`/`drawMention` в `DialogCell` |
 | 0038 | статичные видео-аватары | built | `0017-feat-turn-off-animated-userpics`; гейт в `ImageReceiver` + ветка видео в `ProfileActivity`; на девайсе проверено только отсутствие анимации у статичных аватаров — аккаунта с видео-аватаром нет |
 | 0100 | не применять счётчики replies к отложенным | built | `0018-fix-ignore-reply-counters-on-scheduled-messages`; always on |
+| infra | применение тумблеров без перезапуска | built | `0019-fix-apply-interface-toggles-without-restart`; `TeleHooks.onConfigChanged`: пересоздание форматтеров + оповещение UI |
 
 ## пачка 2 — приватность
 
