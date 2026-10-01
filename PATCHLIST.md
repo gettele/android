@@ -29,11 +29,11 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | queued | `0001-misc-support-custom-api-credentials` |
-| infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db) | queued | `0002-misc-enable-kotlin-and-add-the-tele-skeleton` |
-| infra | секция настроек «tele» (страница, строка в главных настройках, deeplinks позже) | queued | `0003-feat-add-the-tele-settings-section` |
-| 0007, 0091 | переименовать приложение в tele + иконка-плейсхолдер | queued | `0004-misc-call-the-app-tele`; полный набор иконок и package rename — позже |
-| 0001, 0048 | номер сборки tele в шапке списка чатов и рядом с версией в настройках | queued | `0005-feat-show-the-tele-build-number`; `TELE_BUILD` из local.properties, 0 = dev |
+| misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | built | `0001-misc-support-custom-api-credentials` |
+| infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db) | built | `0002-misc-enable-kotlin-and-add-the-tele-skeleton` |
+| infra | секция настроек «tele» (страница, строка в главных настройках, deeplinks позже) | built | `0003-feat-add-the-tele-settings-section` |
+| 0007, 0091 | переименовать приложение в tele + иконка-плейсхолдер | built | `0004-misc-call-the-app-tele`; полный набор иконок и package rename — позже |
+| 0001, 0048 | номер сборки tele в шапке списка чатов и рядом с версией в настройках | built | `0005-feat-show-the-tele-build-number`; `TELE_BUILD` из local.properties, 0 = dev |
 
 ## пачка 1 — быстрые тумблеры интерфейса
 
