@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?t=CE=B1ngenx?= <me@tangenx.dev>
+Date: Thu, 1 Oct 2026 04:43:59 +0300
+Subject: [PATCH 2/5] misc: enable kotlin and add the tele skeleton
+
+---
+ TMessagesProj/build.gradle                    |  5 ++
+ .../telegram/messenger/ApplicationLoader.java |  2 +
+ .../src/main/java/tele/TeleConfig.kt          | 58 +++++++++++++++++++
+ TMessagesProj/src/main/java/tele/TeleHooks.kt | 12 ++++
+ .../main/java/tele/db/TeleDatabaseHelper.kt   | 47 +++++++++++++++
+ 5 files changed, 124 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/TeleConfig.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/TeleHooks.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index a3df5574c..2fb1fcb28 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -2,6 +2,7 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
+ 
+ apply plugin: 'com.android.library'
+ apply plugin: 'org.telegram.build-plugin'
++apply plugin: 'kotlin-android'
+ apply plugin: 'idea'
+ 
+ idea {
+@@ -138,6 +139,10 @@ android {
+         coreLibraryDesugaringEnabled true
+     }
+ 
++    kotlinOptions {
++        jvmTarget = '1.8'
++    }
++
+ 
+     defaultConfig {
+         minSdkVersion 21
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index 5405be7f6..e787bb415 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -39,6 +39,7 @@ import org.json.JSONObject;
+ import org.telegram.messenger.utils.Choreographer60FpsContent;
+ import org.telegram.messenger.voip.VideoCapturerDevice;
+ import org.telegram.tgnet.ConnectionsManager;
++import tele.TeleHooks;
+ import org.telegram.tgnet.TLRPC;
+ import org.telegram.ui.ActionBar.BaseFragment;
+ import org.telegram.ui.Components.ForegroundDetector;
+@@ -289,6 +290,7 @@ public class ApplicationLoader extends Application {
+         }
+ 
+         super.onCreate();
++        TeleHooks.init(this);
+ 
+         // AndroidUtilities must be initialized before FileLog
+         final String helloWorld = AndroidUtilities.getHelloWorld();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+new file mode 100644
+index 000000000..fb82bdb8d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -0,0 +1,58 @@
++package tele
++
++import android.content.Context
++import android.content.SharedPreferences
++
++val configItems = mutableListOf<Item<*>>()
++
++abstract class Item<T>(val key: String, val default: T) {
++    var value: T = default
++        internal set
++
++    init {
++        configItems.add(this)
++    }
++
++    internal fun load(prefs: SharedPreferences) {
++        @Suppress("UNCHECKED_CAST")
++        value = when (default) {
++            is Boolean -> prefs.getBoolean(key, default) as T
++            is Int -> prefs.getInt(key, default) as T
++            is Float -> prefs.getFloat(key, default) as T
++            is String -> prefs.getString(key, default) as T
++            else -> default
++        }
++    }
++
++    internal fun save(prefs: SharedPreferences) {
++        prefs.edit().apply {
++            when (val v = value) {
++                is Boolean -> putBoolean(key, v)
++                is Int -> putInt(key, v)
++                is Float -> putFloat(key, v)
++                is String -> putString(key, v)
++            }
++        }.apply()
++    }
++}
++
++class BoolItem(key: String, default: Boolean = false) : Item<Boolean>(key, default)
++class IntItem(key: String, default: Int) : Item<Int>(key, default)
++class FloatItem(key: String, default: Float) : Item<Float>(key, default)
++class StringItem(key: String, default: String) : Item<String>(key, default)
++
++object TeleConfig {
++    private var prefs: SharedPreferences? = null
++
++    fun init(context: Context) {
++        val p = context.applicationContext.getSharedPreferences("tele_config", Context.MODE_PRIVATE)
++        prefs = p
++        configItems.forEach { it.load(p) }
++    }
++
++    fun <T> set(item: Item<T>, v: T) {
++        val p = prefs ?: return
++        item.value = v
++        item.save(p)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+new file mode 100644
+index 000000000..4766ec35a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -0,0 +1,12 @@
++package tele
++
++import android.content.Context
++import tele.db.TeleDatabaseHelper
++
++object TeleHooks {
++    @JvmStatic
++    fun init(context: Context) {
++        TeleConfig.init(context)
++        TeleDatabaseHelper.init(context)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+new file mode 100644
+index 000000000..443833648
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -0,0 +1,47 @@
++package tele.db
++
++import android.content.ContentValues
++import android.content.Context
++import android.database.sqlite.SQLiteDatabase
++import android.database.sqlite.SQLiteOpenHelper
++
++object TeleDatabaseHelper {
++    private var helper: Helper? = null
++
++    fun init(context: Context) {
++        if (helper == null) {
++            helper = Helper(context.applicationContext)
++        }
++    }
++
++    fun put(key: String, value: String?) {
++        val db = helper?.writableDatabase ?: return
++        if (value == null) {
++            db.delete("tele_kv", "key = ?", arrayOf(key))
++            return
++        }
++        val cv = ContentValues()
++        cv.put("key", key)
++        cv.put("value", value)
++        db.insertWithOnConflict("tele_kv", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
++    }
++
++    fun get(key: String, default: String? = null): String? {
++        val db = helper?.readableDatabase ?: return default
++        db.rawQuery("SELECT value FROM tele_kv WHERE key = ?", arrayOf(key)).use { c ->
++            if (c.moveToFirst()) {
++                return c.getString(0)
++            }
++        }
++        return default
++    }
++
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 1) {
++        override fun onCreate(db: SQLiteDatabase) {
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
++        }
++
++        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
++        }
++    }
++}
