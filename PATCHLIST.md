@@ -54,6 +54,7 @@
 | 0038 | статичные видео-аватары | built | `0017-feat-turn-off-animated-userpics`; гейт в `ImageReceiver` + ветка видео в `ProfileActivity`; на девайсе проверено только отсутствие анимации у статичных аватаров — аккаунта с видео-аватаром нет |
 | 0100 | не применять счётчики replies к отложенным | built | `0018-fix-ignore-reply-counters-on-scheduled-messages`; always on |
 | infra | применение тумблеров без перезапуска | built | `0019-fix-apply-interface-toggles-without-restart`; `TeleHooks.onConfigChanged`: пересоздание форматтеров + оповещение UI |
+| 0001 | надпись сборки tele в шапке списка чатов при наличии истории | built | `0020-fix-show-the-tele-build-label-in-the-chats-header`; вордмарк `telegram_logo_2` — вектор, строками не меняется; заголовок берётся из `TeleHooks.storiesHeaderTitle` |
 
 ## пачка 2 — приватность
 
