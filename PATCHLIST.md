@@ -43,31 +43,31 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0017, 0043 | секунды во времени сообщений (+ время в сервисных сообщениях) | built | `0008-feat-show-seconds-in-message-times`; хук `formatterDay` в `LocaleController` |
-| 0030 | скрыть папку «Все чаты» | built | `0009-debloat-hide-the-all-chats-folder`; гейт в `getDialogFilters()` |
-| 0021, 0063 | скрыть кнопки звонков + подтверждение перед звонком | built | `0010-debloat-hide-call-buttons` (гейт по `phone_calls_available` в ChatActivity+ProfileActivity), `0011-feat-confirm-calls-before-starting` (VoIPHelper) |
-| 0025 | открывать ссылки без подтверждения | built | `0012-feat-open-links-without-confirmation`; условие в `showOpenUrlAlert` |
-| 0076 | имена вместо номеров в шапке чата | built | `0013-feat-show-names-instead-of-phone-numbers-in-chat-hea` |
-| 0011 | поднять лимит аккаунтов (4→8) | built | `0014-feat-remove-the-account-limit`; always on |
-| 0054 | спойлеры раскрыты всегда | built | `0015-feat-reveal-spoilers-automatically`; текст+медиа в `MessageObject` |
-| 0073, 0125 | скрыть кнопки упоминаний/реакций и их бейджи в списке | built | `0016-debloat-hide-mention-and-reaction-badges`; гейт на `mentionString`/`drawMention` в `DialogCell` |
-| 0038 | статичные видео-аватары | built | `0017-feat-turn-off-animated-userpics`; гейт в `ImageReceiver` + ветка видео в `ProfileActivity`; на девайсе проверено только отсутствие анимации у статичных аватаров — аккаунта с видео-аватаром нет |
-| 0100 | не применять счётчики replies к отложенным | built | `0018-fix-ignore-reply-counters-on-scheduled-messages`; always on |
-| infra | применение тумблеров без перезапуска | built | `0019-fix-apply-interface-toggles-without-restart`; `TeleHooks.onConfigChanged`: пересоздание форматтеров + оповещение UI |
-| 0001 | надпись сборки tele в шапке списка чатов при наличии истории | built | `0020-fix-show-the-tele-build-label-in-the-chats-header`; вордмарк `telegram_logo_2` — вектор, строками не меняется; заголовок берётся из `TeleHooks.storiesHeaderTitle` |
+| 0017, 0043 | секунды во времени сообщений (+ время в сервисных сообщениях) | done | `0008-feat-show-seconds-in-message-times`; хук `formatterDay` в `LocaleController` |
+| 0030 | скрыть папку «Все чаты» | done | `0009-debloat-hide-the-all-chats-folder`; гейт в `getDialogFilters()` |
+| 0021, 0063 | скрыть кнопки звонков + подтверждение перед звонком | done | `0010-debloat-hide-call-buttons` (гейт по `phone_calls_available` в ChatActivity+ProfileActivity), `0011-feat-confirm-calls-before-starting` (VoIPHelper) |
+| 0025 | открывать ссылки без подтверждения | done | `0012-feat-open-links-without-confirmation`; условие в `showOpenUrlAlert` |
+| 0076 | имена вместо номеров в шапке чата | done | `0013-feat-show-names-instead-of-phone-numbers-in-chat-hea` |
+| 0011 | поднять лимит аккаунтов (4→8) | done | `0014-feat-remove-the-account-limit`; always on |
+| 0054 | спойлеры раскрыты всегда | done | `0015-feat-reveal-spoilers-automatically`; текст+медиа в `MessageObject` |
+| 0073, 0125 | скрыть кнопки упоминаний/реакций и их бейджи в списке | done | `0016-debloat-hide-mention-and-reaction-badges`; гейт на `mentionString`/`drawMention` в `DialogCell` |
+| 0038 | статичные видео-аватары | done | `0017-feat-turn-off-animated-userpics`; гейт в `ImageReceiver` + ветка видео в `ProfileActivity`; проверено только отсутствие анимации у статичных аватаров — аккаунта с видео-аватаром нет |
+| 0100 | не применять счётчики replies к отложенным | done | `0018-fix-ignore-reply-counters-on-scheduled-messages`; always on |
+| infra | применение тумблеров без перезапуска | done | `0019-fix-apply-interface-toggles-without-restart`; `TeleHooks.onConfigChanged`: пересоздание форматтеров + оповещение UI |
+| 0001 | надпись сборки tele в шапке списка чатов при наличии истории | done | `0020-fix-show-the-tele-build-label-in-the-chats-header`; вордмарк `telegram_logo_2` — вектор, строками не меняется; заголовок берётся из `TeleHooks.storiesHeaderTitle` |
 
 ## пачка 2 — приватность
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0003 | скрыть сторис везде | todo | образец `debloat/hide-stories` |
-| 0004 | смотреть сторис незаметно | todo | подавление `markStoryAsRead`/просмотров |
-| 0032, 0065 | ghost mode + расширенные опции | todo | receipts/typing/online/сторис-просмотры; schedule-трюк |
-| 0026 | исчезающие медиа без сжигания (+ «mark as viewed») | todo | гейт `markMessagesContentAsRead` |
-| 0027 | скриншоты исчезающих медиа | todo | `FLAG_SECURE` в `PhotoViewer` |
-| 0113 | никогда не блокировать скриншоты | todo | все точки `FLAG_SECURE`, включая secret chats |
-| 0016, 0074 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | data-layer фильтр + `tele_*` таблица |
-| 0096 | черновики только на устройстве | todo | образец `debloat/cloud-drafts` |
+| 0003 | скрыть сторис везде | queued | `0021-feat-add-privacy-toggles-for-stories-ghost-mode-scre`; гейт в `StoriesController.hasStories()` (обе перегрузки) + репост в сторис |
+| 0004 | смотреть сторис незаметно | queued | тот же патч; подавлен `TL_stories_readStories` в `markStoryAsRead`, живые сторис блокируются в `StoryViewer.open` |
+| 0032, 0065 | ghost mode + расширенные опции | queued | тот же патч; online/typing/read/contents-read. **не сделано:** offline-after-send, локальные реакции, schedule-трюк |
+| 0026 | исчезающие медиа без сжигания (+ «mark as viewed») | todo | не сделано: нужен пункт «отметить просмотренным» в меню |
+| 0027 | скриншоты исчезающих медиа | queued | тот же патч; `FLAG_SECURE` в `PhotoViewer` снимается для `ttl_seconds != 0` |
+| 0113 | никогда не блокировать скриншоты | queued | тот же патч; глобальный гейт в `PhotoViewer`. **не сделано:** `SecretMediaViewer`, `SecretVoicePlayer`, `StoryViewer` |
+| 0016, 0074 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | не начат; нужен `tele_*` таблица + пикер |
+| 0096 | черновики только на устройстве | queued | тот же патч; гейт `TL_messages_saveDraft` в `MediaDataController` |
 
 ## пачка 3 — профиль и ID
 
