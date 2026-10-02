@@ -63,7 +63,7 @@
 | 0003 | скрыть сторис везде | queued | `0021-feat-add-privacy-toggles-for-stories-ghost-mode-scre`; гейт в `StoriesController.hasStories()` (обе перегрузки) + репост в сторис |
 | 0004 | смотреть сторис незаметно | queued | тот же патч; подавлен `TL_stories_readStories` в `markStoryAsRead`, живые сторис блокируются в `StoryViewer.open` |
 | 0032, 0065 | ghost mode + расширенные опции | queued | online/typing/read; contents-read глушится на сетевом слое — `0023-fix-hide-viewed-receipts-at-the-network-layer` (4 точки `readMessageContents`). **не сделано:** offline-after-send, schedule-трюк |
-| 0026 | исчезающие медиа без сжигания (+ «mark as viewed») | queued | `0022-fix-extend-screenshot-policy-and-keep-disappearing-m`; гейт в `markMessageContentAsRead` для `ttl_seconds != 0`. **не сделано:** пункт «отметить просмотренным» в меню |
+| 0026 | исчезающие медиа без сжигания (+ «mark as viewed») | queued | `0022-...` (гейт) + `0024-feat-add-mark-as-viewed-action-for-disappearing-medi`; пункт «mark as viewed» в меню сообщения через `TeleHooks.forceMarkViewed` |
 | 0027 | скриншоты исчезающих медиа | queued | тот же патч; `FLAG_SECURE` в `PhotoViewer` снимается для `ttl_seconds != 0` |
 | 0113 | никогда не блокировать скриншоты | queued | гейт в `PhotoViewer`, `SecretMediaViewer`, `SecretVoicePlayer`, `StoryViewer.allowScreenshots` |
 | 0016, 0074 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | не начат; нужен `tele_*` таблица + пикер |
