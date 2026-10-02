@@ -66,7 +66,7 @@
 | 0026 | исчезающие медиа без сжигания (+ «mark as viewed») | queued | `0022-...` (гейт) + `0024-feat-add-mark-as-viewed-action-for-disappearing-medi`; пункт «mark as viewed» в меню сообщения через `TeleHooks.forceMarkViewed` |
 | 0027 | скриншоты исчезающих медиа | queued | тот же патч; `FLAG_SECURE` в `PhotoViewer` снимается для `ttl_seconds != 0` |
 | 0113 | никогда не блокировать скриншоты | queued | гейт в `PhotoViewer`, `SecretMediaViewer`, `SecretVoicePlayer`, `StoryViewer.allowScreenshots` |
-| 0016, 0074 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | не начат; нужен `tele_*` таблица + пикер |
+| 0016, 0074 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | не начат. разведка: хранилище готово — `tele_kv` в `TeleDatabaseHelper` (набор id через запятую, новая таблица не нужна); стоковый `PrivacyUsersActivity` **не переиспользуем** — он жёстко зашит на `TYPE_BLOCKED` и читает блок-лист `ContactsController`, нужен форк пикера; фильтр в `DialogCell` (список) и `ChatMessageCell` (в чате) |
 | 0096 | черновики только на устройстве | queued | тот же патч; гейт `TL_messages_saveDraft` в `MediaDataController` |
 
 ## пачка 3 — профиль и ID
