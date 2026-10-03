@@ -75,9 +75,9 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0014, 0047, 0098, 0023 | id пира и DC в профиле (варианты формата, одна строка) | todo | образец `feature/id-in-profile`; dc_id из `FileLocation` |
+| 0014, 0047, 0098, 0023 | id пира и DC в профиле (варианты формата, одна строка) | queued | `0025-feat-show-the-peer-id-and-data-center-in-the-profile`; хелпер `tele/helpers/PeerId.kt` (bot api: чат −id, канал/супергрупп −100…; dc из `photo.dc_id` → `photo_small/big.dc_id`, свой профиль — `getCurrentDatacenterId()`; города: 1,3 Miami; 2,4 Amsterdam; 5 Singapore); строки в `ProfileActivity` после username (юзер, чат) и bio (карточка юзера); клик — меню копирования. 0047 впитан: тумблеры сразу в настройках tele |
 | 0013, 0066 | id подарков (обычных и коллекционных) | todo | `TL_starGiftUnique`, гифт-шиты |
-| 0029 | id сообщения в меню сообщения | todo | хук меню `ChatActivity` |
+| 0029 | id сообщения в меню сообщения | queued | `0026-feat-show-the-message-id-in-the-message-menu`; пункт «ID: N» первым в меню сообщения через `fillMessageMenu` (option 118), копирует bare id |
 | 0056 | копировать id кастомного эмодзи | todo | hit-test спанов в `ChatMessageCell` |
 | 0080 | локальные имена людей | todo | подмена на слое `putUser`/`UserObject.getUserName` |
 | 0072 | username-алиасы | todo | `tele_kv` + `MentionsAdapter` + подстановка при отправке; база для 0103/0124 |
