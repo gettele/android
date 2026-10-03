@@ -75,7 +75,7 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0014, 0047, 0098, 0023 | id пира и DC в профиле (варианты формата, одна строка) | queued | `0025-feat-show-the-peer-id-and-data-center-in-the-profile`; хелпер `tele/helpers/PeerId.kt` (bot api: чат −id, канал/супергрупп −100…; dc из `photo.dc_id` → `photo_small/big.dc_id`, свой профиль — `getCurrentDatacenterId()`; города: 1,3 Miami; 2,4 Amsterdam; 5 Singapore); строки в `ProfileActivity` после username (юзер, чат) и bio (карточка юзера); клик — меню копирования. 0047 впитан: тумблеры сразу в настройках tele |
+| 0014, 0047, 0098, 0023 | id пира и DC в профиле (варианты формата, одна строка) | queued | `0025-feat-show-the-peer-id-and-data-center-in-the-profile`; хелпер `tele/helpers/PeerId.kt` (bot api: чат −id, канал/супергрупп −100…; dc из `photo.dc_id` → `photo_small/big.dc_id`, свой профиль — `getCurrentDatacenterId()`; города: 1,3 Miami; 2,4 Amsterdam; 5 Singapore); строки в `ProfileActivity` после username (юзер, чат) и bio (карточка юзера), у чатов — вне блока about/public, чтобы показывались всем; клик — меню копирования. строки форка в `strings_tele.xml` включены в генерацию локали (`TelegramBuildAppPlugin.kt`, `stringsXml`) — иначе `LocaleController.getString` даёт `LOC_ERR:null`. 0047 впитан: тумблеры сразу в настройках tele |
 | 0013, 0066 | id подарков (обычных и коллекционных) | todo | `TL_starGiftUnique`, гифт-шиты |
 | 0029 | id сообщения в меню сообщения | queued | `0026-feat-show-the-message-id-in-the-message-menu`; пункт «ID: N» первым в меню сообщения через `fillMessageMenu` (option 118), копирует bare id |
 | 0056 | копировать id кастомного эмодзи | todo | hit-test спанов в `ChatMessageCell` |
