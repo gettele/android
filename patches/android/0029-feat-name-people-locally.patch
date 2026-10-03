@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 3 Oct 2026 21:43:54 +0300
+Subject: [PATCH] feat: name people locally
+
+---
+ .../org/telegram/messenger/UserObject.java    | 12 +++++++
+ .../java/org/telegram/ui/ProfileActivity.java | 31 +++++++++++++++++++
+ .../src/main/java/tele/TeleConfig.kt          |  2 ++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  1 +
+ 4 files changed, 46 insertions(+)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
+index a05e9e3d9..2db3bea4c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
+@@ -57,6 +57,12 @@ public class UserObject {
+         if (user == null || isDeleted(user)) {
+             return LocaleController.getString(R.string.HiddenName);
+         }
++        if (tele.TeleConfig.LOCAL_NAMES.getValue() && !UserObject.isUserSelf(user)) {
++            final String local = tele.helpers.LocalNames.get(user.id);
++            if (!TextUtils.isEmpty(local)) {
++                return local;
++            }
++        }
+         String name = AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(ContactsController.formatName(user.first_name, user.last_name)));
+         return name.length() != 0 || TextUtils.isEmpty(user.phone) ? name : PhoneFormat.getInstance().format("+" + user.phone);
+     }
+@@ -109,6 +115,12 @@ public class UserObject {
+         if (user == null || isDeleted(user)) {
+             return "DELETED";
+         }
++        if (tele.TeleConfig.LOCAL_NAMES.getValue() && !UserObject.isUserSelf(user)) {
++            final String local = tele.helpers.LocalNames.get(user.id);
++            if (!TextUtils.isEmpty(local)) {
++                return local;
++            }
++        }
+         String name = user.first_name;
+         if (TextUtils.isEmpty(name)) {
+             name = user.last_name;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 3aa4b9d2d..0d9f78f77 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -573,6 +573,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private final static int share = 10;
+     private final static int edit_channel = 12;
+     private final static int add_shortcut = 14;
++    private final static int tele_set_local_name = 90;
+     private final static int call_item = 15;
+     private final static int video_call_item = 16;
+     private final static int search_members = 17;
+@@ -2743,6 +2744,33 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     } catch (Exception e) {
+                         FileLog.e(e);
+                     }
++                } else if (id == tele_set_local_name) {
++                    TLRPC.User user = getMessagesController().getUser(userId);
++                    if (user == null || getParentActivity() == null) {
++                        return;
++                    }
++                    android.widget.EditText input = new android.widget.EditText(getParentActivity());
++                    input.setText(tele.helpers.LocalNames.get(userId));
++                    input.setSingleLine(true);
++                    input.setHint(ContactsController.formatName(user.first_name, user.last_name));
++                    android.widget.FrameLayout container = new android.widget.FrameLayout(getParentActivity());
++                    container.addView(input, new android.widget.FrameLayout.LayoutParams(
++                        android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
++                    int pad = AndroidUtilities.dp(20);
++                    container.setPadding(pad, pad / 2, pad, 0);
++                    AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
++                    builder.setTitle("set a name for me");
++                    builder.setView(container);
++                    builder.setPositiveButton(getString(R.string.Save), (di, w) -> {
++                        String value = input.getText().toString().trim();
++                        tele.helpers.LocalNames.set(userId, value.isEmpty() ? null : value);
++                        getNotificationCenter().postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_NAME);
++                        if (listView != null && listView.getAdapter() != null) {
++                            listView.getAdapter().notifyDataSetChanged();
++                        }
++                    });
++                    builder.setNegativeButton(getString(R.string.Cancel), null);
++                    showDialog(builder.create());
+                 } else if (id == call_item || id == video_call_item) {
+                     onCallClicked(id == video_call_item);
+                 } else if (id == search_members) {
+@@ -12238,6 +12266,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (!isBot && getContactsController().contactsDict.get(userId) != null) {
+                     otherItem.addSubItem(add_shortcut, R.drawable.msg_home, LocaleController.getString(R.string.AddShortcut));
+                 }
++                if (!user.self && !UserObject.isUserSelf(user)) {
++                    otherItem.addSubItem(tele_set_local_name, R.drawable.msg_edit, "set a name for me");
++                }
+             }
+         } else if (chatId != 0) {
+             TLRPC.Chat chat = getMessagesController().getChat(chatId);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index f42301d30..506d524ae 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -98,6 +98,8 @@ object TeleConfig {
+     val SHOW_REGULAR_GIFT_IDS = BoolItem("show_regular_gift_ids", false)
+     @JvmField
+     val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
++    @JvmField
++    val LOCAL_NAMES = BoolItem("local_names", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index e2282324f..bc8376498 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -101,6 +101,7 @@ class TeleSettingsActivity : BaseFragment() {
+             Row(TYPE_TOGGLE, "show gift id", item = TeleConfig.SHOW_GIFT_IDS),
+             Row(TYPE_TOGGLE, "show ids on regular gifts", item = TeleConfig.SHOW_REGULAR_GIFT_IDS)
+             Row(TYPE_TOGGLE, "copy custom emoji id", item = TeleConfig.COPY_EMOJI_ID)
++            Row(TYPE_TOGGLE, "local names for people", item = TeleConfig.LOCAL_NAMES)
+         )
+ 
+         override fun getItemCount(): Int = rows.size
