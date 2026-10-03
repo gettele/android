@@ -54,7 +54,7 @@
 | 0038 | статичные видео-аватары | done | `0017-feat-turn-off-animated-userpics`; гейт в `ImageReceiver` + ветка видео в `ProfileActivity`; проверено только отсутствие анимации у статичных аватаров — аккаунта с видео-аватаром нет |
 | 0100 | не применять счётчики replies к отложенным | done | `0018-fix-ignore-reply-counters-on-scheduled-messages`; always on |
 | infra | применение тумблеров без перезапуска | done | `0019-fix-apply-interface-toggles-without-restart`; `TeleHooks.onConfigChanged`: пересоздание форматтеров + оповещение UI |
-| 0001 | надпись сборки tele в шапке списка чатов при наличии истории | done | `0020-fix-show-the-tele-build-label-in-the-chats-header`; вордмарк `telegram_logo_2` — вектор, строками не меняется; заголовок берётся из `TeleHooks.storiesHeaderTitle` |
+| 0001 | надпись сборки tele в шапке списка чатов при наличии истории | queued | `0020-fix-show-the-tele-build-label-in-the-chats-header`; вордмарк `telegram_logo_2` — вектор, строками не меняется; заголовок берётся из `TeleHooks.storiesHeaderTitle`. фикс регресса: emoji-статус рядом с заголовком гасился (альфа статуса была привязана к логотипу, который в текстовом режиме скрыт) — теперь статус виден и позиционируется за текстом заголовка |
 
 ## пачка 2 — приватность
 
@@ -63,9 +63,9 @@
 | 0003 | скрыть сторис везде | queued | `0021-feat-add-privacy-toggles-for-stories-ghost-mode-scre`; гейт в `StoriesController.hasStories()` (обе перегрузки) + репост в сторис |
 | 0004 | смотреть сторис незаметно | queued | тот же патч; подавлен `TL_stories_readStories` в `markStoryAsRead`, живые сторис блокируются в `StoryViewer.open` |
 | 0032, 0065 | ghost mode + расширенные опции | queued | online/typing/read; contents-read глушится на сетевом слое — `0023-fix-hide-viewed-receipts-at-the-network-layer` (4 точки `readMessageContents`). **не сделано:** offline-after-send, schedule-трюк |
-| 0026 | исчезающие медиа без сжигания (+ «mark as viewed») | queued | `0022-...` (гейт) + `0024-feat-add-mark-as-viewed-action-for-disappearing-medi`; пункт «mark as viewed» в меню сообщения через `TeleHooks.forceMarkViewed` |
-| 0027 | скриншоты исчезающих медиа | queued | тот же патч; `FLAG_SECURE` в `PhotoViewer` снимается для `ttl_seconds != 0` |
-| 0113 | никогда не блокировать скриншоты | queued | гейт в `PhotoViewer`, `SecretMediaViewer`, `SecretVoicePlayer`, `StoryViewer.allowScreenshots` |
+| 0026 | исчезающие медиа без сжигания (+ «mark as viewed») | queued | `0022-...` (гейт) + `0024-feat-add-mark-as-viewed-action-for-disappearing-medi`; пункт «mark as viewed» в меню сообщения через `TeleHooks.forceMarkViewed`. ttl-фото открываются не в `PhotoViewer`, а в `SecretMediaViewer`; сжигание идёт через `ChatActivity.sendSecretMessageRead` → `markMessageAsRead2` → `createTaskForMid` + `readMessageContents` — гейт стоит там (`sendSecretMessageRead`/`sendSecretMediaDelete`). **не покрывается:** view-once в стиле extended-media-preview — сервер сжигает их при загрузке `getExtendedMedia`, подавлять нечем |
+| 0027 | скриншоты исчезающих медиа | queued | тот же патч; `FLAG_SECURE` снимается в `PhotoViewer` (per-open) и в `SecretMediaViewer` (per-open, до `addView`) при `ttl_seconds != 0`; условие — `TeleHooks.isDisappearing` (любая media с `ttl_seconds != 0`, не только документы) |
+| 0113 | никогда не блокировать скриншоты | queued | гейты в `PhotoViewer`, `SecretMediaViewer` (перенесён из конструктора в `openMedia` — иначе тумблер замораживается на первом открытии), `SecretVoicePlayer`, `StoryViewer.allowScreenshots` + choke в `FlagSecureReason.updateWindowSecure` (12.x ведёт FLAG_SECURE «по причинам»: секретные чаты, noforwards, voice-once в чате, экран пароля) |
 | 0016, 0074 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | не начат. разведка: хранилище готово — `tele_kv` в `TeleDatabaseHelper` (набор id через запятую, новая таблица не нужна); стоковый `PrivacyUsersActivity` **не переиспользуем** — он жёстко зашит на `TYPE_BLOCKED` и читает блок-лист `ContactsController`, нужен форк пикера; фильтр в `DialogCell` (список) и `ChatMessageCell` (в чате) |
 | 0096 | черновики только на устройстве | queued | тот же патч; гейт `TL_messages_saveDraft` в `MediaDataController` |
 
