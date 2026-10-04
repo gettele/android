@@ -5,14 +5,14 @@ Subject: [PATCH] feat: link your own usernames to chats locally
 
 ---
  .../messenger/MediaDataController.java        |   1 +
- .../telegram/ui/Adapters/MentionsAdapter.java |  25 +++
+ .../telegram/ui/Adapters/MentionsAdapter.java |  35 +++-
  .../java/org/telegram/ui/ChatActivity.java    |  56 ++++++
  .../java/org/telegram/ui/LaunchActivity.java  |  12 ++
- .../java/org/telegram/ui/ProfileActivity.java | 112 +++++++++++-
+ .../java/org/telegram/ui/ProfileActivity.java | 113 +++++++++++-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  .../src/main/java/tele/helpers/Aliases.kt     | 173 ++++++++++++++++++
  .../tele/ui/settings/TeleSettingsActivity.kt  |   3 +-
- 8 files changed, 381 insertions(+), 3 deletions(-)
+ 8 files changed, 391 insertions(+), 4 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/Aliases.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
@@ -28,7 +28,7 @@ index 30937e2f4..a615201ba 100644
      }
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
-index 1b75c7d97..86d0c4530 100644
+index 1b75c7d97..7abafb18e 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
 @@ -103,6 +103,7 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
@@ -39,20 +39,30 @@ index 1b75c7d97..86d0c4530 100644
      private Runnable searchGlobalRunnable;
      private String hintHashtag;
      private boolean hintHashtagDivider;
-@@ -748,6 +749,12 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
-                         return;
-                     }
-                     searchForContextBotResults(true, foundContextBot, query, "");
-+                } else if (tele.TeleConfig.USERNAME_ALIASES.getValue() && tele.helpers.Aliases.dialogId(currentAccount, username) > 0) {
-+                    searchingContextUsername = username;
-+                    final TLRPC.User aliasBot = messagesController.getUser(tele.helpers.Aliases.dialogId(currentAccount, username));
-+                    if (aliasBot != null && aliasBot.bot && aliasBot.bot_inline_placeholder != null) {
-+                        searchForContextBotResults(true, aliasBot, query, "");
-+                    }
-                 } else {
-                     searchingContextUsername = username;
-                     TLObject object = messagesController.getUserOrChat(searchingContextUsername);
-@@ -1259,6 +1266,7 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
+@@ -677,7 +678,21 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
+ //        }, 600);
+ //    }
+ 
+-    private void searchForContextBot(final String username, final String query) {
++    private String teleAliasRealUsername(String inputUsername) {
++        if (!tele.TeleConfig.USERNAME_ALIASES.getValue() || inputUsername == null) {
++            return inputUsername;
++        }
++        final long aliasDid = tele.helpers.Aliases.dialogId(currentAccount, inputUsername);
++        if (aliasDid <= 0) {
++            return inputUsername;
++        }
++        final TLRPC.User aliasBot = MessagesController.getInstance(currentAccount).getUser(aliasDid);
++        final String real = aliasBot != null && aliasBot.bot ? UserObject.getPublicUsername(aliasBot) : null;
++        return real != null ? real : inputUsername;
++    }
++
++    private void searchForContextBot(final String inputUsername, final String query) {
++        final String username = teleAliasRealUsername(inputUsername);
+         if (foundContextBot != null && foundContextBot.username != null && foundContextBot.username.equals(username) && searchingContextQuery != null && searchingContextQuery.equals(query)) {
+             return;
+         }
+@@ -1259,6 +1274,7 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
                  }
              }
              final String usernameString = result.toString().toLowerCase();
@@ -60,7 +70,7 @@ index 1b75c7d97..86d0c4530 100644
              boolean hasSpace = usernameString.indexOf(' ') >= 0;
              ArrayList<TLObject> newResult = new ArrayList<>();
              final LongSparseArray<TLRPC.User> newResultsHashMap = new LongSparseArray<>();
-@@ -1648,6 +1656,23 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
+@@ -1648,6 +1664,23 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
      }
  
      private void showUsersResult(ArrayList<TLObject> newResult, LongSparseArray<TLObject> newMap, boolean notify) {
@@ -85,7 +95,7 @@ index 1b75c7d97..86d0c4530 100644
          if ((!allowBots || !allowChats) && searchResultUsernames != null) {
              Iterator<TLObject> i = searchResultUsernames.iterator();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index d045f8092..899e8ad12 100644
+index d045f8092..4fe8cdbe0 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -36288,6 +36288,13 @@ public class ChatActivity extends BaseFragment implements
@@ -158,11 +168,11 @@ index d045f8092..899e8ad12 100644
 +            final ScrimOptions aliasDialog = new ScrimOptions(getContext(), themeDelegate);
 +            aliasOptions.setOnDismiss(aliasDialog::dismissFast);
 +            aliasOptions.add(R.drawable.msg_openin, "open the real @" + username, () -> {
-+                aliasOptions.dismiss();
++                aliasDialog.dismiss();
 +                Browser.openUrl(getContext(), "https://t.me/" + username, false);
 +            });
 +            aliasOptions.add(R.drawable.msg_copy, getString(R.string.ProfileCopyUsername), () -> {
-+                aliasOptions.dismiss();
++                aliasDialog.dismiss();
 +                AndroidUtilities.addToClipboard("@" + username);
 +                BulletinFactory.of(ChatActivity.this).createCopyBulletin(getString(R.string.UsernameCopied)).show();
 +            });
@@ -196,7 +206,7 @@ index 0e6dfb2eb..eefc36b0c 100644
                  if (peerId != null && peerId == Long.MAX_VALUE) {
                      try {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
-index 0d9f78f77..97e69fd93 100644
+index 0d9f78f77..2fd4a56db 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 @@ -574,6 +574,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
@@ -356,20 +366,28 @@ index 0d9f78f77..97e69fd93 100644
              }
              if (actionsView == null) {
                  if (infoHeaderRow != -1) {
-@@ -12269,6 +12368,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+@@ -12269,6 +12368,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                  if (!user.self && !UserObject.isUserSelf(user)) {
                      otherItem.addSubItem(tele_set_local_name, R.drawable.msg_edit, "set a name for me");
                  }
 +                if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
 +                    otherItem.addSubItem(tele_set_username_alias, R.drawable.msg_addcontact, "set an alias for me");
 +                }
-+                if (tele.TeleConfig.USERNAME_ALIASES.getValue() && currentChat != null) {
-+                    otherItem.addSubItem(tele_set_chat_alias, R.drawable.msg_addcontact, "set an alias for me");
-+                }
++
              }
          } else if (chatId != 0) {
              TLRPC.Chat chat = getMessagesController().getChat(chatId);
-@@ -13558,6 +13663,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+@@ -12387,6 +12490,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (topicId == 0) {
+                     otherItem.addSubItem(add_shortcut, R.drawable.msg_home, LocaleController.getString(R.string.AddShortcut));
+                 }
++                if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
++                    otherItem.addSubItem(tele_set_chat_alias, R.drawable.msg_addcontact, "set an alias for me");
++                }
+                 otherItem.addSubItem(leave_group, R.drawable.msg_leave, LocaleController.getString(R.string.DeleteAndExit));
+                 leaveAction = true;
+             }
+@@ -13558,6 +13664,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                          }
                      } else if (position == tele_idRow) {
                          detailCell.setTextAndValue(tele.helpers.PeerId.rowText(currentAccount, userId, chatId), LocaleController.getString(R.string.TeleProfileId), false);
@@ -379,7 +397,7 @@ index 0d9f78f77..97e69fd93 100644
                      } else if (position == tele_dcRow) {
                          detailCell.setTextAndValue(tele.helpers.PeerId.dcText(currentAccount, userId, chatId), LocaleController.getString(R.string.TeleProfileDc), false);
                      } else if (position == phoneRow) {
-@@ -14391,7 +14499,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+@@ -14391,7 +14500,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
              if (position == infoHeaderRow || position == membersHeaderRow || position == settingsSectionRow2 ||
                      position == numberSectionRow || position == helpHeaderRow || position == debugHeaderRow || position == botPermissionsHeader) {
                  return VIEW_TYPE_HEADER;
