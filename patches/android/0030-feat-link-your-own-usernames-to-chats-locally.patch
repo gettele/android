@@ -1,0 +1,249 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 4 Oct 2026 16:29:05 +0300
+Subject: [PATCH] feat: link your own usernames to chats locally
+
+---
+ .../java/org/telegram/ui/LaunchActivity.java  |   9 ++
+ .../java/org/telegram/ui/ProfileActivity.java |  45 +++++++-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/Aliases.kt     | 104 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   3 +-
+ 5 files changed, 161 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index 0e6dfb2eb..e6bf1ac5f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -4219,6 +4219,15 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+             if (progress != null) {
+                 progress.init();
+             }
++            final long aliasDialogId = tele.TeleConfig.USERNAME_ALIASES.getValue() ? tele.helpers.Aliases.dialogId(intentAccount, username) : 0;
++            if (aliasDialogId != 0) {
++                Bundle aliasArgs = new Bundle();
++                aliasArgs.putLong("chat_id", aliasDialogId);
++                aliasArgs.putLong("user_id", aliasDialogId);
++                presentFragment(new ChatActivity(aliasArgs));
++                dismissLoading.run();
++                return;
++            }
+             MessagesController.getInstance(intentAccount).getUserNameResolver().resolve(username, referrer, (peerId) -> {
+                 if (peerId != null && peerId == Long.MAX_VALUE) {
+                     try {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 0d9f78f77..f7a24d9b0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -574,6 +574,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private final static int edit_channel = 12;
+     private final static int add_shortcut = 14;
+     private final static int tele_set_local_name = 90;
++    private final static int tele_set_username_alias = 91;
+     private final static int call_item = 15;
+     private final static int video_call_item = 16;
+     private final static int search_members = 17;
+@@ -2438,7 +2439,44 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         Bulletin.removeDelegate(this);
+     }
+ 
+-    @Override
++    private void showAliasDialog() {
++        if (getParentActivity() == null) {
++            return;
++        }
++        final long did = userId != 0 ? userId : -chatId;
++        final String current = tele.helpers.Aliases.aliasOf(currentAccount, did);
++        android.widget.EditText input = new android.widget.EditText(getParentActivity());
++        input.setText(current);
++        input.setSingleLine(true);
++        input.setHint("@alias");
++        android.widget.FrameLayout container = new android.widget.FrameLayout(getParentActivity());
++        container.addView(input, new android.widget.FrameLayout.LayoutParams(
++                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
++        final int pad = AndroidUtilities.dp(20);
++        container.setPadding(pad, pad / 2, pad, 0);
++        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
++        builder.setTitle("set an alias for me");
++        builder.setView(container);
++        builder.setPositiveButton(getString(R.string.Save), (di, w) -> {
++            final String alias = input.getText().toString().trim();
++            if (current != null) {
++                tele.helpers.Aliases.remove(currentAccount, current);
++            }
++            if (!alias.isEmpty()) {
++                if (!tele.helpers.Aliases.isValid(alias)) {
++                    if (getParentActivity() != null) {
++                        Toast.makeText(getParentActivity(), "alias must be letters, digits and underscore, up to 32", Toast.LENGTH_SHORT).show();
++                    }
++                    return;
++                }
++                tele.helpers.Aliases.set(currentAccount, alias, did);
++            }
++            NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_NAME);
++        });
++        builder.setNegativeButton(getString(R.string.Cancel), null);
++        showDialog(builder.create());
++    }
++
+     public ActionBar createActionBar(Context context) {
+         BaseFragment lastFragment = parentLayout.getLastFragment();
+         if (lastFragment instanceof ChatActivity && ((ChatActivity) lastFragment).themeDelegate != null && ((ChatActivity) lastFragment).themeDelegate.getCurrentTheme() != null && !((ChatActivity) lastFragment).themeDelegate.isGiftTheme()) {
+@@ -2771,6 +2809,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     });
+                     builder.setNegativeButton(getString(R.string.Cancel), null);
+                     showDialog(builder.create());
++                } else if (id == tele_set_username_alias) {
++                    showAliasDialog();
+                 } else if (id == call_item || id == video_call_item) {
+                     onCallClicked(id == video_call_item);
+                 } else if (id == search_members) {
+@@ -12269,6 +12309,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (!user.self && !UserObject.isUserSelf(user)) {
+                     otherItem.addSubItem(tele_set_local_name, R.drawable.msg_edit, "set a name for me");
+                 }
++                if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
++                    otherItem.addSubItem(tele_set_username_alias, R.drawable.msg_addcontact, "set an alias for me");
++                }
+             }
+         } else if (chatId != 0) {
+             TLRPC.Chat chat = getMessagesController().getChat(chatId);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 506d524ae..f5ea78f45 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -100,6 +100,8 @@ object TeleConfig {
+     val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
+     @JvmField
+     val LOCAL_NAMES = BoolItem("local_names", false)
++    @JvmField
++    val USERNAME_ALIASES = BoolItem("username_aliases", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+new file mode 100644
+index 000000000..9554782f6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+@@ -0,0 +1,104 @@
++package tele.helpers
++
++import org.json.JSONObject
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++object Aliases {
++
++    private const val KEY = "username_aliases"
++    private const val MAX_LENGTH = 32
++    private val map = HashMap<String, Long>()
++    private var loaded = false
++
++    private fun entryKey(account: Int, alias: String) = "$account:${alias.lowercase()}"
++
++    private fun ensureLoaded(account: Int) {
++        if (loaded) return
++        loaded = true
++        TeleDatabaseHelper.get("$KEY:$account")?.let { raw ->
++            runCatching {
++                val json = JSONObject(raw)
++                for (k in json.keys()) {
++                    map[entryKey(account, k)] = json.getLong(k)
++                }
++            }
++        }
++    }
++
++    private fun save(account: Int) {
++        val json = JSONObject()
++        map.forEach { (key, id) ->
++            if (key.startsWith("$account:")) {
++                json.put(key.substring(account.toString().length + 1), id)
++            }
++        }
++        TeleDatabaseHelper.put("$KEY:$account", json.toString())
++    }
++
++    @JvmStatic
++    fun isValid(alias: String?): Boolean {
++        if (alias.isNullOrEmpty() || alias.length > MAX_LENGTH) return false
++        if (!alias[0].isLetter()) return false
++        return alias.all { it.isLetterOrDigit() || it == '_' }
++    }
++
++    @JvmStatic
++    fun dialogId(account: Int, alias: String?): Long {
++        if (alias.isNullOrEmpty() || !TeleConfig.USERNAME_ALIASES.value) return 0
++        synchronized(map) {
++            ensureLoaded(account)
++            return map[entryKey(account, alias)] ?: 0
++        }
++    }
++
++    @JvmStatic
++    fun set(account: Int, alias: String, dialogId: Long) {
++        synchronized(map) {
++            ensureLoaded(account)
++            map[entryKey(account, alias)] = dialogId
++            save(account)
++        }
++    }
++
++    @JvmStatic
++    fun remove(account: Int, alias: String) {
++        synchronized(map) {
++            ensureLoaded(account)
++            map.remove(entryKey(account, alias))
++            save(account)
++        }
++    }
++
++    @JvmStatic
++    fun aliasOf(account: Int, dialogId: Long): String? {
++        if (!TeleConfig.USERNAME_ALIASES.value) return null
++        synchronized(map) {
++            ensureLoaded(account)
++            val prefix = "$account:"
++            return map.entries.firstOrNull { it.value == dialogId && it.key.startsWith(prefix) }
++                ?.key?.substring(prefix.length)
++        }
++    }
++
++    @JvmStatic
++    fun findAll(text: CharSequence): List<String> {
++        val out = ArrayList<String>()
++        val value = text.toString()
++        var i = 0
++        while (i < value.length) {
++            if (value[i] == '@' && (i == 0 || !isNameChar(value[i - 1]))) {
++                var j = i + 1
++                while (j < value.length && isNameChar(value[j])) j++
++                val alias = value.substring(i + 1, j)
++                if (isValid(alias)) out.add(alias)
++                i = j
++            } else {
++                i++
++            }
++        }
++        return out
++    }
++
++    private fun isNameChar(c: Char) = c.isLetterOrDigit() || c == '_'
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index ab0dba265..b890fe050 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -101,7 +101,8 @@ class TeleSettingsActivity : BaseFragment() {
+             Row(TYPE_TOGGLE, "show gift id", item = TeleConfig.SHOW_GIFT_IDS),
+             Row(TYPE_TOGGLE, "show ids on regular gifts", item = TeleConfig.SHOW_REGULAR_GIFT_IDS),
+             Row(TYPE_TOGGLE, "copy custom emoji id", item = TeleConfig.COPY_EMOJI_ID),
+-            Row(TYPE_TOGGLE, "local names for people", item = TeleConfig.LOCAL_NAMES)
++            Row(TYPE_TOGGLE, "local names for people", item = TeleConfig.LOCAL_NAMES),
++            Row(TYPE_TOGGLE, "username aliases", item = TeleConfig.USERNAME_ALIASES)
+         )
+ 
+         override fun getItemCount(): Int = rows.size
