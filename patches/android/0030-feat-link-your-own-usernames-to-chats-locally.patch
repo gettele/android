@@ -4,14 +4,124 @@ Date: Sun, 4 Oct 2026 16:29:05 +0300
 Subject: [PATCH] feat: link your own usernames to chats locally
 
 ---
+ .../messenger/MediaDataController.java        |   1 +
+ .../telegram/ui/Adapters/MentionsAdapter.java |  19 ++
+ .../java/org/telegram/ui/ChatActivity.java    |  33 ++++
  .../java/org/telegram/ui/LaunchActivity.java  |  12 ++
- .../java/org/telegram/ui/ProfileActivity.java |  45 +++++++-
+ .../java/org/telegram/ui/ProfileActivity.java |  61 +++++-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
- .../src/main/java/tele/helpers/Aliases.kt     | 104 ++++++++++++++++++
+ .../src/main/java/tele/helpers/Aliases.kt     | 173 ++++++++++++++++++
  .../tele/ui/settings/TeleSettingsActivity.kt  |   3 +-
- 5 files changed, 164 insertions(+), 2 deletions(-)
+ 8 files changed, 301 insertions(+), 3 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/Aliases.kt
 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+index 30937e2f4..a615201ba 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+@@ -7681,6 +7681,7 @@ public class MediaDataController extends BaseController {
+ 
+         message[0] = cs;
+ 
++        tele.helpers.Aliases.replaceForSend(currentAccount, message, entities);
+         return entities;
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
+index 1b75c7d97..858e27ff0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
+@@ -103,6 +103,7 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
+     private SearchAdapterHelper searchAdapterHelper;
+     private ArrayList<TLObject> searchResultUsernames;
+     private LongSparseArray<TLObject> searchResultUsernamesMap;
++    private String searchResultUsernamesQuery;
+     private Runnable searchGlobalRunnable;
+     private String hintHashtag;
+     private boolean hintHashtagDivider;
+@@ -1259,6 +1260,7 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
+                 }
+             }
+             final String usernameString = result.toString().toLowerCase();
++            searchResultUsernamesQuery = usernameString;
+             boolean hasSpace = usernameString.indexOf(' ') >= 0;
+             ArrayList<TLObject> newResult = new ArrayList<>();
+             final LongSparseArray<TLRPC.User> newResultsHashMap = new LongSparseArray<>();
+@@ -1648,6 +1650,23 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
+     }
+ 
+     private void showUsersResult(ArrayList<TLObject> newResult, LongSparseArray<TLObject> newMap, boolean notify) {
++        if (tele.TeleConfig.USERNAME_ALIASES.getValue() && searchResultUsernamesQuery != null && !isSearchingMentions && !newResult.isEmpty()) {
++            final ArrayList<TLObject> aliased = new ArrayList<>();
++            for (android.util.Pair<String, Long> match : tele.helpers.Aliases.matchingPeers(currentAccount, searchResultUsernamesQuery)) {
++                final long did = match.second;
++                final TLObject peer = did > 0
++                        ? MessagesController.getInstance(currentAccount).getUser(did)
++                        : MessagesController.getInstance(currentAccount).getChat(-did);
++                if (peer != null) {
++                    aliased.add(peer);
++                    newMap.put(did, peer);
++                }
++            }
++            if (!aliased.isEmpty()) {
++                aliased.addAll(newResult);
++                newResult = aliased;
++            }
++        }
+         searchResultUsernames = newResult;
+         if ((!allowBots || !allowChats) && searchResultUsernames != null) {
+             Iterator<TLObject> i = searchResultUsernames.iterator();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index d045f8092..7f044e6c4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -44517,6 +44517,31 @@ public class ChatActivity extends BaseFragment implements
+         ).setDuration(8000).show(true);
+     }
+ 
++    private String teleAliasName(String url) {
++        String value = url;
++        final int at = value.indexOf('@');
++        if (at >= 0) {
++            value = value.substring(at + 1);
++        }
++        final int slash = value.indexOf('/');
++        if (slash > 0) {
++            value = value.substring(0, slash);
++        }
++        final int query = value.indexOf('?');
++        if (query > 0) {
++            value = value.substring(0, query);
++        }
++        return value;
++    }
++
++    private long teleAliasPeerForUrl(String url) {
++        final String name = teleAliasName(url).toLowerCase();
++        if (name.isEmpty() || !tele.helpers.Aliases.isValid(name)) {
++            return 0;
++        }
++        return tele.helpers.Aliases.dialogId(currentAccount, name);
++    }
++
+     public void didLongPressLink(ChatMessageCell cell, MessageObject messageObject, CharacterStyle span, String str) {
+         final ItemOptions options = ItemOptions.makeOptions(ChatActivity.this, cell, true);
+         final ScrimOptions dialog = new ScrimOptions(getContext(), themeDelegate);
+@@ -44527,6 +44552,14 @@ public class ChatActivity extends BaseFragment implements
+         final boolean customTabs = inAppBrowser && allowCustomTabs;
+         final boolean isHashtag = str.startsWith("#") || str.startsWith("$");
+         final boolean isMail = str.startsWith("mailto:");
++        final long teleAliasedPeer = tele.TeleConfig.USERNAME_ALIASES.getValue()
++                ? teleAliasPeerForUrl(str) : 0;
++        if (teleAliasedPeer != 0) {
++            options.add(R.drawable.msg_openin, "open the real @" + teleAliasName(str), () -> {
++                options.dismiss();
++                Browser.openUrl(getParentActivity(), "https://t.me/" + teleAliasName(str), false);
++            });
++        }
+ 
+         if (!isMail) {
+             options.add(customTabs && !isHashtag ? R.drawable.menu_website : R.drawable.msg_openin, getString(customTabs && !isHashtag ? R.string.OpenInTelegramBrowser2 : R.string.Open), () -> {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 index 0e6dfb2eb..eefc36b0c 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
@@ -36,7 +146,7 @@ index 0e6dfb2eb..eefc36b0c 100644
                  if (peerId != null && peerId == Long.MAX_VALUE) {
                      try {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
-index 0d9f78f77..f7a24d9b0 100644
+index 0d9f78f77..5ec346f77 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 @@ -574,6 +574,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
@@ -47,7 +157,15 @@ index 0d9f78f77..f7a24d9b0 100644
      private final static int call_item = 15;
      private final static int video_call_item = 16;
      private final static int search_members = 17;
-@@ -2438,7 +2439,44 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+@@ -620,6 +621,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private int bioRow;
+     private int tele_idRow;
+     private int tele_dcRow;
++    private int tele_aliasRow;
+     private int phoneSuggestionSectionRow;
+     private int graceSuggestionRow;
+     private int graceSuggestionSectionRow;
+@@ -2438,7 +2440,44 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
          Bulletin.removeDelegate(this);
      }
  
@@ -93,7 +211,7 @@ index 0d9f78f77..f7a24d9b0 100644
      public ActionBar createActionBar(Context context) {
          BaseFragment lastFragment = parentLayout.getLastFragment();
          if (lastFragment instanceof ChatActivity && ((ChatActivity) lastFragment).themeDelegate != null && ((ChatActivity) lastFragment).themeDelegate.getCurrentTheme() != null && !((ChatActivity) lastFragment).themeDelegate.isGiftTheme()) {
-@@ -2771,6 +2809,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+@@ -2771,6 +2810,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                      });
                      builder.setNegativeButton(getString(R.string.Cancel), null);
                      showDialog(builder.create());
@@ -102,7 +220,45 @@ index 0d9f78f77..f7a24d9b0 100644
                  } else if (id == call_item || id == video_call_item) {
                      onCallClicked(id == video_call_item);
                  } else if (id == search_members) {
-@@ -12269,6 +12309,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+@@ -10511,6 +10552,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         bioRow = -1;
+         tele_idRow = -1;
+         tele_dcRow = -1;
++        tele_aliasRow = -1;
+         channelRow = -1;
+         channelDividerRow = -1;
+         phoneSuggestionSectionRow = -1;
+@@ -10681,6 +10723,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     if (tele.helpers.PeerId.showDcRow()) {
+                         tele_dcRow = rowCount++;
+                     }
++                    if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
++                        tele_aliasRow = rowCount++;
++                    }
+                 }
+ 
+                 settingsSectionRow = rowCount++;
+@@ -10778,6 +10823,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     if (tele.helpers.PeerId.showDcRow()) {
+                         tele_dcRow = rowCount++;
+                     }
++                    if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
++                        tele_aliasRow = rowCount++;
++                    }
+                 }
+                 if (userInfo != null) {
+                     if (userInfo.birthday != null) {
+@@ -10950,6 +10998,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (tele.helpers.PeerId.showDcRow()) {
+                     tele_dcRow = rowCount++;
+                 }
++            if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
++                tele_aliasRow = rowCount++;
++            }
+             }
+             if (actionsView == null) {
+                 if (infoHeaderRow != -1) {
+@@ -12269,6 +12320,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                  if (!user.self && !UserObject.isUserSelf(user)) {
                      otherItem.addSubItem(tele_set_local_name, R.drawable.msg_edit, "set a name for me");
                  }
@@ -112,6 +268,25 @@ index 0d9f78f77..f7a24d9b0 100644
              }
          } else if (chatId != 0) {
              TLRPC.Chat chat = getMessagesController().getChat(chatId);
+@@ -13558,6 +13612,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                         }
+                     } else if (position == tele_idRow) {
+                         detailCell.setTextAndValue(tele.helpers.PeerId.rowText(currentAccount, userId, chatId), LocaleController.getString(R.string.TeleProfileId), false);
++                    } else if (position == tele_aliasRow) {
++                        String alias = tele.helpers.Aliases.aliasOf(currentAccount, userId != 0 ? userId : -chatId);
++                        detailCell.setTextAndValue(alias != null ? "@" + alias : "", "alias", false);
+                     } else if (position == tele_dcRow) {
+                         detailCell.setTextAndValue(tele.helpers.PeerId.dcText(currentAccount, userId, chatId), LocaleController.getString(R.string.TeleProfileDc), false);
+                     } else if (position == phoneRow) {
+@@ -14391,7 +14448,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             if (position == infoHeaderRow || position == membersHeaderRow || position == settingsSectionRow2 ||
+                     position == numberSectionRow || position == helpHeaderRow || position == debugHeaderRow || position == botPermissionsHeader) {
+                 return VIEW_TYPE_HEADER;
+-            } else if (position == phoneRow || position == locationRow || position == numberRow || position == birthdayRow || position == tele_idRow || position == tele_dcRow) {
++            } else if (position == phoneRow || position == locationRow || position == numberRow || position == birthdayRow || position == tele_idRow || position == tele_dcRow || position == tele_aliasRow) {
+                 return VIEW_TYPE_TEXT_DETAIL;
+             } else if (position == usernameRow || position == setUsernameRow) {
+                 return VIEW_TYPE_TEXT_DETAIL_MULTILINE;
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 index 506d524ae..f5ea78f45 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
@@ -127,13 +302,14 @@ index 506d524ae..f5ea78f45 100644
  
 diff --git a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
 new file mode 100644
-index 000000000..9554782f6
+index 000000000..2bb95300a
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,173 @@
 +package tele.helpers
 +
 +import org.json.JSONObject
++import org.telegram.tgnet.TLRPC
 +import tele.TeleConfig
 +import tele.db.TeleDatabaseHelper
 +
@@ -212,6 +388,74 @@ index 000000000..9554782f6
 +            return map.entries.firstOrNull { it.value == dialogId && it.key.startsWith(prefix) }
 +                ?.key?.substring(prefix.length)
 +        }
++    }
++
++    @JvmStatic
++    fun replaceForSend(account: Int, message: Array<CharSequence?>, entities: MutableList<TLRPC.MessageEntity>?) {
++        if (!TeleConfig.USERNAME_ALIASES.value) return
++        val original = message[0] ?: return
++        val mentions = ArrayList<TLRPC.MessageEntity>()
++        var result: String? = null
++        var added = 0
++        val text = original.toString()
++        var i = 0
++        while (i < text.length) {
++            if (text[i] == '@' && (i == 0 || !isNameChar(text[i - 1]))) {
++                var j = i + 1
++                while (j < text.length && isNameChar(text[j])) j++
++                val alias = text.substring(i + 1, j)
++                val did = dialogId(account, alias)
++                if (did != 0L) {
++                    val shift = if (result == null) 0 else added
++                    if (did > 0) {
++                        mentions.add(TLRPC.TL_messageEntityMentionName().also {
++                            it.user_id = did
++                            it.offset = i + shift
++                            it.length = j - i
++                        })
++                    } else {
++                        val chat = org.telegram.messenger.MessagesController.getInstance(account).getChat(-did)
++                        val username = org.telegram.messenger.ChatObject.getPublicUsername(chat)
++                        if (username != null) {
++                            val replacement = "@$username"
++                            result = result ?: text
++                            result = result.substring(0, i + shift) + replacement + result.substring(j + shift)
++                            added += replacement.length - (j - i)
++                            mentions.add(TLRPC.TL_messageEntityMentionName().also {
++                                it.offset = i + shift
++                                it.length = replacement.length
++                                it.user_id = 0
++                            })
++                        }
++                    }
++                }
++                i = j
++            } else {
++                i++
++            }
++        }
++        if (mentions.isEmpty()) return
++        message[0] = result ?: original
++        entities?.addAll(mentions)
++    }
++
++    @JvmStatic
++    fun matchingPeers(account: Int, query: String): List<android.util.Pair<String, Long>> {
++        if (!TeleConfig.USERNAME_ALIASES.value || query.isEmpty()) return emptyList()
++        val q = query.lowercase()
++        val out = ArrayList<android.util.Pair<String, Long>>()
++        synchronized(map) {
++            ensureLoaded(account)
++            map.forEach { (key, id) ->
++                if (!key.startsWith("$account:")) return@forEach
++                val alias = key.substring(account.toString().length + 1)
++                if (alias.startsWith(q) && alias.length > q.length) {
++                    out.add(android.util.Pair(alias, id))
++                }
++            }
++        }
++        out.sortBy { it.first }
++        return out
 +    }
 +
 +    @JvmStatic
