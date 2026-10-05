@@ -102,12 +102,12 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0053 | чистка трекинг-параметров | todo | образец `feature/strip-tracking` (правила AdGuard) |
+| 0053 | чистка трекинг-параметров | queued | `0050-feat-clean-tracking-parameters-from-links`; `tele/helpers/Tracking.kt` — полная таблица правил из tele (глобальная + провайдеры, amazon /ref= в путях, t.me не трогаем). два тумблера в privacy: `clean_opened_links` (хук в `openClickableLink`, одна точка для всех ссылок сообщений) и `clean_sent_links` (в `getEntities` после алиасов, офсеты энтити пересчитываются). **не проверено на девайсе** |
 | 0078, 0079 | перезапись вставляемых ссылок по правилам + редактор | todo | хук вставки; база — strip-tracking |
-| 0088 | `@username` → t.me в окне создания ссылки | todo | regex в `showInputDialog` |
+| 0088 | `@username` → t.me в окне создания ссылки | queued | `0049-feat-turn-username-into-a-t.me-link-in-the-link-box`; `EditTextCaption.showInputDialog` OK → `LinkRewrites.usernameToLink` (regex как в tele: `^@([a-zA-Z][a-zA-Z0-9_]{3,31})$`), always on |
 | 0087 | контроль превью ссылок (частично) | todo | выбор/отключение; форс своего превью — потом |
-| 0024 | скрыть спонсорские сообщения | todo | гейт sponsored-блока в `MessagesController` |
-| 0034 | скрыть спонсорский канал MTProxy | todo | гейт promo-диалога |
+| 0024 | скрыть спонсорские сообщения | queued | `0048-feat-hide-sponsored-messages-and-the-proxy-sponsor-c`; тумблер `hide_sponsored`: `getSponsoredMessages` возвращает null — чаты и боты не запрашивают и не рендерят рекламу. **не проверено на девайсе** |
+| 0034 | скрыть спонсорский канал MTProxy | queued | тот же патч, тумблер `hide_proxy_sponsor`: proxy-ответ `help.promoData` обнуляет `did` и ставит `noDialog` — стоковый путь сам убирает существующий диалог. PSA не тронуты. **не проверено на девайсе** |
 
 ## пачка 6 — отправка
 
