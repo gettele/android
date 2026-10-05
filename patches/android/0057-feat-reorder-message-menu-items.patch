@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 22:55:27 +0300
+Subject: [PATCH] feat: reorder message menu items
+
+The stored code order is applied as a stable sort in the same filter
+that drops hidden items, so options absent from the saved order keep
+their stock relative positions and everything stays consistent when new
+menu items appear. The editor rows drag vertically (long press), each
+drop persists the full order.
+
+Confidence: medium
+Scope-risk: narrow
+Not-tested: drag feels on the device
+---
+ .../src/main/java/tele/helpers/MessageMenu.kt | 54 ++++++++++++++---
+ .../java/tele/ui/settings/TeleMenuActivity.kt | 58 ++++++++++++++++---
+ 2 files changed, 96 insertions(+), 16 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index ae6b4d9bd..07084bf1a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -58,6 +58,30 @@ object MessageMenu {
+     )
+ 
+     private const val KEY = "message_menu_hidden"
++    private const val ORDER_KEY = "message_menu_order"
++
++    private fun loadOrder(): Map<Int, Int> {
++        val raw = TeleDatabaseHelper.get(ORDER_KEY) ?: return emptyMap()
++        val out = HashMap<Int, Int>()
++        runCatching {
++            val array = JSONArray(raw)
++            for (i in 0 until array.length()) {
++                out[array.getInt(i)] = i
++            }
++        }
++        return out
++    }
++
++    @JvmStatic
++    fun saveOrder(codes: List<Int>) {
++        if (codes.isEmpty()) {
++            TeleDatabaseHelper.put(ORDER_KEY, null)
++            return
++        }
++        val array = JSONArray()
++        codes.forEach { array.put(it) }
++        TeleDatabaseHelper.put(ORDER_KEY, array.toString())
++    }
+ 
+     private fun load(): MutableSet<Int>? {
+         val raw = TeleDatabaseHelper.get(KEY) ?: return null
+@@ -97,14 +121,30 @@ object MessageMenu {
+ 
+     @JvmStatic
+     fun filter(items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
+-        val hidden = load() ?: return
+-        if (hidden.isEmpty()) return
+-        for (i in options.indices.reversed()) {
+-            if (options[i] in hidden) {
+-                items.removeAt(i)
+-                icons.removeAt(i)
+-                options.removeAt(i)
++        val hidden = load()
++        if (hidden != null && hidden.isNotEmpty()) {
++            for (i in options.indices.reversed()) {
++                if (options[i] in hidden) {
++                    items.removeAt(i)
++                    icons.removeAt(i)
++                    options.removeAt(i)
++                }
+             }
+         }
++        val order = loadOrder()
++        if (order.isEmpty()) return
++        val indices = options.indices.toMutableList()
++        indices.sortBy { i -> order[options[i]] ?: (Int.MAX_VALUE / 2 + i) }
++        val sortedItems = ArrayList<CharSequence>(options.size)
++        val sortedIcons = ArrayList<Int>(options.size)
++        val sortedOptions = ArrayList<Int>(options.size)
++        for (i in indices) {
++            sortedItems.add(items[i])
++            sortedIcons.add(icons[i])
++            sortedOptions.add(options[i])
++        }
++        items.clear(); items.addAll(sortedItems)
++        icons.clear(); icons.addAll(sortedIcons)
++        options.clear(); options.addAll(sortedOptions)
+     }
+ }
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
+index d612df0b1..f7563fecc 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
+@@ -4,6 +4,7 @@ import android.content.Context
+ import android.view.View
+ import android.view.ViewGroup
+ import android.widget.FrameLayout
++import androidx.recyclerview.widget.ItemTouchHelper
+ import androidx.recyclerview.widget.LinearLayoutManager
+ import androidx.recyclerview.widget.RecyclerView
+ import org.telegram.messenger.R
+@@ -20,6 +21,8 @@ import tele.helpers.MessageMenu
+ class TeleMenuActivity : BaseFragment() {
+ 
+     private var adapter: Adapter? = null
++    private var touchHelper: ItemTouchHelper? = null
++    private var rows: MutableList<MessageMenu.Item> = mutableListOf()
+ 
+     override fun createView(context: Context): View {
+         actionBar.setBackButtonImage(R.drawable.ic_ab_back)
+@@ -33,6 +36,8 @@ class TeleMenuActivity : BaseFragment() {
+             }
+         })
+ 
++        rows = MessageMenu.ALL.toMutableList()
++
+         val frameLayout = FrameLayout(context)
+         frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+         fragmentView = frameLayout
+@@ -42,23 +47,58 @@ class TeleMenuActivity : BaseFragment() {
+         listView.setVerticalScrollBarEnabled(false)
+         adapter = Adapter(context)
+         listView.setAdapter(adapter)
++
++        touchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
++            override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
++                return if (viewHolder.itemViewType == TYPE_TOGGLE)
++                    makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
++                else 0
++            }
++
++            override fun onMove(recyclerView: RecyclerView, source: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
++                val from = source.adapterPosition
++                val to = target.adapterPosition
++                if (from < 1 || to < 1 || from > rows.size || to > rows.size) return false
++                if (from == to) return false
++                val item = rows.removeAt(from - 1)
++                rows.add(to - 1, item)
++                adapter?.notifyItemMoved(from, to)
++                MessageMenu.saveOrder(rows.map { it.code })
++                return true
++            }
++
++            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {}
++
++            override fun isLongPressDragEnabled(): Boolean = false
++        })
++        touchHelper?.attachToRecyclerView(listView)
++
+         listView.setOnItemClickListener { view, position ->
+-            val item = MessageMenu.ALL.getOrNull(position - 1) ?: return@setOnItemClickListener
++            val item = rows.getOrNull(position - 1) ?: return@setOnItemClickListener
+             val cell = view as TextCheckCell
+             val newValue = !cell.isChecked
+             cell.setChecked(newValue)
+             MessageMenu.setHidden(item.code, !newValue)
+         }
++        listView.setOnItemLongClickListener { view, position ->
++            val holder = if (position in 1..rows.size) listView.findViewHolderForAdapterPosition(position) else null
++            if (holder != null && touchHelper != null) {
++                touchHelper!!.startDrag(holder)
++                true
++            } else {
++                false
++            }
++        }
+         frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+         return fragmentView
+     }
+ 
+-    private class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
+ 
+-        override fun getItemCount(): Int = MessageMenu.ALL.size + 2
++        override fun getItemCount(): Int = rows.size + 2
+ 
+         override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean =
+-            holder.adapterPosition in 1..MessageMenu.ALL.size
++            holder.adapterPosition in 1..rows.size
+ 
+         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+             val view: View = when (viewType) {
+@@ -72,21 +112,21 @@ class TeleMenuActivity : BaseFragment() {
+ 
+         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+             when (val cell = holder.itemView) {
+-                is HeaderCell -> cell.setText("items")
++                is HeaderCell -> cell.setText("items (long press to reorder)")
+                 is TextInfoPrivacyCell -> cell.setText(
+-                    if (MessageMenu.ALL.none { MessageMenu.isHidden(it.code) }) "everything is shown"
++                    if (rows.none { MessageMenu.isHidden(it.code) }) "everything is shown"
+                     else "hidden items stay off until you turn them back on"
+                 )
+                 else -> {
+-                    val item = MessageMenu.ALL[position - 1]
+-                    (cell as TextCheckCell).setTextAndCheck(item.name, !MessageMenu.isHidden(item.code), position < MessageMenu.ALL.size)
++                    val item = rows[position - 1]
++                    (cell as TextCheckCell).setTextAndCheck(item.name, !MessageMenu.isHidden(item.code), position < rows.size)
+                 }
+             }
+         }
+ 
+         override fun getItemViewType(position: Int): Int = when (position) {
+             0 -> TYPE_HEADER
+-            MessageMenu.ALL.size + 1 -> TYPE_SHADOW
++            rows.size + 1 -> TYPE_SHADOW
+             else -> TYPE_TOGGLE
+         }
+     }
