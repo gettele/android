@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 07:19:04 +0300
+Subject: [PATCH] feat: show bot button payloads on long press
+
+Long pressing a callback, switch-inline or web app button now opens a
+dialog with the payload and a copy action; non-printable callback bytes
+are shown as hex. Before, long press on those buttons did nothing while
+url and copy buttons had their own handling.
+
+Confidence: high
+Scope-risk: narrow
+Not-tested: requires a live bot button on the device
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 19 +++++++++++++++
+ TMessagesProj/src/main/java/tele/TeleHooks.kt | 23 +++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 32d4692dc..d39e223d0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -40264,6 +40264,25 @@ public class ChatActivity extends BaseFragment implements
+                 try {
+                     cell.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
+                 } catch (Exception ignore) {}
++                return;
++            }
++            final TL_keyboard.TL_inlineButtonTypeCallback buttonTypeCallback = TLKeyboardHelper.getType(button, TL_keyboard.TL_inlineButtonTypeCallback.class);
++            if (buttonTypeCallback != null) {
++                tele.TeleHooks.showBotButtonPayload(ChatActivity.this, "callback data", buttonTypeCallback.data == null ? new byte[0] : buttonTypeCallback.data);
++                try {
++                    cell.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
++                } catch (Exception ignore) {}
++                return;
++            }
++            final TL_keyboard.TL_inlineButtonTypeSwitchInline buttonTypeSwitchInline = TLKeyboardHelper.getType(button, TL_keyboard.TL_inlineButtonTypeSwitchInline.class);
++            if (buttonTypeSwitchInline != null) {
++                tele.TeleHooks.showBotButtonPayload(ChatActivity.this, "inline query", buttonTypeSwitchInline.query == null ? new byte[0] : buttonTypeSwitchInline.query.getBytes());
++                return;
++            }
++            final TL_keyboard.TL_inlineButtonTypeWebView buttonTypeWebView = TLKeyboardHelper.getType(button, TL_keyboard.TL_inlineButtonTypeWebView.class);
++            if (buttonTypeWebView != null) {
++                tele.TeleHooks.showBotButtonPayload(ChatActivity.this, "web app url", buttonTypeWebView.url == null ? new byte[0] : buttonTypeWebView.url.getBytes());
++                return;
+             }
+         }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index e5a08caa6..b939945e5 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -115,6 +115,29 @@ object TeleHooks {
+         return ""
+     }
+ 
++        @JvmStatic
++    fun showBotButtonPayload(fragment: BaseFragment, kind: String, data: ByteArray) {
++        val activity = fragment.parentActivity ?: return
++        if (data.isEmpty()) {
++            Toast.makeText(activity, "the button carries no payload", Toast.LENGTH_SHORT).show()
++            return
++        }
++        val text = String(data, Charsets.UTF_8)
++        val printable = text.toByteArray(Charsets.UTF_8).contentEquals(data) &&
++                text.none { Character.isISOControl(it) && it != '\n' && it != '\t' }
++        val shown = if (printable) text else data.joinToString("") { "%02x".format(it) }
++        val provider = fragment.resourceProvider
++        val builder = if (provider != null) AlertDialog.Builder(activity, provider) else AlertDialog.Builder(activity)
++        builder.setTitle(kind)
++        builder.setMessage(shown)
++        builder.setPositiveButton(LocaleController.getString(R.string.Copy)) { _, _ ->
++            AndroidUtilities.addToClipboard(shown)
++            Toast.makeText(activity, "payload copied", Toast.LENGTH_SHORT).show()
++        }
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        fragment.showDialog(builder.create())
++    }
++
+     private fun themedField(activity: Context, provider: Theme.ResourcesProvider?): EditTextBoldCursor {
+         val field = EditTextBoldCursor(activity)
+         field.setSingleLine(true)
