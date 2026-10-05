@@ -88,7 +88,7 @@
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0058, 0055, 0092 | настраиваемое меню сообщения (порядок/скрытие) | todo | своя реализация; ориентир `feature/message-menu` (NagramX) |
-| 0028, 0005 | пейлоады кнопок ботов: поповер при зажатии + копирование | todo | `TL_keyboardButton*` |
+| 0028, 0005 | пейлоады кнопок ботов: поповер при зажатии + копирование | queued | `0042-feat-show-bot-button-payloads-on-long-press`; зажатие callback/switch-inline/webview-кнопки открывает диалог с пейлоадом и Copy (непечатаемые байты — hex). слот — существующий `ChatActivity.didLongPressBotButton`, где url/copy уже обрабатывались, а остальные типы молчали. **не проверено на девайсе** |
 | 0033 | view as TL (schema.jppgr.am) | todo | `ConnectionsManager` + сериализация TLRPC |
 | 0094 | кликабельные кастом-эмодзи в эмодзи-only сообщениях | todo | `AnimatedEmojiSpan` в `ChatMessageCell` |
 | 0104 | seen/reacted счётчики раздельно | todo | `MessageSeenView` |
