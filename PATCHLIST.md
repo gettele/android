@@ -80,7 +80,7 @@
 | 0029 | id сообщения в меню сообщения | queued | `0026-feat-show-the-message-id-in-the-message-menu`; пункт «ID: N» первым в меню сообщения через `fillMessageMenu` (option 118), копирует bare id |
 | 0056 | копировать id кастомного эмодзи | queued | `0028-...`; long-press на эмодзи → пункт «copy emoji ID» первым в меню; hit-test — `ChatMessageCell.tele_emojiIdAt` (текст + подпись), id живёт в `ChatActivity.tele_pressedEmojiId`/`tele_menuEmojiId` |
 | 0080 | локальные имена людей | queued | `0029-...`; хранилище — `tele_kv` ключ `local_names` (JSON), `tele/helpers/LocalNames.kt`; подмена в `UserObject.getUserName/getFirstName`; пункт «set a name for me» в меню профиля («…»); тумблер `local_names` |
-| 0072 | username-алиасы | queued | `0030-feat-link-your-own-usernames-to-chats-locally`; `tele/helpers/Aliases.kt` (`tele_kv`, ключ на аккаунт: алиас → dialogId); пункт «set an alias for me» в меню профиля рядом с локальным именем; резолв — перехват в `LaunchActivity.runLinkRequest`: `@алиас` открывает чат напрямую. автодополнение — `MentionsAdapter.showUsersResult` (алиасы первыми в результатах); подмена при отправке — `MediaDataController.getEntities` (пользователь: `messageEntityMentionName` с текстом-алиасом, чат: текст заменяется на `@username`); строка `alias` в профиле; пункт «open the real @X» в контекстном меню тега (`ChatActivity.didLongPressUsername`); тап по `@алиас` открывает чат; инлайн-боты — `MentionsAdapter.searchForContextBot`: алиас резолвится в бота и уходит в inline-запрос. остаток: 0103 (поиск чатов по алиасам) |
+| 0072 | username-алиасы | queued | `0030-feat-link-your-own-usernames-to-chats-locally`; `tele/helpers/Aliases.kt` (`tele_kv`, ключ на аккаунт: алиас → dialogId); пункт «set an alias for me» в меню профиля рядом с локальным именем; резолв — перехват в `LaunchActivity.runLinkRequest`: `@алиас` открывает чат напрямую. автодополнение — `MentionsAdapter.showUsersResult` (алиасы первыми в результатах); подмена при отправке — `MediaDataController.getEntities` (пользователь: `inputMessageEntityMentionName` с `InputUser`, чат: текст заменяется на `@username`); строка `alias` в профиле; пункт «open the real @X» в контекстном меню тега (`ChatActivity.didLongPressUsername`); тап по `@алиас` открывает чат; инлайн-боты — `MentionsAdapter.searchForContextBot`: алиас резолвится в бота и уходит в inline-запрос. |
 | 0013, 0066 | id подарков (обычных и коллекционных) | queued | `0027-...`; строка «Gift ID» в `StarGiftSheet` после `tableView.clear()` (3 пути: уникальный — `gift_id`, сохранённый — `savedStarGift.gift.id`, из сообщения — `stargift.id`); `tele/helpers/Gifts.kt`; тумблеры `show_gift_ids`/`show_regular_gift_ids` |
 
 ## пачка 4 — меню сообщения и боты
@@ -94,7 +94,7 @@
 | 0104 | seen/reacted счётчики раздельно | todo | `MessageSeenView` |
 | 0105 | отправить inline-запрос как текст | todo | пункт при активном inline-боте |
 | 0067 | инлайн-результаты без via | todo | сборка обычного сообщения вместо `sendInlineBotResult` |
-| 0103 | поиск чатов по алиасам | todo | зависит от 0072 |
+| 0103 | поиск по алиасам | queued | `0031-feat-search-chats-and-mentions-by-alias`; зависит от 0072. поиск чатов — `DialogsSearchAdapter.searchDialogsInternal` после `MessagesStorage.localSearch`: диалоги, чей алиас содержит запрос, добавляются в выдачу, в ячейке видно `Имя @алиас`; `@` в строке ввода — `MentionsAdapter.showUsersResult` больше не требует непустой серверной выдачи, алиасы подставляются всегда |
 | 0124 | алиасы для inline-ботов | todo | зависит от 0072 |
 
 ## пачка 5 — ссылки
