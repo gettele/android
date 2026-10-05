@@ -1,0 +1,400 @@
+From 853fca29fd86aaa7ce368c573d2c105d159a2b3a Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 6 Oct 2026 02:21:59 +0300
+Subject: [PATCH] feat: view messages and peers as TL
+
+Add opt-in fresh TL inspection for message and profile menus.
+
+Constraint: Never edit generated TLRPC.java or stock strings.xml
+
+Constraint: View as TL remains disabled by default
+
+Rejected: Add all desktop surfaces in one patch | Android menu callbacks are not stable enough without separate verification
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: Manual browser opening and device menu interaction
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  14 ++
+ .../java/org/telegram/ui/ProfileActivity.java |   9 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/MessageMenu.kt |   1 +
+ .../src/main/java/tele/helpers/ViewAsTl.kt    | 219 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
+ .../src/main/res/values/strings_tele.xml      |   2 +
+ 8 files changed, 250 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ViewAsTl.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 4bc2737cf..248ae6080 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1231,6 +1231,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_mark_viewed = 117;
+     public final static int tele_option_copy_msg_id = 118;
+     public final static int tele_option_copy_emoji_id = 119;
++    public final static int tele_option_view_as_tl = 120;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -33420,6 +33421,14 @@ public class ChatActivity extends BaseFragment implements
+                 BulletinFactory.of(this).createCopyBulletin(getString(R.string.TeleMessageIdCopied)).show();
+                 break;
+             }
++            case tele_option_view_as_tl: {
++                final MessageObject object = selectedObject;
++                closeMenu();
++                if (object != null && object.messageOwner != null) {
++                    tele.helpers.ViewAsTl.viewMessage(this, object.getDialogId(), object.getId());
++                }
++                break;
++            }
+             case tele_option_copy_emoji_id: {
+                 AndroidUtilities.addToClipboard(String.valueOf(tele_menuEmojiId));
+                 BulletinFactory.of(this).createCopyBulletin(getString(R.string.TeleEmojiIdCopied)).show();
+@@ -46468,6 +46477,11 @@ public class ChatActivity extends BaseFragment implements
+             options.add(OPTION_WELCOME_REVERT);
+             icons.add(R.drawable.outline_revert_24);
+         }
++        if (tele.helpers.ViewAsTl.isEnabled() && message.getId() > 0 && !message.scheduled && !isEphemeral) {
++            items.add(0, getString(R.string.TeleViewAsTl));
++            options.add(0, tele_option_view_as_tl);
++            icons.add(0, R.drawable.msg_info);
++        }
+         tele.helpers.MessageMenu.filter(items, icons, options);
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 08833e753..bfa4207d1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -576,6 +576,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private final static int tele_set_local_name = 90;
+     private final static int tele_set_username_alias = 91;
+     private final static int tele_set_chat_alias = 92;
++    private final static int tele_view_as_tl = 93;
+     private final static int call_item = 15;
+     private final static int video_call_item = 16;
+     private final static int search_members = 17;
+@@ -2801,6 +2802,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     showDialog(builder.create());
+                 } else if (id == tele_set_username_alias) {
+                     showAliasDialog();
++                } else if (id == tele_view_as_tl) {
++                    tele.helpers.ViewAsTl.viewPeer(ProfileActivity.this, userId, chatId);
+                 } else if (id == tele_set_chat_alias) {
+                     showChatAliasDialog();
+                 } else if (id == call_item || id == video_call_item) {
+@@ -12313,6 +12316,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (!user.self && !UserObject.isUserSelf(user)) {
+                     otherItem.addSubItem(tele_set_local_name, R.drawable.msg_edit, "set a name for me");
+                 }
++                if (tele.helpers.ViewAsTl.isEnabled()) {
++                    otherItem.addSubItem(tele_view_as_tl, R.drawable.msg_info, getString(R.string.TeleViewAsTl));
++                }
+                 if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
+                     otherItem.addSubItem(tele_set_username_alias, R.drawable.msg_addcontact, "set an alias for me");
+                 }
+@@ -12438,6 +12444,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
+                     otherItem.addSubItem(tele_set_chat_alias, R.drawable.msg_addcontact, "set an alias for me");
+                 }
++                if (tele.helpers.ViewAsTl.isEnabled()) {
++                    otherItem.addSubItem(tele_view_as_tl, R.drawable.msg_info, getString(R.string.TeleViewAsTl));
++                }
+                 otherItem.addSubItem(leave_group, R.drawable.msg_leave, LocaleController.getString(R.string.DeleteAndExit));
+                 leaveAction = true;
+             }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index e219e3317..302a9a1a3 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -107,6 +107,8 @@ object TeleConfig {
+     @JvmField
+     val BOT_BUTTON_PAYLOADS = BoolItem("bot_button_payloads", true)
+     @JvmField
++    val VIEW_AS_TL = BoolItem("view_as_tl", false)
++    @JvmField
+     val HIDE_SPONSORED = BoolItem("hide_sponsored", false)
+     @JvmField
+     val HIDE_PROXY_SPONSOR = BoolItem("hide_proxy_sponsor", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index 07084bf1a..471608503 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -53,6 +53,7 @@ object MessageMenu {
+         Item(ChatActivity.OPTION_FACT_CHECK, "Edit fact check"),
+         Item(ChatActivity.OPTION_WELCOME_REVERT, "Revert welcome"),
+         Item(ChatActivity.tele_option_copy_msg_id, "copy message id"),
++        Item(ChatActivity.tele_option_view_as_tl, "view as TL"),
+         Item(ChatActivity.tele_option_copy_emoji_id, "copy emoji id"),
+         Item(ChatActivity.tele_option_mark_viewed, "mark as viewed")
+     )
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ViewAsTl.kt b/TMessagesProj/src/main/java/tele/helpers/ViewAsTl.kt
+new file mode 100644
+index 000000000..fb131cc3a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ViewAsTl.kt
+@@ -0,0 +1,219 @@
++package tele.helpers
++
++import android.content.Intent
++import android.util.Base64
++import androidx.core.content.FileProvider
++import java.io.ByteArrayOutputStream
++import java.io.File
++import java.io.FileOutputStream
++import java.util.zip.Deflater
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.browser.Browser
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.BulletinFactory
++import tele.TeleConfig
++
++object ViewAsTl {
++    private const val PACK_FROM = 512
++    private const val MAX_DIRECT_URL_LENGTH = 2000
++    private const val SCHEMA_URL = "https://schema.jppgr.am/embed"
++
++    @JvmStatic
++    fun isEnabled(): Boolean = TeleConfig.VIEW_AS_TL.value
++
++    @JvmStatic
++    fun viewMessage(fragment: BaseFragment, dialogId: Long, messageId: Int) {
++        if (!isEnabled() || messageId <= 0 || fragment.parentActivity == null) {
++            return
++        }
++
++        val controller = fragment.messagesController
++        val request: TLObject
++        if (dialogId < 0) {
++            val chat = controller.getChat(-dialogId)
++            if (chat == null) {
++                showError(fragment, LocaleController.getString(org.telegram.messenger.R.string.TeleViewAsTlError))
++                return
++            }
++            if (ChatObject.isChannel(chat)) {
++                val channel = TLRPC.TL_channels_getMessages()
++                channel.channel = org.telegram.messenger.MessagesController.getInputChannel(chat)
++                channel.id.add(messageId)
++                request = channel
++            } else {
++                val messages = TLRPC.TL_messages_getMessages()
++                messages.id.add(messageId)
++                request = messages
++            }
++        } else {
++            val messages = TLRPC.TL_messages_getMessages()
++            messages.id.add(messageId)
++            request = messages
++        }
++
++        val requestId = fragment.connectionsManager.sendRequest(request) { response, error ->
++            AndroidUtilities.runOnUIThread {
++                if (error != null) {
++                    BulletinFactory.of(fragment).showForError(error)
++                    return@runOnUIThread
++                }
++                val messages = response as? TLRPC.messages_Messages
++                val message = messages?.messages?.firstOrNull { it.id == messageId }
++                if (message == null) {
++                    showError(fragment, LocaleController.getString(org.telegram.messenger.R.string.TeleViewAsTlError))
++                } else {
++                    open(fragment, message)
++                }
++            }
++        }
++        fragment.connectionsManager.bindRequestToGuid(requestId, fragment.getClassGuid())
++    }
++
++    @JvmStatic
++    fun viewPeer(fragment: BaseFragment, userId: Long, chatId: Long) {
++        if (!isEnabled() || fragment.parentActivity == null) {
++            return
++        }
++        val controller = fragment.messagesController
++        val request: TLObject
++        if (userId != 0L) {
++            val user = controller.getUser(userId)
++            if (user == null) {
++                showError(fragment, LocaleController.getString(org.telegram.messenger.R.string.TeleViewAsTlError))
++                return
++            }
++            request = TLRPC.TL_users_getFullUser().apply {
++                id = controller.getInputUser(user)
++            }
++        } else if (chatId != 0L) {
++            val chat = controller.getChat(chatId)
++            if (chat == null) {
++                showError(fragment, LocaleController.getString(org.telegram.messenger.R.string.TeleViewAsTlError))
++                return
++            }
++            request = if (ChatObject.isChannel(chat)) {
++                TLRPC.TL_channels_getFullChannel().apply {
++                    channel = org.telegram.messenger.MessagesController.getInputChannel(chat)
++                }
++            } else {
++                TLRPC.TL_messages_getFullChat().apply {
++                    this.chat_id = chat.id
++                }
++            }
++        } else {
++            return
++        }
++        val requestId = fragment.connectionsManager.sendRequest(request) { response, error ->
++            AndroidUtilities.runOnUIThread {
++                if (error != null) {
++                    BulletinFactory.of(fragment).showForError(error)
++                } else if (response != null) {
++                    open(fragment, response)
++                } else {
++                    showError(fragment, LocaleController.getString(org.telegram.messenger.R.string.TeleViewAsTlError))
++                }
++            }
++        }
++        fragment.connectionsManager.bindRequestToGuid(requestId, fragment.getClassGuid())
++    }
++
++    @JvmStatic
++    fun open(fragment: BaseFragment, value: TLObject) {
++        val bytes = serialize(value)
++        if (bytes.isEmpty()) {
++            showError(fragment, LocaleController.getString(org.telegram.messenger.R.string.TeleViewAsTlError))
++            return
++        }
++        val packed = if (bytes.size > PACK_FROM) rawDeflate(bytes) else null
++        val compressed = packed != null && packed.size < bytes.size
++        val payload = if (compressed) packed!! else bytes
++        val data = Base64.encodeToString(
++            payload,
++            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
++        )
++        val theme = if (Theme.isCurrentThemeDark()) "dark" else "light"
++        val url = buildString {
++            append(SCHEMA_URL)
++            append("#layer=")
++            append(TLRPC.LAYER)
++            append("&theme=")
++            append(theme)
++            if (compressed) {
++                append("&z=1")
++            }
++            append("&data=")
++            append(data)
++        }
++        if (url.length > MAX_DIRECT_URL_LENGTH) {
++            openRedirect(fragment, url)
++        } else {
++            Browser.openUrl(fragment.parentActivity, url)
++        }
++    }
++
++    private fun openRedirect(fragment: BaseFragment, url: String) {
++        runCatching {
++            val directory = ApplicationLoader.getFilesDirFixed("cache/tele-tl")
++            val file = File(directory, "redirect-${System.currentTimeMillis()}.html")
++            FileOutputStream(file).use { output ->
++                val escaped = url.replace("\\", "\\\\").replace("\"", "\\\"")
++                val html = """<!doctype html><meta charset="utf-8"><script>location.replace("$escaped")</script><a href="$url">open</a>"""
++                output.write(html.toByteArray())
++            }
++            val uri = FileProvider.getUriForFile(
++                fragment.parentActivity,
++                ApplicationLoader.getApplicationId() + ".provider",
++                file
++            )
++            val intent = Intent(Intent.ACTION_VIEW, uri)
++                .setDataAndType(uri, "text/html")
++                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++            fragment.parentActivity.startActivity(intent)
++        }.onFailure {
++            showError(fragment, LocaleController.getString(org.telegram.messenger.R.string.TeleViewAsTlError))
++        }
++    }
++
++    private fun serialize(value: TLObject): ByteArray {
++        return runCatching {
++            val data = SerializedData(value.objectSize)
++            value.serializeToStream(data)
++            val bytes = data.toByteArray()
++            data.cleanup()
++            bytes
++        }.getOrDefault(ByteArray(0))
++    }
++
++    private fun rawDeflate(bytes: ByteArray): ByteArray? {
++        val deflater = Deflater(Deflater.BEST_COMPRESSION, true)
++        return try {
++            deflater.setInput(bytes)
++            deflater.finish()
++            val output = ByteArrayOutputStream(bytes.size)
++            val buffer = ByteArray(1024)
++            while (!deflater.finished()) {
++                val count = deflater.deflate(buffer)
++                if (count <= 0) {
++                    break
++                }
++                output.write(buffer, 0, count)
++            }
++            output.toByteArray()
++        } finally {
++            deflater.end()
++        }
++    }
++
++    private fun showError(fragment: BaseFragment, message: String) {
++        if (fragment.parentActivity != null) {
++            BulletinFactory.of(fragment).showForError(message)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 7c0cb3313..078ffcb92 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -41,7 +41,8 @@ object TeleSearch {
+             section(GUID_INTERFACE + 8, "hide mention and reaction badges", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(GUID_INTERFACE + 9, "turn off animated userpics", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(GUID_INTERFACE + 10, "show bot button payloads on long press", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            ProfileActivity.SearchAdapter.SearchResult(GUID_INTERFACE + 11, "message menu", icon) { fragment.presentFragment(TeleMenuActivity()) },
++            section(GUID_INTERFACE + 11, "view messages as TL", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            ProfileActivity.SearchAdapter.SearchResult(GUID_INTERFACE + 12, "message menu", icon) { fragment.presentFragment(TeleMenuActivity()) },
+             section(GUID_PRIVACY + 12, "clean tracking parameters from opened links", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 13, "clean tracking parameters from sent links", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 16, "rewrite pasted links by rules", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 541cae57f..4aa15febb 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -162,6 +162,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("hide mention and reaction badges", TeleConfig.HIDE_MENTION_REACTIONS),
+                 toggle("turn off animated userpics", TeleConfig.STATIC_AVATARS),
+                 toggle("show bot button payloads on long press", TeleConfig.BOT_BUTTON_PAYLOADS),
++                toggle("view messages as TL", TeleConfig.VIEW_AS_TL),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "editor"),
+                 sectionLink("message menu", MODE_MENU, R.drawable.msg2_permissions),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index d9dadc940..e58dd2f99 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -9,4 +9,6 @@
+     <string name="TeleMessageIdCopied">Message ID copied to clipboard</string>
+     <string name="TeleSetAliasFor">Set an alias for %s</string>
+     <string name="TeleNameOnlyYouSee">Name only you see</string>
++    <string name="TeleViewAsTl">View as TL</string>
++    <string name="TeleViewAsTlError">Unable to open this object as TL</string>
+ </resources>
+-- 
+2.43.0
+
