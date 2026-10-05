@@ -32,7 +32,7 @@
 | misc | свои api-креденциалы (`TELE_API_ID`/`TELE_API_HASH` из local.properties) | done | `0001-misc-support-custom-api-credentials` |
 | infra | kotlin-плагин + скелет `tele/` (TeleConfig, TeleHooks, db) | done | `0002-misc-enable-kotlin-and-add-the-tele-skeleton` |
 | infra | секция настроек «tele» (страница, строка в главных настройках, deeplinks позже) | done | `0003-feat-add-the-tele-settings-section` |
-| 0007, 0091 | переименовать приложение в tele + иконка | done | `0004-misc-call-the-app-tele`; оба debug-оверлея манифеста. иконки — `0039-feat-tele-launcher-and-settings-icons`: лаунчер (полный набор mipmap + adaptive: шар вырезан по маске из исходника поверх его же фона) и иконка секции tele в общих настройках (пузырь из второго исходника, прозрачный фон). package rename — позже |
+| 0007, 0091 | переименовать приложение в tele + иконка | done | `0004-misc-call-the-app-tele`; оба debug-оверлея манифеста. иконки — `0039-...` + `0043-fix-whole-ball-on-the-launcher-and-a-white-bubble-on`: лаунчер — полный набор mipmap + adaptive; исходное фото обрезает шар снизу, круг достроен зеркальным продолжением градиента, теперь шар целиком; иконка секции tele — белый пузырь на синем круге (`IconBackgroundColors.BLUE`). package rename — позже |
 | misc | свой package-суффикс debug-сборок (`.tele` вместо `.beta`) | done | `0006-misc-use-a-fork-package-suffix-for-debug-builds`; не конфликтует с Telegram/Beta на устройстве |
 | misc | отключение google-services (чужой firebase) | done | `0007-misc-disable-google-services-integration`; fcm-push не работает до своей конфигурации |
 | 0001, 0048 | номер сборки tele в шапке списка чатов и рядом с версией в настройках | done | `0005-feat-show-the-tele-build-number`; `TELE_BUILD` из local.properties, 0 = dev |
@@ -88,7 +88,7 @@
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0058, 0055, 0092 | настраиваемое меню сообщения (порядок/скрытие) | todo | своя реализация; ориентир `feature/message-menu` (NagramX) |
-| 0028, 0005 | пейлоады кнопок ботов: поповер при зажатии + копирование | queued | `0042-feat-show-bot-button-payloads-on-long-press`; зажатие callback/switch-inline/webview-кнопки открывает диалог с пейлоадом и Copy (непечатаемые байты — hex). слот — существующий `ChatActivity.didLongPressBotButton`, где url/copy уже обрабатывались, а остальные типы молчали. **не проверено на девайсе** |
+| 0028, 0005 | пейлоады кнопок ботов: поповер при зажатии + копирование | queued | `0042-feat-show-bot-button-payloads-on-long-press`; зажатие callback/switch-inline/webview-кнопки открывает диалог с пейлоадом и Copy (непечатаемые байты — hex). слот — существующий `ChatActivity.didLongPressBotButton`, где url/copy уже обрабатывались, а остальные типы молчали; тумблер `bot_button_payloads` (интерфейс, по умолчанию вкл) — `0045` |
 | 0033 | view as TL (schema.jppgr.am) | todo | `ConnectionsManager` + сериализация TLRPC |
 | 0094 | кликабельные кастом-эмодзи в эмодзи-only сообщениях | todo | `AnimatedEmojiSpan` в `ChatMessageCell` |
 | 0104 | seen/reacted счётчики раздельно | todo | `MessageSeenView` |
@@ -179,7 +179,7 @@
 |---|---|---|---|
 | 0022, 0035 | lowercase всего интерфейса | todo | перехват `LocaleController.getString` |
 | 0040 | брендинг «tele» во внутренних строках | done | `0038-feat-call-the-app-tele-in-its-own-texts`: стоковые строки, называющие приложение, перекрываются из `TMessagesProj_App/src/main/res/values/tele_strings.xml` (app-модуль побеждает библиотеку на merge) — стоковые strings.xml не тронуты. сервисные упоминания (Premium, модераторы, FAQ) и имена папок на диске оставлены как есть |
-| 0042 | секции и поиск настроек tele | done | `0040-feat-split-tele-settings-into-sections-and-add-them-.patch`; `TeleSettingsActivity(mode)` — корень открывает interface/privacy/ids/your data, каждая секция — свой экран; `tele/ui/settings/TeleSearch.kt` добавляет все секции и тумблеры в массив поиска `ProfileActivity.SearchAdapter` (guid 950+, хлебные крошки tele > секция), хук — оборачивание возвращаемого массива `onCreateSearchArray` |
+| 0042 | секции и поиск настроек tele | done | `0040-feat-split-tele-settings-into-sections-and-add-them-.patch`; `TeleSettingsActivity(mode)` — корень открывает interface/privacy/ids/your data, каждая секция — свой экран; `tele/ui/settings/TeleSearch.kt` добавляет все секции и тумблеры в массив поиска `ProfileActivity.SearchAdapter` (guid 950+, хлебные крошки tele > секция), хук — оборачивание возвращаемого массива `onCreateSearchArray`. `0044`: строки секций в корне — `SettingsActivity.SettingCell` с цветными иконками и подписями, в одной секции с версией tele |
 | 0010, 0041 | шаблон заголовка экрана диалогов (частично) | todo | движок переменных на базе шапки чатов |
 | 0069 | локальные фоны чатов (частично) | todo | per-chat обои уже в стоке; добавить форс-локальность |
 | 0071 | аккаунты test-сервера (частично) | todo | нужен нативный per-account флаг `isTestBackend` |
