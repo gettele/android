@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 20:48:24 +0300
+Subject: [PATCH] fix: rewrite pasted links before the rich paste hook
+
+The message field is an anonymous EditTextCaption subclass whose
+onTextContextMenuItem intercepts paste with handleRichHtmlPaste first,
+so clips with an html flavour (most browser copies) never reached the
+rewriter. The rewrite is now a protected method called before it.
+
+Confidence: high
+Scope-risk: narrow
+---
+ .../ui/Components/ChatActivityEnterView.java  |  3 ++
+ .../ui/Components/EditTextCaption.java        | 37 +++++++++++--------
+ 2 files changed, 24 insertions(+), 16 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index a8f997306..b70b053cb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -5704,6 +5704,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+ 
+             @Override
+             public boolean onTextContextMenuItem(int id) {
++                if (id == android.R.id.paste && teleRewritePaste()) {
++                    return true;
++                }
+                 if (id == android.R.id.paste && handleRichHtmlPaste()) {
+                     return true;
+                 }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+index 7e69e1249..92dbc7ade 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+@@ -964,23 +964,28 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+         return Theme.getColor(key, resourcesProvider);
+     }
+ 
+-    @Override
++    protected boolean teleRewritePaste() {
++        ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
++        ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
++        CharSequence clipText = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(getContext()) : null;
++        if (TextUtils.isEmpty(clipText)) {
++            return false;
++        }
++        android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(clipText.toString());
++        if (rewritten == null) {
++            return false;
++        }
++        int start = Math.max(0, getSelectionStart());
++        int end = Math.min(getText().length(), getSelectionEnd());
++        setText(getText().replace(start, end, rewritten.first));
++        setSelection(start + rewritten.first.length(), start + rewritten.first.length());
++        Toast.makeText(getContext(), TextUtils.join("\n", rewritten.second), Toast.LENGTH_SHORT).show();
++        return true;
++    }
++
+     public boolean onTextContextMenuItem(int id) {
+-        if (id == android.R.id.paste && tele.helpers.LinkRewrites.rewritePastedLinksEnabled()) {
+-            ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+-            ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
+-            CharSequence clipText = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(getContext()) : null;
+-            if (!TextUtils.isEmpty(clipText)) {
+-                android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(clipText.toString());
+-                if (rewritten != null) {
+-                    int start = Math.max(0, getSelectionStart());
+-                    int end = Math.min(getText().length(), getSelectionEnd());
+-                    setText(getText().replace(start, end, rewritten.first));
+-                    setSelection(start + rewritten.first.length(), start + rewritten.first.length());
+-                    Toast.makeText(getContext(), TextUtils.join("\n", rewritten.second), Toast.LENGTH_SHORT).show();
+-                    return true;
+-                }
+-            }
++        if (id == android.R.id.paste && teleRewritePaste()) {
++            return true;
+         }
+         if (id == android.R.id.paste) {
+             ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
