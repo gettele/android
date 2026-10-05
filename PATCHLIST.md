@@ -92,11 +92,11 @@
 | 0033 | view as TL (schema.jppgr.am) | todo | `ConnectionsManager` + сериализация TLRPC |
 | 0094 | кликабельные кастом-эмодзи в эмодзи-only сообщениях | todo | `AnimatedEmojiSpan` в `ChatMessageCell` |
 | 0104 | seen/reacted счётчики раздельно | todo | `MessageSeenView` |
-| 0105 | отправить inline-запрос как текст | todo | пункт при активном inline-боте |
-| 0067 | инлайн-результаты без via | todo | сборка обычного сообщения вместо `sendInlineBotResult` |
+| 0105 | отправить inline-запрос как текст | n/a | на Android кнопка отправки уже шлёт текст поля (`processSendingText`), панель инлайна — отдельный тап по результату; десктопный пункт нужен был потому, что Enter отправлял подсвеченный результат |
+| 0067 | инлайн-результаты без via | queued | `0041-feat-send-inline-results-without-via`; тумблер `inline_no_via` (секция privacy + поиск): `via_bot_id` не ставится ни при отправке (`params.containsKey("bot")`), ни в ретрае (ветка `replyMarkup`), локальная отрисовка честная. **не проверено на девайсе**; игры/webview-результаты могут требовать via — поэтому тумблер по умолчанию выключен |
 | 0103 | поиск по алиасам | queued | `0031-feat-search-chats-and-mentions-by-alias`; зависит от 0072. поиск чатов — `DialogsSearchAdapter.searchDialogsInternal` после `MessagesStorage.localSearch`: диалоги, чей алиас содержит запрос, добавляются в выдачу, в ячейке видно `Имя @алиас`; `@` в строке ввода — `MentionsAdapter.showUsersResult` больше не требует непустой серверной выдачи, алиасы подставляются всегда |
 | 0105 | управление локальными именами и алиасами | queued | `0035-feat-manage-local-names-and-aliases-from-tele-settin`; зависит от 0072/0029. `tele/ui/settings/TeleNamesActivity.kt` — два экрана из настроек tele («your data»): список «Имя → значение», тап открывает диалог редактирования с кнопкой Delete, долгий тап открывает профиль (`0036` — индекс строки сдвинут на заголовок). Диалоги алиаса и локального имени — один общий в `TeleHooks`: `ChatActivity` и `ProfileActivity` больше не держат свои копии (`0037`), поэтому подпись, линия, отступы и Delete одинаковые везде; тема чата прокидывается через `getResourceProvider()` плейсхолдеры диалогов приглушены, `@` в поле алиаса — приглушённый префикс (`0034`) |
-| 0124 | алиасы для inline-ботов | todo | зависит от 0072 |
+| 0124 | алиасы для inline-ботов | done | покрыто 0030: `MentionsAdapter.teleAliasRealUsername` резолвит алиас в бота до инлайн-запроса (`searchForContextBot`); подтверждено пользователем (memeindexerbot/zaza) |
 
 ## пачка 5 — ссылки
 
