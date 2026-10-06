@@ -1,0 +1,245 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 6 Oct 2026 17:33:32 +0300
+Subject: [PATCH] feat: skip link previews for pasted links
+
+Add a link preview mode that suppresses automatic previews for pasted links only.
+
+Constraint: Explicit preview selection and no_link_previews behavior stay unchanged
+
+Rejected: Add Only ones you add mode now | Android paste provenance needs device verification first
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: Manual paste, rich paste and Gboard verification on device
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  5 +++-
+ .../ui/Components/ChatActivityEnterView.java  | 30 +++++++++++++++++++
+ .../ui/Components/EditTextCaption.java        | 14 +++++++++
+ .../src/main/java/tele/TeleConfig.kt          |  2 ++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 18 +++++++++++
+ 6 files changed, 69 insertions(+), 1 deletion(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 248ae6080..9981fa9bc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -2235,7 +2235,7 @@ public class ChatActivity extends BaseFragment implements
+                 AndroidUtilities.cancelRunOnUIThread(waitingForCharaterEnterRunnable);
+                 waitingForCharaterEnterRunnable = null;
+             }
+-            if ((currentChat == null || ChatObject.canSendEmbed(currentChat)) && chatActivityEnterView.isMessageWebPageSearchEnabled() && (!chatActivityEnterView.isEditingMessage() || !chatActivityEnterView.isEditingCaption())) {
++            if ((currentChat == null || ChatObject.canSendEmbed(currentChat)) && chatActivityEnterView.isMessageWebPageSearchEnabled() && !chatActivityEnterView.shouldSkipAutomaticLinkPreview() && (!chatActivityEnterView.isEditingMessage() || !chatActivityEnterView.isEditingCaption())) {
+                 if (bigChange) {
+                     searchLinks(text, true);
+                 } else {
+@@ -2268,6 +2268,9 @@ public class ChatActivity extends BaseFragment implements
+ 
+         @Override
+         public void onTextSpansChanged(CharSequence text) {
++            if (chatActivityEnterView != null && chatActivityEnterView.shouldSkipAutomaticLinkPreview()) {
++                return;
++            }
+             searchLinks(text, true);
+         }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index f960a7694..959fbb13a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -750,6 +750,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+     private MessageObject botMessageObject;
+     private TLRPC.WebPage messageWebPage;
+     private boolean messageWebPageSearch = true;
++    private boolean pastedServerLink;
+     private ChatActivityEnterViewDelegate delegate;
+     private TrendingStickersAlert trendingStickersAlert;
+ 
+@@ -5713,6 +5714,11 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 return super.onTextContextMenuItem(id);
+             }
+ 
++            @Override
++            protected void teleNotifyPastedUrl() {
++                pastedServerLink = true;
++            }
++
+             float touchX, touchY;
+             boolean clickMaybe;
+             @Override
+@@ -5956,6 +5962,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                     nextChangeIsSend = true;
+                 }
+                 isPaste = false;
++                clearPastedServerLinkIfEmpty();
+                 checkSendButton(true);
+                 CharSequence message = AndroidUtilities.getTrimmedString(charSequence.toString());
+                 if (delegate != null) {
+@@ -6972,6 +6979,26 @@ public class ChatActivityEnterView extends FrameLayout implements
+         return messageWebPageSearch;
+     }
+ 
++    public boolean hasPastedServerLink() {
++        return pastedServerLink;
++    }
++
++    public void markPastedServerLink(CharSequence text) {
++        if (text != null && AndroidUtilities.WEB_URL.matcher(text).find()) {
++            pastedServerLink = true;
++        }
++    }
++
++    public void clearPastedServerLinkIfEmpty() {
++        if (TextUtils.isEmpty(getFieldText())) {
++            pastedServerLink = false;
++        }
++    }
++
++    public boolean shouldSkipAutomaticLinkPreview() {
++        return "pasted".equals(tele.TeleConfig.LINK_PREVIEW_MODE.getValue()) && pastedServerLink;
++    }
++
+     private void hideRecordedAudioPanel(boolean wasSent) {
+         if (recordPannelAnimation != null && recordPannelAnimation.isRunning()) {
+             return;
+@@ -7874,6 +7901,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 } else if (messageWebPage instanceof TLRPC.TL_webPagePending) {
+                     params.searchLinks = true;
+                     params.mediaWebPage = null;
++                } else if (shouldSkipAutomaticLinkPreview()) {
++                    params.searchLinks = false;
++                    params.mediaWebPage = null;
+                 } else if (messageWebPage != null) {
+                     params.mediaWebPage = new TLRPC.TL_messageMediaWebPage();
+                     params.mediaWebPage.webpage = messageWebPage;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+index a18bea6ef..3e0363005 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+@@ -976,6 +976,7 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+             @Override
+             public boolean commitText(CharSequence text, int newCursorPosition) {
+                 if (text != null) {
++                    teleNotifyPasted(text);
+                     android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(text.toString());
+                     if (rewritten != null) {
+                         Toast.makeText(getContext(), TextUtils.join("\n", rewritten.second), Toast.LENGTH_SHORT).show();
+@@ -987,6 +988,15 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+         };
+     }
+ 
++    protected void teleNotifyPasted(CharSequence text) {
++        if (text != null && AndroidUtilities.WEB_URL.matcher(text).find()) {
++            teleNotifyPastedUrl();
++        }
++    }
++
++    protected void teleNotifyPastedUrl() {
++    }
++
+     protected boolean teleRewritePaste() {
+         ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+         ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
+@@ -994,6 +1004,7 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+         if (TextUtils.isEmpty(clipText)) {
+             return false;
+         }
++        teleNotifyPasted(clipText);
+         android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(clipText.toString());
+         if (rewritten == null) {
+             return false;
+@@ -1013,6 +1024,9 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+         if (id == android.R.id.paste) {
+             ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+             ClipData clipData = clipboard.getPrimaryClip();
++            if (clipData != null && clipData.getItemCount() > 0) {
++                teleNotifyPasted(clipData.getItemAt(0).coerceToText(getContext()));
++            }
+             if (clipData != null && clipData.getItemCount() == 1 && clipData.getDescription().hasMimeType("text/html")) {
+                 try {
+                     String html = clipData.getItemAt(0).getHtmlText();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 302a9a1a3..e1d545a70 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -120,6 +120,8 @@ object TeleConfig {
+     val REWRITE_PASTED_LINKS = BoolItem("rewrite_pasted_links", false)
+     @JvmField
+     val NO_LINK_PREVIEWS = BoolItem("no_link_previews", false)
++    @JvmField
++    val LINK_PREVIEW_MODE = StringItem("link_preview_mode", "all")
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 078ffcb92..e8766e3b5 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -48,6 +48,7 @@ object TeleSearch {
+             section(GUID_PRIVACY + 16, "rewrite pasted links by rules", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             ProfileActivity.SearchAdapter.SearchResult(GUID_PRIVACY + 17, "link rewrite rules", icon) { fragment.presentFragment(TeleRulesActivity()) },
+             section(GUID_PRIVACY + 18, "disable link previews", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(GUID_PRIVACY + 19, "automatic link previews", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+ 
+             section(GUID_PRIVACY, "tele privacy", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 1, "hide stories", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4aa15febb..65192d406 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -9,6 +9,7 @@ import androidx.recyclerview.widget.RecyclerView
+ import org.telegram.messenger.BuildVars
+ import org.telegram.messenger.R
+ import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Cells.HeaderCell
+@@ -35,6 +36,18 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+     private var adapter: ListAdapter? = null
+ 
++    private fun chooseLinkPreviewMode() {
++        val activity = parentActivity ?: return
++        val values = arrayOf("all", "pasted")
++        val labels = arrayOf("for all links", "not for pasted links")
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle("automatic link previews")
++        builder.setItems(labels) { _, which ->
++            TeleConfig.set(TeleConfig.LINK_PREVIEW_MODE, values[which])
++        }
++        showDialog(builder.create())
++    }
++
+     private fun sectionTitle(): String = when (mode) {
+         MODE_INTERFACE -> "tele · interface"
+         MODE_PRIVACY -> "tele · privacy"
+@@ -72,6 +85,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 cell.setChecked(newValue)
+                 TeleConfig.set(row.item, newValue)
+                 TeleHooks.onConfigChanged(row.item)
++            } else if (row.type == TYPE_VALUE && row.item == TeleConfig.LINK_PREVIEW_MODE) {
++                chooseLinkPreviewMode()
+             } else if (row.type == TYPE_LINK || row.type == TYPE_LINK_ICON) {
+                 when (row.mode) {
+                     TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+@@ -144,6 +159,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, item = item)
+ 
++        private fun choice(title: String, item: Item<*>) = Row(TYPE_VALUE, title = title, value = if (item.value == "pasted") "not for pasted links" else "for all links", item = item)
++
+         private fun link(title: String, mode: String) = Row(TYPE_LINK, title = title, mode = mode)
+ 
+         private fun sectionLink(title: String, mode: String, icon: Int) =
+@@ -189,6 +206,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS),
+                 toggle("rewrite pasted links by rules", TeleConfig.REWRITE_PASTED_LINKS),
+                 toggle("disable link previews", TeleConfig.NO_LINK_PREVIEWS),
++                choice("automatic link previews", TeleConfig.LINK_PREVIEW_MODE),
+                 sectionLink("rewrite rules", MODE_RULES, R.drawable.msg2_link2),
+                 Row(TYPE_SHADOW)
+             )
