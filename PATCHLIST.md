@@ -114,9 +114,9 @@
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0051, 0121, 0122 | очередь текста за загружающимся медиа (+ ответы мимо очереди, форс-отправка) | todo | состояние загрузок уже трекается в `SendMessagesHelper` |
-| 0097 | отложенные отправляются вовремя | todo | локальный планировщик + «send now» |
-| 0102 | фото в HD по умолчанию | todo | форс `highQuality` в send-боксах |
-| 0095 | gif как видео и видео как gif | todo | подмена атрибутов документа |
+| 0097 | отложенные отправляются вовремя | queued | `0064-feat-send-scheduled-messages-on-time`; тумблер `punctual_scheduled` (секция sending): локальный таймер `tele/helpers/PunctualScheduled.kt` каждые 20с — из `scheduled_messages_v2` берутся server-scheduled (mid>0, не секретные) с `date <= now` и отправляются штатным `TL_messages_sendScheduledMessages` (тот же запрос, что «send now»); работает пока приложение живо и онлайн, при офлайне сервер отсылает сам (может опоздать). старт — `ApplicationLoader` после `checkUnsentMessages`. **не проверено на девайсе** |
+| 0102 | фото в HD по умолчанию | queued | `0063-feat-send-photos-in-HD-by-default`; тумблер `hd_photos` (секция sending): один гейт в `MediaController.MediaEditState.isHighQuality()` — при отсутствии per-photo выбора (`highQuality == null`) дефолт HD, покрывает все UI-пути (PhotoViewer, attach-панель, редактор); стоковый пер-photo HD-тоггл и запоминание `photoHighQualityDefault` работают как раньше. **не проверено на девайсе** |
+| 0095 | gif как видео и видео как gif | todo | подмена атрибутов документа; на Android точки сборки атрибутов — `SendMessagesHelper.prepareSendingDocumentInternal` (9442+) и `prepareSendingMedia` (11130+) |
 | 0070 | реплай на удалённое: скип или цитата | todo | препроцессинг `reply_to` |
 | 0008 | quick replies в группах и каналах | todo | отправка шортката как обычных сообщений |
 | 0116 | пересылка защищённых как копий | todo | перехват форварда → пересборка/перекачка |
