@@ -1,0 +1,231 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 6 Oct 2026 19:22:56 +0300
+Subject: [PATCH] feat: add manual link previews
+
+Add only-added preview mode and an action to attach a preview to any URL.
+
+Constraint: Only-added mode must not block explicitly attached previews
+
+Rejected: Persist manual flag into cloud drafts | DraftMessage has no custom field and local sidecar needs separate design
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: Manual preview add and only-added mode on device
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 10 +++
+ .../ui/Components/ChatActivityEnterView.java  | 72 ++++++++++++++++++-
+ .../ui/Components/EditTextCaption.java        |  7 ++
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 10 ++-
+ TMessagesProj/src/main/res/values/ids.xml     |  1 +
+ .../src/main/res/values/strings_tele.xml      |  3 +
+ 6 files changed, 98 insertions(+), 5 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 9981fa9bc..8dc0390b0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -14133,6 +14133,16 @@ public class ChatActivity extends BaseFragment implements
+         }
+     }
+ 
++    public void teleAddCustomLinkPreview(String url) {
++        if (url == null || url.trim().isEmpty()) {
++            return;
++        }
++        if (chatActivityEnterView != null) {
++            chatActivityEnterView.setManualWebPage(true);
++        }
++        searchLinks(url, true);
++    }
++
+     public void searchLinks(final CharSequence charSequence, final boolean force) {
+         if (currentEncryptedChat != null && getMessagesController().secretWebpagePreview == 0 || editingMessageObject != null && (!editingMessageObject.isWebpage() || editingMessageObject.messageOwner.media.webpage instanceof TLRPC.TL_webPagePending)) {
+             return;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 959fbb13a..f7beff12c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -751,6 +751,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+     private TLRPC.WebPage messageWebPage;
+     private boolean messageWebPageSearch = true;
+     private boolean pastedServerLink;
++    private boolean manualWebPage;
+     private ChatActivityEnterViewDelegate delegate;
+     private TrendingStickersAlert trendingStickersAlert;
+ 
+@@ -5719,6 +5720,24 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 pastedServerLink = true;
+             }
+ 
++            @Override
++            protected boolean performTeleMenuAction(int itemId) {
++                if (itemId == R.id.tele_add_link_preview) {
++                    showTeleAddLinkPreviewDialog();
++                    return true;
++                }
++                return false;
++            }
++
++            @Override
++            protected void extendActionMode(ActionMode actionMode, Menu menu) {
++                super.extendActionMode(actionMode, menu);
++                if (parentFragment == null || TextUtils.isEmpty(getText())) {
++                    return;
++                }
++                menu.add(R.id.menu_groupbolditalic, R.id.tele_add_link_preview, 5, LocaleController.getString(R.string.TeleAddLinkPreview));
++            }
++
+             float touchX, touchY;
+             boolean clickMaybe;
+             @Override
+@@ -6992,11 +7011,60 @@ public class ChatActivityEnterView extends FrameLayout implements
+     public void clearPastedServerLinkIfEmpty() {
+         if (TextUtils.isEmpty(getFieldText())) {
+             pastedServerLink = false;
++            manualWebPage = false;
+         }
+     }
+ 
+     public boolean shouldSkipAutomaticLinkPreview() {
+-        return "pasted".equals(tele.TeleConfig.LINK_PREVIEW_MODE.getValue()) && pastedServerLink;
++        String mode = tele.TeleConfig.LINK_PREVIEW_MODE.getValue();
++        if ("added".equals(mode) || manualWebPage) {
++            return true;
++        }
++        return "pasted".equals(mode) && pastedServerLink;
++    }
++
++    public void setManualWebPage(boolean value) {
++        manualWebPage = value;
++    }
++
++    public boolean isManualWebPage() {
++        return manualWebPage;
++    }
++
++    private void showTeleAddLinkPreviewDialog() {
++        if (parentFragment == null || parentFragment.getParentActivity() == null) {
++            return;
++        }
++        EditTextBoldCursor input = new EditTextBoldCursor(parentFragment.getParentActivity());
++        input.setSingleLine(true);
++        input.setTextIsSelectable(true);
++        input.setHint(LocaleController.getString(R.string.TeleLinkPreviewHint));
++        input.setLineColors(getThemedColor(Theme.key_windowBackgroundWhiteInputField), getThemedColor(Theme.key_windowBackgroundWhiteInputFieldActivated), getThemedColor(Theme.key_text_RedRegular));
++
++        LinearLayout container = new LinearLayout(parentFragment.getParentActivity());
++        container.setOrientation(LinearLayout.VERTICAL);
++        int pad = dp(20);
++        container.setPadding(pad, dp(12), pad, 0);
++        container.addView(input, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
++
++        AlertDialog.Builder builder = resourcesProvider != null
++                ? new AlertDialog.Builder(parentFragment.getParentActivity(), resourcesProvider)
++                : new AlertDialog.Builder(parentFragment.getParentActivity());
++        builder.setTitle(LocaleController.getString(R.string.TeleLinkPreviewTitle));
++        builder.setView(container);
++        builder.setPositiveButton(LocaleController.getString(R.string.Save), (dialog, which) -> {
++            String value = input.getText().toString().trim();
++            if (value.isEmpty()) {
++                return;
++            }
++            if (!value.contains("://")) {
++                value = "https://" + value;
++            }
++            manualWebPage = true;
++            parentFragment.teleAddCustomLinkPreview(value);
++        });
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
++        builder.show();
+     }
+ 
+     private void hideRecordedAudioPanel(boolean wasSent) {
+@@ -7901,7 +7969,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 } else if (messageWebPage instanceof TLRPC.TL_webPagePending) {
+                     params.searchLinks = true;
+                     params.mediaWebPage = null;
+-                } else if (shouldSkipAutomaticLinkPreview()) {
++                } else if (shouldSkipAutomaticLinkPreview() && !(messageWebPage instanceof TLRPC.TL_webPage)) {
+                     params.searchLinks = false;
+                     params.mediaWebPage = null;
+                 } else if (messageWebPage != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+index 3e0363005..9296d2436 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+@@ -788,6 +788,9 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+     }
+ 
+     public boolean performMenuAction(int itemId) {
++        if (itemId == R.id.tele_add_link_preview) {
++            return performTeleMenuAction(itemId);
++        }
+         if (itemId == R.id.menu_regular) {
+             makeSelectedRegular();
+             return true;
+@@ -997,6 +1000,10 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+     protected void teleNotifyPastedUrl() {
+     }
+ 
++    protected boolean performTeleMenuAction(int itemId) {
++        return false;
++    }
++
+     protected boolean teleRewritePaste() {
+         ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+         ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index ced837df7..c7eba47d7 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -38,8 +38,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+     private fun chooseLinkPreviewMode() {
+         val activity = parentActivity ?: return
+-        val values = arrayOf("all", "pasted")
+-        val labels = arrayOf("for all links", "not for pasted links")
++        val values = arrayOf("all", "pasted", "added")
++        val labels = arrayOf("for all links", "not for pasted links", "only the ones you add")
+         val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
+         builder.setTitle("automatic link previews")
+         builder.setItems(labels) { _, which ->
+@@ -165,7 +165,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, item = item)
+ 
+-        private fun choice(title: String, item: Item<*>) = Row(TYPE_VALUE, title = title, value = if (item.value == "pasted") "not for pasted links" else "for all links", item = item)
++        private fun choice(title: String, item: Item<*>) = Row(TYPE_VALUE, title = title, value = when (item.value) {
++            "pasted" -> "not for pasted links"
++            "added" -> "only the ones you add"
++            else -> "for all links"
++        }, item = item)
+ 
+         private fun link(title: String, mode: String) = Row(TYPE_LINK, title = title, mode = mode)
+ 
+diff --git a/TMessagesProj/src/main/res/values/ids.xml b/TMessagesProj/src/main/res/values/ids.xml
+index cc49d1353..e08c3a5f0 100644
+--- a/TMessagesProj/src/main/res/values/ids.xml
++++ b/TMessagesProj/src/main/res/values/ids.xml
+@@ -10,6 +10,7 @@
+     <item name="menu_underline" type="id"/>
+     <item name="menu_date" type="id"/>
+     <item name="menu_groupbolditalic" type="id"/>
++    <item name="tele_add_link_preview" type="id"/>
+     <item name="menu_delete" type="id"/>
+     <item name="menu_translate" type="id"/>
+     <item name="parent_tag" type="id"/>
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index e58dd2f99..0f0d95562 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -11,4 +11,7 @@
+     <string name="TeleNameOnlyYouSee">Name only you see</string>
+     <string name="TeleViewAsTl">View as TL</string>
+     <string name="TeleViewAsTlError">Unable to open this object as TL</string>
++    <string name="TeleAddLinkPreview">Add a link preview</string>
++    <string name="TeleLinkPreviewTitle">Add a link preview</string>
++    <string name="TeleLinkPreviewHint">https://</string>
+ </resources>
