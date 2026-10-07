@@ -1,0 +1,333 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 7 Oct 2026 18:41:13 +0300
+Subject: [PATCH] feat: queue text behind uploading media
+
+Hold text sends behind earlier uploading media, allow older replies through, and release held sends on double enter.
+
+Constraint: Scheduled messages and explicit retries bypass the hold
+
+Rejected: Queue persisted across process death | in-memory delayed upload state is not durable
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: Manual multi-device upload and double-enter behavior
+---
+ .../messenger/SendMessagesHelper.java         |  59 +++++-
+ .../ui/Components/ChatActivityEnterView.java  |   3 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   5 +
+ .../src/main/java/tele/helpers/SendOrder.kt   | 181 ++++++++++++++++++
+ 4 files changed, 245 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index f03f9bcd4..6c8f8e59e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -152,6 +152,41 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+     private final HashMap<String, ImportingStickers> importingStickersFiles = new HashMap<>();
+     private final HashMap<String, ImportingStickers> importingStickersMap = new HashMap<>();
+ 
++    public boolean teleIsSendingMessage(int mid) {
++        return sendingMessages.get(mid) != null;
++    }
++
++    public boolean teleHasUploadingMedia(long dialogId, int msgId, int replyMsgId) {        boolean olderReplies = tele.TeleConfig.SEND_OLDER_REPLIES.getValue();
++        synchronized (delayedMessages) {
++            for (ArrayList<DelayedMessage> arr : delayedMessages.values()) {
++                for (int a = 0, N = arr.size(); a < N; a++) {
++                    DelayedMessage dm = arr.get(a);
++                    if (dm.peer != dialogId || dm.obj == null) {
++                        continue;
++                    }
++                    if (dm.sendRequest != null || dm.sendEncryptedRequest != null) {
++                        continue;
++                    }
++                    int mid = dm.obj.getId();
++                    if (dm.messageObjects != null) {
++                        for (int b = 0, M = dm.messageObjects.size(); b < M; b++) {
++                            int groupMid = dm.messageObjects.get(b).getId();
++                            if (groupMid > mid) mid = groupMid;
++                        }
++                    }
++                    if (mid >= msgId) {
++                        continue;
++                    }
++                    if (olderReplies && replyMsgId != 0 && mid < replyMsgId) {
++                        continue;
++                    }
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
++
+     public static boolean checkUpdateStickersOrder(CharSequence text) {
+         if (text instanceof Spannable) {
+             AnimatedEmojiSpan[] spans = ((Spannable)text).getSpans(0, text.length(), AnimatedEmojiSpan.class);
+@@ -964,6 +999,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+     public SendMessagesHelper(int instance) {
+         super(instance);
+ 
++        tele.helpers.SendOrder.init(instance);
+         AndroidUtilities.runOnUIThread(() -> {
+             getNotificationCenter().addObserver(SendMessagesHelper.this, NotificationCenter.fileUploaded);
+             getNotificationCenter().addObserver(SendMessagesHelper.this, NotificationCenter.fileUploadProgressChanged);
+@@ -5329,10 +5365,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         if (retryMessageObject == null) {
+                             StarsController.getInstance(currentAccount).beforeSendingMessage(newMsgObj);
+                         }
+-                        performSendMessageRequest(reqSend, newMsgObj, null, null, parentObject, params, scheduleDate != 0);
+-                        if (retryMessageObject == null) {
+-                            getMediaDataController().cleanDraft(peer, replyToTopMsg != null ? replyToTopMsg.getId() : 0, false);
++                        final TLObject teleReq = reqSend;
++                        final MessageObject teleMsgObj = newMsgObj;
++                        final Object teleParent = parentObject;
++                        final HashMap<String, String> teleParams = params;
++                        final boolean teleScheduled = scheduleDate != 0;
++                        final boolean teleRetry = retryMessageObject == null;
++                        final long telePeer = peer;
++                        final MessageObject teleReplyTop = replyToTopMsg;
++                        Runnable teleSend = () -> {
++                            performSendMessageRequest(teleReq, teleMsgObj, null, null, teleParent, teleParams, teleScheduled);
++                            if (teleRetry) {
++                                getMediaDataController().cleanDraft(telePeer, teleReplyTop != null ? teleReplyTop.getId() : 0, false);
++                            }
++                        };
++                        if (tele.helpers.SendOrder.hold(currentAccount, peer, newMsgObj.getId(), newMsg.reply_to != null ? newMsg.reply_to.reply_to_msg_id : 0, scheduleDate != 0, teleSend)) {
++                            return;
+                         }
++                        teleSend.run();
+                     }
+                 } else {
+                     TLRPC.TL_decryptedMessage reqSend;
+@@ -7055,6 +7105,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             });
+             putToDelayedMessages(key, message);
+         }
++        if (message.obj != null && message.peer != 0 && (message.sendRequest != null || message.sendEncryptedRequest != null)) {
++            AndroidUtilities.runOnUIThread(() -> tele.helpers.SendOrder.flush(currentAccount, message.peer));
++        }
+     }
+ 
+     private void uploadMultiMedia(final DelayedMessage message, final TLRPC.InputMedia inputMedia, final TLRPC.InputEncryptedFile inputEncryptedFile, String key) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index f7beff12c..1c0b4d9fc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -7478,6 +7478,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 return;
+             }
+             CharSequence message = messageEditText == null ? "" : messageEditText.getTextToUse();
++            if (message.length() == 0 && parentFragment != null && !isInScheduleMode() && tele.helpers.SendOrder.sendHeldOnDoubleEnter(currentAccount, dialog_id, true)) {
++                return;
++            }
+             if (parentFragment != null) {
+                 TLRPC.Chat chat = parentFragment.getCurrentChat();
+                 if (chat != null && chat.slowmode_enabled && !ChatObject.hasAdminRights(chat)) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index b939945e5..9834228bc 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -77,6 +77,11 @@ object TeleHooks {
+                 AccountInstance.getInstance(account).getNotificationCenter().postNotificationName(NotificationCenter.storiesUpdated)
+             }
+         }
++        if (item === TeleConfig.QUEUE_BEHIND_MEDIA) {
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                tele.helpers.SendOrder.flush(account)
++            }
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+new file mode 100644
+index 000000000..8a792d77d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+@@ -0,0 +1,181 @@
++package tele.helpers
++
++import android.os.Handler
++import android.os.Looper
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.SendMessagesHelper
++
++object SendOrder : NotificationCenter.NotificationCenterDelegate {
++
++    private const val DOUBLE_ENTER_MS = 500L
++    private const val RECHECK_MS = 5000L
++
++    private class Held(
++        val account: Int,
++        val dialogId: Long,
++        val msgId: Int,
++        val replyMsgId: Int,
++        val at: Long,
++        val send: Runnable
++    )
++
++    private val held = HashMap<Int, HashMap<Long, ArrayList<Held>>>()
++    private val handler = Handler(Looper.getMainLooper())
++    private var recheckScheduled = false
++    private var lastEnter = 0L
++    private var initialized = false
++
++    @Volatile
++    private var releasing = false
++
++    @JvmStatic
++    fun hold(
++        account: Int,
++        dialogId: Long,
++        msgId: Int,
++        replyMsgId: Int,
++        scheduled: Boolean,
++        send: Runnable
++    ): Boolean {
++        if (scheduled || releasing) {
++            return false
++        }
++        if (!tele.TeleConfig.QUEUE_BEHIND_MEDIA.value) {
++            return false
++        }
++        if (!SendMessagesHelper.getInstance(account).teleHasUploadingMedia(dialogId, msgId, replyMsgId)) {
++            return false
++        }
++        synchronized(held) {
++            held.getOrPut(account) { HashMap() }.getOrPut(dialogId) { ArrayList() }.add(
++                Held(account, dialogId, msgId, replyMsgId, System.currentTimeMillis(), send)
++            )
++        }
++        scheduleRecheck()
++        return true
++    }
++
++    @JvmStatic
++    fun sendHeldOnDoubleEnter(account: Int, dialogId: Long, fieldEmpty: Boolean): Boolean {
++        val now = System.currentTimeMillis()
++        val since = lastEnter
++        lastEnter = now
++        if (!fieldEmpty
++            || !tele.TeleConfig.DOUBLE_ENTER_SEND.value
++            || !tele.TeleConfig.QUEUE_BEHIND_MEDIA.value
++            || now - since > DOUBLE_ENTER_MS
++        ) {
++            return false
++        }
++        val taken = ArrayList<Held>()
++        synchronized(held) {
++            val dialogs = held[account] ?: return false
++            val list = dialogs[dialogId] ?: return false
++            val it = list.iterator()
++            while (it.hasNext()) {
++                val entry = it.next()
++                if (entry.at >= since) {
++                    taken.add(entry)
++                    it.remove()
++                }
++            }
++        }
++        if (taken.isEmpty()) {
++            return false
++        }
++        releasing = true
++        for (entry in taken) {
++            runCatching { entry.send.run() }.onFailure { FileLog.e(it) }
++        }
++        releasing = false
++        return true
++    }
++
++    @JvmStatic
++    fun flush(account: Int, dialogId: Long) {
++        val taken = ArrayList<Held>()
++        synchronized(held) {
++            val dialogs = held[account] ?: return
++            val list = dialogs[dialogId] ?: return
++            val it = list.iterator()
++            while (it.hasNext()) {
++                val entry = it.next()
++                if (!SendMessagesHelper.getInstance(account).teleIsSendingMessage(entry.msgId)) {
++                    it.remove()
++                    continue
++                }
++                if (!SendMessagesHelper.getInstance(account).teleHasUploadingMedia(dialogId, entry.msgId, entry.replyMsgId)) {
++                    taken.add(entry)
++                    it.remove()
++                }
++            }
++        }
++        if (taken.isEmpty()) {
++            return
++        }
++        releasing = true
++        for (entry in taken) {
++            runCatching { entry.send.run() }.onFailure { FileLog.e(it) }
++        }
++        releasing = false
++    }
++
++    @JvmStatic
++    fun flush(account: Int) {
++        val dialogIds: List<Long>
++        synchronized(held) {
++            val dialogs = held[account] ?: return
++            dialogIds = ArrayList(dialogs.keys)
++        }
++        for (dialogId in dialogIds) {
++            flush(account, dialogId)
++        }
++    }
++
++    @JvmStatic
++    fun flushAll() {
++        val dialogs: List<Pair<Int, Long>>
++        synchronized(held) {
++            dialogs = held.flatMap { (account, map) -> map.keys.map { account to it } }
++        }
++        for ((account, dialogId) in dialogs) {
++            flush(account, dialogId)
++        }
++    }
++
++    private fun scheduleRecheck() {
++        if (recheckScheduled) {
++            return
++        }
++        recheckScheduled = true
++        handler.postDelayed({
++            recheckScheduled = false
++            val dialogs: List<Pair<Int, Long>>
++            synchronized(held) {
++                dialogs = held.flatMap { (account, map) -> map.keys.map { account to it } }
++            }
++            if (dialogs.isEmpty()) {
++                return@postDelayed
++            }
++            for ((account, dialogId) in dialogs) {
++                runCatching { flush(account, dialogId) }.onFailure { FileLog.e(it) }
++            }
++        }, RECHECK_MS)
++    }
++
++    @JvmStatic
++    fun init(account: Int) {
++        if (initialized) {
++            return
++        }
++        initialized = true
++        NotificationCenter.getInstance(account).addObserver(this, NotificationCenter.fileUploadFailed)
++    }
++
++    override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++        if (id == NotificationCenter.fileUploadFailed) {
++            flushAll()
++        }
++    }
++}
