@@ -14,11 +14,12 @@ Scope-risk: moderate
 Not-tested: Manual group autocomplete and media shortcut replay
 ---
  .../telegram/ui/Adapters/MentionsAdapter.java |  2 +-
- .../java/org/telegram/ui/ChatActivity.java    | 52 +++++++++++++++++++
- .../src/main/java/tele/TeleConfig.kt          |  8 +++
- .../main/java/tele/ui/settings/TeleSearch.kt  |  6 ++-
- .../tele/ui/settings/TeleSettingsActivity.kt  |  4 ++
- 5 files changed, 70 insertions(+), 2 deletions(-)
+ .../ui/Business/QuickRepliesController.java   | 66 +++++---------
+ .../java/org/telegram/ui/ChatActivity.java    | 90 +++++++++++++++++++
+ .../src/main/java/tele/TeleConfig.kt          |  8 ++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  6 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  4 +
+ 6 files changed, 131 insertions(+), 45 deletions(-)
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
 index 83748ea85..115acd95b 100644
@@ -33,8 +34,95 @@ index 83748ea85..115acd95b 100644
                  final QuickRepliesController quickRepliesController = QuickRepliesController.getInstance(currentAccount);
                  quickRepliesController.load();
                  quickRepliesQuery = command;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java b/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java
+index 406994c1c..0a5bcae41 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java
+@@ -768,6 +768,10 @@ public class QuickRepliesController {
+     }
+ 
+     public void sendQuickReplyTo(long dialogId, QuickRepliesController.QuickReply reply) {
++        sendQuickReply(dialogId, reply, null);
++    }
++
++    public void sendQuickReply(long dialogId, QuickRepliesController.QuickReply reply, Utilities.Callback<ArrayList<TLRPC.Message>> onMessagesLoaded) {
+         if (reply == null) return;
+ 
+         TLRPC.TL_messages_sendQuickReplyMessages req = new TLRPC.TL_messages_sendQuickReplyMessages();
+@@ -775,52 +779,28 @@ public class QuickRepliesController {
+         if (req.peer == null) return;
+         req.shortcut_id = reply.id;
+ 
+-        MessagesStorage storage = MessagesStorage.getInstance(currentAccount);
+-        storage.getStorageQueue().postRunnable(() -> {
+-            ArrayList<Integer> ids = new ArrayList<>();
+-            SQLiteCursor cursor = null;
+-            try {
+-                cursor = storage.getDatabase().queryFinalized("SELECT id FROM quick_replies_messages WHERE topic_id = ?", reply.id);
+-                while (cursor.next()) {
+-                    ids.add(cursor.intValue(0));
++        TLRPC.TL_messages_getQuickReplyMessages req2 = new TLRPC.TL_messages_getQuickReplyMessages();
++        req2.shortcut_id = reply.id;
++        ConnectionsManager.getInstance(currentAccount).sendRequest(req2, (res, err) -> AndroidUtilities.runOnUIThread(() -> {
++                if (!(res instanceof TLRPC.TL_messages_messages)) {
++                    FileLog.e("received " + res + " " + err + " on getQuickReplyMessages when sending shortcut");
++                    return;
+                 }
+-            } catch (Exception e) {
+-                FileLog.e(e);
+-            } finally {
+-                if (cursor != null) {
+-                    cursor.dispose();
++                ArrayList<TLRPC.Message> messages = ((TLRPC.TL_messages_messages) res).messages;
++                if (onMessagesLoaded != null) {
++                    onMessagesLoaded.run(messages);
++                    return;
+                 }
+-            }
+-            AndroidUtilities.runOnUIThread(() -> {
+-                if (ids.isEmpty() || ids.size() < reply.getMessagesCount()) {
+-                    TLRPC.TL_messages_getQuickReplyMessages req2 = new TLRPC.TL_messages_getQuickReplyMessages();
+-                    req2.shortcut_id = reply.id;
+-                    ConnectionsManager.getInstance(currentAccount).sendRequest(req2, (res, err) -> AndroidUtilities.runOnUIThread(() -> {
+-                        if (res instanceof TLRPC.TL_messages_messages) {
+-                            ArrayList<TLRPC.Message> messages = ((TLRPC.TL_messages_messages) res).messages;
+-                            ids.clear();
+-                            for (TLRPC.Message m : messages) {
+-                                ids.add(m.id);
+-                            }
+-
+-                            req.id = ids;
+-                            for (int i = 0; i < ids.size(); ++i) {
+-                                req.random_id.add(Utilities.random.nextLong());
+-                            }
+-                            ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
+-                        } else {
+-                            FileLog.e("received " + res + " " + err + " on getQuickReplyMessages when trying to send quick reply");
+-                        }
+-                    }));
+-                } else {
+-                    req.id = ids;
+-                    for (int i = 0; i < ids.size(); ++i) {
+-                        req.random_id.add(Utilities.random.nextLong());
+-                    }
+-                    ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
++                ArrayList<Integer> ids = new ArrayList<>();
++                for (TLRPC.Message message : messages) {
++                    ids.add(message.id);
+                 }
+-            });
+-        });
++                req.id = ids;
++                for (int i = 0; i < ids.size(); ++i) {
++                    req.random_id.add(Utilities.random.nextLong());
++                }
++                ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
++            }));
+     }
+ 
+ }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 8dc0390b0..8489911b4 100644
+index 8dc0390b0..400248ac0 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -172,6 +172,8 @@ import org.telegram.messenger.MessagePreviewParams;
@@ -60,50 +148,88 @@ index 8dc0390b0..8489911b4 100644
                      TLRPC.TL_messages_sendQuickReplyMessages req = new TLRPC.TL_messages_sendQuickReplyMessages();
                      req.peer = getMessagesController().getInputPeer(dialog_id);
                      req.shortcut_id = ((QuickRepliesController.QuickReply) object).id;
-@@ -14133,6 +14142,49 @@ public class ChatActivity extends BaseFragment implements
+@@ -14133,6 +14142,87 @@ public class ChatActivity extends BaseFragment implements
          }
      }
  
 +    private void teleResendQuickReply(QuickRepliesController.QuickReply reply) {
-+        final MessagesStorage storage = getMessagesStorage();
-+        storage.getStorageQueue().postRunnable(() -> {
-+            ArrayList<TLRPC.Message> messages = new ArrayList<>();
-+            SQLiteCursor cursor = null;
-+            try {
-+                cursor = storage.getDatabase().queryFinalized("SELECT data FROM quick_replies_messages WHERE topic_id = ? ORDER BY mid ASC", reply.id);
-+                while (cursor.next()) {
-+                    NativeByteBuffer data = cursor.byteBufferValue(0);
-+                    if (data != null) {
-+                        TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
-+                        if (message != null) {
-+                            message.readAttachPath(data, getUserConfig().clientUserId);
-+                            messages.add(message);
-+                        }
-+                        data.reuse();
++        QuickRepliesController.getInstance(currentAccount).sendQuickReply(dialog_id, reply, messages -> {
++            if (messages == null || messages.isEmpty()) {
++                BulletinFactory.of(this).createSimpleBulletin(R.raw.error, getString(R.string.UnknownError)).show();
++                return;
++            }
++            for (TLRPC.Message message : messages) {
++                if (message.media instanceof TLRPC.TL_messageMediaWebPage
++                    || message.media instanceof TLRPC.TL_messageMediaEmpty
++                    || message.media == null) {
++                    SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(
++                        message.message,
++                        dialog_id,
++                        null,
++                        null,
++                        message.media instanceof TLRPC.TL_messageMediaWebPage ? message.media.webpage : null,
++                        true,
++                        message.entities,
++                        message.reply_markup,
++                        null,
++                        true,
++                        0,
++                        0,
++                        null,
++                        false
++                    );
++                    getSendMessagesHelper().sendMessage(params);
++                } else if (message.media.photo instanceof TLRPC.TL_photo) {
++                    SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(
++                        (TLRPC.TL_photo) message.media.photo,
++                        null,
++                        dialog_id,
++                        null,
++                        null,
++                        message.message,
++                        message.entities,
++                        message.reply_markup,
++                        null,
++                        true,
++                        0,
++                        0,
++                        message.media.ttl_seconds,
++                        null,
++                        false,
++                        false
++                    );
++                    getSendMessagesHelper().sendMessage(params);
++                } else if (message.media.document instanceof TLRPC.TL_document) {
++                    String attachPath = message.attachPath;
++                    TLRPC.Document document = message.media.document;
++                    if (TextUtils.isEmpty(attachPath) || !new java.io.File(attachPath).exists()) {
++                        String fileName = FileLoader.getInstance(currentAccount).getPathToAttach(document, true).getAbsolutePath();
++                        attachPath = new java.io.File(fileName).exists() ? fileName : null;
 +                    }
-+                }
-+            } catch (Exception e) {
-+                FileLog.e(e);
-+            } finally {
-+                if (cursor != null) {
-+                    cursor.dispose();
++                    SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(
++                        (TLRPC.TL_document) document,
++                        null,
++                        attachPath,
++                        dialog_id,
++                        null,
++                        null,
++                        message.message,
++                        message.entities,
++                        message.reply_markup,
++                        null,
++                        true,
++                        0,
++                        0,
++                        message.media.ttl_seconds,
++                        null,
++                        null,
++                        false
++                    );
++                    getSendMessagesHelper().sendMessage(params);
++                } else {
++                    BulletinFactory.of(this).createSimpleBulletin(R.raw.error, getString(R.string.UnknownError)).show();
 +                }
 +            }
-+            AndroidUtilities.runOnUIThread(() -> {
-+                if (messages.isEmpty()) {
-+                    BulletinFactory.of(this).createSimpleBulletin(R.raw.error, getString(R.string.UnknownError)).show();
-+                    return;
-+                }
-+                ArrayList<MessageObject> objects = new ArrayList<>();
-+                for (int a = 0, N = messages.size(); a < N; a++) {
-+                    TLRPC.Message message = messages.get(a);
-+                    message.quick_reply_shortcut = null;
-+                    message.quick_reply_shortcut_id = 0;
-+                    message.flags &= ~1073741824;
-+                    objects.add(new MessageObject(currentAccount, message, true, false));
-+                }
-+                getSendMessagesHelper().sendMessage(objects, dialog_id, true, false, true, 0, 0);
-+            });
 +        });
 +    }
 +
