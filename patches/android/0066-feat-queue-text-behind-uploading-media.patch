@@ -15,15 +15,15 @@ Scope-risk: moderate
 
 Not-tested: Manual multi-device upload and double-enter behavior
 ---
- .../messenger/SendMessagesHelper.java         |  81 +++++++-
+ .../messenger/SendMessagesHelper.java         |  82 +++++++-
  .../ui/Components/ChatActivityEnterView.java  |   3 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   5 +
- .../src/main/java/tele/helpers/SendOrder.kt   | 180 ++++++++++++++++++
- 4 files changed, 266 insertions(+), 3 deletions(-)
+ .../src/main/java/tele/helpers/SendOrder.kt   | 197 ++++++++++++++++++
+ 4 files changed, 284 insertions(+), 3 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-index f03f9bcd4..965caa49b 100644
+index f03f9bcd4..ba59b69be 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 @@ -152,6 +152,55 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
@@ -106,17 +106,18 @@ index f03f9bcd4..965caa49b 100644
              messageIds.add(object.getId());
              if (object.isQuickReply()) {
                  topicId = object.getQuickReplyId();
-@@ -1702,6 +1754,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -1702,6 +1754,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
              }
              getMessagesController().deleteMessages(messageIds, null, null, dialogId, topicId, false, mode);
          }
 +        for (long canceledDialogId : canceledDialogIds) {
++            tele.helpers.SendOrder.markCancelled(currentAccount, canceledDialogId, messageIds);
 +            AndroidUtilities.runOnUIThread(() -> tele.helpers.SendOrder.flush(currentAccount, canceledDialogId));
 +        }
      }
  
      public boolean retrySendMessage(MessageObject messageObject, boolean unsent, long payStars) {
-@@ -5329,10 +5384,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -5329,10 +5385,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                          if (retryMessageObject == null) {
                              StarsController.getInstance(currentAccount).beforeSendingMessage(newMsgObj);
                          }
@@ -144,7 +145,7 @@ index f03f9bcd4..965caa49b 100644
                      }
                  } else {
                      TLRPC.TL_decryptedMessage reqSend;
-@@ -7831,6 +7900,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -7831,6 +7901,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                          removeFromSendingMessages(newMsgObj.id, scheduled);
                      }
                  }
@@ -154,7 +155,7 @@ index f03f9bcd4..965caa49b 100644
              });
          }, null, ConnectionsManager.RequestFlagCanCompress | ConnectionsManager.RequestFlagInvokeAfter);
      }
-@@ -8369,6 +8441,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -8369,6 +8442,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                          processSentMessage(newMsgObj.id);
                          removeFromSendingMessages(newMsgObj.id, scheduled);
                      }
@@ -196,10 +197,10 @@ index b939945e5..9834228bc 100644
      @JvmStatic
 diff --git a/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
 new file mode 100644
-index 000000000..8d9259fc1
+index 000000000..e4b0f82c6
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,197 @@
 +package tele.helpers
 +
 +import android.os.Handler
@@ -220,7 +221,10 @@ index 000000000..8d9259fc1
 +        val replyMsgId: Int,
 +        val at: Long,
 +        val send: Runnable
-+    )
++    ) {
++        @Volatile
++        var cancelled = false
++    }
 +
 +    private val held = HashMap<Int, HashMap<Long, ArrayList<Held>>>()
 +    private val handler = Handler(Looper.getMainLooper())
@@ -296,7 +300,7 @@ index 000000000..8d9259fc1
 +            val it = list.iterator()
 +            while (it.hasNext()) {
 +                val entry = it.next()
-+                if (!SendMessagesHelper.getInstance(account).teleIsSendingMessage(entry.msgId)) {
++                if (entry.cancelled) {
 +                    it.remove()
 +                    continue
 +                }
@@ -310,6 +314,20 @@ index 000000000..8d9259fc1
 +        }
 +        dispatch(taken)
 +        scheduleRecheckIfNeeded()
++    }
++
++    @JvmStatic
++    fun markCancelled(account: Int, dialogId: Long, msgIds: List<Int>) {
++        if (msgIds.isEmpty()) return
++        synchronized(held) {
++            val dialogs = held[account] ?: return
++            val list = dialogs[dialogId] ?: return
++            for (entry in list) {
++                if (entry.msgId in msgIds) {
++                    entry.cancelled = true
++                }
++            }
++        }
 +    }
 +
 +    private fun dispatch(taken: List<Held>) {
