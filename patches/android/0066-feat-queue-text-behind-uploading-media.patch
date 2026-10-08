@@ -15,15 +15,15 @@ Scope-risk: moderate
 
 Not-tested: Manual multi-device upload and double-enter behavior
 ---
- .../messenger/SendMessagesHelper.java         |  76 +++++++-
+ .../messenger/SendMessagesHelper.java         |  81 +++++++-
  .../ui/Components/ChatActivityEnterView.java  |   3 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   5 +
- .../src/main/java/tele/helpers/SendOrder.kt   | 171 ++++++++++++++++++
- 4 files changed, 252 insertions(+), 3 deletions(-)
+ .../src/main/java/tele/helpers/SendOrder.kt   | 180 ++++++++++++++++++
+ 4 files changed, 266 insertions(+), 3 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-index f03f9bcd4..f13f27c82 100644
+index f03f9bcd4..965caa49b 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 @@ -152,6 +152,55 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
@@ -90,7 +90,33 @@ index f03f9bcd4..f13f27c82 100644
          AndroidUtilities.runOnUIThread(() -> {
              getNotificationCenter().addObserver(SendMessagesHelper.this, NotificationCenter.fileUploaded);
              getNotificationCenter().addObserver(SendMessagesHelper.this, NotificationCenter.fileUploadProgressChanged);
-@@ -5329,10 +5379,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -1575,6 +1625,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         ArrayList<Integer> messageIds = new ArrayList<>();
+         boolean enc = false;
+         boolean scheduled = false;
++        HashSet<Long> canceledDialogIds = new HashSet<>();
+         long dialogId = 0;
+         int topicId = 0;
+         for (int c = 0; c < objects.size(); c++) {
+@@ -1583,6 +1634,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 scheduled = true;
+             }
+             dialogId = object.getDialogId();
++            canceledDialogIds.add(dialogId);
+             messageIds.add(object.getId());
+             if (object.isQuickReply()) {
+                 topicId = object.getQuickReplyId();
+@@ -1702,6 +1754,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             }
+             getMessagesController().deleteMessages(messageIds, null, null, dialogId, topicId, false, mode);
+         }
++        for (long canceledDialogId : canceledDialogIds) {
++            AndroidUtilities.runOnUIThread(() -> tele.helpers.SendOrder.flush(currentAccount, canceledDialogId));
++        }
+     }
+ 
+     public boolean retrySendMessage(MessageObject messageObject, boolean unsent, long payStars) {
+@@ -5329,10 +5384,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                          if (retryMessageObject == null) {
                              StarsController.getInstance(currentAccount).beforeSendingMessage(newMsgObj);
                          }
@@ -118,7 +144,7 @@ index f03f9bcd4..f13f27c82 100644
                      }
                  } else {
                      TLRPC.TL_decryptedMessage reqSend;
-@@ -7831,6 +7895,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -7831,6 +7900,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                          removeFromSendingMessages(newMsgObj.id, scheduled);
                      }
                  }
@@ -128,7 +154,7 @@ index f03f9bcd4..f13f27c82 100644
              });
          }, null, ConnectionsManager.RequestFlagCanCompress | ConnectionsManager.RequestFlagInvokeAfter);
      }
-@@ -8369,6 +8436,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -8369,6 +8441,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                          processSentMessage(newMsgObj.id);
                          removeFromSendingMessages(newMsgObj.id, scheduled);
                      }
@@ -170,10 +196,10 @@ index b939945e5..9834228bc 100644
      @JvmStatic
 diff --git a/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
 new file mode 100644
-index 000000000..56134c165
+index 000000000..8d9259fc1
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,180 @@
 +package tele.helpers
 +
 +import android.os.Handler
@@ -283,6 +309,7 @@ index 000000000..56134c165
 +            if (dialogs.isEmpty()) held.remove(account)
 +        }
 +        dispatch(taken)
++        scheduleRecheckIfNeeded()
 +    }
 +
 +    private fun dispatch(taken: List<Held>) {
@@ -320,6 +347,13 @@ index 000000000..56134c165
 +        }
 +    }
 +
++    private fun scheduleRecheckIfNeeded() {
++        val hasHeld = synchronized(held) { held.isNotEmpty() }
++        if (hasHeld) {
++            scheduleRecheck()
++        }
++    }
++
 +    private fun scheduleRecheck() {
 +        if (recheckScheduled) {
 +            return
@@ -334,6 +368,7 @@ index 000000000..56134c165
 +            for ((account, dialogId) in dialogs) {
 +                runCatching { flush(account, dialogId) }.onFailure { FileLog.e(it) }
 +            }
++            scheduleRecheckIfNeeded()
 +        }, RECHECK_MS)
 +    }
 +
