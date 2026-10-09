@@ -4,18 +4,18 @@ Date: Thu, 8 Oct 2026 22:38:20 +0300
 Subject: [PATCH] feat: forward protected messages as copies
 
 ---
- .../messenger/SendMessagesHelper.java         |   3 +
- .../java/org/telegram/ui/ChatActivity.java    |  38 +--
+ .../messenger/SendMessagesHelper.java         |  17 +-
+ .../java/org/telegram/ui/ChatActivity.java    |  38 +-
  .../java/org/telegram/ui/PhotoViewer.java     |  20 +-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
- .../java/tele/helpers/ProtectedMessages.kt    | 279 ++++++++++++++++++
+ .../java/tele/helpers/ProtectedMessages.kt    | 370 ++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
- 7 files changed, 317 insertions(+), 29 deletions(-)
+ 7 files changed, 415 insertions(+), 36 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ProtectedMessages.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-index ba59b69be..1a5300b59 100644
+index ba59b69be..df0833714 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 @@ -2164,6 +2164,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
@@ -28,6 +28,69 @@ index ba59b69be..1a5300b59 100644
              if (DialogObject.isUserDialog(peer)) {
                  TLRPC.User sendToUser = getMessagesController().getUser(peer);
                  if (sendToUser == null) {
+@@ -5323,7 +5326,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             StarsController.getInstance(currentAccount).beforeSendingMessage(newMsgObj);
+                         }
+                         performSendMessageRequest(reqSend, newMsgObj, null, null, parentObject, params, scheduleDate != 0);
+-                        if (retryMessageObject == null) {
++                        if (retryMessageObject == null && (params == null || !params.containsKey("tele_nodraft"))) {
+                             getMediaDataController().cleanDraft(peer, replyToTopMsg != null ? replyToTopMsg.getId() : 0, false);
+                         }
+                     } else {
+@@ -5431,7 +5434,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         reqSend.media = new TLRPC.TL_decryptedMessageMediaEmpty();
+                     }
+                     getSecretChatHelper().performSendEncryptedRequest(reqSend, newMsgObj.messageOwner, encryptedChat, null, null, newMsgObj);
+-                    if (retryMessageObject == null) {
++                    if (retryMessageObject == null && (params == null || !params.containsKey("tele_nodraft"))) {
+                         getMediaDataController().cleanDraft(peer, replyToTopMsg != null ? replyToTopMsg.getId() : 0, false);
+                     }
+                 }
+@@ -5484,7 +5487,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     StarsController.getInstance(currentAccount).beforeSendingMessage(newMsgObj);
+                 }
+                 performSendMessageRequest(reqSend, newMsgObj, null, null, parentObject, params, scheduleDate != 0);
+-                if (retryMessageObject == null) {
++                if (retryMessageObject == null && (params == null || !params.containsKey("tele_nodraft"))) {
+                     getMediaDataController().cleanDraft(peer, replyToTopMsg != null ? replyToTopMsg.getId() : 0, false);
+                 }
+             } else if (type >= 1 && type <= 3 || type >= 5 && type <= 8 || type == 9 && encryptedChat != null || type == 10 || type == MEDIA_TYPE_DICE || type == MEDIA_TYPE_STORY) {
+@@ -5573,7 +5576,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                                 serializedData.cleanup();
+                             }
+                         }
+-                        if (document.access_hash == 0) {
++                        if (document.access_hash == 0 || params != null && params.containsKey("tele_force_reupload")) {
+                             inputMedia = uploadedDocument;
+                             performMediaUpload = true;
+                         } else {
+@@ -5653,7 +5656,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             uploadedMedia = null;
+                         }
+ 
+-                        if (document.access_hash == 0) {
++                        if (document.access_hash == 0 || params != null && params.containsKey("tele_force_reupload")) {
+                             inputMedia = uploadedMedia;
+                             performMediaUpload = uploadedMedia instanceof TLRPC.TL_inputMediaUploadedDocument;
+                         } else {
+@@ -6358,7 +6361,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         request.files.add(encryptedFile);
+                         performSendDelayedMessage(delayedMessage);
+                     }
+-                    if (retryMessageObject == null) {
++                    if (retryMessageObject == null && (params == null || !params.containsKey("tele_nodraft"))) {
+                         getMediaDataController().cleanDraft(peer, replyToTopMsg != null ? replyToTopMsg.getId() : 0, false);
+                     }
+                 }
+@@ -6442,7 +6445,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 }
+                 reqSend.query_id = Utilities.parseLong(params.get("query_id"));
+                 reqSend.id = params.get("id");
+-                if (retryMessageObject == null) {
++                if (retryMessageObject == null && (params == null || !params.containsKey("tele_nodraft"))) {
+                     reqSend.clear_draft = true;
+                     getMediaDataController().cleanDraft(peer, replyToTopMsg != null ? replyToTopMsg.getId() : 0, false);
+                 }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 index 400248ac0..ce4fc96fc 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
@@ -270,16 +333,17 @@ index 132c3507e..409b6f24b 100644
      val DOUBLE_ENTER_SEND = BoolItem("double_enter_send", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ProtectedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/ProtectedMessages.kt
 new file mode 100644
-index 000000000..2bde4ccdd
+index 000000000..a8f5de0f9
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ProtectedMessages.kt
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,370 @@
 +package tele.helpers
 +
 +import android.text.TextUtils
 +import org.telegram.messenger.AndroidUtilities
 +import org.telegram.messenger.DialogObject
 +import org.telegram.messenger.FileLoader
++import org.telegram.messenger.ImageLocation
 +import org.telegram.messenger.MessageObject
 +import org.telegram.messenger.MessagesController
 +import org.telegram.messenger.R
@@ -317,7 +381,8 @@ index 000000000..2bde4ccdd
 +    }
 +
 +    private fun isProtected(message: MessageObject): Boolean {
-+        return message.messageOwner.noforwards || peerNoForwards(message.currentAccount, message.getDialogId())
++        val account = message.currentAccount
++        return message.messageOwner.noforwards || MessagesController.getInstance(account).isPeerNoForwards(message.getDialogId())
 +    }
 +
 +    private fun copyable(message: MessageObject): Boolean {
@@ -453,6 +518,27 @@ index 000000000..2bde4ccdd
 +        val media = MessageObject.getMedia(message.messageOwner)
 +        val caption = if (hideCaption) "" else message.messageOwner.message ?: ""
 +        val entities = if (hideCaption) null else message.messageOwner.entities
++        if (kind == Kind.PHOTO) {
++            val photo = (media as TLRPC.TL_messageMediaPhoto).photo as TLRPC.TL_photo
++            if (photoPath(account, photo) == null) {
++                val size = FileLoader.getClosestPhotoSizeWithSize(photo.sizes, AndroidUtilities.getPhotoSize(true))
++                FileLoader.getInstance(account).loadFile(ImageLocation.getForPhoto(size, photo), message, null, 1, 0)
++            }
++            waitAndSend(60000, { photoPath(account, photo) }) { ready ->
++                sendPhoto(account, photo, ready, peer, replyToTopMsg, caption, entities, media.spoiler, payStars, notify, scheduleDate)
++            }
++            return
++        }
++        if (kind == Kind.FILE || kind == Kind.STICKER || kind == Kind.VOICE || kind == Kind.ROUND || kind == Kind.VISUAL) {
++            val document = (media as TLRPC.TL_messageMediaDocument).document as TLRPC.TL_document
++            if (documentPath(account, document) == null) {
++                FileLoader.getInstance(account).loadFile(document, message, 1, 0)
++            }
++            waitAndSend(60000, { documentPath(account, document) }) { ready ->
++                sendDocument(account, document, ready, peer, replyToTopMsg, caption, entities, media.spoiler, payStars, notify, scheduleDate)
++            }
++            return
++        }
 +        val params = SendMessagesHelper.SendMessageParams()
 +        params.peer = peer
 +        params.replyToTopMsg = replyToTopMsg
@@ -460,27 +546,13 @@ index 000000000..2bde4ccdd
 +        params.scheduleDate = scheduleDate
 +        params.payStars = payStars
 +        params.monoForumPeer = 0
++        params.params = HashMap()
++        params.params.put("tele_nodraft", "1")
 +        when (kind) {
 +            Kind.TEXT -> {
 +                params.message = message.messageOwner.message
 +                params.webPage = (media as? TLRPC.TL_messageMediaWebPage)?.webpage
 +                params.searchLinks = true
-+            }
-+            Kind.PHOTO -> {
-+                val photo = (media as TLRPC.TL_messageMediaPhoto).photo as TLRPC.TL_photo
-+                params.photo = photo
-+                params.path = photoPath(account, photo)
-+                params.caption = caption
-+                params.entities = entities
-+                params.hasMediaSpoilers = media.spoiler
-+            }
-+            Kind.FILE, Kind.STICKER, Kind.VOICE, Kind.ROUND, Kind.VISUAL -> {
-+                val document = (media as TLRPC.TL_messageMediaDocument).document as TLRPC.TL_document
-+                params.document = document
-+                params.path = documentPath(account, document)
-+                params.caption = caption
-+                params.entities = entities
-+                params.hasMediaSpoilers = media.spoiler
 +            }
 +            Kind.POLL -> {
 +                params.poll = pollCopy(media as TLRPC.TL_messageMediaPoll)
@@ -502,19 +574,101 @@ index 000000000..2bde4ccdd
 +            Kind.LOCATION, Kind.VENUE -> {
 +                params.location = media
 +            }
++            else -> {}
++        }
++        SendMessagesHelper.getInstance(account).sendMessage(params)
++    }
++
++    private fun waitAndSend(timeoutMs: Long, check: () -> String?, send: (String) -> Unit) {
++        val path = check()
++        if (path != null) {
++            send(path)
++            return
++        }
++        if (timeoutMs <= 0) {
++            AndroidUtilities.runOnUIThread {
++                BulletinFactory.global().createSimpleBulletin(R.raw.error, "Could not download media to send copy.").show()
++            }
++            return
++        }
++        AndroidUtilities.runOnUIThread({
++            waitAndSend(timeoutMs - 500, check, send)
++        }, 500)
++    }
++
++    private fun sendPhoto(
++        account: Int,
++        photo: TLRPC.TL_photo,
++        path: String,
++        peer: Long,
++        replyToTopMsg: MessageObject?,
++        caption: String,
++        entities: ArrayList<TLRPC.MessageEntity>?,
++        spoiler: Boolean,
++        payStars: Long,
++        notify: Boolean,
++        scheduleDate: Int
++    ) {
++        val params = SendMessagesHelper.SendMessageParams()
++        params.photo = photo
++        params.path = path
++        params.peer = peer
++        params.replyToTopMsg = replyToTopMsg
++        params.caption = caption
++        params.entities = entities
++        params.hasMediaSpoilers = spoiler
++        params.notify = notify
++        params.scheduleDate = scheduleDate
++        params.payStars = payStars
++        params.monoForumPeer = 0
++        params.params = HashMap()
++        params.params.put("tele_nodraft", "1")
++        SendMessagesHelper.getInstance(account).sendMessage(params)
++    }
++
++    private fun sendDocument(
++        account: Int,
++        document: TLRPC.TL_document,
++        path: String,
++        peer: Long,
++        replyToTopMsg: MessageObject?,
++        caption: String,
++        entities: ArrayList<TLRPC.MessageEntity>?,
++        spoiler: Boolean,
++        payStars: Long,
++        notify: Boolean,
++        scheduleDate: Int
++    ) {
++        val params = SendMessagesHelper.SendMessageParams()
++        params.document = document
++        params.path = path
++        params.peer = peer
++        params.replyToTopMsg = replyToTopMsg
++        params.caption = caption
++        params.entities = entities
++        params.hasMediaSpoilers = spoiler
++        params.notify = notify
++        params.scheduleDate = scheduleDate
++        params.payStars = payStars
++        params.monoForumPeer = 0
++        params.params = HashMap()
++        params.params.put("tele_nodraft", "1")
++        if (MessageObject.isVideoDocument(document) || MessageObject.isGifDocument(document) || MessageObject.isRoundVideoDocument(document)) {
++            params.params.put("tele_force_reupload", "1")
 +        }
 +        SendMessagesHelper.getInstance(account).sendMessage(params)
 +    }
 +
 +    private fun photoPath(account: Int, photo: TLRPC.TL_photo): String? {
 +        if (photo.sizes.isEmpty()) return null
-+        val path = FileLoader.getInstance(account).getPathToAttach(photo.sizes.get(photo.sizes.size - 1).location, true) ?: return null
-+        return if (path.exists()) path.absolutePath else null
++        val size = FileLoader.getClosestPhotoSizeWithSize(photo.sizes, AndroidUtilities.getPhotoSize(true)) ?: return null
++        val path = FileLoader.getInstance(account).getPathToAttach(size.location, false) ?: return null
++        return if (path.exists() && path.length() > 0) path.absolutePath else null
 +    }
 +
 +    private fun documentPath(account: Int, document: TLRPC.TL_document): String? {
-+        val path = FileLoader.getInstance(account).getPathToAttach(document, true) ?: return null
-+        return if (path.exists()) path.absolutePath else null
++        val path = FileLoader.getInstance(account).getPathToAttach(document, false) ?: return null
++        return if (path.exists() && path.length() > 0) path.absolutePath else null
 +    }
 +
 +    private fun pollCopy(media: TLRPC.TL_messageMediaPoll): TLRPC.TL_messageMediaPoll {
