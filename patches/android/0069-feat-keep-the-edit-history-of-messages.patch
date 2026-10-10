@@ -1,0 +1,414 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 10 Oct 2026 17:16:28 +0300
+Subject: [PATCH] feat: keep the edit history of messages
+
+---
+ .../telegram/messenger/MessagesStorage.java   |   7 +
+ .../java/org/telegram/ui/ChatActivity.java    |  14 ++
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  33 +++-
+ .../main/java/tele/helpers/MessageHistory.kt  |  44 +++++
+ .../src/main/java/tele/helpers/MessageMenu.kt |   1 +
+ .../ui/settings/TeleEditHistoryActivity.kt    | 153 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
+ .../src/main/res/values/strings_tele.xml      |   5 +
+ 10 files changed, 260 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleEditHistoryActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index bacd815e2..c72085ffd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -16309,6 +16309,10 @@ public class MessagesStorage extends BaseController {
+                                     TLRPC.Message oldMessage = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                     oldMessage.readAttachPath(data, getUserConfig().clientUserId);
+                                     data.reuse();
++                                    oldMessage.dialog_id = message.dialog_id;
++                                    if (tele.TeleConfig.EDIT_HISTORY.getValue() && mode == ChatActivity.MODE_DEFAULT && oldMessage.id > 0 && message.edit_date > 0) {
++                                        tele.helpers.MessageHistory.archiveVersion(currentAccount, oldMessage, oldMessage.edit_date == 0);
++                                    }
+                                     if (reactionUpdates != null) {
+                                         reactionUpdates.add(new SavedReactionsUpdate(selfId, oldMessage, message));
+                                     }
+@@ -16340,6 +16344,9 @@ public class MessagesStorage extends BaseController {
+                                     if (customParams != null) {
+                                         customParams.reuse();
+                                     }
++                                    if (tele.TeleConfig.EDIT_HISTORY.getValue() && mode == ChatActivity.MODE_DEFAULT && message.id > 0 && message.edit_date > 0) {
++                                        tele.helpers.MessageHistory.archiveVersion(currentAccount, message, false);
++                                    }
+                                 }
+                                 boolean oldMention = cursor.intValue(3) != 0;
+                                 int readState = cursor.intValue(4);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index ce4fc96fc..69ddc9f0a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1235,6 +1235,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_copy_msg_id = 118;
+     public final static int tele_option_copy_emoji_id = 119;
+     public final static int tele_option_view_as_tl = 120;
++    public final static int tele_option_edit_history = 121;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -33534,6 +33535,14 @@ public class ChatActivity extends BaseFragment implements
+                 }
+                 break;
+             }
++            case tele_option_edit_history: {
++                MessageObject object = selectedObject;
++                closeMenu();
++                if (object != null && object.getId() > 0) {
++                    presentFragment(tele.ui.settings.TeleEditHistoryActivity.of(currentAccount, object.getDialogId(), object.getId()));
++                }
++                break;
++            }
+             case tele_option_copy_emoji_id: {
+                 AndroidUtilities.addToClipboard(String.valueOf(tele_menuEmojiId));
+                 BulletinFactory.of(this).createCopyBulletin(getString(R.string.TeleEmojiIdCopied)).show();
+@@ -46587,6 +46596,11 @@ public class ChatActivity extends BaseFragment implements
+             options.add(0, tele_option_view_as_tl);
+             icons.add(0, R.drawable.msg_info);
+         }
++        if (tele.TeleConfig.EDIT_HISTORY.getValue() && message.getId() > 0 && !message.scheduled && message.messageOwner.edit_date > 0) {
++            items.add(0, getString(R.string.TeleEditHistory));
++            options.add(0, tele_option_edit_history);
++            icons.add(0, R.drawable.msg_info);
++        }
+         tele.helpers.MessageMenu.filter(items, icons, options);
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index bff07e6f2..95d7dfbac 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -85,6 +85,8 @@ object TeleConfig {
+     @JvmField
+     val KEEP_SELF_DELETED_MESSAGES = BoolItem("keep_self_deleted_messages", false)
+     @JvmField
++    val EDIT_HISTORY = BoolItem("edit_history", false)
++    @JvmField
+     val SHOW_PEER_ID = BoolItem("show_peer_id", false)
+     @JvmField
+     val PEER_IDS_WITHOUT_SPACES = BoolItem("peer_ids_without_spaces", false)
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 93d962e78..cf580c487 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -37,6 +37,7 @@ object TeleDatabaseHelper {
+     }
+ 
+     data class ArchivedMessage(val account: Int, val dialogId: Long, val messageId: Int, val date: Int, val deletedAt: Int, val data: ByteArray)
++    data class ArchivedVersion(val editDate: Int, val original: Boolean, val data: ByteArray)
+ 
+     fun putDeletedMessage(account: Int, dialogId: Long, messageId: Int, date: Int, deletedAt: Int, data: ByteArray) {
+         val db = helper?.writableDatabase ?: return
+@@ -71,7 +72,31 @@ object TeleDatabaseHelper {
+         else db.delete("tele_deleted_messages", "account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString()))
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 2) {
++    fun putMessageVersion(account: Int, dialogId: Long, messageId: Int, editDate: Int, original: Boolean, versionKey: String, data: ByteArray) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("dialog_id", dialogId)
++            put("message_id", messageId)
++            put("edit_date", editDate)
++            put("original", if (original) 1 else 0)
++            put("version_key", versionKey)
++            put("data", data)
++        }
++        db.insertWithOnConflict("tele_message_edits", null, values, SQLiteDatabase.CONFLICT_IGNORE)
++    }
++
++    fun getMessageVersions(account: Int, dialogId: Long, messageId: Int): List<ArchivedVersion> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<ArchivedVersion>()
++        db.rawQuery("SELECT edit_date, original, data FROM tele_message_edits WHERE account = ? AND dialog_id = ? AND message_id = ? ORDER BY edit_date ASC, original DESC, rowid ASC", arrayOf(account.toString(), dialogId.toString(), messageId.toString())).use {
++            while (it.moveToNext()) result.add(ArchivedVersion(it.getInt(0), it.getInt(1) != 0, it.getBlob(2)))
++        }
++        return result
++    }
++
++
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 4) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -84,6 +109,12 @@ object TeleDatabaseHelper {
+         private fun createArchiveTables(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_deleted_messages (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, deleted_at INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, message_id))")
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_deleted_messages_date ON tele_deleted_messages(account, deleted_at DESC)")
++            createMessageEditTable(db)
++            db.execSQL("CREATE INDEX IF NOT EXISTS tele_message_edits_message ON tele_message_edits(account, dialog_id, message_id, edit_date)")
++        }
++
++        private fun createMessageEditTable(db: SQLiteDatabase) {
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_message_edits (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, edit_date INTEGER NOT NULL, original INTEGER NOT NULL, version_key TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, message_id, version_key))")
+         }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt b/TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt
+new file mode 100644
+index 000000000..87d254c57
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt
+@@ -0,0 +1,44 @@
++package tele.helpers
++
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.security.MessageDigest
++
++object MessageHistory {
++    data class Version(val message: TLRPC.Message, val editDate: Int, val original: Boolean)
++
++    @JvmStatic
++    fun archiveVersion(account: Int, message: TLRPC.Message, original: Boolean) {
++        if (!TeleConfig.EDIT_HISTORY.value || message.id <= 0) return
++        val stream = SerializedData(message.getObjectSize())
++        try {
++            message.serializeToStream(stream)
++            val data = stream.toByteArray()
++            val key = MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
++            TeleDatabaseHelper.putMessageVersion(account, message.dialog_id, message.id, message.edit_date.takeIf { it > 0 } ?: message.date, original, key, data)
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    @JvmStatic
++    fun getVersions(account: Int, dialogId: Long, messageId: Int): List<Version> {
++        return TeleDatabaseHelper.getMessageVersions(account, dialogId, messageId).mapNotNull { row ->
++            runCatching {
++                val stream = SerializedData(row.data)
++                try {
++                    val message = TLRPC.Message.TLdeserialize(stream, stream.readInt32(false), false) ?: return@runCatching null
++                    message.readAttachPath(stream, UserConfig.getInstance(account).clientUserId)
++                    message.dialog_id = dialogId
++                    Version(message, row.editDate, row.original)
++                } finally {
++                    stream.cleanup()
++                }
++            }.getOrNull()
++        }
++    }
++
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index 471608503..550408e89 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -55,6 +55,7 @@ object MessageMenu {
+         Item(ChatActivity.tele_option_copy_msg_id, "copy message id"),
+         Item(ChatActivity.tele_option_view_as_tl, "view as TL"),
+         Item(ChatActivity.tele_option_copy_emoji_id, "copy emoji id"),
++        Item(ChatActivity.tele_option_edit_history, "edit history"),
+         Item(ChatActivity.tele_option_mark_viewed, "mark as viewed")
+     )
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleEditHistoryActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleEditHistoryActivity.kt
+new file mode 100644
+index 000000000..9cb446413
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleEditHistoryActivity.kt
+@@ -0,0 +1,153 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.Typeface
++import android.text.format.DateFormat
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.ChatMessageSharedResources
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.messenger.MessageObject
++import org.telegram.ui.Cells.ChatMessageCell
++import org.telegram.tgnet.TLRPC
++import tele.helpers.MessageHistory
++import java.util.Date
++
++class TeleEditHistoryActivity : BaseFragment() {
++
++    private var history: List<MessageHistory.Version> = emptyList()
++    private var displayedMessages: List<DisplayVersion> = emptyList()
++    private var sharedResources: ChatMessageSharedResources? = null
++    private var adapter: Adapter? = null
++
++    private val historyAccount get() = arguments.getInt(ARG_ACCOUNT)
++    private val dialogId get() = arguments.getLong(ARG_DIALOG_ID)
++    private val messageId get() = arguments.getInt(ARG_MESSAGE_ID)
++
++    override fun onFragmentCreate(): Boolean {
++        reload()
++        return super.onFragmentCreate()
++    }
++
++    private fun reload() {
++        history = MessageHistory.getVersions(historyAccount, dialogId, messageId)
++        displayedMessages = history.mapIndexed { index, version ->
++            val label = if (index == history.lastIndex) R.string.TeleCurrentVersion else if (version.original) R.string.TeleOriginalVersion else R.string.TeleEditedVersion
++            DisplayVersion(version.message, version.editDate, LocaleController.getString(label))
++        }
++    }
++
++    private class DisplayVersion(val message: TLRPC.Message, val date: Int, val label: String)
++
++    override fun onResume() {
++        super.onResume()
++        reload()
++        adapter?.notifyDataSetChanged()
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(LocaleController.getString(R.string.TeleEditHistory))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment()
++            }
++        })
++
++        val root = FrameLayout(context)
++        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = root
++
++        val list = RecyclerListView(context)
++        list.setLayoutManager(LinearLayoutManager(context))
++        list.setVerticalScrollBarEnabled(false)
++        adapter = Adapter(context)
++        list.adapter = adapter
++        root.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        return fragmentView
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        override fun getItemCount(): Int = if (displayedMessages.isEmpty()) 1 else displayedMessages.size * 2
++
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = false
++
++        override fun getItemViewType(position: Int): Int = if (position % 2 == 0) TYPE_LABEL else TYPE_MESSAGE
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view = if (viewType == TYPE_LABEL) {
++                TextView(context).apply {
++                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++                    textSize = 14f
++                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
++                    gravity = Gravity.CENTER_VERTICAL
++                    setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(12f), AndroidUtilities.dp(16f), AndroidUtilities.dp(4f))
++                }
++            } else {
++                LinearLayout(context).apply {
++                    orientation = LinearLayout.VERTICAL
++                    addView(TextView(context).apply {
++                        tag = DATE_TAG
++                        setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
++                        textSize = 13f
++                        setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(8f), AndroidUtilities.dp(16f), AndroidUtilities.dp(4f))
++                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++                    addView(ChatMessageCell(context, historyAccount, false, sharedResources ?: ChatMessageSharedResources(context).also { sharedResources = it }, resourceProvider).apply {
++                        tag = BUBBLE_TAG
++                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++                }
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            if (position % 2 == 0) {
++                val index = position / 2
++                (holder.itemView as TextView).text = if (displayedMessages.isEmpty()) LocaleController.getString(R.string.TeleNoEditHistory) else displayedMessages[index].label
++            } else {
++                val version = displayedMessages[position / 2]
++                val date = Date(version.date.toLong() * 1000L)
++                holder.itemView.findViewWithTag<TextView>(DATE_TAG).text = DateFormat.getMediumDateFormat(context).format(date) + " · " + DateFormat.getTimeFormat(context).format(date)
++                val messageObject = MessageObject(historyAccount, version.message, true, false)
++                holder.itemView.findViewWithTag<ChatMessageCell>(BUBBLE_TAG).setMessageObject(messageObject, null, false, false, true, true)
++            }
++        }
++    }
++
++
++    companion object {
++        private const val ARG_ACCOUNT = "account"
++        private const val ARG_DIALOG_ID = "dialog_id"
++        private const val ARG_MESSAGE_ID = "message_id"
++        private const val TYPE_LABEL = 0
++        private const val TYPE_MESSAGE = 1
++        private const val DATE_TAG = 2
++        private const val BUBBLE_TAG = 3
++
++        @JvmStatic
++        fun of(account: Int, dialogId: Long, messageId: Int): TeleEditHistoryActivity =
++            TeleEditHistoryActivity().apply {
++                arguments = android.os.Bundle().apply {
++                    putInt(ARG_ACCOUNT, account)
++                    putLong(ARG_DIALOG_ID, dialogId)
++                    putInt(ARG_MESSAGE_ID, messageId)
++                }
++            }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 6f03d73eb..93e17cde0 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -83,6 +83,7 @@ object TeleSearch {
+             section(GUID_DATA + 3, "keep deleted messages", "your data", TeleSettingsActivity.MODE_DATA),
+             section(GUID_DATA + 4, "keep messages you delete yourself", "your data", TeleSettingsActivity.MODE_DATA),
+             screen(GUID_DATA + 5, "deleted messages") { TeleDeletedMessagesActivity() },
++            section(GUID_DATA + 6, "keep edit history", "your data", TeleSettingsActivity.MODE_DATA),
+             screen(GUID_DATA + 8, "manage local names") { TeleNamesActivity(TeleNamesActivity.MODE_LOCAL) },
+             screen(GUID_DATA + 9, "manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
+             section(GUID_SENDING, "tele sending", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index d72c1cf30..a2708d3cb 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -257,6 +257,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("local names for people", TeleConfig.LOCAL_NAMES),
+                 toggle("keep deleted messages", TeleConfig.KEEP_DELETED_MESSAGES),
+                 toggle("keep messages you delete yourself", TeleConfig.KEEP_SELF_DELETED_MESSAGES),
++                toggle("keep edit history", TeleConfig.EDIT_HISTORY),
+                 toggle("username aliases", TeleConfig.USERNAME_ALIASES),
+                 Row(TYPE_SHADOW),
+                 link("deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 5c2711a32..710ded2f0 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -18,4 +18,9 @@
+     <string name="TeleClearDeletedHistory">Clear deleted history</string>
+     <string name="TeleDeleteArchivedMessages">Delete all archived messages?</string>
+     <string name="TeleDeletedHistoryEmpty">Deleted history is empty</string>
++    <string name="TeleEditHistory">Edit history</string>
++    <string name="TeleNoEditHistory">No edit history</string>
++    <string name="TeleOriginalVersion">Original</string>
++    <string name="TeleEditedVersion">Edited</string>
++    <string name="TeleCurrentVersion">Current</string>
+ </resources>
