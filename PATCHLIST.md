@@ -125,7 +125,7 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0019, 0059 | хранить удалённые сообщения (в т.ч. самоудалённые) | todo | хуки `deleteMessages`/`processDeleteMessages` + `tele_*` таблица |
+| 0019, 0059 | хранить удалённые сообщения (в т.ч. самоудалённые) | queued | `0068-feat-keep-deleted-messages`; тумблеры в your data: `keep_deleted_messages` (все удаления — свои, чужие, серверные) и `keep_messages_you_delete yourself` (только исходящие при собственном ручном удалении). Единая точка — `MessagesStorage.markMessagesAsDeletedInternal`: через неё идут все пути (UI-удаление, серверные `updateDeleteMessages`/`updateDeleteChannelMessages`, канал-очистка, range-удаления), до удаления строки blob восстанавливается и сериализуется в `tele_deleted_messages` (tele.db v4, с датой удаления). `userInitiated` тянется из UI через новый `MessagesController.deleteMessagesFromUser` (AlertsCreator, DeleteMessagesBottomSheet, PhotoViewer, BookmarksFragment). При архивации медиа-файлы не удаляются — копия остаётся открываемой; секретные чаты и scheduled/quick replies/welcome не архивируются. Экран «Deleted messages» (your data) — сообщения целиком (ChatMessageCell) с отправителем и датой + очистка всей истории. off = сток |
 | 0018, 0062 | история правок сообщения (+ просмотр как чат) | todo | хук `updateMessageEdited` + версии в fork-БД |
 | 0101 | сохранённые черновики (частично: без rich-IV) | todo | снапшот состояния поля + браузер черновиков |
 
