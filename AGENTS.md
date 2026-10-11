@@ -32,6 +32,8 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 2. **edit and commit there.** one feature = one commit at the end of the queue (`feat: …`). a fix to a patch that isn't released yet goes into that patch's commit (`git commit --fixup`, `git rebase -i --autosquash <UPSTREAM commit>`).
 3. **build.** `./gradlew :TMessagesProj_App:assembleDebug` in the telegram checkout (see [docs/development.md](docs/development.md) for sdk setup). the first build compiles natives and is slow.
 4. **run and test.** install on a device or emulator and exercise the feature by hand with the option on and off. if you can't run the app, say so plainly and hand over exact steps to test; never claim a feature works because it compiles.
+   - driving the emulator/device ui (taps, gestures, typing) is the maintainer's job. hand over a numbered step list and wait; the assistant does code, builds, installs, logcat and screenshots.
+   - when a ui detail or behavior is unclear, ask the maintainer directly instead of inferring; two minutes of questions beats half an hour of reasoning.
 5. **export** into this repository: `git format-patch <UPSTREAM commit> -o patches/android/ --zero-commit --no-signature` (from `../Telegram`, see [docs/development.md](docs/development.md)), then update `PATCHLIST.md` statuses.
 6. **batch gate.** patches are delivered in batches (see `PATCHLIST.md`). when every patch of a batch is committed and exported, assemble a debug apk and hand it over for manual testing. a batch is done only after that build is verified by a human.
 7. **commit here.** `git add patches PATCHLIST.md && git commit -m "feat: <what it does>"` (one commit per patch; docs and infra changes use their prefixes).
