@@ -7,11 +7,13 @@ Subject: [PATCH] feat: skip or quote deleted messages when replying
  .../messenger/SendMessagesHelper.java         |  17 +++
  .../java/org/telegram/ui/ChatActivity.java    |   8 +-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
- .../main/java/tele/helpers/DeletedReply.kt    | 137 ++++++++++++++++++
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |   8 ++
+ .../main/java/tele/helpers/DeletedMessages.kt |  17 +++
+ .../main/java/tele/helpers/DeletedReply.kt    | 133 ++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
- .../tele/ui/settings/TeleSettingsActivity.kt  |  16 ++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  16 +++
  .../src/main/res/values/strings_tele.xml      |   1 +
- 7 files changed, 178 insertions(+), 4 deletions(-)
+ 9 files changed, 199 insertions(+), 4 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
@@ -95,12 +97,59 @@ index 7c3d14047..7596ddca5 100644
  
      @JvmField
      val EDIT_HISTORY = BoolItem("edit_history", false)
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 85bf300df..6d4cb14ae 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -68,6 +68,14 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
++    fun getDeletedMessage(account: Int, dialogId: Long, messageId: Int): ArchivedMessage? {
++        val db = helper?.readableDatabase ?: return null
++        db.rawQuery("SELECT account, dialog_id, message_id, date, deleted_at, data FROM tele_deleted_messages WHERE account = ? AND dialog_id = ? AND message_id = ? LIMIT 1", arrayOf(account.toString(), dialogId.toString(), messageId.toString())).use {
++            if (it.moveToFirst()) return ArchivedMessage(it.getInt(0), it.getLong(1), it.getInt(2), it.getInt(3), it.getInt(4), it.getBlob(5))
++        }
++        return null
++    }
++
+     fun deleteDeletedMessages(account: Int, dialogId: Long? = null) {
+         val db = helper?.writableDatabase ?: return
+         if (dialogId == null) db.delete("tele_deleted_messages", "account = ?", arrayOf(account.toString()))
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index 4e541f11c..a572d180d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -117,6 +117,23 @@ object DeletedMessages {
+         }
+     }
+ 
++    @JvmStatic
++    fun getMessage(account: Int, dialogId: Long, messageId: Int): TLRPC.Message? {
++        val row = TeleDatabaseHelper.getDeletedMessage(account, dialogId, messageId) ?: return null
++        return runCatching {
++            val stream = SerializedData(row.data)
++            try {
++                val message = TLRPC.Message.TLdeserialize(stream, stream.readInt32(false), false) ?: return@runCatching null
++                message.readAttachPath(stream, UserConfig.getInstance(account).clientUserId)
++                message.dialog_id = row.dialogId
++                message.id = row.messageId
++                message
++            } finally {
++                stream.cleanup()
++            }
++        }.getOrNull()
++    }
++
+     fun getDialogs(account: Int): List<TeleDatabaseHelper.ArchivedDialog> = TeleDatabaseHelper.getDeletedDialogs(account)
+ 
+     fun deleteAll(account: Int, dialogId: Long? = null) {
 diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
 new file mode 100644
-index 000000000..2b626b1d0
+index 000000000..2cea6a32e
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,133 @@
 +package tele.helpers
 +
 +import android.text.TextUtils
@@ -148,11 +197,7 @@ index 000000000..2b626b1d0
 +    }
 +
 +    private fun storedMessage(messageObject: MessageObject): TLRPC.Message? {
-+        val id = messageObject.getId()
-+        for (message in DeletedMessages.getAll(messageObject.currentAccount, messageObject.getDialogId())) {
-+            if (message.id == id) return message
-+        }
-+        return null
++        return DeletedMessages.getMessage(messageObject.currentAccount, messageObject.getDialogId(), messageObject.getId())
 +    }
 +
 +    private fun senderName(account: Int, message: TLRPC.Message?): String? {
