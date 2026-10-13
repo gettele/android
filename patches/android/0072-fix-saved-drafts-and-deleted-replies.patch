@@ -1,0 +1,453 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 13 Oct 2026 21:39:19 +0300
+Subject: [PATCH] [chat] fix regressions
+
+Fix saved-draft browser startup, add photo-picker draft saving and a latest-draft shortcut, and consistently hide reply/forward actions for retained deleted messages in skip mode.
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: signed-in draft and deleted-reply UI flows need manual retest
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 107 +++++++++++++++---
+ .../ui/Components/ChatActivityEnterView.java  |   3 +-
+ .../ui/Components/ChatAttachAlert.java        |  10 ++
+ ...ChatActivitySideControlsButtonsLayout.java |   9 +-
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  19 +++-
+ .../main/java/tele/helpers/DeletedMessages.kt |  11 +-
+ .../main/java/tele/helpers/DeletedReply.kt    |   2 +-
+ .../src/main/java/tele/helpers/SavedDrafts.kt |  12 ++
+ .../tele/ui/settings/TeleDraftsActivity.kt    |   1 +
+ 9 files changed, 153 insertions(+), 21 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 0cf5b0237..5f2616c42 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -7189,7 +7189,7 @@ public class ChatActivity extends BaseFragment implements
+         sideControlsButtonsLayout.setOnLongClickListener(this::onSideControlButtonOnLongClick);
+         {
+             final int indexToAdd = chatActivityFadeView != null ? contentView.indexOfChild(chatActivityFadeView) : -1;
+-            contentView.addView(sideControlsButtonsLayout, indexToAdd, LayoutHelper.createFrame(57, 300, Gravity.RIGHT | Gravity.BOTTOM));
++            contentView.addView(sideControlsButtonsLayout, indexToAdd, LayoutHelper.createFrame(57, LayoutHelper.MATCH_PARENT, Gravity.RIGHT | Gravity.BOTTOM));
+         }
+ 
+         updateMessageListAccessibilityVisibility();
+@@ -8104,10 +8104,6 @@ public class ChatActivity extends BaseFragment implements
+             textToSet = null;
+         }
+ 
+-        if (teleInsertDraftId != 0) {
+-            teleInsertDraft(tele.helpers.SavedDrafts.find(currentAccount, teleInsertDraftId));
+-            teleInsertDraftId = 0;
+-        }
+         if (inPreviewMode || isInsideContainer) {
+             chatActivityEnterView.setVisibility(View.INVISIBLE);
+         }
+@@ -9019,7 +9015,11 @@ public class ChatActivity extends BaseFragment implements
+         onBottomItemsVisibilityChanged();
+         ViewCompat.setOnApplyWindowInsetsListener(fragmentView, this::onApplyWindowInsets);
+         Timer.finish(t);
+-
++        updateTeleDraftButton(false);
++        if (teleInsertDraftId != 0) {
++            teleInsertDraft(tele.helpers.SavedDrafts.find(currentAccount, teleInsertDraftId));
++            teleInsertDraftId = 0;
++        }
+         return fragmentView;
+     }
+ 
+@@ -14879,7 +14879,41 @@ public class ChatActivity extends BaseFragment implements
+         Utilities.globalQueue.postRunnable(() -> {
+             List<tele.helpers.SavedDrafts.StoredFile> files = tele.helpers.SavedDrafts.copyAttachedFiles(entries);
+             tele.helpers.SavedDrafts.save(currentAccount, getDialogId(), (int) getTopicId(), finalDraft, files, finalReplyMessage);
+-            AndroidUtilities.runOnUIThread(() -> BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved)).show());
++            AndroidUtilities.runOnUIThread(() -> {
++                updateTeleDraftButton(true);
++                BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved)).show();
++            });
++        });
++    }
++
++    public void teleSaveDraftFromAttachAlert(ChatAttachAlert alert) {
++        if (chatActivityEnterView == null || alert == null) {
++            return;
++        }
++        MessageObject replyObject = chatActivityEnterView.getReplyingMessageObject();
++        TLRPC.Message replyMessage = replyObject != null ? replyObject.messageOwner : null;
++        CharSequence text = alert.getCommentView().getText();
++        ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(currentAccount).getEntities(new CharSequence[]{text}, true);
++        TLRPC.TL_draftMessage draft = tele.helpers.SavedDrafts.buildDraftMessage(text, entities, replyMessage, chatActivityEnterView.getWebPage());
++        ArrayList<MediaController.PhotoEntry> entries = new ArrayList<>();
++        HashMap<Object, Object> selected = alert.getPhotoLayout().getSelectedPhotos();
++        ArrayList<Object> order = alert.getPhotoLayout().getSelectedPhotosOrder();
++        for (Object key : order) {
++            Object value = selected.get(key);
++            if (value instanceof MediaController.PhotoEntry) {
++                entries.add((MediaController.PhotoEntry) value);
++            }
++        }
++        final TLRPC.TL_draftMessage finalDraft = draft;
++        final ArrayList<MediaController.PhotoEntry> finalEntries = entries;
++        final TLRPC.Message finalReplyMessage = replyMessage;
++        Utilities.globalQueue.postRunnable(() -> {
++            List<tele.helpers.SavedDrafts.StoredFile> files = tele.helpers.SavedDrafts.copyAttachedFiles(finalEntries);
++            tele.helpers.SavedDrafts.save(currentAccount, getDialogId(), (int) getTopicId(), finalDraft, files, finalReplyMessage);
++            AndroidUtilities.runOnUIThread(() -> {
++                updateTeleDraftButton(true);
++                BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved)).show();
++            });
+         });
+     }
+ 
+@@ -14894,6 +14928,22 @@ public class ChatActivity extends BaseFragment implements
+         }
+     }
+ 
++    private void teleInsertLatestDraft() {
++        tele.helpers.SavedDrafts.Draft draft = tele.helpers.SavedDrafts.getLatest(currentAccount, getDialogId(), (int) getTopicId());
++        if (draft != null) {
++            teleInsertDraft(draft);
++        }
++    }
++
++    private void updateTeleDraftButton(boolean animated) {
++        if (sideControlsButtonsLayout == null) {
++            return;
++        }
++        boolean hasDrafts = tele.helpers.SavedDrafts.hasDraft(currentAccount, getDialogId(), (int) getTopicId());
++        sideControlsButtonsLayout.showButton(ChatActivitySideControlsButtonsLayout.BUTTON_DRAFT, hasDrafts && chatMode == MODE_DEFAULT, animated);
++    }
++
++
+     private Runnable onHideFieldPanelRunnable;
+     public void showFieldPanelForReplyQuote(MessageObject messageObjectToReply, ReplyQuote quote) {
+         showFieldPanel(true, messageObjectToReply, null, null, null, true, 0, quote, false, 0, true);
+@@ -29979,6 +30029,8 @@ public class ChatActivity extends BaseFragment implements
+         super.onResume();
+         checkShowBlur(false);
+         activityResumeTime = System.currentTimeMillis();
++
++        updateTeleDraftButton(false);
+         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
+             ImportingAlert alert = new ImportingAlert(getParentActivity(), null, this, themeDelegate);
+             alert.setOnHideListener(dialog -> {
+@@ -33560,6 +33612,9 @@ public class ChatActivity extends BaseFragment implements
+                 break;
+             }
+             case OPTION_FORWARD: {
++                if (selectedObject != null && tele.helpers.DeletedMessages.isKeptOrArchived(selectedObject)) {
++                    return;
++                }
+                 if (getMessagesController().isFrozen()) {
+                     AccountFrozenAlert.show(currentAccount);
+                     selectedObject = null;
+@@ -33851,6 +33906,9 @@ public class ChatActivity extends BaseFragment implements
+                 break;
+             }
+             case OPTION_REPLY: {
++                if (selectedObject != null && tele.helpers.DeletedReply.skipReplyTo(selectedObject)) {
++                    return;
++                }
+                 if (selectedObject != null && selectedObject.messageOwner != null && selectedObject.messageOwner.noforwards) {
+                     return;
+                 }
+@@ -46015,6 +46073,7 @@ public class ChatActivity extends BaseFragment implements
+         final int type = getMessageType(message);
+         final boolean isEphemeral = message.isEphemeral();
+         final boolean isEphemeralFromBot = isEphemeral && !message.isOut();
++        final boolean teleKeptMessage = tele.helpers.DeletedMessages.isKeptOrArchived(message);
+ 
+         final long pressedEmojiId = tele_pressedEmojiId;
+         tele_pressedEmojiId = 0;
+@@ -46147,7 +46206,7 @@ public class ChatActivity extends BaseFragment implements
+             icons.add(deleteIconRes);
+         } else if (type == 1) {
+             if (currentChat != null) {
+-                if ((allowChatActions || isEphemeralFromBot) && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && !isInsideContainer && chatMode != MODE_WELCOME_MESSAGES && !tele.helpers.DeletedReply.skipReplyTo(selectedObject)) {
++                if ((allowChatActions || isEphemeralFromBot) && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && !isInsideContainer && chatMode != MODE_WELCOME_MESSAGES && !(teleKeptMessage && !tele.helpers.DeletedReply.quoteMode())) {
+                     items.add(LocaleController.getString(R.string.Reply));
+                     options.add(OPTION_REPLY);
+                     icons.add(R.drawable.menu_reply);
+@@ -46197,7 +46256,7 @@ public class ChatActivity extends BaseFragment implements
+                     icons.add(R.drawable.msg_report);
+                 }
+             } else {
+-                if (selectedObject.getId() > 0 && (allowChatActions || isEphemeralFromBot) && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && !isInsideContainer && chatMode != MODE_WELCOME_MESSAGES && !tele.helpers.DeletedReply.skipReplyTo(selectedObject)) {
++                if (selectedObject.getId() > 0 && (allowChatActions || isEphemeralFromBot) && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && !isInsideContainer && chatMode != MODE_WELCOME_MESSAGES && !(teleKeptMessage && !tele.helpers.DeletedReply.quoteMode())) {
+                     items.add(LocaleController.getString(R.string.Reply));
+                     options.add(OPTION_REPLY);
+                     icons.add(R.drawable.menu_reply);
+@@ -46251,7 +46310,7 @@ public class ChatActivity extends BaseFragment implements
+                         icons.add(R.drawable.msg_fave);
+                     }
+                 }
+-                if (((allowChatActions || isEphemeralFromBot) || !noforwardsOrPaidMedia && ChatObject.isChannelAndNotMegaGroup(currentChat) && !selectedObject.isSponsored() && selectedObject.contentType == 0 && chatMode == MODE_DEFAULT) && !isInsideContainer && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && chatMode != MODE_WELCOME_MESSAGES && !tele.helpers.DeletedReply.skipReplyTo(selectedObject)) {
++                if (((allowChatActions || isEphemeralFromBot) || !noforwardsOrPaidMedia && ChatObject.isChannelAndNotMegaGroup(currentChat) && !selectedObject.isSponsored() && selectedObject.contentType == 0 && chatMode == MODE_DEFAULT) && !isInsideContainer && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && chatMode != MODE_WELCOME_MESSAGES && !(teleKeptMessage && !tele.helpers.DeletedReply.quoteMode())) {
+                     items.add(LocaleController.getString(R.string.Reply));
+                     options.add(OPTION_REPLY);
+                     icons.add(R.drawable.menu_reply);
+@@ -46487,7 +46546,7 @@ public class ChatActivity extends BaseFragment implements
+                     }
+                 }
+ 
+-                final boolean canForward = !selectedObject.isSponsored()
++                final boolean canForward = !teleKeptMessage && !selectedObject.isSponsored()
+                     && !isQuickRepliesOrWelcomeMessagesMode()
+                     && chatMode != MODE_SCHEDULED
+                     && (!selectedObject.needDrawBluredPreview() || selectedObject.hasExtendedMediaPreview())
+@@ -46561,7 +46620,7 @@ public class ChatActivity extends BaseFragment implements
+                     icons.add(deleteIconRes);
+                 }
+             } else {
+-                if ((allowChatActions || isEphemeralFromBot) && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && !isInsideContainer && chatMode != MODE_WELCOME_MESSAGES && !tele.helpers.DeletedReply.skipReplyTo(selectedObject)) {
++                if ((allowChatActions || isEphemeralFromBot) && (primaryMessage == null || !primaryMessage.isWelcomeMessage()) && !isInsideContainer && chatMode != MODE_WELCOME_MESSAGES && !(teleKeptMessage && !tele.helpers.DeletedReply.quoteMode())) {
+                     items.add(LocaleController.getString(R.string.Reply));
+                     options.add(OPTION_REPLY);
+                     icons.add(R.drawable.menu_reply);
+@@ -46667,9 +46726,26 @@ public class ChatActivity extends BaseFragment implements
+             options.add(0, tele_option_edit_history);
+             icons.add(0, R.drawable.msg_info);
+         }
++        if (teleKeptMessage) {
++            if (!tele.helpers.DeletedReply.quoteMode()) {
++                for (int i = options.size() - 1; i >= 0; i--) {
++                    if (options.get(i) == OPTION_REPLY) {
++                        options.remove(i);
++                        items.remove(i);
++                        icons.remove(i);
++                    }
++                }
++            }
++            for (int i = options.size() - 1; i >= 0; i--) {
++                if (options.get(i) == OPTION_FORWARD) {
++                    options.remove(i);
++                    items.remove(i);
++                    icons.remove(i);
++                }
++            }
++        }
+         tele.helpers.MessageMenu.filter(items, icons, options);
+     }
+-
+     private boolean showWelcomeMessageRevertOption(MessageObject messageObject) {
+         return chatMode == MODE_DEFAULT && messageObject != null && messageObject.isWelcomeAnchored();
+     }
+@@ -47125,6 +47201,8 @@ public class ChatActivity extends BaseFragment implements
+                 chatAttachAlert.setEditingMessageObject(0, null);
+             }
+             openAttachMenu();
++        } else if (buttonId == ChatActivitySideControlsButtonsLayout.BUTTON_DRAFT) {
++            teleInsertLatestDraft();
+         }
+     }
+ 
+@@ -47234,6 +47312,9 @@ public class ChatActivity extends BaseFragment implements
+                     scrimPopupWindow.dismiss();
+                 }
+             };
++        } else if (buttonId == ChatActivitySideControlsButtonsLayout.BUTTON_DRAFT) {
++            presentFragment(new tele.ui.settings.TeleDraftsActivity());
++            return true;
+         } else {
+             return false;
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 87f16b294..f9bbdbb26 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -4784,7 +4784,8 @@ public class ChatActivityEnterView extends FrameLayout implements
+             return false;
+         }
+ 
+-        if (isStories || (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && parentFragment != null && parentFragment.messagePreviewParams != null && parentFragment.messagePreviewParams.forwardMessages != null && parentFragment.messagePreviewParams.forwardMessages.messages != null && !parentFragment.messagePreviewParams.forwardMessages.messages.isEmpty()) {
++        boolean hasSelectedPhotos = parentFragment != null && parentFragment.chatAttachAlert != null && !parentFragment.chatAttachAlert.getPhotoLayout().getSelectedPhotos().isEmpty();
++        if (isStories || (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && (hasSelectedPhotos || parentFragment != null && parentFragment.messagePreviewParams != null && parentFragment.messagePreviewParams.forwardMessages != null && parentFragment.messagePreviewParams.forwardMessages.messages != null && !parentFragment.messagePreviewParams.forwardMessages.messages.isEmpty())) {
+ 
+             boolean self = parentFragment != null && UserObject.isUserSelf(parentFragment.getCurrentUser());
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index 28534c59e..516ccebac 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -3944,6 +3944,16 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+                     options.addGap();
+                 }
+             }
++            final ChatActivity draftChatActivity = chatActivity;
++            if (editingMessageObject == null && draftChatActivity != null && (currentAttachLayout == photoLayout || currentAttachLayout == photoPreviewLayout)) {
++                options.add(R.drawable.msg_saved, getString(R.string.TeleSaveAsDraft), () -> {
++                    draftChatActivity.teleSaveDraftFromAttachAlert(this);
++                    if (messageSendPreview != null) {
++                        messageSendPreview.dismiss(false);
++                        messageSendPreview = null;
++                    }
++                });
++            }
+             final boolean self = UserObject.isUserSelf(user);
+             if (editingMessageObject == null && (chatActivity == null || !ChatObject.isMonoForum(chatActivity.getCurrentChat())) && ((chatActivity != null && chatActivity.canScheduleMessage()) || currentAttachLayout.canScheduleMessages())) {
+                 final long finalDialogId = dialogId;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
+index ba1638a3a..9eafc28d6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
+@@ -35,8 +35,9 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+     public static final int BUTTON_POLL_VOTES = 4;
+     public static final int BUTTON_SEARCH_DOWN = 5;
+     public static final int BUTTON_SEARCH_UP = 6;
++    public static final int BUTTON_DRAFT = 7;
+ 
+-    private static final int BUTTONS_COUNT = 7;
++    private static final int BUTTONS_COUNT = 8;
+ 
+     private static final int ANIMATOR_ID_VISIBILITY = 1;
+     private static final int ANIMATOR_ID_COUNTER_VISIBILITY = 2;
+@@ -48,7 +49,8 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+         R.drawable.reactionbutton,
+         R.drawable.menu_poll_notify,
+         R.drawable.pagedown,
+-        R.drawable.pagedown
++        R.drawable.pagedown,
++        R.drawable.msg_saved
+     };
+ 
+     private final String[] buttonDescriptions = new String[] {
+@@ -58,7 +60,8 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+         LocaleController.getString(R.string.AccDescrReactionMentionDown),
+         LocaleController.getString(R.string.AccDescrPollVotesMentionDown),
+         LocaleController.getString(R.string.AccDescrSearchPrev),
+-        LocaleController.getString(R.string.AccDescrSearchNext)
++        LocaleController.getString(R.string.AccDescrSearchNext),
++        LocaleController.getString(R.string.TeleSavedDrafts)
+     };
+ 
+     private final Theme.ResourcesProvider resourcesProvider;
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 6d4cb14ae..4f0ece5d8 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -154,9 +154,9 @@ object TeleDatabaseHelper {
+         val db = helper?.readableDatabase ?: return emptyList()
+         val result = ArrayList<ArchivedDraft>()
+         val cursor = if (dialogId == null) {
+-            db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? ORDER BY created DESC", arrayOf(account.toString()))
++            db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? ORDER BY rowid DESC", arrayOf(account.toString()))
+         } else {
+-            db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? ORDER BY created ASC", arrayOf(account.toString(), dialogId.toString(), topicId.toString()))
++            db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? ORDER BY rowid DESC", arrayOf(account.toString(), dialogId.toString(), topicId.toString()))
+         }
+         cursor.use {
+             while (it.moveToNext()) result.add(ArchivedDraft(it.getInt(0), it.getLong(1), it.getInt(2), it.getLong(3), it.getInt(4), it.getInt(5), it.getBlob(6)))
+@@ -164,6 +164,21 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
++    fun hasDraft(account: Int, dialogId: Long, topicId: Int): Boolean {
++        val db = helper?.readableDatabase ?: return false
++        db.rawQuery("SELECT 1 FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? LIMIT 1", arrayOf(account.toString(), dialogId.toString(), topicId.toString())).use {
++            return it.moveToFirst()
++        }
++    }
++
++    fun getLatestDraft(account: Int, dialogId: Long, topicId: Int): ArchivedDraft? {
++        val db = helper?.readableDatabase ?: return null
++        db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? ORDER BY rowid DESC LIMIT 1", arrayOf(account.toString(), dialogId.toString(), topicId.toString())).use {
++            if (it.moveToFirst()) return ArchivedDraft(it.getInt(0), it.getLong(1), it.getInt(2), it.getLong(3), it.getInt(4), it.getInt(5), it.getBlob(6))
++        }
++        return null
++    }
++
+     fun removeDraft(account: Int, id: Long) {
+         val db = helper?.writableDatabase ?: return
+         db.delete("tele_drafts", "account = ? AND draft_id = ?", arrayOf(account.toString(), id.toString()))
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index a572d180d..56d0ddef9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -62,7 +62,8 @@ object DeletedMessages {
+         val key = dialogKey(account, dialogId)
+         if (!loadedDialogs.add(key)) return
+         val ids = TeleDatabaseHelper.getKeptIds(account, dialogId)
+-        keptInChat.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap.newKeySet() }.addAll(ids)
++        val dialogIds = keptInChat.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap.newKeySet() }
++        dialogIds.addAll(ids)
+     }
+ 
+     @JvmStatic
+@@ -71,11 +72,19 @@ object DeletedMessages {
+         return keptInChat[account]?.get(dialogId)?.contains(messageId) == true
+     }
+ 
++
+     @JvmStatic
+     fun isKept(messageObject: MessageObject): Boolean {
+         return messageObject.messageOwner != null && isKept(messageObject.currentAccount, messageObject.getDialogId(), messageObject.getId())
+     }
+ 
++    @JvmStatic
++    fun isKeptOrArchived(messageObject: MessageObject): Boolean {
++        if (isKept(messageObject)) return true
++        return TeleDatabaseHelper.hasDeletedMessage(messageObject.currentAccount, messageObject.getDialogId(), messageObject.getId())
++    }
++
++
+     @JvmStatic
+     fun filterInChat(account: Int, dialogId: Long, ids: ArrayList<Int>, userInitiated: Boolean, lookup: (Int) -> MessageObject?): ArrayList<Int>? {
+         if (ids.isEmpty()) return null
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
+index 2cea6a32e..1c359e2db 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
+@@ -20,7 +20,7 @@ object DeletedReply {
+ 
+     @JvmStatic
+     fun isKeptReply(messageObject: MessageObject?): Boolean {
+-        return messageObject != null && messageObject.messageOwner != null && DeletedMessages.isKept(messageObject)
++        return messageObject != null && messageObject.messageOwner != null && DeletedMessages.isKeptOrArchived(messageObject)
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
+index 8d6371773..983d73db5 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
+@@ -124,6 +124,17 @@ object SavedDrafts {
+         return TeleDatabaseHelper.getDrafts(account, dialogId, topicId).mapNotNull { deserialize(it) }
+     }
+ 
++    @JvmStatic
++    fun hasDraft(account: Int, dialogId: Long, topicId: Int): Boolean {
++        return TeleDatabaseHelper.hasDraft(account, dialogId, topicId)
++    }
++
++    @JvmStatic
++    fun getLatest(account: Int, dialogId: Long, topicId: Int): Draft? {
++        val row = TeleDatabaseHelper.getLatestDraft(account, dialogId, topicId) ?: return null
++        return deserialize(row)
++    }
++
+     @JvmStatic
+     fun find(account: Int, id: Long): Draft? {
+         return get(account).firstOrNull { it.id == id }
+@@ -163,6 +174,7 @@ object SavedDrafts {
+         return draft
+     }
+ 
++    @JvmStatic
+     fun buildDraftMessage(text: CharSequence, entities: ArrayList<TLRPC.MessageEntity>?, replyMessage: TLRPC.Message?, webPage: TLRPC.WebPage?): TLRPC.TL_draftMessage {
+         val draft = buildDraftMessage(text, entities, replyMessage)
+         if (webPage != null) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
+index e86fb1819..cfcbbe3f2 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
+@@ -87,6 +87,7 @@ class TeleDraftsActivity : BaseFragment() {
+         presentFragment(org.telegram.ui.ChatActivity(args))
+     }
+ 
++
+     private fun confirmDelete(draft: SavedDrafts.Draft) {
+         AlertDialog.Builder(context, resourceProvider)
+             .setTitle(LocaleController.getString(R.string.TeleDeleteDraft))
