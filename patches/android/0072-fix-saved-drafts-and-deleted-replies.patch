@@ -4,20 +4,20 @@ Date: Wed, 14 Oct 2026 03:25:32 +0300
 Subject: [PATCH] fix: saved drafts and deleted replies
 
 ---
- .../java/org/telegram/ui/ChatActivity.java    | 188 ++++++++++++++++--
+ .../java/org/telegram/ui/ChatActivity.java    | 213 ++++++++++++++++--
  .../ui/Components/ChatActivityEnterView.java  |  21 +-
  .../ui/Components/ChatAttachAlert.java        |  10 +
  ...ChatActivitySideControlsButtonsLayout.java |   9 +-
  .../main/java/tele/db/TeleDatabaseHelper.kt   |  19 +-
  .../main/java/tele/helpers/DeletedMessages.kt |  11 +-
  .../main/java/tele/helpers/DeletedReply.kt    |   2 +-
- .../src/main/java/tele/helpers/SavedDrafts.kt |  12 ++
+ .../src/main/java/tele/helpers/SavedDrafts.kt |  15 +-
  .../tele/ui/settings/TeleDraftsActivity.kt    |   1 +
  .../src/main/res/values/strings_tele.xml      |   1 +
- 10 files changed, 250 insertions(+), 24 deletions(-)
+ 10 files changed, 275 insertions(+), 27 deletions(-)
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 0cf5b0237..4ee34e850 100644
+index 0cf5b0237..206bed5bd 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -7189,7 +7189,7 @@ public class ChatActivity extends BaseFragment implements
@@ -165,12 +165,32 @@ index 0cf5b0237..4ee34e850 100644
          });
      }
  
-@@ -14888,12 +14974,34 @@ public class ChatActivity extends BaseFragment implements
+@@ -14888,12 +14974,55 @@ public class ChatActivity extends BaseFragment implements
              return;
          }
          chatActivityEnterView.setFieldText(tele.helpers.SavedDrafts.toFieldText(draft), true, true);
-+        if (!draft.files.isEmpty()) {
-+            chatActivityEnterView.teleSetPendingDraftFiles(tele.helpers.SavedDrafts.toPhotoEntries(draft));
++        if (!draft.files.isEmpty() && chatAttachAlert != null && chatAttachAlert.getPhotoLayout() != null) {
++            org.telegram.ui.Components.ChatAttachAlertPhotoLayout photoLayout = chatAttachAlert.getPhotoLayout();
++            HashMap<Object, Object> newSelectedPhotos = new HashMap<>();
++            ArrayList<Object> newPhotosOrder = new ArrayList<>();
++            for (tele.helpers.SavedDrafts.StoredFile file : draft.files) {
++                java.io.File storedFile = tele.helpers.SavedDrafts.storedFile(file.storedName);
++                if (!storedFile.exists()) {
++                    continue;
++                }
++                MediaController.PhotoEntry entry = new MediaController.PhotoEntry(0, 0, 0, storedFile.getAbsolutePath(), file.isVideo ? file.duration : file.orientation, file.isVideo, file.width, file.height, file.size);
++                entry.hasSpoiler = file.spoiler;
++                entry.ttl = file.ttl;
++                newSelectedPhotos.put(entry.imageId, entry);
++                newPhotosOrder.add(entry.imageId);
++            }
++            if (!newSelectedPhotos.isEmpty()) {
++                photoLayout.updateSelected(newSelectedPhotos, newPhotosOrder, true);
++                if (chatAttachAlert.getCommentView() != null && !TextUtils.isEmpty(draft.getText())) {
++                    chatAttachAlert.getCommentView().setText(draft.getText());
++                }
++            }
++            chatActivityEnterView.teleSetPendingDraftFiles(null);
 +        } else {
 +            chatActivityEnterView.teleSetPendingDraftFiles(null);
 +        }
@@ -179,6 +199,7 @@ index 0cf5b0237..4ee34e850 100644
              showFieldPanelForReply(replyObject);
          }
 +        tele.helpers.SavedDrafts.remove(currentAccount, draft.id);
++        updateTeleDraftButton(true);
 +    }
 +
 +    private void teleInsertLatestDraft() {
@@ -186,21 +207,21 @@ index 0cf5b0237..4ee34e850 100644
 +        if (draft != null) {
 +            teleInsertDraft(draft);
 +        }
-     }
- 
++    }
++
 +    private void updateTeleDraftButton(boolean animated) {
 +        if (sideControlsButtonsLayout == null) {
 +            return;
 +        }
 +        boolean hasDrafts = tele.helpers.SavedDrafts.hasDraft(currentAccount, getDialogId(), (int) getTopicId());
 +        sideControlsButtonsLayout.showButton(ChatActivitySideControlsButtonsLayout.BUTTON_DRAFT, hasDrafts && chatMode == MODE_DEFAULT, animated);
-+    }
-+
+     }
+ 
 +
      private Runnable onHideFieldPanelRunnable;
      public void showFieldPanelForReplyQuote(MessageObject messageObjectToReply, ReplyQuote quote) {
          showFieldPanel(true, messageObjectToReply, null, null, null, true, 0, quote, false, 0, true);
-@@ -19346,7 +19454,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -19346,7 +19475,7 @@ public class ChatActivity extends BaseFragment implements
                          cantDeleteMessagesCount++;
                      }
                      boolean noforwards = ProtectedMessages.peerNoForwards(currentAccount, dialog_id);
@@ -209,7 +230,7 @@ index 0cf5b0237..4ee34e850 100644
                          cantForwardMessagesCount++;
                      } else {
                          canForwardMessagesCount++;
-@@ -19471,7 +19579,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -19471,7 +19600,7 @@ public class ChatActivity extends BaseFragment implements
                          newVisibility = View.VISIBLE;
                          for (int b = 0, N = selectedMessagesIds[0].size(); b < N; b++) {
                              MessageObject message = selectedMessagesIds[0].valueAt(b);
@@ -218,7 +239,7 @@ index 0cf5b0237..4ee34e850 100644
                                  newVisibility = View.GONE;
                                  break;
                              }
-@@ -22477,12 +22585,29 @@ public class ChatActivity extends BaseFragment implements
+@@ -22477,12 +22606,29 @@ public class ChatActivity extends BaseFragment implements
              if (args.length > 6) sentMessages = (ArrayList<Integer>) args[6];
              boolean movedToScheduled = args.length > 4 && (boolean) args[4] || sentMessages != null && !sentMessages.isEmpty();
              if (chatMode == MODE_DEFAULT && !movedToScheduled) {
@@ -248,7 +269,7 @@ index 0cf5b0237..4ee34e850 100644
                      if (chatAdapter != null) {
                          chatAdapter.notifyDataSetChanged(false);
                      }
-@@ -29979,6 +30104,8 @@ public class ChatActivity extends BaseFragment implements
+@@ -29979,6 +30125,8 @@ public class ChatActivity extends BaseFragment implements
          super.onResume();
          checkShowBlur(false);
          activityResumeTime = System.currentTimeMillis();
@@ -257,7 +278,7 @@ index 0cf5b0237..4ee34e850 100644
          if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
              ImportingAlert alert = new ImportingAlert(getParentActivity(), null, this, themeDelegate);
              alert.setOnHideListener(dialog -> {
-@@ -33560,6 +33687,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -33560,6 +33708,9 @@ public class ChatActivity extends BaseFragment implements
                  break;
              }
              case OPTION_FORWARD: {
@@ -267,7 +288,7 @@ index 0cf5b0237..4ee34e850 100644
                  if (getMessagesController().isFrozen()) {
                      AccountFrozenAlert.show(currentAccount);
                      selectedObject = null;
-@@ -33851,6 +33981,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -33851,6 +34002,9 @@ public class ChatActivity extends BaseFragment implements
                  break;
              }
              case OPTION_REPLY: {
@@ -277,7 +298,7 @@ index 0cf5b0237..4ee34e850 100644
                  if (selectedObject != null && selectedObject.messageOwner != null && selectedObject.messageOwner.noforwards) {
                      return;
                  }
-@@ -46015,6 +46148,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46015,6 +46169,7 @@ public class ChatActivity extends BaseFragment implements
          final int type = getMessageType(message);
          final boolean isEphemeral = message.isEphemeral();
          final boolean isEphemeralFromBot = isEphemeral && !message.isOut();
@@ -285,7 +306,21 @@ index 0cf5b0237..4ee34e850 100644
  
          final long pressedEmojiId = tele_pressedEmojiId;
          tele_pressedEmojiId = 0;
-@@ -46147,7 +46281,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46053,11 +46208,11 @@ public class ChatActivity extends BaseFragment implements
+         if (UserObject.isReplyUser(dialog_id) || dialog_id == UserObject.VERIFY) {
+             allowPin = false;
+         }
+-        allowPin = allowPin && message.getId() > 0 && (message.messageOwner.action == null || message.messageOwner.action instanceof TLRPC.TL_messageActionEmpty) && !message.isExpiredStory() && message.type != MessageObject.TYPE_STORY_MENTION;
++        allowPin = allowPin && message.getId() > 0 && (message.messageOwner.action == null || message.messageOwner.action instanceof TLRPC.TL_messageActionEmpty) && !message.isExpiredStory() && message.type != MessageObject.TYPE_STORY_MENTION && !teleKeptMessage;
+         boolean noforwards = ProtectedMessages.peerNoForwards(currentAccount, dialog_id) || ProtectedMessages.forbidsForward(message) || getDialogId() == UserObject.VERIFY;
+         boolean noforwardsOrPaidMedia = noforwards || message.type == MessageObject.TYPE_PAID_MEDIA;
+         boolean allowUnpin = !isEphemeral && message.getDialogId() != mergeDialogId && allowPin && (pinnedMessageObjects.containsKey(message.getId()) || groupedMessages != null && !groupedMessages.messages.isEmpty() && pinnedMessageObjects.containsKey(groupedMessages.messages.get(0).getId())) && !message.isExpiredStory();
+-        boolean allowEdit = !isEphemeral && message.canEditMessage(currentChat) && !chatActivityEnterView.hasAudioToSend() && message.getDialogId() != mergeDialogId && message.type != MessageObject.TYPE_STORY && message.type != MessageObject.TYPE_POLL;
++        boolean allowEdit = !isEphemeral && message.canEditMessage(currentChat) && !chatActivityEnterView.hasAudioToSend() && message.getDialogId() != mergeDialogId && message.type != MessageObject.TYPE_STORY && message.type != MessageObject.TYPE_POLL && !(teleKeptMessage && message.isOut());
+         if (allowEdit && groupedMessages != null) {
+             int captionsCount = 0;
+             for (int a = 0, N = groupedMessages.messages.size(); a < N; a++) {
+@@ -46147,7 +46302,7 @@ public class ChatActivity extends BaseFragment implements
              icons.add(deleteIconRes);
          } else if (type == 1) {
              if (currentChat != null) {
@@ -294,7 +329,7 @@ index 0cf5b0237..4ee34e850 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46197,7 +46331,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46197,7 +46352,7 @@ public class ChatActivity extends BaseFragment implements
                      icons.add(R.drawable.msg_report);
                  }
              } else {
@@ -303,7 +338,7 @@ index 0cf5b0237..4ee34e850 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46251,7 +46385,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46251,7 +46406,7 @@ public class ChatActivity extends BaseFragment implements
                          icons.add(R.drawable.msg_fave);
                      }
                  }
@@ -312,7 +347,7 @@ index 0cf5b0237..4ee34e850 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46487,7 +46621,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46487,7 +46642,7 @@ public class ChatActivity extends BaseFragment implements
                      }
                  }
  
@@ -321,7 +356,7 @@ index 0cf5b0237..4ee34e850 100644
                      && !isQuickRepliesOrWelcomeMessagesMode()
                      && chatMode != MODE_SCHEDULED
                      && (!selectedObject.needDrawBluredPreview() || selectedObject.hasExtendedMediaPreview())
-@@ -46561,7 +46695,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46561,7 +46716,7 @@ public class ChatActivity extends BaseFragment implements
                      icons.add(deleteIconRes);
                  }
              } else {
@@ -330,7 +365,7 @@ index 0cf5b0237..4ee34e850 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46667,9 +46801,26 @@ public class ChatActivity extends BaseFragment implements
+@@ -46667,9 +46822,26 @@ public class ChatActivity extends BaseFragment implements
              options.add(0, tele_option_edit_history);
              icons.add(0, R.drawable.msg_info);
          }
@@ -358,7 +393,7 @@ index 0cf5b0237..4ee34e850 100644
      private boolean showWelcomeMessageRevertOption(MessageObject messageObject) {
          return chatMode == MODE_DEFAULT && messageObject != null && messageObject.isWelcomeAnchored();
      }
-@@ -47125,6 +47276,8 @@ public class ChatActivity extends BaseFragment implements
+@@ -47125,6 +47297,8 @@ public class ChatActivity extends BaseFragment implements
                  chatAttachAlert.setEditingMessageObject(0, null);
              }
              openAttachMenu();
@@ -367,7 +402,7 @@ index 0cf5b0237..4ee34e850 100644
          }
      }
  
-@@ -47234,6 +47387,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -47234,6 +47408,9 @@ public class ChatActivity extends BaseFragment implements
                      scrimPopupWindow.dismiss();
                  }
              };
@@ -572,10 +607,27 @@ index 2cea6a32e..1c359e2db 100644
  
      @JvmStatic
 diff --git a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
-index 8d6371773..983d73db5 100644
+index 8d6371773..bcd1f5f90 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
-@@ -124,6 +124,17 @@ object SavedDrafts {
+@@ -22,7 +22,7 @@ object SavedDrafts {
+         val text: String get() = message.message ?: ""
+     }
+ 
+-    class StoredFile(val storedName: String, val fileName: String, val isVideo: Boolean, val spoiler: Boolean, val ttl: Int, val width: Int, val height: Int, val size: Long, val duration: Int, val orientation: Int)
++    class StoredFile(@JvmField val storedName: String, @JvmField val fileName: String, @JvmField val isVideo: Boolean, @JvmField val spoiler: Boolean, @JvmField val ttl: Int, @JvmField val width: Int, @JvmField val height: Int, @JvmField val size: Long, @JvmField val duration: Int, @JvmField val orientation: Int)
+ 
+     fun draftsDirectory(): File {
+         val dir = File(ApplicationLoader.getFilesDirFixed(), "tele_drafts")
+@@ -44,6 +44,7 @@ object SavedDrafts {
+         }
+     }
+ 
++    @JvmStatic
+     fun storedFile(name: String): File = File(draftsDirectory(), name)
+ 
+     fun deleteStoredFiles(names: List<String>) {
+@@ -124,6 +125,17 @@ object SavedDrafts {
          return TeleDatabaseHelper.getDrafts(account, dialogId, topicId).mapNotNull { deserialize(it) }
      }
  
@@ -593,7 +645,7 @@ index 8d6371773..983d73db5 100644
      @JvmStatic
      fun find(account: Int, id: Long): Draft? {
          return get(account).firstOrNull { it.id == id }
-@@ -163,6 +174,7 @@ object SavedDrafts {
+@@ -163,6 +175,7 @@ object SavedDrafts {
          return draft
      }
  
