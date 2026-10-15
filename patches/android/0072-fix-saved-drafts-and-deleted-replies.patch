@@ -4,20 +4,34 @@ Date: Wed, 14 Oct 2026 03:25:32 +0300
 Subject: [PATCH] fix: saved drafts and deleted replies
 
 ---
- .../java/org/telegram/ui/ChatActivity.java    | 225 ++++++++++++++++--
- .../ui/Components/ChatActivityEnterView.java  |  27 ++-
+ .../messenger/SendMessagesHelper.java         |   2 +-
+ .../java/org/telegram/ui/ChatActivity.java    | 269 ++++++++++++++++--
+ .../ui/Components/ChatActivityEnterView.java  |  27 +-
  .../ui/Components/ChatAttachAlert.java        |  10 +
  ...ChatActivitySideControlsButtonsLayout.java |   9 +-
  .../main/java/tele/db/TeleDatabaseHelper.kt   |  19 +-
  .../main/java/tele/helpers/DeletedMessages.kt |  11 +-
  .../main/java/tele/helpers/DeletedReply.kt    |   2 +-
- .../src/main/java/tele/helpers/SavedDrafts.kt |  15 +-
+ .../src/main/java/tele/helpers/SavedDrafts.kt |  22 +-
  .../tele/ui/settings/TeleDraftsActivity.kt    |   1 +
  .../src/main/res/values/strings_tele.xml      |   1 +
- 10 files changed, 293 insertions(+), 27 deletions(-)
+ 11 files changed, 345 insertions(+), 28 deletions(-)
 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 543259792..5f8126b6c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -9335,7 +9335,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         if (uri != null && AndroidUtilities.isInternalUri(uri)) {
+             return ERROR_TYPE_UNSUPPORTED;
+         }
+-        if (path != null && AndroidUtilities.isInternalUri(Uri.fromFile(new File(path)))) {
++        if (path != null && AndroidUtilities.isInternalUri(Uri.fromFile(new File(path))) && !path.contains("/tele_drafts/")) {
+             return ERROR_TYPE_UNSUPPORTED;
+         }
+         MimeTypeMap myMime = MimeTypeMap.getSingleton();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 0cf5b0237..b4e924240 100644
+index 0cf5b0237..6738b8c7f 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -7189,7 +7189,7 @@ public class ChatActivity extends BaseFragment implements
@@ -115,7 +129,17 @@ index 0cf5b0237..b4e924240 100644
          if (!ProtectedMessages.enabled() && (isPeerNoForwards() || hasSelectedNoforwardsMessage())) {
              // We should update text if user changed locale without re-opening chat activity
              String str;
-@@ -14879,7 +14924,48 @@ public class ChatActivity extends BaseFragment implements
+@@ -12706,6 +12751,9 @@ public class ChatActivity extends BaseFragment implements
+                                     fillEditingMediaWithCaption(photos.get(0).caption, photos.get(0).entities);
+                                     updateStickersOrder = photos.get(0).updateStickersOrder;
+                                 }
++                                if (chatActivityEnterView != null) {
++                                    chatActivityEnterView.teleSetPendingDraftFiles(null);
++                                }
+ 
+                                 if (editingMessageObject != null && editingMessageObject.needResendWhenEdit()) {
+                                     MessageSuggestionParams params = messageSuggestionParams != null ?
+@@ -14879,7 +14927,48 @@ public class ChatActivity extends BaseFragment implements
          Utilities.globalQueue.postRunnable(() -> {
              List<tele.helpers.SavedDrafts.StoredFile> files = tele.helpers.SavedDrafts.copyAttachedFiles(entries);
              tele.helpers.SavedDrafts.save(currentAccount, getDialogId(), (int) getTopicId(), finalDraft, files, finalReplyMessage);
@@ -165,7 +189,7 @@ index 0cf5b0237..b4e924240 100644
          });
      }
  
-@@ -14888,12 +14974,67 @@ public class ChatActivity extends BaseFragment implements
+@@ -14888,12 +14977,108 @@ public class ChatActivity extends BaseFragment implements
              return;
          }
          chatActivityEnterView.setFieldText(tele.helpers.SavedDrafts.toFieldText(draft), true, true);
@@ -185,7 +209,11 @@ index 0cf5b0237..b4e924240 100644
 +            }
 +            if (!entries.isEmpty()) {
 +                chatActivityEnterView.teleSetPendingDraftFiles(entries);
-+                if (chatAttachAlert != null && chatAttachAlert.getPhotoLayout() != null && chatAttachAlert.isShowing()) {
++                openAttachMenu();
++                if (chatAttachAlert != null) {
++                    chatActivityEnterView.teleSetPendingDraftFiles(null);
++                }
++                if (chatAttachAlert != null && chatAttachAlert.getPhotoLayout() != null) {
 +                    org.telegram.ui.Components.ChatAttachAlertPhotoLayout photoLayout = chatAttachAlert.getPhotoLayout();
 +                    HashMap<Object, Object> newSelectedPhotos = new HashMap<>();
 +                    ArrayList<Object> newPhotosOrder = new ArrayList<>();
@@ -196,8 +224,45 @@ index 0cf5b0237..b4e924240 100644
 +                        newPhotosOrder.add(entry.imageId);
 +                    }
 +                    photoLayout.updateSelected(newSelectedPhotos, newPhotosOrder, true);
++                    if (chatAttachAlert != null) chatAttachAlert.updateCountButton(1);
 +                    if (chatAttachAlert.getCommentView() != null && !TextUtils.isEmpty(draft.getText())) {
 +                        chatAttachAlert.getCommentView().setText(draft.getText());
++                            if (chatAttachAlert.commentTextView != null) {
++                                chatAttachAlert.commentTextView.setText(draft.getText());
++                                chatAttachAlert.commentTextView.setVisibility(View.VISIBLE);
++                            }
++                            if (chatAttachAlert.topCommentTextView != null) {
++                                chatAttachAlert.topCommentTextView.setText(draft.getText());
++                                chatAttachAlert.topCommentTextView.setVisibility(View.VISIBLE);
++                            }
++                AndroidUtilities.runOnUIThread(() -> {
++                    if (chatAttachAlert != null && chatAttachAlert.getPhotoLayout() != null) {
++                        chatAttachAlert.getPhotoLayout().updateSelected(newSelectedPhotos, newPhotosOrder, true);
++                        if (chatAttachAlert.getCommentView() != null && !TextUtils.isEmpty(draft.getText())) {
++                            chatAttachAlert.getCommentView().setText(draft.getText());
++                        if (chatAttachAlert.getSelectedTextView() != null) {
++                            int _c = Math.max(1, newSelectedPhotos.size());
++                            chatAttachAlert.getSelectedTextView().setText(LocaleController.formatPluralString("PhotosSelected", _c));
++                            chatAttachAlert.getSelectedTextView().setVisibility(View.VISIBLE);
++                        }
++                        if (chatAttachAlert.getCommentView() != null) {
++                            chatAttachAlert.getCommentView().setVisibility(View.VISIBLE);
++                        try {
++                            java.lang.reflect.Field fl = chatAttachAlert.getClass().getDeclaredField("frameLayout2");
++                            fl.setAccessible(true);
++                            android.view.View frameLayout2 = (android.view.View) fl.get(chatAttachAlert);
++                            if (frameLayout2 != null) frameLayout2.setVisibility(android.view.View.VISIBLE);
++                            java.lang.reflect.Field cc = chatAttachAlert.getClass().getDeclaredField("captionContainer");
++                            cc.setAccessible(true);
++                            android.view.View captionContainer = (android.view.View) cc.get(chatAttachAlert);
++                            if (captionContainer != null) captionContainer.setVisibility(android.view.View.VISIBLE);
++                        } catch (Exception ignore) {
++                        }
++                        chatAttachAlert.updateCountButton(1);
++                        }
++                        }
++                    }
++                }, 500);
 +                    }
 +                }
 +            } else {
@@ -210,17 +275,17 @@ index 0cf5b0237..b4e924240 100644
              MessageObject replyObject = new MessageObject(currentAccount, draft.replyMessage, getMessagesController().getUsers(), false, false);
              showFieldPanelForReply(replyObject);
          }
-+        tele.helpers.SavedDrafts.remove(currentAccount, draft.id);
++        tele.helpers.SavedDrafts.removeRecord(currentAccount, draft.id);
 +        updateTeleDraftButton(true);
-     }
- 
++    }
++
 +    private void teleInsertLatestDraft() {
 +        tele.helpers.SavedDrafts.Draft draft = tele.helpers.SavedDrafts.getLatest(currentAccount, getDialogId(), (int) getTopicId());
 +        if (draft != null) {
 +            teleInsertDraft(draft);
 +        }
-+    }
-+
+     }
+ 
 +    private void updateTeleDraftButton(boolean animated) {
 +        if (sideControlsButtonsLayout == null) {
 +            return;
@@ -233,7 +298,7 @@ index 0cf5b0237..b4e924240 100644
      private Runnable onHideFieldPanelRunnable;
      public void showFieldPanelForReplyQuote(MessageObject messageObjectToReply, ReplyQuote quote) {
          showFieldPanel(true, messageObjectToReply, null, null, null, true, 0, quote, false, 0, true);
-@@ -19346,7 +19487,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -19346,7 +19531,7 @@ public class ChatActivity extends BaseFragment implements
                          cantDeleteMessagesCount++;
                      }
                      boolean noforwards = ProtectedMessages.peerNoForwards(currentAccount, dialog_id);
@@ -242,7 +307,7 @@ index 0cf5b0237..b4e924240 100644
                          cantForwardMessagesCount++;
                      } else {
                          canForwardMessagesCount++;
-@@ -19471,7 +19612,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -19471,7 +19656,7 @@ public class ChatActivity extends BaseFragment implements
                          newVisibility = View.VISIBLE;
                          for (int b = 0, N = selectedMessagesIds[0].size(); b < N; b++) {
                              MessageObject message = selectedMessagesIds[0].valueAt(b);
@@ -251,7 +316,7 @@ index 0cf5b0237..b4e924240 100644
                                  newVisibility = View.GONE;
                                  break;
                              }
-@@ -22477,12 +22618,29 @@ public class ChatActivity extends BaseFragment implements
+@@ -22477,12 +22662,29 @@ public class ChatActivity extends BaseFragment implements
              if (args.length > 6) sentMessages = (ArrayList<Integer>) args[6];
              boolean movedToScheduled = args.length > 4 && (boolean) args[4] || sentMessages != null && !sentMessages.isEmpty();
              if (chatMode == MODE_DEFAULT && !movedToScheduled) {
@@ -281,7 +346,7 @@ index 0cf5b0237..b4e924240 100644
                      if (chatAdapter != null) {
                          chatAdapter.notifyDataSetChanged(false);
                      }
-@@ -29979,6 +30137,8 @@ public class ChatActivity extends BaseFragment implements
+@@ -29979,6 +30181,8 @@ public class ChatActivity extends BaseFragment implements
          super.onResume();
          checkShowBlur(false);
          activityResumeTime = System.currentTimeMillis();
@@ -290,7 +355,7 @@ index 0cf5b0237..b4e924240 100644
          if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
              ImportingAlert alert = new ImportingAlert(getParentActivity(), null, this, themeDelegate);
              alert.setOnHideListener(dialog -> {
-@@ -33560,6 +33720,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -33560,6 +33764,9 @@ public class ChatActivity extends BaseFragment implements
                  break;
              }
              case OPTION_FORWARD: {
@@ -300,7 +365,7 @@ index 0cf5b0237..b4e924240 100644
                  if (getMessagesController().isFrozen()) {
                      AccountFrozenAlert.show(currentAccount);
                      selectedObject = null;
-@@ -33851,6 +34014,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -33851,6 +34058,9 @@ public class ChatActivity extends BaseFragment implements
                  break;
              }
              case OPTION_REPLY: {
@@ -310,7 +375,7 @@ index 0cf5b0237..b4e924240 100644
                  if (selectedObject != null && selectedObject.messageOwner != null && selectedObject.messageOwner.noforwards) {
                      return;
                  }
-@@ -46015,6 +46181,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46015,6 +46225,7 @@ public class ChatActivity extends BaseFragment implements
          final int type = getMessageType(message);
          final boolean isEphemeral = message.isEphemeral();
          final boolean isEphemeralFromBot = isEphemeral && !message.isOut();
@@ -318,7 +383,7 @@ index 0cf5b0237..b4e924240 100644
  
          final long pressedEmojiId = tele_pressedEmojiId;
          tele_pressedEmojiId = 0;
-@@ -46053,11 +46220,11 @@ public class ChatActivity extends BaseFragment implements
+@@ -46053,11 +46264,11 @@ public class ChatActivity extends BaseFragment implements
          if (UserObject.isReplyUser(dialog_id) || dialog_id == UserObject.VERIFY) {
              allowPin = false;
          }
@@ -332,7 +397,7 @@ index 0cf5b0237..b4e924240 100644
          if (allowEdit && groupedMessages != null) {
              int captionsCount = 0;
              for (int a = 0, N = groupedMessages.messages.size(); a < N; a++) {
-@@ -46147,7 +46314,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46147,7 +46358,7 @@ public class ChatActivity extends BaseFragment implements
              icons.add(deleteIconRes);
          } else if (type == 1) {
              if (currentChat != null) {
@@ -341,7 +406,7 @@ index 0cf5b0237..b4e924240 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46197,7 +46364,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46197,7 +46408,7 @@ public class ChatActivity extends BaseFragment implements
                      icons.add(R.drawable.msg_report);
                  }
              } else {
@@ -350,7 +415,7 @@ index 0cf5b0237..b4e924240 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46251,7 +46418,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46251,7 +46462,7 @@ public class ChatActivity extends BaseFragment implements
                          icons.add(R.drawable.msg_fave);
                      }
                  }
@@ -359,7 +424,7 @@ index 0cf5b0237..b4e924240 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46487,7 +46654,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46487,7 +46698,7 @@ public class ChatActivity extends BaseFragment implements
                      }
                  }
  
@@ -368,7 +433,7 @@ index 0cf5b0237..b4e924240 100644
                      && !isQuickRepliesOrWelcomeMessagesMode()
                      && chatMode != MODE_SCHEDULED
                      && (!selectedObject.needDrawBluredPreview() || selectedObject.hasExtendedMediaPreview())
-@@ -46561,7 +46728,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -46561,7 +46772,7 @@ public class ChatActivity extends BaseFragment implements
                      icons.add(deleteIconRes);
                  }
              } else {
@@ -377,7 +442,7 @@ index 0cf5b0237..b4e924240 100644
                      items.add(LocaleController.getString(R.string.Reply));
                      options.add(OPTION_REPLY);
                      icons.add(R.drawable.menu_reply);
-@@ -46667,9 +46834,26 @@ public class ChatActivity extends BaseFragment implements
+@@ -46667,9 +46878,26 @@ public class ChatActivity extends BaseFragment implements
              options.add(0, tele_option_edit_history);
              icons.add(0, R.drawable.msg_info);
          }
@@ -405,7 +470,7 @@ index 0cf5b0237..b4e924240 100644
      private boolean showWelcomeMessageRevertOption(MessageObject messageObject) {
          return chatMode == MODE_DEFAULT && messageObject != null && messageObject.isWelcomeAnchored();
      }
-@@ -47125,6 +47309,8 @@ public class ChatActivity extends BaseFragment implements
+@@ -47125,6 +47353,8 @@ public class ChatActivity extends BaseFragment implements
                  chatAttachAlert.setEditingMessageObject(0, null);
              }
              openAttachMenu();
@@ -414,7 +479,7 @@ index 0cf5b0237..b4e924240 100644
          }
      }
  
-@@ -47234,6 +47420,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -47234,6 +47464,9 @@ public class ChatActivity extends BaseFragment implements
                      scrimPopupWindow.dismiss();
                  }
              };
@@ -625,7 +690,7 @@ index 2cea6a32e..1c359e2db 100644
  
      @JvmStatic
 diff --git a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
-index 8d6371773..bcd1f5f90 100644
+index 8d6371773..52419b132 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
 @@ -22,7 +22,7 @@ object SavedDrafts {
@@ -663,7 +728,21 @@ index 8d6371773..bcd1f5f90 100644
      @JvmStatic
      fun find(account: Int, id: Long): Draft? {
          return get(account).firstOrNull { it.id == id }
-@@ -163,6 +175,7 @@ object SavedDrafts {
+@@ -138,6 +150,13 @@ object SavedDrafts {
+         }
+     }
+ 
++    @JvmStatic
++    fun removeRecord(account: Int, id: Long) {
++        // Remove the draft from the database without deleting the already-copied media files.
++        // Used when inserting a draft into a chat: the files must stay available for sending.
++        TeleDatabaseHelper.removeDraft(account, id)
++    }
++
+     @JvmStatic
+     fun removeAll(account: Int, dialogId: Long? = null) {
+         val drafts = get(account, dialogId)
+@@ -163,6 +182,7 @@ object SavedDrafts {
          return draft
      }
  
