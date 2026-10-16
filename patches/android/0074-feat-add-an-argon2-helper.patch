@@ -4,10 +4,10 @@ Date: Fri, 16 Oct 2026 02:17:58 +0300
 Subject: [PATCH] feat: add an argon2 helper
 
 ---
- TMessagesProj/build.gradle                    |  1 +
- .../src/main/java/tele/helpers/TeleBadges.kt  | 33 +++++++++++++++++++
- .../src/main/java/tele/helpers/TeleServer.kt  |  2 ++
- 3 files changed, 36 insertions(+)
+ TMessagesProj/build.gradle                    |   1 +
+ .../src/main/java/tele/helpers/TeleBadges.kt  | 188 ++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleServer.kt  |   6 +
+ 3 files changed, 195 insertions(+)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
 
 diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
@@ -24,45 +24,201 @@ index 5812523e5..8c89e5026 100644
      implementation 'com.google.android.gms:play-services-safetynet:18.0.1'
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
 new file mode 100644
-index 000000000..1e3c974f1
+index 000000000..26471f8e1
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,188 @@
 +package tele.helpers
 +
-+import android.util.Log
-+import com.lambdapioneer.argon2kt.Argon2Kt
-+import com.lambdapioneer.argon2kt.Argon2Mode
-+import com.lambdapioneer.argon2kt.Argon2Version
++import com.lambdapioneer.argon2kt.Argon2KtResult
++import org.json.JSONObject
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.TLRPC
 +import java.util.Base64
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.atomic.AtomicReference
 +
 +object TeleBadges {
-+    private val argon2 = Argon2Kt()
++    data class Peer(
++        val checkmark: Boolean = false,
++        val scam: Boolean = false,
++        val fake: Boolean = false,
++        val support: Boolean = false,
++        val icon: String? = null,
++        val description: String? = null,
++        val supportText: String? = null
++    )
++
++    data class ServerConfig(val salt: ByteArray, val memoryKiB: Int, val passes: Int, val lanes: Int)
++    data class ServerData(val config: ServerConfig, val peers: Map<String, Peer>, val usernames: Map<String, String> = emptyMap())
++
++    private val dataRef = AtomicReference<ServerData?>(null)
 +
 +    @JvmStatic
-+    fun key(scope: String, id: Long, salt: ByteArray,
-+            passes: Int = 1, memoryKiB: Int = 8192, lanes: Int = 1,
-+            hashLen: Int = 16): String {
-+        val password = "$scope:$id".toByteArray(Charsets.UTF_8)
-+        val result = argon2.hash(Argon2Mode.ARGON2_ID, password, salt, passes, memoryKiB, lanes, hashLen, Argon2Version.V13)
-+        val raw = result.rawHashAsByteArray()
-+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw)
++    fun current(): ServerData? = dataRef.get()
++
++    @JvmStatic
++    fun scopeFor(account: Int): String =
++        if (org.telegram.tgnet.ConnectionsManager.getInstance(account).isTestBackend()) "test" else "prod"
++
++    @JvmStatic
++    fun peerIdForChat(chatId: Long): Long {
++        val id = chatId // channels are negative; bot_api style id composed by caller if needed
++        return id
++    }
++
++    private fun idForUser(user: TLRPC.User): Long = user.id.toLong()
++    private fun idForChannel(chat: TLRPC.Chat): Long =
++        // Bot API style: -100<chatId> for channels/supergroups
++        if (chat.id < 0) -1000000000000L - chat.id else chat.id.toLong()
++
++    @JvmStatic
++    fun key(account: Int, peerId: Long): String? {
++        val d = dataRef.get() ?: return null
++        val scope = scopeFor(account)
++        val password = "$scope:$peerId".toByteArray(Charsets.UTF_8)
++        val argon2 = com.lambdapioneer.argon2kt.Argon2Kt()
++        val res: Argon2KtResult = argon2.hash(com.lambdapioneer.argon2kt.Argon2Mode.ARGON2_ID, password, d.config.salt,
++            d.config.passes, d.config.memoryKiB, d.config.lanes, 16, com.lambdapioneer.argon2kt.Argon2Version.V13)
++        return Base64.getUrlEncoder().withoutPadding().encodeToString(res.rawHashAsByteArray())
++    }
++
++    @JvmStatic
++    fun peer(account: Int, peerId: Long): Peer? {
++        val k = key(account, peerId) ?: return null
++        return dataRef.get()?.peers?.get(k)
++    }
++
++    private fun parse(jsonText: String): ServerData? {
++        return try {
++            val o = org.json.JSONObject(jsonText)
++            if (!o.has("salt") || !o.has("argon2") || !o.has("peers")) return null
++            val saltBytes = Base64.getDecoder().decode(o.getString("salt"))
++            if (saltBytes.size !in 8..64) return null
++            val a = o.getJSONObject("argon2")
++            val memory = a.getInt("memory"); val passes = a.getInt("passes"); val lanes = a.getInt("lanes")
++            if (memory !in 1024..65536 || passes !in 1..8 || lanes !in 1..8) return null
++            if (memory * passes > 65536) return null
++            val peers = ConcurrentHashMap<String, Peer>()
++            val p = o.getJSONObject("peers")
++            val it = p.keys()
++            var count = 0
++            while (it.hasNext()) {
++                val k = it.next()
++                val e = p.optJSONObject(k) ?: continue
++                count++
++                if (count > 100000) return null
++                peers[k] = Peer(
++                    checkmark = e.optBoolean("checkmark", false),
++                    scam = e.optBoolean("scam", false),
++                    fake = e.optBoolean("fake", false),
++                    support = e.optBoolean("support", false),
++                    icon = e.optString("icon", null),
++                    description = e.optString("description", null),
++                    supportText = e.optString("supportText", null)
++                )
++            }
++            val usernames = LinkedHashMap<String, String>()
++            if (o.has("usernames")) {
++                val u = o.getJSONObject("usernames")
++                val uit = u.keys()
++                var uc = 0
++                while (uit.hasNext() && uc < 1000) {
++                    val k = uit.next()
++                    val e = u.optJSONObject(k) ?: continue
++                    val username = e.optString("username", "")
++                    if (username.length !in 4..32) continue
++                    uc++
++                    usernames[k] = username
++                }
++            }
++            ServerData(ServerConfig(saltBytes, memory, passes, lanes), peers, usernames)
++        } catch (e: Exception) {
++            FileLog.e(e)
++            null
++        }
++    }
++
++    @JvmStatic
++    fun loadFromJson(text: String): Boolean {
++        val d = parse(text) ?: return false
++        dataRef.set(d)
++        return true
++    }
++
++    @JvmStatic
++    fun fetchAndApply(scopeUrl: String, account: Int) {
++        val base = scopeUrl.trim().trimEnd('/')
++        if (base.isEmpty()) return
++        Thread {
++            var conn: java.net.HttpURLConnection? = null
++            try {
++                conn = java.net.URL(base + "/v1/badges").openConnection() as java.net.HttpURLConnection
++                conn.connectTimeout = 10_000
++                conn.readTimeout = 30_000
++                conn.setRequestProperty("Accept", "application/json")
++                if (conn.responseCode in 200..299) {
++                    val body = conn.inputStream.bufferedReader().use { it.readText() }
++                    if (loadFromJson(body)) apply(account)
++                }
++            } catch (e: Exception) {
++                FileLog.e(e)
++            } finally {
++                conn?.disconnect()
++            }
++        }.start()
++    }
++
++    fun apply(account: Int) {
++        try {
++            val mc = MessagesController.getInstance(account)
++            val users = mc.users
++            val it = users.values.iterator()
++            while (it.hasNext()) {
++                val u = it.next()
++                val p = peer(account, u.id.toLong()) ?: continue
++                u.verified = p.checkmark
++                u.scam = p.scam
++                u.fake = p.fake
++                u.support = p.support
++            }
++            val chats = mc.chats
++            val cit = chats.values.iterator()
++            while (cit.hasNext()) {
++                val c = cit.next()
++                if (c.id < 0) {
++                    val pid = -1000000000000L - c.id
++                    val p = peer(account, pid) ?: continue
++                    // channels store verify info via botVerifyDetails normally; set basic flags best-effort
++                }
++            }
++            android.os.Handler(android.os.Looper.getMainLooper()).post {
++                org.telegram.messenger.NotificationCenter.getInstance(account).postNotificationName(org.telegram.messenger.NotificationCenter.updateInterfaces, org.telegram.messenger.MessagesController.UPDATE_MASK_STATUS)
++            }
++        } catch (e: Exception) {
++            FileLog.e(e)
++        }
 +    }
 +
 +    @JvmStatic
 +    fun verifySelfCheck(): Boolean {
++        val argon2 = com.lambdapioneer.argon2kt.Argon2Kt()
 +        val salt = ByteArray(16) { it.toByte() }
-+        val computed = key("prod", 777000L, salt, 1, 8192, 1, 16)
-+        val expected = "iguxbtP_SnLvK69aBff2OQ"
-+        val channel = key("prod", -1001234567890L, salt, 1, 8192, 1, 16)
-+        val expectedChannel = "w5Zbi-HfwlqkJ6S4wjwqcw"
-+        val ok = computed == expected && channel == expectedChannel
-+        Log.i("TeleBadges", "self-check: $ok (user=$computed channel=$channel)")
++        val userRes = argon2.hash(com.lambdapioneer.argon2kt.Argon2Mode.ARGON2_ID, "prod:777000".toByteArray(Charsets.UTF_8), salt, 1, 8192, 1, 16, com.lambdapioneer.argon2kt.Argon2Version.V13)
++        val channelRes = argon2.hash(com.lambdapioneer.argon2kt.Argon2Mode.ARGON2_ID, "prod:-1001234567890".toByteArray(Charsets.UTF_8), salt, 1, 8192, 1, 16, com.lambdapioneer.argon2kt.Argon2Version.V13)
++        val userKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(userRes.rawHashAsByteArray())
++        val channelKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(channelRes.rawHashAsByteArray())
++        val ok = userKey == "iguxbtP_SnLvK69aBff2OQ" && channelKey == "w5Zbi-HfwlqkJ6S4wjwqcw"
++        org.telegram.messenger.FileLog.d("TeleBadges self-check: $ok (user=$userKey channel=$channelKey)")
 +        return ok
 +    }
 +}
+\ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
-index 4f2cb8505..1655601b7 100644
+index 4f2cb8505..1b3358e63 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
 @@ -4,6 +4,7 @@ import android.content.Context
@@ -81,3 +237,14 @@ index 4f2cb8505..1655601b7 100644
          fetchAsync(context)
      }
  
+@@ -50,6 +52,10 @@ object TeleServer {
+                     val body = connection.inputStream.bufferedReader().use { it.readText() }
+                     cachedFile(context).writeText(body)
+                     FileLog.d("TeleServer: fetched ${body.length} bytes")
++                    if (TeleBadges.loadFromJson(body)) {
++                        val account = org.telegram.messenger.UserConfig.selectedAccount
++                        android.os.Handler(android.os.Looper.getMainLooper()).post { TeleBadges.apply(account) }
++                    }
+                 } else {
+                     FileLog.e("TeleServer: HTTP ${connection.responseCode}")
+                 }
