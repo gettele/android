@@ -136,7 +136,7 @@
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0009 | метки с tele-сервера (verified/scam/fake/support) | built | https-фетч + Argon2-ключ (`tele/helpers/TeleBadges.kt`); применение флагов к `TLRPC.User`/chat (`TeleBadges.apply/applyUser/applyChat`), clear cache сбрасывает метки, hook `putUser/putChat` сохраняет флаги после reload. Базовые галочки/scam/fake/support работают в списках/профилях. Кастомные icon/description/supportText (0012/0110) остаются дополнительными штрихами |
-| 0012 | бейджи верификации везде | todo | зависит от 0009 |
+| 0012 | бейджи верификации везде | wip | зависит от 0009; базовые verified/scam/fake/support теперь отрисовываются как стандартные checkmark/scam badges; custom icon/description/supportText и custom-verify UI остаются (ProfileActivity/DialogCell) |
 | 0083 | очистка кэша бейджей + тултипы верификации | todo | зависит от 0009 |
 | 0093 | юзернеймы с tele-сервера | todo | фид `usernames` → профиль |
 | 0110 | бейджи tele на личном канале в профиле | todo | зависит от 0009; база `linked-channel-in-profile` |
