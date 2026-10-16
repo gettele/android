@@ -5,9 +5,9 @@ Subject: [PATCH] feat: add an argon2 helper
 
 ---
  TMessagesProj/build.gradle                    |   1 +
- .../src/main/java/tele/helpers/TeleBadges.kt  | 214 ++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleBadges.kt  | 249 ++++++++++++++++++
  .../src/main/java/tele/helpers/TeleServer.kt  |   7 +
- 3 files changed, 222 insertions(+)
+ 3 files changed, 257 insertions(+)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
 
 diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
@@ -24,10 +24,10 @@ index 5812523e5..8c89e5026 100644
      implementation 'com.google.android.gms:play-services-safetynet:18.0.1'
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
 new file mode 100644
-index 000000000..cfa95345e
+index 000000000..05d0ce712
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,249 @@
 +package tele.helpers
 +
 +import com.lambdapioneer.argon2kt.Argon2KtResult
@@ -53,7 +53,8 @@ index 000000000..cfa95345e
 +    )
 +
 +    data class ServerConfig(val salt: ByteArray, val memoryKiB: Int, val passes: Int, val lanes: Int)
-+    data class ServerData(val config: ServerConfig, val peers: Map<String, Peer>, val usernames: Map<String, String> = emptyMap())
++    data class UsernameEntry(val username: String, val position: Int? = null)
++    data class ServerData(val config: ServerConfig, val peers: Map<String, Peer>, val usernames: Map<String, UsernameEntry> = emptyMap())
 +
 +    private val dataRef = AtomicReference<ServerData?>(null)
 +    private val markedUsers = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
@@ -122,7 +123,7 @@ index 000000000..cfa95345e
 +                    supportText = e.optString("supportText", null)
 +                )
 +            }
-+            val usernames = LinkedHashMap<String, String>()
++            val usernames = LinkedHashMap<String, UsernameEntry>()
 +            if (o.has("usernames")) {
 +                val u = o.getJSONObject("usernames")
 +                val uit = u.keys()
@@ -132,8 +133,11 @@ index 000000000..cfa95345e
 +                    val e = u.optJSONObject(k) ?: continue
 +                    val username = e.optString("username", "")
 +                    if (username.length !in 4..32) continue
++                    val keyLen = k.length
++                    if (keyLen !in 2..32) continue
 +                    uc++
-+                    usernames[k] = username
++                    val pos = if (e.has("position") && e.get("position") is Number) e.getInt("position") else null
++                    usernames[k] = UsernameEntry(username = username, position = pos)
 +                }
 +            }
 +            ServerData(ServerConfig(saltBytes, memory, passes, lanes), peers, usernames)
@@ -226,6 +230,37 @@ index 000000000..cfa95345e
 +            }
 +        } catch (e: Exception) {
 +            FileLog.e(e)
++        }
++    }
++
++    fun applyUsernames(account: Int, mc: org.telegram.messenger.MessagesController) {
++        val unameMap = dataRef.get()?.usernames ?: return
++        if (org.telegram.tgnet.ConnectionsManager.getInstance(account).isTestBackend()) return
++        val byName = HashMap<String, org.telegram.tgnet.TLRPC.User>()
++        for (u in mc.users.values) {
++            val name = u.username?.trim()?.lowercase() ?: continue
++            if (name.isNotEmpty()) byName[name] = u
++        }
++        for ((extra, entry) in unameMap) {
++            val real = byName[entry.username.lowercase()] ?: continue
++            if (real.usernames == null) real.usernames = ArrayList()
++            val exists = real.usernames.any { it != null && it.username?.equals(extra, true) == true }
++            if (!exists && real.username?.equals(extra, true) != true) {
++                val tlUsername = org.telegram.tgnet.TLRPC.TL_username()
++                tlUsername.username = extra
++                tlUsername.active = true
++                tlUsername.editable = false
++                real.usernames.add(tlUsername)
++            }
++            try {
++                val field = mc.javaClass.getDeclaredField("objectsByUsernames")
++                field.isAccessible = true
++                @Suppress("UNCHECKED_CAST")
++                val map = field.get(mc) as java.util.concurrent.ConcurrentHashMap<String, org.telegram.tgnet.TLObject>
++                map[extra.lowercase()] = real
++            } catch (e: Exception) {
++                org.telegram.messenger.FileLog.e(e)
++            }
 +        }
 +    }
 +
