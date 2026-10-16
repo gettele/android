@@ -136,13 +136,13 @@
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0009 | метки с tele-сервера (verified/scam/fake/support) | done | https-фетч + Argon2-ключ (`tele/helpers/TeleBadges.kt`); применение флагов к `TLRPC.User`/chat (`TeleBadges.apply/applyUser/applyChat`), clear cache сбрасывает метки, hook `putUser/putChat` сохраняет флаги после reload. Базовые галочки/scam/fake/support работают в списках/профилях. Кастомные icon/description/supportText (0012/0110) остаются дополнительными штрихами |
-| 0012 | бейджи верификации везде | done | базовые `verified/scam/fake/support` применяются из сервера и рисуются стандартными значками; custom icon/description/supportText (desk top) пока отложены как косметические (счётчик/-too); зависит от 0009 |
-| 0083 | очистка кэша бейджей + тултипы верификации | done | кнопка clear cached data в настройках server (0073), очищает tele_badges.json и снимает метки; кастомные тултипы (иконка → описание) отложены вместе с UI 0012 |
-| 0093 | юзернеймы с tele-сервера | done | `TeleBadges.applyUsernames()` добавляет extra usernames в `User.usernames` и `objectsByUsernames`, search/resolve (`getUserOrChat`) работает; зависит от 0009 |
-| 0110 | бейджи tele на личном канале в профиле | done | depends on 0009; `applyChat` ставит verified/scam/fake для каналов и супергрупп, включая личный канал, при reload |
-| 0037 | краш-репорты на tele server | done | `TeleCrash` пишет репорт, multipart-отправка `Android`/7112 на `/v1/crash.php`, ручной запуск из настроек; диалог при старте отложен (скелетовый шаг) |
-| infra | tele server client (каркас) | done | `0073-feat-add-a-tele-server-client-skeleton.patch`: TeleConfig `tele_server_url`, TeleServer с HTTPS-фетчем `/v1/badges`, кэш в `tele_badges.json`, `start()`/`clearCachedData()`. Будущие патчи (0009/0012/0083/0093/0110/0037) навесят применение меток, бейджи, usernames, crash reports |
-| infra | argon2 helper | done | `0074-feat-add-an-argon2-helper.patch`: pure-JVM `tele.helpers.TeleArgon2` (Argon2Kt 1.6.0, native .so для Android) + self-check против RFC 9106 векторов для `prod:777000` и `prod:-1001234567890`. Основа для протокола бейджей (0009+) |
+| 0012 | бейджи верификации везде | built | базовые `verified/scam/fake/support` применяются из сервера и рисуются стандартными значками; custom icon/description/supportText (desk top) пока отложены как косметические (счётчик/-too); зависит от 0009 |
+| 0083 | очистка кэша бейджей + тултипы верификации | built | кнопка clear cached data в настройках server (0073), очищает tele_badges.json и снимает метки; кастомные тултипы (иконка → описание) отложены вместе с UI 0012 |
+| 0093 | юзернеймы с tele-сервера | built | `TeleBadges.applyUsernames()` добавляет extra usernames в `User.usernames` и `objectsByUsernames`, search/resolve (`getUserOrChat`) работает; зависит от 0009 |
+| 0110 | бейджи tele на личном канале в профиле | built | depends on 0009; `applyChat` ставит verified/scam/fake для каналов и супергрупп, включая личный канал, при reload |
+| 0037 | краш-репорты на tele server | built | `TeleCrash` пишет репорт, multipart-отправка `Android`/7112 на `/v1/crash.php`, ручной запуск из настроек; диалог при старте отложен (скелетовый шаг) |
+| infra | tele server client (каркас) | built | `0073-feat-add-a-tele-server-client-skeleton.patch`: TeleConfig `tele_server_url`, TeleServer с HTTPS-фетчем `/v1/badges`, кэш в `tele_badges.json`, `start()`/`clearCachedData()`. Будущие патчи (0009/0012/0083/0093/0110/0037) навесят применение меток, бейджи, usernames, crash reports |
+| infra | argon2 helper | built | `0074-feat-add-an-argon2-helper.patch`: pure-JVM `tele.helpers.TeleArgon2` (Argon2Kt 1.6.0, native .so для Android) + self-check против RFC 9106 векторов для `prod:777000` и `prod:-1001234567890`. Основа для протокола бейджей (0009+) |
 
 ## пачка 9 — апдейтер и what's new
 
