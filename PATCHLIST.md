@@ -142,6 +142,7 @@
 | 0110 | бейджи tele на личном канале в профиле | todo | зависит от 0009; база `linked-channel-in-profile` |
 | 0037 | краш-репорты на tele server | todo | поверх fork-crash handler; показ текста + ручная отправка |
 | infra | tele server client (каркас) | wip | `0073-feat-add-a-tele-server-client-skeleton.patch`: TeleConfig `tele_server_url`, TeleServer с HTTPS-фетчем `/v1/badges`, кэш в `tele_badges.json`, `start()`/`clearCachedData()`. Будущие патчи (0009/0012/0083/0093/0110/0037) навесят применение меток, бейджи, usernames, crash reports |
+| infra | argon2 helper | wip | `0074-feat-add-an-argon2-helper.patch`: pure-JVM `tele.helpers.TeleArgon2` (Argon2Kt 1.6.0, native .so для Android) + self-check против RFC 9106 векторов для `prod:777000` и `prod:-1001234567890`. Основа для протокола бейджей (0009+) |
 
 ## пачка 9 — апдейтер и what's new
 
