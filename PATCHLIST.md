@@ -135,7 +135,7 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0009 | метки с tele-сервера (verified/scam/fake/support) | todo | https-фетч + перезапись флагов в `putUser/processChat` |
+| 0009 | метки с tele-сервера (verified/scam/fake/support) | wip | https-фетч + Argon2-ключ (`tele/helpers/TeleBadges.kt`); применение флагов к `TLRPC.User` (`TeleBadges.apply`), `clearCachedData` снимает метки. Кастомные иконки/описания (`icon`/`description`) и `usernames` пока только парсятся, UI-часть (0012/0093) отложена |
 | 0012 | бейджи верификации везде | todo | зависит от 0009 |
 | 0083 | очистка кэша бейджей + тултипы верификации | todo | зависит от 0009 |
 | 0093 | юзернеймы с tele-сервера | todo | фид `usernames` → профиль |
