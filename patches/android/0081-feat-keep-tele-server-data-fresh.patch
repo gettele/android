@@ -1,0 +1,769 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 01:51:32 +0300
+Subject: [PATCH] feat: keep tele server data fresh
+
+---
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
+ .../src/main/java/tele/helpers/TeleBadges.kt  | 275 +++++++++---------
+ .../src/main/java/tele/helpers/TeleServer.kt  | 211 ++++++++++----
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   9 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  33 ++-
+ 5 files changed, 328 insertions(+), 202 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 24c6bb107..10658c365 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -32,7 +32,7 @@ object TeleHooks {
+         TeleConfig.init(context)
+         TeleDatabaseHelper.init(context)
+         TeleCrash.install(context)
+-        TeleServer.start(context)
++        TeleServer.start()
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+index 72a058fea..37c802af3 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+@@ -2,10 +2,11 @@ package tele.helpers
+ 
+ import com.lambdapioneer.argon2kt.Argon2KtResult
+ import org.json.JSONObject
+-import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.ChatObject
+ import org.telegram.messenger.FileLog
+ import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
+ import org.telegram.messenger.UserConfig
+ import org.telegram.tgnet.SerializedData
+ import org.telegram.tgnet.TLObject
+@@ -20,15 +21,22 @@ object TeleBadges {
+         val scam: Boolean = false,
+         val fake: Boolean = false,
+         val support: Boolean = false,
+-        val icon: String? = null,
+-        val description: String? = null,
+-        val supportText: String? = null
++        val supportText: String? = null,
++        val iconId: Long = 0L,
++        val description: String? = null
+     )
+ 
+     data class ServerConfig(val salt: ByteArray, val memoryKiB: Int, val passes: Int, val lanes: Int)
+     data class UsernameEntry(val username: String, val position: Int? = null)
+     data class ServerData(val config: ServerConfig, val peers: Map<String, Peer>, val usernames: Map<String, UsernameEntry> = emptyMap())
+ 
++    class FeedException(message: String) : Exception(message)
++
++    private const val MAX_ENTRIES = 100000
++    private const val MAX_ARGON2_WORK = 65536
++    private const val MAX_SUPPORT_TEXT = 64
++    private const val TAG_SIZE = 16
++
+     private val dataRef = AtomicReference<ServerData?>(null)
+     // flags tele overwrote, keyed by object identity: restored on clear and written to storage instead of tele's
+     private class StockFlags(val verified: Boolean, val scam: Boolean, val fake: Boolean, val support: Boolean)
+@@ -37,43 +45,42 @@ object TeleBadges {
+     private val peerCache = ConcurrentHashMap<String, Peer>()
+     private val noPeer = Peer()
+     private val pending = ConcurrentHashMap.newKeySet<String>()
++    // derived keys survive feed updates that keep the argon2 params
++    private class Keys(val config: ServerConfig, val map: ConcurrentHashMap<String, String> = ConcurrentHashMap())
++    @Volatile
++    private var keys: Keys? = null
++
++    private fun keysFor(config: ServerConfig): Keys {
++        keys?.let {
++            val c = it.config
++            if (c.salt.contentEquals(config.salt) && c.memoryKiB == config.memoryKiB && c.passes == config.passes && c.lanes == config.lanes) return it
++        }
++        return Keys(config).also { keys = it }
++    }
+     private val lookupQueue by lazy { org.telegram.messenger.DispatchQueue("teleBadges") }
+ 
+     @JvmStatic
+     fun current(): ServerData? = dataRef.get()
+ 
+-    @JvmStatic
+-    fun scopeFor(account: Int): String =
++    private fun scopeFor(account: Int): String =
+         if (org.telegram.tgnet.ConnectionsManager.getInstance(account).isTestBackend()) "test" else "prod"
+ 
+-    @JvmStatic
+-    fun peerIdForChat(chatId: Long): Long {
+-        val id = chatId // channels are negative; bot_api style id composed by caller if needed
+-        return id
+-    }
+-
+-    private fun idForUser(user: TLRPC.User): Long = user.id.toLong()
+-    private fun idForChannel(chat: TLRPC.Chat): Long =
+-        // Bot API style: -100<chatId> for channels/supergroups
+-        if (chat.id < 0) -1000000000000L - chat.id else chat.id.toLong()
+-
+     private fun key(d: ServerData, account: Int, peerId: Long): String {
+         val password = "${scopeFor(account)}:$peerId".toByteArray(Charsets.UTF_8)
+         val argon2 = com.lambdapioneer.argon2kt.Argon2Kt()
+         val res: Argon2KtResult = argon2.hash(com.lambdapioneer.argon2kt.Argon2Mode.ARGON2_ID, password, d.config.salt,
+-            d.config.passes, d.config.memoryKiB, d.config.lanes, 16, com.lambdapioneer.argon2kt.Argon2Version.V13)
++            d.config.passes, d.config.memoryKiB, d.config.lanes, TAG_SIZE, com.lambdapioneer.argon2kt.Argon2Version.V13)
+         return Base64.getUrlEncoder().withoutPadding().encodeToString(res.rawHashAsByteArray())
+     }
+ 
+     private fun cacheKey(account: Int, peerId: Long) = "${scopeFor(account)}:$peerId"
+ 
+     // blocking: background threads only
+-    @JvmStatic
+-    fun peer(account: Int, peerId: Long): Peer? {
++    private fun peer(account: Int, peerId: Long): Peer? {
+         val d = dataRef.get() ?: return null
+         val cacheKey = cacheKey(account, peerId)
+         peerCache[cacheKey]?.let { return it.takeUnless { p -> p === noPeer } }
+-        val p = d.peers[key(d, account, peerId)]
++        val p = d.peers[keysFor(d.config).map.getOrPut(cacheKey) { key(d, account, peerId) }]
+         if (dataRef.get() === d) peerCache[cacheKey] = p ?: noPeer
+         return p
+     }
+@@ -91,118 +98,122 @@ object TeleBadges {
+                     pending.remove(cacheKey)
+                 }
+                 if (p != null) {
+-                    org.telegram.messenger.AndroidUtilities.runOnUIThread { if (dataRef.get() === d) onResolved(p) }
++                    AndroidUtilities.runOnUIThread { if (dataRef.get() === d) onResolved(p) }
+                 }
+             }
+         }
+         return null
+     }
+ 
+-    private fun parse(jsonText: String): ServerData? {
+-        return try {
+-            val o = org.json.JSONObject(jsonText)
+-            if (!o.has("salt") || !o.has("argon2") || !o.has("peers")) return null
+-            val saltBytes = Base64.getDecoder().decode(o.getString("salt"))
+-            if (saltBytes.size !in 8..64) return null
+-            val a = o.getJSONObject("argon2")
+-            val memory = a.getInt("memory"); val passes = a.getInt("passes"); val lanes = a.getInt("lanes")
+-            if (memory !in 1024..65536 || passes !in 1..8 || lanes !in 1..8) return null
+-            if (memory * passes > 65536) return null
+-            val peers = ConcurrentHashMap<String, Peer>()
+-            val p = o.getJSONObject("peers")
+-            val it = p.keys()
+-            var count = 0
+-            while (it.hasNext()) {
+-                val k = it.next()
+-                val e = p.optJSONObject(k) ?: continue
+-                count++
+-                if (count > 100000) return null
+-                peers[k] = Peer(
+-                    checkmark = e.optBoolean("checkmark", false),
+-                    scam = e.optBoolean("scam", false),
+-                    fake = e.optBoolean("fake", false),
+-                    support = e.optBoolean("support", false),
+-                    icon = e.optString("icon", null),
+-                    description = e.optString("description", null),
+-                    supportText = e.optString("supportText", null)
+-                )
+-            }
+-            val usernames = LinkedHashMap<String, UsernameEntry>()
+-            if (o.has("usernames")) {
+-                val u = o.getJSONObject("usernames")
+-                val uit = u.keys()
+-                var uc = 0
+-                while (uit.hasNext() && uc < 1000) {
+-                    val k = uit.next()
+-                    val e = u.optJSONObject(k) ?: continue
+-                    val username = e.optString("username", "")
+-                    if (username.length !in 4..32) continue
+-                    val keyLen = k.length
+-                    if (keyLen !in 2..32) continue
+-                    uc++
+-                    val pos = if (e.has("position") && e.get("position") is Number) e.getInt("position") else null
+-                    usernames[k] = UsernameEntry(username = username, position = pos)
+-                }
+-            }
+-            ServerData(ServerConfig(saltBytes, memory, passes, lanes), peers, usernames)
+-        } catch (e: Exception) {
+-            FileLog.e(e)
+-            null
++    @JvmStatic
++    @Throws(FeedException::class)
++    fun parse(jsonText: String): ServerData {
++        val o = try {
++            JSONObject(jsonText)
++        } catch (e: org.json.JSONException) {
++            throw FeedException("bad json")
+         }
++        val salt = runCatching { Base64.getDecoder().decode(o.optString("salt")) }.getOrNull()
++        if (salt == null || salt.size !in 8..64) throw FeedException("bad salt")
++        val argon2 = o.optJSONObject("argon2") ?: throw FeedException("bad argon2 params")
++        val memory = argon2.intIn("memory", 1024, 65536)
++        val passes = argon2.intIn("passes", 1, 8)
++        val lanes = argon2.intIn("lanes", 1, 8)
++        if (memory == null || passes == null || lanes == null || memory * passes > MAX_ARGON2_WORK) throw FeedException("bad argon2 params")
++        val list = o.optJSONObject("peers") ?: throw FeedException("bad peers")
++        if (list.length() > MAX_ENTRIES) throw FeedException("too many peers")
++        val peers = HashMap<String, Peer>(list.length())
++        val it = list.keys()
++        while (it.hasNext()) {
++            val k = it.next()
++            val tag = runCatching { Base64.getUrlDecoder().decode(k) }.getOrNull()
++            if (tag == null || tag.size != TAG_SIZE) throw FeedException("bad key $k")
++            val entry = list.optJSONObject(k)?.let(::parseEntry) ?: throw FeedException("bad entry $k")
++            peers[Base64.getUrlEncoder().withoutPadding().encodeToString(tag)] = entry
++        }
++        return ServerData(ServerConfig(salt, memory, passes, lanes), peers, parseUsernames(o.optJSONObject("usernames")))
+     }
+ 
+-    @JvmStatic
+-    fun loadFromJson(text: String): Boolean {
+-        val d = parse(text) ?: return false
+-        dataRef.set(d)
+-        peerCache.clear()
+-        return true
++    private fun JSONObject.intIn(name: String, min: Int, max: Int): Int? {
++        val v = opt(name) as? Number ?: return null
++        val d = v.toDouble()
++        return if (d < min || d > max || d != Math.floor(d)) null else d.toInt()
+     }
+ 
+-    @JvmStatic
+-    fun fetchAndApply(scopeUrl: String, account: Int) {
+-        val base = scopeUrl.trim().trimEnd('/')
+-        if (base.isEmpty()) return
+-        Thread {
+-            var conn: java.net.HttpURLConnection? = null
+-            try {
+-                conn = java.net.URL(base + "/v1/badges").openConnection() as java.net.HttpURLConnection
+-                conn.connectTimeout = 10_000
+-                conn.readTimeout = 30_000
+-                conn.setRequestProperty("Accept", "application/json")
+-                if (conn.responseCode in 200..299) {
+-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
+-                    if (loadFromJson(body)) apply(account)
+-                }
+-            } catch (e: Exception) {
+-                FileLog.e(e)
+-            } finally {
+-                conn?.disconnect()
+-            }
+-        }.start()
++    private fun parseEntry(e: JSONObject): Peer? {
++        val checkmark = e.flag("checkmark") ?: return null
++        val scam = e.flag("scam") ?: return null
++        val fake = e.flag("fake") ?: return null
++        val support = e.flag("support") ?: return null
++        val supportRaw = e.opt("supportText").takeUnless { it == JSONObject.NULL }
++        val iconRaw = e.opt("icon").takeUnless { it == JSONObject.NULL }
++        val descriptionRaw = e.opt("description").takeUnless { it == JSONObject.NULL }
++        if ((supportRaw != null && supportRaw !is String) || (iconRaw != null && iconRaw !is String) || (descriptionRaw != null && descriptionRaw !is String)) return null
++        val supportText = (supportRaw as String?)?.trim()
++        if (supportText != null && (supportText.isEmpty() || supportText.codePointCount(0, supportText.length) > MAX_SUPPORT_TEXT)) return null
++        var iconId = 0L
++        if (iconRaw != null) {
++            val text = iconRaw as String
++            if (text.isEmpty() || !text[0].isDigit()) return null
++            iconId = text.toULongOrNull()?.toLong() ?: return null
++        }
++        val description = (descriptionRaw as String?)?.takeIf { iconId != 0L && it.isNotBlank() }
++        return Peer(checkmark, scam, fake, support, supportText, iconId, description)
+     }
+ 
++    private fun JSONObject.flag(name: String): Boolean? = when (val v = opt(name)) {
++        null, JSONObject.NULL -> false
++        is Boolean -> v
++        else -> null
++    }
++
++    private fun parseUsernames(u: JSONObject?): Map<String, UsernameEntry> {
++        val usernames = LinkedHashMap<String, UsernameEntry>()
++        if (u == null) return usernames
++        val uit = u.keys()
++        while (uit.hasNext() && usernames.size < 1000) {
++            val k = uit.next()
++            val e = u.optJSONObject(k) ?: continue
++            val username = e.optString("username", "")
++            if (username.length !in 4..32 || k.length !in 2..32) continue
++            val pos = (e.opt("position") as? Number)?.toInt()
++            usernames[k] = UsernameEntry(username = username, position = pos)
++        }
++        return usernames
++    }
++
++    // swaps the feed and re-applies it to every account; blocking (argon2), background threads only
+     @JvmStatic
+-    fun clearCachedData(account: Int) {
+-        dataRef.set(null)
++    fun setData(data: ServerData?) {
++        dataRef.set(data)
+         peerCache.clear()
+-        val marked = synchronized(stockFlags) { stockFlags.keys.toList() }
+-        marked.forEach(::unmark)
+-        notifyChanged(account)
++        if (data == null) {
++            val marked = synchronized(stockFlags) { stockFlags.keys.toList() }
++            marked.forEach(::unmark)
++            forEachAccount(::notifyChanged)
++        } else {
++            forEachAccount(::apply)
++        }
++    }
++
++    private fun forEachAccount(action: (Int) -> Unit) {
++        for (a in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (UserConfig.getInstance(a).isClientActivated) action(a)
++        }
+     }
+ 
+     private fun notifyChanged(account: Int) {
+-        val mask = MessagesController.UPDATE_MASK_CHAT or MessagesController.UPDATE_MASK_NAME
+-        android.os.Handler(android.os.Looper.getMainLooper()).post {
+-            org.telegram.messenger.NotificationCenter.getInstance(account).postNotificationName(org.telegram.messenger.NotificationCenter.updateInterfaces, mask)
++        val mask = MessagesController.UPDATE_MASK_CHAT or MessagesController.UPDATE_MASK_NAME or MessagesController.UPDATE_MASK_STATUS
++        AndroidUtilities.runOnUIThread {
++            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.updateInterfaces, mask)
+         }
+     }
+ 
+-    fun apply(account: Int) {
++    private fun apply(account: Int) {
+         try {
+             val mc = MessagesController.getInstance(account)
+             for (u in mc.users.values) {
+-                val p = peer(account, u.id.toLong())
++                val p = peer(account, u.id)
+                 if (p != null) mark(u, p) else unmark(u)
+             }
+             for (c in mc.chats.values) {
+@@ -218,7 +229,7 @@ object TeleBadges {
+ 
+     @JvmStatic
+     fun applyUser(account: Int, user: TLRPC.User) {
+-        val p = cachedPeer(account, user.id.toLong()) { resolved ->
++        val p = cachedPeer(account, user.id) { resolved ->
+             // the object handed to putUser may have been replaced while its key was computed
+             MessagesController.getInstance(account).getUser(user.id)?.let { mark(it, resolved) }
+             notifyChanged(account)
+@@ -238,25 +249,26 @@ object TeleBadges {
+ 
+     // bot API style id (-100...)
+     private fun channelPeerId(chat: TLRPC.Chat): Long =
+-        if (chat.id > 0) -(1000000000000L + chat.id.toLong()) else chat.id.toLong()
++        if (chat.id > 0) -(1000000000000L + chat.id) else chat.id
+ 
++    // tele only adds marks: telegram's own flags stay, like desktop's Apply
+     private fun mark(user: TLRPC.User, p: Peer) {
+-        synchronized(stockFlags) {
+-            if (!stockFlags.containsKey(user)) stockFlags[user] = StockFlags(user.verified, user.scam, user.fake, user.support)
++        val s = synchronized(stockFlags) {
++            stockFlags.getOrPut(user) { StockFlags(user.verified, user.scam, user.fake, user.support) }
+         }
+-        user.verified = p.checkmark
+-        user.scam = p.scam
+-        user.fake = p.fake
+-        user.support = p.support
++        user.verified = s.verified || p.checkmark
++        user.scam = s.scam || p.scam
++        user.fake = s.fake || p.fake
++        user.support = s.support || p.support
+     }
+ 
+     private fun mark(chat: TLRPC.Chat, p: Peer) {
+-        synchronized(stockFlags) {
+-            if (!stockFlags.containsKey(chat)) stockFlags[chat] = StockFlags(chat.verified, chat.scam, chat.fake, false)
++        val s = synchronized(stockFlags) {
++            stockFlags.getOrPut(chat) { StockFlags(chat.verified, chat.scam, chat.fake, false) }
+         }
+-        chat.verified = p.checkmark
+-        chat.scam = p.scam
+-        chat.fake = p.fake
++        chat.verified = s.verified || p.checkmark
++        chat.scam = s.scam || p.scam
++        chat.fake = s.fake || p.fake
+     }
+ 
+     private fun unmark(obj: TLObject) {
+@@ -320,17 +332,12 @@ object TeleBadges {
+         }
+     }
+ 
+-    @JvmStatic
+-    fun iconDocumentId(account: Int, peerId: Long): Long {
+-        val p = cachedPeer(account, peerId) { notifyChanged(account) } ?: return 0L
+-        return p.icon?.toLongOrNull() ?: 0L
+-    }
++    // UI lookups below answer from the cache and repaint once a miss is resolved
+ 
+-    @JvmStatic
+-    fun description(account: Int, peerId: Long): String? = peer(account, peerId)?.description
++    private fun entry(account: Int, peerId: Long): Peer? = cachedPeer(account, peerId) { notifyChanged(account) }
+ 
+     @JvmStatic
+-    fun supportText(account: Int, peerId: Long): String? = peer(account, peerId)?.supportText
++    fun iconDocumentId(account: Int, peerId: Long): Long = entry(account, peerId)?.iconId ?: 0L
+ 
+     @JvmStatic
+     fun verifySelfCheck(): Boolean {
+@@ -338,10 +345,10 @@ object TeleBadges {
+         val salt = ByteArray(16) { it.toByte() }
+         val userRes = argon2.hash(com.lambdapioneer.argon2kt.Argon2Mode.ARGON2_ID, "prod:777000".toByteArray(Charsets.UTF_8), salt, 1, 8192, 1, 16, com.lambdapioneer.argon2kt.Argon2Version.V13)
+         val channelRes = argon2.hash(com.lambdapioneer.argon2kt.Argon2Mode.ARGON2_ID, "prod:-1001234567890".toByteArray(Charsets.UTF_8), salt, 1, 8192, 1, 16, com.lambdapioneer.argon2kt.Argon2Version.V13)
+-        val userKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(userRes.rawHashAsByteArray())
+-        val channelKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(channelRes.rawHashAsByteArray())
++        val userKey = Base64.getUrlEncoder().withoutPadding().encodeToString(userRes.rawHashAsByteArray())
++        val channelKey = Base64.getUrlEncoder().withoutPadding().encodeToString(channelRes.rawHashAsByteArray())
+         val ok = userKey == "iguxbtP_SnLvK69aBff2OQ" && channelKey == "w5Zbi-HfwlqkJ6S4wjwqcw"
+-        org.telegram.messenger.FileLog.d("TeleBadges self-check: $ok (user=$userKey channel=$channelKey)")
++        FileLog.d("TeleBadges self-check: $ok (user=$userKey channel=$channelKey)")
+         return ok
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
+index 9e3b303cb..2b07dc095 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
+@@ -1,91 +1,190 @@
+ package tele.helpers
+ 
+-import android.content.Context
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.BuildVars
++import org.telegram.messenger.DispatchQueue
+ import org.telegram.messenger.FileLog
++import tele.TeleBuild
+ import tele.TeleConfig
+-import tele.helpers.TeleBadges
++import java.io.ByteArrayOutputStream
+ import java.io.File
+ import java.net.HttpURLConnection
+ import java.net.URL
++import java.security.MessageDigest
+ 
++// the tele server feed (/v1/badges), kept like desktop's Badges: cached per url, refreshed every 10 minutes with an etag
+ object TeleServer {
+     private const val CACHE_FILE = "tele_badges.json"
+     private const val ENDPOINT = "/v1/badges"
++    private const val START_DELAY = 3_000L
++    private const val FIRST_FETCH_DELAY = 10_000L
++    private const val FETCH_INTERVAL = 10 * 60_000L
++    private const val TIMEOUT = 60_000
++    private const val MAX_FEED_SIZE = 4 * 1024 * 1024
++    private const val MAX_CACHE_SIZE = 2L * MAX_FEED_SIZE
+ 
++    private val queue by lazy { DispatchQueue("teleServer") }
++    // queue thread only
++    private var url = ""
++    private var etag = ""
++    private val scheduledFetch = Runnable { fetch(null) }
++
++    // "" when the server is off, null when the url is unusable
+     @JvmStatic
+-    fun isEnabled(): Boolean = TeleConfig.TELE_SERVER_URL.value.isNotBlank()
++    fun normalizeUrl(raw: String?): String? {
++        var result = raw?.trim().orEmpty()
++        while (result.endsWith('/')) result = result.dropLast(1)
++        if (result.isEmpty()) return ""
++        val uri = runCatching { java.net.URI(result) }.getOrNull() ?: return null
++        val host = uri.host
++        if (host.isNullOrEmpty() || uri.rawQuery != null || uri.rawFragment != null || uri.rawUserInfo != null) return null
++        return when (uri.scheme) {
++            "https" -> result
++            "http" -> result.takeIf { host == "127.0.0.1" || host == "localhost" }
++            else -> null
++        }
++    }
+ 
+     @JvmStatic
+-    fun serverUrl(): String = TeleConfig.TELE_SERVER_URL.value.trim().trimEnd('/')
++    fun serverUrl(): String = normalizeUrl(TeleConfig.TELE_SERVER_URL.value).orEmpty()
++
++    private fun cacheFile(): File = File(ApplicationLoader.applicationContext.filesDir, CACHE_FILE)
+ 
+     @JvmStatic
+-    fun cachedFile(context: Context = ApplicationLoader.applicationContext): File =
+-        File(context.filesDir, CACHE_FILE)
++    fun start() {
++        queue.postRunnable({
++            val target = normalizeUrl(TeleConfig.TELE_SERVER_URL.value)
++            if (target.isNullOrEmpty()) {
++                fetch(null)
++                return@postRunnable
++            }
++            runCatching { TeleBadges.verifySelfCheck() }
++            loadCache(target)
++            schedule(FIRST_FETCH_DELAY)
++        }, START_DELAY)
++    }
+ 
+     @JvmStatic
+-    fun init(context: Context) {
+-        // Skeleton: a full fetch loop is wired in a follow-up patch.
+-        // Kept as an explicit no-op entry point so the rest of the app
+-        // can call TeleServer.start() without caring about the URL.
++    fun refresh(done: ((String) -> Unit)?) {
++        queue.postRunnable { fetch(done) }
+     }
+ 
+     @JvmStatic
+-    fun start(context: Context) {
+-        if (!isEnabled()) {
+-            if (TeleBadges.current() != null) TeleBadges.clearCachedData(org.telegram.messenger.UserConfig.selectedAccount)
+-            return
++    fun clearCachedData(done: ((String) -> Unit)?) {
++        queue.postRunnable {
++            queue.cancelRunnable(scheduledFetch)
++            cacheFile().delete()
++            etag = ""
++            TeleBadges.setData(null)
++            if (serverUrl().isEmpty()) answer(done, "cached server data cleared") else fetch(done)
+         }
+-        // Defer all network/crypto work to keep startup (splash) snappy;
+-        // otherwise first-run thread scheduling can starve the UI thread.
+-        Thread {
+-            try { Thread.sleep(3000L) } catch (_: InterruptedException) {}
+-            if (!isEnabled()) return@Thread
+-            runCatching { TeleBadges.verifySelfCheck() }
+-            fetchAsync(context)
+-        }.apply { priority = Thread.NORM_PRIORITY - 1; start() }
+     }
+ 
+-    @JvmStatic
+-    fun fetchAsync(context: Context = ApplicationLoader.applicationContext) {
+-        val base = serverUrl()
+-        if (base.isEmpty()) return
+-        Thread {
+-            var connection: HttpURLConnection? = null
+-            try {
+-                connection = URL(base + ENDPOINT).openConnection() as HttpURLConnection
+-                connection.connectTimeout = 10_000
+-                connection.readTimeout = 30_000
+-                connection.setRequestProperty("Accept", "application/json")
+-                if (connection.responseCode in 200..299) {
+-                    val body = connection.inputStream.bufferedReader().use { it.readText() }
+-                    cachedFile(context).writeText(body)
+-                    FileLog.d("TeleServer: fetched ${body.length} bytes")
+-                    if (TeleBadges.loadFromJson(body)) {
+-                        val account = org.telegram.messenger.UserConfig.selectedAccount
+-                        TeleBadges.apply(account)
++    private fun answer(done: ((String) -> Unit)?, text: String) {
++        if (done != null) AndroidUtilities.runOnUIThread { done(text) }
++    }
++
++    private fun schedule(delay: Long) {
++        queue.cancelRunnable(scheduledFetch)
++        queue.postRunnable(scheduledFetch, delay)
++    }
++
++    private fun loadCache(target: String) {
++        try {
++            val file = cacheFile()
++            if (!file.exists() || file.length() > MAX_CACHE_SIZE) return
++            val cached = JSONObject(file.readText())
++            if (cached.optString("url") != target) return
++            val data = TeleBadges.parse(cached.getString("feed"))
++            url = target
++            etag = cached.optString("etag")
++            TeleBadges.setData(data)
++        } catch (e: Exception) {
++            FileLog.e("TeleServer: bad cache, ${e.message}")
++        }
++    }
++
++    private fun writeCache(body: String) {
++        try {
++            val file = cacheFile()
++            val tmp = File(file.parentFile, "$CACHE_FILE.tmp")
++            tmp.writeText(JSONObject().put("url", url).put("etag", etag).put("feed", body).toString())
++            if (!tmp.renameTo(file)) FileLog.e("TeleServer: can't write $file")
++        } catch (e: Exception) {
++            FileLog.e(e)
++        }
++    }
++
++    private fun fetch(done: ((String) -> Unit)?) {
++        queue.cancelRunnable(scheduledFetch)
++        val target = normalizeUrl(TeleConfig.TELE_SERVER_URL.value)
++        if (target.isNullOrEmpty()) {
++            url = ""
++            etag = ""
++            if (TeleBadges.current() != null) TeleBadges.setData(null)
++            cacheFile().delete()
++            answer(done, if (target == null) "the tele server url is invalid" else "the tele server is off")
++            return
++        }
++        if (target != url) {
++            url = target
++            etag = ""
++            if (TeleBadges.current() != null) TeleBadges.setData(null)
++        }
++        var connection: HttpURLConnection? = null
++        try {
++            connection = URL(url + ENDPOINT).openConnection() as HttpURLConnection
++            connection.connectTimeout = TIMEOUT
++            connection.readTimeout = TIMEOUT
++            connection.setRequestProperty("Accept", "application/json")
++            connection.setRequestProperty("User-Agent", "tele/${BuildVars.BUILD_VERSION_STRING}-tele.${TeleBuild.BUILD}")
++            if (etag.isNotEmpty()) connection.setRequestProperty("If-None-Match", etag)
++            when (val code = connection.responseCode) {
++                HttpURLConnection.HTTP_NOT_MODIFIED -> {
++                    schedule(FETCH_INTERVAL)
++                    answer(done, "server data is up to date")
++                }
++                HttpURLConnection.HTTP_OK -> {
++                    val bytes = readLimited(connection) ?: return fail(done, "response is too large")
++                    val data = try {
++                        TeleBadges.parse(String(bytes, Charsets.UTF_8))
++                    } catch (e: TeleBadges.FeedException) {
++                        return fail(done, "bad feed, ${e.message}")
+                     }
+-                } else {
+-                    FileLog.e("TeleServer: HTTP ${connection.responseCode}")
++                    etag = "\"" + MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) } + "\""
++                    writeCache(String(bytes, Charsets.UTF_8))
++                    TeleBadges.setData(data)
++                    schedule(FETCH_INTERVAL)
++                    answer(done, "server data updated")
+                 }
+-            } catch (e: Exception) {
+-                FileLog.e(e)
+-            } finally {
+-                connection?.disconnect()
++                else -> fail(done, "unexpected http status $code")
+             }
+-        }.start()
++        } catch (e: Exception) {
++            fail(done, "network error: ${e.message ?: e.javaClass.simpleName}")
++        } finally {
++            connection?.disconnect()
++        }
+     }
+ 
+-    @JvmStatic
+-    fun clearCachedData(context: Context = ApplicationLoader.applicationContext) {
+-        val file = cachedFile(context)
+-        if (file.exists()) file.delete()
+-        TeleBadges.clearCachedData(org.telegram.messenger.UserConfig.selectedAccount)
++    private fun readLimited(connection: HttpURLConnection): ByteArray? {
++        val out = ByteArrayOutputStream()
++        connection.inputStream.use { input ->
++            val buffer = ByteArray(16 * 1024)
++            while (true) {
++                val read = input.read(buffer)
++                if (read < 0) break
++                out.write(buffer, 0, read)
++                if (out.size() > MAX_FEED_SIZE) return null
++            }
++        }
++        return out.toByteArray()
+     }
+ 
+-    @JvmStatic
+-    fun cachedJson(context: Context = ApplicationLoader.applicationContext): String? {
+-        val file = cachedFile(context)
+-        return if (file.exists()) runCatching { file.readText() }.getOrNull() else null
++    private fun fail(done: ((String) -> Unit)?, error: String) {
++        FileLog.e("TeleServer: $error")
++        schedule(FETCH_INTERVAL)
++        answer(done, "couldn't refresh the server data: $error")
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 65a47da3a..63c7f0f44 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -12,6 +12,7 @@ object TeleSearch {
+     private const val GUID_IDS = 972
+     private const val GUID_DATA = 982
+     private const val GUID_SENDING = 992
++    private const val GUID_SERVER = 1002
+ 
+     @JvmStatic
+     fun appendAll(fragment: BaseFragment, stock: Array<ProfileActivity.SearchAdapter.SearchResult>): Array<ProfileActivity.SearchAdapter.SearchResult> =
+@@ -96,7 +97,13 @@ object TeleSearch {
+             section(GUID_SENDING + 4, "send replies to older messages right away", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 5, "send right away on double enter", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 6, "offer quick replies in groups", "sending", TeleSettingsActivity.MODE_SENDING),
+-            section(GUID_SENDING + 7, "forward protected messages as copies", "sending", TeleSettingsActivity.MODE_SENDING)
++            section(GUID_SENDING + 7, "forward protected messages as copies", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(GUID_SERVER, "tele server", "server", TeleSettingsActivity.MODE_SERVER),
++            section(GUID_SERVER + 1, "server url", "server", TeleSettingsActivity.MODE_SERVER),
++            section(GUID_SERVER + 2, "refresh server data now", "server", TeleSettingsActivity.MODE_SERVER),
++            section(GUID_SERVER + 3, "clear cached server data", "server", TeleSettingsActivity.MODE_SERVER),
++            section(GUID_SERVER + 4, "usernames from the server", "server", TeleSettingsActivity.MODE_SERVER),
++            section(GUID_SERVER + 5, "send crash reports", "server", TeleSettingsActivity.MODE_SERVER)
+         )
+     }
+ }
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index d86236539..683fe233e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -17,6 +17,7 @@ import org.telegram.ui.Cells.TextCheckCell
+ import org.telegram.ui.Cells.TextInfoPrivacyCell
+ import org.telegram.ui.Cells.TextSettingsCell
+ import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.BulletinFactory
+ import org.telegram.ui.Cells.TextCell
+ import org.telegram.ui.Components.RecyclerListView
+ import tele.Item
+@@ -82,16 +83,33 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         input.setSingleLine(true)
+         val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
+         builder.setTitle("tele server url")
++        builder.setMessage("where tele gets extra account data, like checkmarks and custom verification. empty turns it off.")
+         builder.setView(input)
+         builder.setPositiveButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.OK)) { _, _ ->
+-            TeleConfig.set(TeleConfig.TELE_SERVER_URL, input.text.toString())
+-            tele.helpers.TeleServer.start(activity)
+-            adapter?.refresh()
++            val url = tele.helpers.TeleServer.normalizeUrl(input.text.toString())
++            if (url == null) {
++                showServerResult("the tele server url is invalid")
++                return@setPositiveButton
++            }
++            setServerUrl(url)
+         }
++        builder.setNeutralButton("reset") { _, _ -> setServerUrl(TeleConfig.TELE_SERVER_URL.default) }
+         builder.setNegativeButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Cancel), null)
+         showDialog(builder.create())
+     }
+ 
++    private fun setServerUrl(url: String) {
++        TeleConfig.set(TeleConfig.TELE_SERVER_URL, url)
++        adapter?.refresh()
++        tele.helpers.TeleServer.refresh(::showServerResult)
++    }
++
++    private fun showServerResult(text: String) {
++        if (fragmentView == null) return
++        BulletinFactory.of(this).createSimpleBulletin(R.raw.info, text).show()
++        adapter?.refresh()
++    }
++
+     private fun sectionTitle(): String = when (mode) {
+         MODE_INTERFACE -> "tele · interface"
+         MODE_PRIVACY -> "tele · privacy"
+@@ -147,13 +165,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
+                     TeleDraftsActivity.MODE_DRAFTS -> presentFragment(TeleDraftsActivity())
+                     MODE_RULES -> presentFragment(TeleRulesActivity())
+-                    "server_refresh" -> {
+-                        tele.helpers.TeleServer.fetchAsync(parentActivity ?: return@setOnItemClickListener)
+-                        adapter?.refresh()
+-                    }
+-                    "server_clear" -> {
+-                        (parentActivity ?: return@setOnItemClickListener).let { tele.helpers.TeleServer.clearCachedData(it); adapter?.refresh() }
+-                    }
++                    "server_refresh" -> tele.helpers.TeleServer.refresh(::showServerResult)
++                    "server_clear" -> tele.helpers.TeleServer.clearCachedData(::showServerResult)
+                     "server_send_crash" -> {
+                         (parentActivity ?: return@setOnItemClickListener).let { tele.helpers.TeleCrash.sendPendingAsync(it); adapter?.refresh() }
+                     }
