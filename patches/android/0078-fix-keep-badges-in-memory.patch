@@ -1,0 +1,277 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 00:05:17 +0300
+Subject: [PATCH] fix: keep badges in memory
+
+Tele flags were written to cache4.db with the user/chat objects, so clearing the server data or disabling the server left checkmarks behind after a restart. Marked objects now remember their stock flags: storage writes copies carrying them, clearing restores them, and peers dropped from the feed are unmarked. An empty server url turns badges off immediately.
+---
+ .../telegram/messenger/MessagesStorage.java   |   2 +
+ .../src/main/java/tele/helpers/TeleBadges.kt  | 176 +++++++++++-------
+ .../src/main/java/tele/helpers/TeleServer.kt  |   5 +-
+ 3 files changed, 114 insertions(+), 69 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index 53951c18b..160d63e57 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -10747,6 +10747,7 @@ public class MessagesStorage extends BaseController {
+         if (users == null || users.isEmpty()) {
+             return;
+         }
++        users = tele.helpers.TeleBadges.stockUsers(users);
+         SQLitePreparedStatement state = database.executeFast("REPLACE INTO users VALUES(?, ?, ?, ?)");
+         for (int a = 0; a < users.size(); a++) {
+             TLRPC.User user = users.get(a);
+@@ -10863,6 +10864,7 @@ public class MessagesStorage extends BaseController {
+         if (chats == null || chats.isEmpty()) {
+             return;
+         }
++        chats = tele.helpers.TeleBadges.stockChats(chats);
+         SQLitePreparedStatement state = database.executeFast("REPLACE INTO chats VALUES(?, ?, ?)");
+         for (int a = 0; a < chats.size(); a++) {
+             TLRPC.Chat chat = chats.get(a);
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+index 17443b7c2..5709f9efe 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+@@ -3,9 +3,12 @@ package tele.helpers
+ import com.lambdapioneer.argon2kt.Argon2KtResult
+ import org.json.JSONObject
+ import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.ChatObject
+ import org.telegram.messenger.FileLog
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLObject
+ import org.telegram.tgnet.TLRPC
+ import java.util.Base64
+ import java.util.concurrent.ConcurrentHashMap
+@@ -27,7 +30,9 @@ object TeleBadges {
+     data class ServerData(val config: ServerConfig, val peers: Map<String, Peer>, val usernames: Map<String, UsernameEntry> = emptyMap())
+ 
+     private val dataRef = AtomicReference<ServerData?>(null)
+-    private val markedUsers = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
++    // flags tele overwrote, keyed by object identity: restored on clear and written to storage instead of tele's
++    private class StockFlags(val verified: Boolean, val scam: Boolean, val fake: Boolean, val support: Boolean)
++    private val stockFlags = java.util.Collections.synchronizedMap(java.util.WeakHashMap<TLObject, StockFlags>())
+     // icon document id requires an argon2 hash; cache per peer so list binds don't recompute it on the UI thread
+     private val iconCache = ConcurrentHashMap<Long, Long>()
+ 
+@@ -154,70 +159,31 @@ object TeleBadges {
+     fun clearCachedData(account: Int) {
+         dataRef.set(null)
+         iconCache.clear()
+-        try {
+-            val mc = org.telegram.messenger.MessagesController.getInstance(account)
+-            val it = mc.users.values.iterator()
+-            while (it.hasNext()) {
+-                val u = it.next()
+-                if (markedUsers.contains(u.id.toLong())) {
+-                    u.verified = false
+-                    u.scam = false
+-                    u.fake = false
+-                    u.support = false
+-                }
+-            }
+-            val cit = mc.chats.values.iterator()
+-            while (cit.hasNext()) {
+-                val c = cit.next()
+-                if (!org.telegram.messenger.ChatObject.isChannel(c)) continue
+-                val pid = if (c.id > 0) -(1000000000000L + c.id.toLong()) else c.id.toLong()
+-                if (markedUsers.contains(pid)) {
+-                    c.verified = false
+-                    c.scam = false
+-                    c.fake = false
+-                }
+-            }
+-            markedUsers.clear()
+-            val mask = org.telegram.messenger.MessagesController.UPDATE_MASK_CHAT or org.telegram.messenger.MessagesController.UPDATE_MASK_NAME
+-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+-                org.telegram.messenger.NotificationCenter.getInstance(account).postNotificationName(org.telegram.messenger.NotificationCenter.updateInterfaces, mask)
+-            }
+-        } catch (e: Exception) {
+-            org.telegram.messenger.FileLog.e(e)
++        val marked = synchronized(stockFlags) { stockFlags.keys.toList() }
++        marked.forEach(::unmark)
++        notifyChanged(account)
++    }
++
++    private fun notifyChanged(account: Int) {
++        val mask = MessagesController.UPDATE_MASK_CHAT or MessagesController.UPDATE_MASK_NAME
++        android.os.Handler(android.os.Looper.getMainLooper()).post {
++            org.telegram.messenger.NotificationCenter.getInstance(account).postNotificationName(org.telegram.messenger.NotificationCenter.updateInterfaces, mask)
+         }
+     }
+ 
+     fun apply(account: Int) {
+         try {
+             val mc = MessagesController.getInstance(account)
+-            val users = mc.users
+-            val it = users.values.iterator()
+-            while (it.hasNext()) {
+-                val u = it.next()
+-                val p = peer(account, u.id.toLong()) ?: continue
+-                u.verified = p.checkmark
+-                u.scam = p.scam
+-                u.fake = p.fake
+-                u.support = p.support
+-                markedUsers.add(u.id.toLong())
++            for (u in mc.users.values) {
++                val p = peer(account, u.id.toLong())
++                if (p != null) mark(u, p) else unmark(u)
+             }
+-            val chats = mc.chats
+-            val cit = chats.values.iterator()
+-            while (cit.hasNext()) {
+-                val c = cit.next()
+-                if (org.telegram.messenger.ChatObject.isChannel(c)) {
+-                    val pid = if (c.id > 0) -(1000000000000L + c.id.toLong()) else c.id.toLong() // bot API style id (-100...)
+-                    val p = peer(account, pid) ?: continue
+-                    c.verified = p.checkmark
+-                    c.scam = p.scam
+-                    c.fake = p.fake
+-                    if (p.checkmark || p.scam || p.fake) markedUsers.add(pid)
+-                }
+-            }
+-            val mask = org.telegram.messenger.MessagesController.UPDATE_MASK_CHAT or org.telegram.messenger.MessagesController.UPDATE_MASK_NAME
+-            android.os.Handler(android.os.Looper.getMainLooper()).post {
+-                org.telegram.messenger.NotificationCenter.getInstance(account).postNotificationName(org.telegram.messenger.NotificationCenter.updateInterfaces, mask)
++            for (c in mc.chats.values) {
++                if (!ChatObject.isChannel(c)) continue
++                val p = peer(account, channelPeerId(c))
++                if (p != null) mark(c, p) else unmark(c)
+             }
++            notifyChanged(account)
+         } catch (e: Exception) {
+             FileLog.e(e)
+         }
+@@ -255,27 +221,101 @@ object TeleBadges {
+     }
+ 
+     @JvmStatic
+-    fun applyUser(account: Int, user: org.telegram.tgnet.TLRPC.User) {
+-        val d = dataRef.get() ?: return
+-        if (user == null) return
++    fun applyUser(account: Int, user: TLRPC.User) {
++        if (dataRef.get() == null) return
+         val p = peer(account, user.id.toLong()) ?: return
++        mark(user, p)
++    }
++
++    @JvmStatic
++    fun applyChat(account: Int, chat: TLRPC.Chat) {
++        if (dataRef.get() == null || !ChatObject.isChannel(chat)) return
++        val p = peer(account, channelPeerId(chat)) ?: return
++        mark(chat, p)
++    }
++
++    // bot API style id (-100...)
++    private fun channelPeerId(chat: TLRPC.Chat): Long =
++        if (chat.id > 0) -(1000000000000L + chat.id.toLong()) else chat.id.toLong()
++
++    private fun mark(user: TLRPC.User, p: Peer) {
++        synchronized(stockFlags) {
++            if (!stockFlags.containsKey(user)) stockFlags[user] = StockFlags(user.verified, user.scam, user.fake, user.support)
++        }
+         user.verified = p.checkmark
+         user.scam = p.scam
+         user.fake = p.fake
+         user.support = p.support
+-        markedUsers.add(user.id.toLong())
+     }
+ 
+-    @JvmStatic
+-    fun applyChat(account: Int, chat: org.telegram.tgnet.TLRPC.Chat) {
+-        val d = dataRef.get() ?: return
+-        if (chat == null || !org.telegram.messenger.ChatObject.isChannel(chat)) return
+-        val pid = if (chat.id > 0) -(1000000000000L + chat.id.toLong()) else chat.id.toLong()
+-        val p = peer(account, pid) ?: return
++    private fun mark(chat: TLRPC.Chat, p: Peer) {
++        synchronized(stockFlags) {
++            if (!stockFlags.containsKey(chat)) stockFlags[chat] = StockFlags(chat.verified, chat.scam, chat.fake, false)
++        }
+         chat.verified = p.checkmark
+         chat.scam = p.scam
+         chat.fake = p.fake
+-        markedUsers.add(pid)
++    }
++
++    private fun unmark(obj: TLObject) {
++        val s = stockFlags.remove(obj) ?: return
++        restore(obj, s)
++    }
++
++    private fun restore(obj: TLObject, s: StockFlags) {
++        when (obj) {
++            is TLRPC.User -> {
++                obj.verified = s.verified
++                obj.scam = s.scam
++                obj.fake = s.fake
++                obj.support = s.support
++            }
++            is TLRPC.Chat -> {
++                obj.verified = s.verified
++                obj.scam = s.scam
++                obj.fake = s.fake
++            }
++        }
++    }
++
++    @JvmStatic
++    fun stockUsers(users: List<TLRPC.User?>): List<TLRPC.User?> =
++        withStockFlags(users) { data -> TLRPC.User.TLdeserialize(data, data.readInt32(false), false) }
++
++    @JvmStatic
++    fun stockChats(chats: List<TLRPC.Chat?>): List<TLRPC.Chat?> =
++        withStockFlags(chats) { data -> TLRPC.Chat.TLdeserialize(data, data.readInt32(false), false) }
++
++    private fun <T : TLObject> withStockFlags(objects: List<T?>, read: (SerializedData) -> T?): List<T?> {
++        if (stockFlags.isEmpty()) return objects
++        var result: ArrayList<T?>? = null
++        for (i in objects.indices) {
++            val obj = objects[i] ?: continue
++            val s = stockFlags[obj] ?: continue
++            val copy = copyOf(obj, read) ?: continue
++            restore(copy, s)
++            if (result == null) result = ArrayList(objects)
++            result[i] = copy
++        }
++        return result ?: objects
++    }
++
++    private fun <T : TLObject> copyOf(obj: T, read: (SerializedData) -> T?): T? {
++        val out = SerializedData(obj.objectSize)
++        return try {
++            obj.serializeToStream(out)
++            val input = SerializedData(out.toByteArray())
++            try {
++                read(input)
++            } finally {
++                input.cleanup()
++            }
++        } catch (e: Exception) {
++            FileLog.e(e)
++            null
++        } finally {
++            out.cleanup()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
+index 61a18ef21..9e3b303cb 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
+@@ -32,7 +32,10 @@ object TeleServer {
+ 
+     @JvmStatic
+     fun start(context: Context) {
+-        if (!isEnabled()) return
++        if (!isEnabled()) {
++            if (TeleBadges.current() != null) TeleBadges.clearCachedData(org.telegram.messenger.UserConfig.selectedAccount)
++            return
++        }
+         // Defer all network/crypto work to keep startup (splash) snappy;
+         // otherwise first-run thread scheduling can starve the UI thread.
+         Thread {
