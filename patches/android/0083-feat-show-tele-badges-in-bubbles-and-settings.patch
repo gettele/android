@@ -1,0 +1,263 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 01:57:00 +0300
+Subject: [PATCH] feat: show tele badges in bubbles and settings
+
+---
+ .../telegram/ui/Cells/ChatMessageCell.java    | 15 +++-
+ .../org/telegram/ui/SettingsActivity.java     |  6 +-
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/TeleBadges.kt  | 21 ++++++
+ .../src/main/java/tele/ui/TeleNameBadges.kt   | 75 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  3 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  1 +
+ 7 files changed, 120 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleNameBadges.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index 384c69bc5..63d6fdc2d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -1800,6 +1800,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     private String currentNameString;
+     private Object currentNameStatus;
+     private long currentNameBotVerificationId;
++    private long tele_bubbleKey;
+     private String nameStatusSlug;
+     public AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable currentNameStatusDrawable;
+     public AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable currentNameEmojiStatusDrawable;
+@@ -6308,6 +6309,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         if (currentNameString == null && newNameString != null || currentNameString != null && newNameString == null || currentNameString != null && !currentNameString.equals(newNameString)) {
+             return true;
+         }
++        if (isNeedAuthorName() && currentMessageObject.customName == null && tele_bubbleKey != tele.helpers.TeleBadges.bubbleKey(currentAccount, currentUser, currentChat)) {
++            return true;
++        }
+ 
+         if (drawForwardedName && currentMessageObject.needDrawForwarded()) {
+             newNameString = currentMessageObject.getForwardedName();
+@@ -18929,12 +18933,14 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             currentNameStatus = null;
+             nameStatusSlug = null;
+             currentNameBotVerificationId = 0;
++            tele_bubbleKey = 0;
+             if (messageObject.customName != null) {
+                 currentNameString = messageObject.customName;
+             } else if (needAuthorName) {
+                 currentNameString = getAuthorName();
+                 currentNameStatus = getAuthorStatus();
+-                currentNameBotVerificationId = getAuthorBotVerificationId();
++                currentNameBotVerificationId = tele.helpers.TeleBadges.bubbleIcon(currentAccount, currentUser, currentChat, getAuthorBotVerificationId());
++                tele_bubbleKey = tele.helpers.TeleBadges.bubbleKey(currentAccount, currentUser, currentChat);
+             } else {
+                 currentNameString = "";
+             }
+@@ -18949,10 +18955,17 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             if (currentNameBotVerificationId != 0) {
+                 nameWidth -= dp(4 + 12 + 4);
+             }
++            final boolean teleVerified = !viaBot && !viaGuestBot && (tele_bubbleKey & 1) != 0;
++            if (teleVerified) {
++                nameWidth -= dp(4 + 16);
++            }
+             if (adminString != null) {
+                 nameWidth -= dp(8);
+             }
+             nameStringFinal = TextUtils.ellipsize(nameStringFinal, Theme.chat_namePaint, nameWidth + additionalWidth - (viaBot ? viaWidth : 0), TextUtils.TruncateAt.END);
++            if (teleVerified) {
++                nameStringFinal = tele.ui.TeleNameBadges.withVerified(nameStringFinal);
++            }
+ 
+             if (viaGuestBot) {
+                 int colorKey;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index eb2ecc266..cc55bc8cb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -532,7 +532,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+ 
+         avatarDrawable.setInfo(user);
+         avatarView.setForUserOrChat(user, avatarDrawable);
+-        titleView.setText(UserObject.getUserName(user));
++        titleView.setText(tele.ui.TeleNameBadges.ownName(titleView, currentAccount, user, UserObject.getUserName(user)));
+         final StringBuilder sb = new StringBuilder();
+         if (user != null) {
+             sb.append(PhoneFormat.getInstance().format("+" + user.phone));
+@@ -1074,6 +1074,10 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+             } else {
+                 botDrawable.set((Drawable) null, false);
+             }
++            final long teleIconId = user != null ? tele.helpers.TeleBadges.iconDocumentId(account, user.id) : 0;
++            if (teleIconId != 0) {
++                botDrawable.set(teleIconId, false);
++            }
+             final Long emojiStatusId = UserObject.getEmojiStatusDocumentId(user);
+             emojiStatusDrawable.setColor(Theme.getColor(Theme.key_profile_verifiedBackground, resourcesProvider));
+             if (emojiStatusId != null) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index eb6938ba0..e5d0ac79d 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -83,6 +83,8 @@ object TeleConfig {
+     @JvmField
+     val SERVER_USERNAMES = BoolItem("server_usernames", true)
+     @JvmField
++    val BUBBLE_BADGES = BoolItem("bubble_badges", false)
++    @JvmField
+     val SEND_CRASH_REPORTS = BoolItem("send_crash_reports", true)
+     @JvmField
+     val KEEP_DISAPPEARING_MEDIA = BoolItem("keep_disappearing_media", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+index edabc70ef..cdfd7575a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+@@ -12,6 +12,7 @@ import org.telegram.tgnet.SerializedData
+ import org.telegram.tgnet.TLObject
+ import org.telegram.tgnet.TLRPC
+ import org.telegram.tgnet.tl.TL_bots
++import tele.TeleConfig
+ import java.util.Base64
+ import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.atomic.AtomicReference
+@@ -346,6 +347,12 @@ object TeleBadges {
+     @JvmStatic
+     fun iconDocumentId(account: Int, peerId: Long): Long = entry(account, peerId)?.iconId ?: 0L
+ 
++    @JvmStatic
++    fun iconDocumentId(account: Int, user: TLRPC.User?, chat: TLRPC.Chat?): Long = entry(account, user, chat)?.iconId ?: 0L
++
++    @JvmStatic
++    fun hasCheckmark(account: Int, user: TLRPC.User?, chat: TLRPC.Chat?): Boolean = entry(account, user, chat)?.checkmark == true
++
+     @JvmStatic
+     fun description(account: Int, user: TLRPC.User?, chat: TLRPC.Chat?): String? =
+         entry(account, user, chat)?.takeIf { it.iconId != 0L }?.description
+@@ -368,6 +375,20 @@ object TeleBadges {
+         return entry(account, user.id)?.supportText ?: stock
+     }
+ 
++    @JvmStatic
++    fun bubbleIcon(account: Int, user: TLRPC.User?, chat: TLRPC.Chat?, stock: Long): Long {
++        if (!TeleConfig.BUBBLE_BADGES.value) return stock
++        return iconDocumentId(account, user, chat).takeIf { it != 0L } ?: stock
++    }
++
++    // what a bubble name shows: the server icon (high bits) and the checkmark (bit 0); 0 when the option is off
++    @JvmStatic
++    fun bubbleKey(account: Int, user: TLRPC.User?, chat: TLRPC.Chat?): Long {
++        if (!TeleConfig.BUBBLE_BADGES.value) return 0L
++        val verified = user?.verified ?: chat?.verified ?: false
++        return (iconDocumentId(account, user, chat) shl 1) or (if (verified) 1L else 0L)
++    }
++
+     @JvmStatic
+     fun verifySelfCheck(): Boolean {
+         val argon2 = com.lambdapioneer.argon2kt.Argon2Kt()
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleNameBadges.kt b/TMessagesProj/src/main/java/tele/ui/TeleNameBadges.kt
+new file mode 100644
+index 000000000..698491f03
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleNameBadges.kt
+@@ -0,0 +1,75 @@
++package tele.ui
++
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.graphics.drawable.Drawable
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.view.View
++import android.widget.TextView
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.R
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.AnimatedEmojiDrawable
++import org.telegram.ui.Components.ColoredImageSpan
++import org.telegram.ui.Components.CombinedDrawable
++import tele.helpers.TeleBadges
++import java.util.WeakHashMap
++
++// tele badges drawn inside a name's text: bubbles (tele 0012) and the settings header
++object TeleNameBadges {
++    private val headerIcons = WeakHashMap<TextView, AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable>()
++
++    private fun verifiedDrawable(): Drawable {
++        val res = ApplicationLoader.applicationContext.resources
++        val area = res.getDrawable(R.drawable.verified_area).mutate()
++        area.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_chats_verifiedBackground), PorterDuff.Mode.SRC_IN)
++        val check = res.getDrawable(R.drawable.verified_check).mutate()
++        check.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_chats_verifiedCheck), PorterDuff.Mode.SRC_IN)
++        return CombinedDrawable(area, check)
++    }
++
++    private fun SpannableStringBuilder.appendDrawable(drawable: Drawable, size: Int = 0): SpannableStringBuilder {
++        val span = ColoredImageSpan(drawable, ColoredImageSpan.ALIGN_CENTER)
++        span.recolorDrawable = false
++        if (size > 0) span.setSize(size)
++        return append("\u2060", span, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++    }
++
++    @JvmStatic
++    fun withVerified(name: CharSequence): CharSequence =
++        SpannableStringBuilder(name).append(" ").appendDrawable(verifiedDrawable())
++
++    // the own account in settings: server icon before the name, server checkmark after it
++    @JvmStatic
++    fun ownName(view: TextView, account: Int, user: TLRPC.User?, name: CharSequence): CharSequence {
++        if (user == null) return name
++        val iconId = TeleBadges.iconDocumentId(account, user.id)
++        val checkmark = TeleBadges.hasCheckmark(account, user, null)
++        if (iconId == 0L && !checkmark) return name
++        val sb = SpannableStringBuilder()
++        if (iconId != 0L) {
++            val icon = headerIcon(view, account)
++            icon.set(iconId, false)
++            sb.appendDrawable(icon, (view.textSize * 1.15f).toInt()).append(" ")
++        }
++        sb.append(name)
++        if (checkmark) sb.append(" ").appendDrawable(verifiedDrawable())
++        return sb
++    }
++
++    private fun headerIcon(view: TextView, account: Int): AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable {
++        headerIcons[view]?.let { return it }
++        val icon = AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable(view, (view.textSize * 1.15f).toInt(), AnimatedEmojiDrawable.CACHE_TYPE_EMOJI_STATUS)
++        icon.setCurrentAccount(account)
++        icon.setColor(Theme.getColor(Theme.key_profile_verifiedBackground))
++        if (view.isAttachedToWindow) icon.attach()
++        view.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
++            override fun onViewAttachedToWindow(v: View) = icon.attach()
++            override fun onViewDetachedFromWindow(v: View) = icon.detach()
++        })
++        headerIcons[view] = icon
++        return icon
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 63c7f0f44..15ff53f31 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -103,7 +103,8 @@ object TeleSearch {
+             section(GUID_SERVER + 2, "refresh server data now", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 3, "clear cached server data", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 4, "usernames from the server", "server", TeleSettingsActivity.MODE_SERVER),
+-            section(GUID_SERVER + 5, "send crash reports", "server", TeleSettingsActivity.MODE_SERVER)
++            section(GUID_SERVER + 5, "send crash reports", "server", TeleSettingsActivity.MODE_SERVER),
++            section(GUID_SERVER + 6, "badges next to names in messages", "interface", TeleSettingsActivity.MODE_INTERFACE)
+         )
+     }
+ }
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 683fe233e..82930f6cf 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -267,6 +267,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("hide mention and reaction badges", TeleConfig.HIDE_MENTION_REACTIONS),
+                 toggle("turn off animated userpics", TeleConfig.STATIC_AVATARS),
+                 toggle("show bot button payloads on long press", TeleConfig.BOT_BUTTON_PAYLOADS),
++                toggle("badges next to names in messages", TeleConfig.BUBBLE_BADGES),
+                 toggle("view messages as TL", TeleConfig.VIEW_AS_TL),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "editor"),
