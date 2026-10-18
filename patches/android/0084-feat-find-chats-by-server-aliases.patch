@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 01:57:53 +0300
+Subject: [PATCH] feat: find chats by server aliases
+
+---
+ .../ui/Adapters/DialogsSearchAdapter.java     |  7 ++++-
+ .../src/main/java/tele/helpers/Aliases.kt     | 11 +++++--
+ .../main/java/tele/helpers/TeleUsernames.kt   | 29 +++++++++++++++++++
+ 3 files changed, 43 insertions(+), 4 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
+index acc1f1393..d590b66cd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
+@@ -960,7 +960,12 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
+             ArrayList<ContactsController.Contact> contacts = new ArrayList<>();
+ 
+             MessagesStorage.getInstance(currentAccount).localSearch(dialogsType, q, resultArray, resultArrayNames, encUsers, filterDialogIds, -1);
+-            tele.helpers.Aliases.addToLocalSearch(currentAccount, q, resultArray, resultArrayNames);
++            tele.helpers.Aliases.addToLocalSearch(currentAccount, q, resultArray, resultArrayNames, () -> {
++                if (searchId == lastSearchId) {
++                    waitingResponseCount++;
++                    searchDialogsInternal(query, searchId);
++                }
++            });
+             updateSearchResults(resultArray, resultArrayNames, encUsers, contacts, searchId);
+             FiltersView.fillTipDates(q, localTipDates);
+             localTipArchive = false;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+index 4c2827afd..f2d3947f2 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+@@ -243,9 +243,14 @@ object Aliases {
+     }
+ 
+     @JvmStatic
+-    fun addToLocalSearch(account: Int, query: String, result: ArrayList<Any>, names: ArrayList<CharSequence>) {
+-        if (!TeleConfig.USERNAME_ALIASES.value || query.isEmpty()) return
+-        val matches = matchingPeers(account, query, true)
++    @JvmOverloads
++    fun addToLocalSearch(account: Int, query: String, result: ArrayList<Any>, names: ArrayList<CharSequence>, onResolved: Runnable? = null) {
++        if (query.isEmpty()) return
++        val matches = ArrayList<android.util.Pair<String, Long>>()
++        if (TeleConfig.USERNAME_ALIASES.value) matches.addAll(matchingPeers(account, query, true))
++        for (match in TeleUsernames.searchPeers(account, query, onResolved)) {
++            if (matches.none { it.second == match.second }) matches.add(match)
++        }
+         if (matches.isEmpty()) return
+         val present = HashSet<Long>()
+         for (obj in result) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleUsernames.kt b/TMessagesProj/src/main/java/tele/helpers/TeleUsernames.kt
+index 808ae30fb..94a440b0a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleUsernames.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleUsernames.kt
+@@ -13,6 +13,7 @@ object TeleUsernames {
+ 
+     @Volatile
+     private var cached: Index? = null
++    private val resolveRequested = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+ 
+     private fun index(account: Int): Index? {
+         if (!TeleConfig.SERVER_USERNAMES.value || ConnectionsManager.getInstance(account).isTestBackend()) return null
+@@ -59,6 +60,34 @@ object TeleUsernames {
+         return out
+     }
+ 
++    // chat search (tele 0103): server aliases starting with the query, exact ones first; a single unloaded target is
++    // resolved once and onResolved re-runs the search
++    @JvmStatic
++    fun searchPeers(account: Int, query: String, onResolved: Runnable?): List<android.util.Pair<String, Long>> {
++        val q = query.trim().trimStart('@').lowercase()
++        if (q.isEmpty()) return emptyList()
++        val index = index(account) ?: return emptyList()
++        val controller = org.telegram.messenger.MessagesController.getInstance(account)
++        val out = ArrayList<android.util.Pair<String, Long>>()
++        val missing = LinkedHashSet<String>()
++        for ((alias, target) in index.targets) {
++            if (!alias.startsWith(q) || Aliases.dialogId(account, alias) != 0L) continue
++            when (val peer = controller.getUserOrChat(target)) {
++                is TLRPC.User -> out.add(android.util.Pair(alias, peer.id))
++                is TLRPC.Chat -> out.add(android.util.Pair(alias, -peer.id))
++                else -> missing.add(target.lowercase())
++            }
++        }
++        if (onResolved != null && missing.size == 1 && resolveRequested.add("$account:${missing.first()}")) {
++            val target = missing.first()
++            org.telegram.messenger.AndroidUtilities.runOnUIThread {
++                controller.userNameResolver.resolve(target) { peerId -> if (peerId != null && peerId != Long.MAX_VALUE) onResolved.run() }
++            }
++        }
++        out.sortWith(compareBy<android.util.Pair<String, Long>> { it.first.length != q.length }.thenBy { it.first })
++        return out
++    }
++
+     // peer usernames with server aliases inserted at their feed positions, primary first; null when nothing applies
+     @JvmStatic
+     fun withServerUsernames(account: Int, primary: String?, usernames: List<TLRPC.TL_username?>?): ArrayList<TLRPC.TL_username>? {
