@@ -16,13 +16,13 @@ Rejected: rewriting on send | pasting is where the author decides
 Confidence: medium
 Scope-risk: narrow
 ---
- .../ui/Components/EditTextCaption.java        |  17 ++
+ .../ui/Components/EditTextCaption.java        |  70 +++++++
  .../src/main/java/tele/TeleConfig.kt          |   2 +
- .../main/java/tele/helpers/LinkRewrites.kt    | 178 ++++++++++++++++++
- 3 files changed, 197 insertions(+)
+ .../main/java/tele/helpers/LinkRewrites.kt    | 182 ++++++++++++++++++
+ 3 files changed, 254 insertions(+)
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
-index 343d012df..ddf3a8fb5 100644
+index 343d012df..138257ad2 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
 @@ -16,6 +16,7 @@ import android.app.Activity;
@@ -33,9 +33,63 @@ index 343d012df..ddf3a8fb5 100644
  import android.graphics.Canvas;
  import android.graphics.Paint;
  import android.graphics.Rect;
-@@ -963,6 +964,22 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+@@ -962,7 +963,76 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+     }
  
      @Override
++    public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
++        InputConnection ic = super.onCreateInputConnection(outAttrs);
++        if (ic == null) {
++            return null;
++        }
++        return new InputConnectionWrapper(ic, true) {
++            @Override
++            public boolean commitText(CharSequence text, int newCursorPosition) {
++                if (text != null) {
++                    teleNotifyPasted(text);
++                    android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(text.toString());
++                    if (rewritten != null) {
++                        Toast.makeText(getContext(), "tele rewrote links:\n" + TextUtils.join("\n", rewritten.second), Toast.LENGTH_SHORT).show();
++                        return super.commitText(rewritten.first, newCursorPosition);
++                    }
++                }
++                return super.commitText(text, newCursorPosition);
++            }
++        };
++    }
++
++    protected void teleNotifyPasted(CharSequence text) {
++        if (text != null && AndroidUtilities.WEB_URL.matcher(text).find()) {
++            teleNotifyPastedUrl();
++        }
++    }
++
++    protected void teleNotifyPastedUrl() {
++    }
++
++    protected boolean performTeleMenuAction(int itemId) {
++        return false;
++    }
++
++    protected boolean teleRewritePaste() {
++        ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
++        ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
++        CharSequence clipText = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(getContext()) : null;
++        if (TextUtils.isEmpty(clipText)) {
++            return false;
++        }
++        teleNotifyPasted(clipText);
++        android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(clipText.toString());
++        if (rewritten == null) {
++            return false;
++        }
++        int start = Math.max(0, getSelectionStart());
++        int end = Math.min(getText().length(), getSelectionEnd());
++        setText(getText().replace(start, end, rewritten.first));
++        setSelection(start + rewritten.first.length(), start + rewritten.first.length());
++        Toast.makeText(getContext(), "tele rewrote links:\n" + TextUtils.join("\n", rewritten.second), Toast.LENGTH_SHORT).show();
++        return true;
++    }
      public boolean onTextContextMenuItem(int id) {
 +        if (id == android.R.id.paste && tele.helpers.LinkRewrites.rewritePastedLinksEnabled()) {
 +            ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
@@ -70,10 +124,10 @@ index 0e24b7180..a3b7c1096 100644
      private var prefs: SharedPreferences? = null
  
 diff --git a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
-index aa0b9cfb6..f891ed816 100644
+index aa0b9cfb6..a5c8a918e 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
-@@ -1,11 +1,189 @@
+@@ -1,11 +1,193 @@
  package tele.helpers
  
 +import org.json.JSONArray
@@ -230,7 +284,11 @@ index aa0b9cfb6..f891ed816 100644
 +                else -> continue
 +            }
 +            if (prefix == "www." || prefix == "m." || prefix == "mobile.") prefix = ""
-+            val target = if (rule.random && rule.to.size > 1) rule.to[(url.hashCode() and 0x7fffffff) % rule.to.size] else rule.to.first()
++            val target = if (rule.random && rule.to.size > 1) {
++                rule.to[(url.hashCode() % rule.to.size + rule.to.size) % rule.to.size]
++            } else {
++                rule.to.first()
++            }
 +            val hostEnd = hostStart + host.length
 +            return url.substring(0, hostStart) + prefix + target + url.substring(hostEnd)
 +        }
