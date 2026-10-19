@@ -18,6 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
+Подробные инструкции для исполнителей: [11](batches/batch-11.md) · [12](batches/batch-12.md) · [13](batches/batch-13.md) · [14](batches/batch-14.md) · [15](batches/batch-15.md) · [16](batches/batch-16.md) · [17](batches/batch-17.md) · [18](batches/batch-18.md) · [19](batches/batch-19.md) · [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md)
 
 инфраструктурные патчи (без номера tele) помечены `infra` и реализуют сразу пачку настроек tele: `0002`, `0015`, `0059`, `0063`, `0077` (редактор), `0106`, `0110`, `0113`, `0116`, `0120`.
 
