@@ -8,7 +8,7 @@ grab the latest build from [releases](https://github.com/gettele/android/release
 
 - android 6.0 or newer.
 - open the apk and let your browser or file manager install apps when android asks.
-- tele still uses telegram's application id, so it can't be installed over an official telegram signed with another key. debug builds from source use `.tele` instead.
+- tele is installed as `org.telegram.messenger.tele`, next to the official telegram. builds from source are `org.telegram.messenger.tele.dev`, so they don't clash with a release.
 - there are no google services in tele, so fcm push notifications don't work until a build is given its own firebase configuration.
 
 tele updates itself: it checks these releases 15 seconds after start and every 3 hours, downloads new builds in the background and offers to install them with the system installer. the feed carries a sha256 that is checked before installing, and android itself refuses an apk signed with another key. turn it off in settings → tele → update automatically. builds from source that have no tele build number never update.

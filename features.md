@@ -175,5 +175,5 @@ for people who build tele themselves, see [docs/development.md](docs/development
 |---|---|---|---|---|---|
 | own api credentials | `TELE_API_ID` and `TELE_API_HASH` in local.properties replace telegram's own pair, which is flagged as spam. passkeys are turned off when a custom pair is set | build | build setting | [0001](patches/android/0001-misc-support-custom-api-credentials.patch) | — |
 | kotlin and the tele package | kotlin is enabled and the fork's code lives in its own `tele` package: the config, the hooks, helpers, the settings pages and its own database tables | build | always on | [0002](patches/android/0002-misc-enable-kotlin-and-add-the-tele-skeleton.patch) | — |
-| debug package suffix | debug builds are installed as `.tele`, next to the beta | build | always on | [0006](patches/android/0006-misc-use-a-fork-package-suffix-for-debug-builds.patch) | — |
+| own package names | releases are installed as `org.telegram.messenger.tele` next to the official app; debug builds from source as `org.telegram.messenger.tele.dev` | build | always on | [0006](patches/android/0006-misc-use-fork-package-names.patch) | — |
 | no google services | the google-services plugin is off, so fcm push doesn't work until a build is given its own firebase configuration | build | always on | [0007](patches/android/0007-misc-disable-google-services-integration.patch) | — |
