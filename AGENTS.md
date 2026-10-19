@@ -25,6 +25,8 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 15. **never edit `.patch` files by hand.** change the commits in the telegram tree and export (see [docs/development.md](docs/development.md)).
 16. **never bump `UPSTREAM` in a feature change.** moving to a new upstream release is its own change (`chore: rebase patches onto <version>`).
 17. **don't run `git push` or network git commands** in this repository unless asked. the remote is local-only for now.
+18. **every user-facing patch also updates [features.md](features.md).** one row per feature, in english, in the section of the settings page that holds its switch: what it does in one plain sentence, where to find it, the default, the patch file in `patches/android/` and the desktop patch it comes from (by its number in the current desktop queue). it goes into the same commit as the patch export, never later.
+19. **[docs/PATCHLIST.md](docs/PATCHLIST.md) is the planning file for agents.** the batch plan, statuses and per-patch notes live there (in russian, by the old desktop numbering); read it before picking up work and keep its statuses true. [features.md](features.md) is what users read, so don't put plans or implementation notes in it.
 
 ## workflow
 
@@ -34,9 +36,9 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 4. **run and test.** install on a device or emulator and exercise the feature by hand with the option on and off. if you can't run the app, say so plainly and hand over exact steps to test; never claim a feature works because it compiles.
    - driving the emulator/device ui (taps, gestures, typing) is the maintainer's job. hand over a numbered step list and wait; the assistant does code, builds, installs, logcat and screenshots.
    - when a ui detail or behavior is unclear, ask the maintainer directly instead of inferring; two minutes of questions beats half an hour of reasoning.
-5. **export** into this repository: `git format-patch <UPSTREAM commit> -o patches/android/ --zero-commit --no-signature` (from `../Telegram`, see [docs/development.md](docs/development.md)), then update `docs/PATCHLIST.md` statuses.
+5. **export** into this repository: `git format-patch <UPSTREAM commit> -o patches/android/ --zero-commit --no-signature` (from `../Telegram`, see [docs/development.md](docs/development.md)), then update `docs/PATCHLIST.md` statuses and, for a user-facing patch, add its row to `features.md`.
 6. **batch gate.** patches are delivered in batches (see `docs/PATCHLIST.md`). when every patch of a batch is committed and exported, assemble a debug apk and hand it over for manual testing. a batch is done only after that build is verified by a human.
-7. **commit here.** `git add patches docs/PATCHLIST.md && git commit -m "feat: <what it does>"` (one commit per patch; docs and infra changes use their prefixes).
+7. **commit here.** `git add patches docs/PATCHLIST.md features.md && git commit -m "feat: <what it does>"` (one commit per patch; docs and infra changes use their prefixes).
 
 ## known pitfalls
 
@@ -58,5 +60,5 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 - off by default, and off is exactly stock's behaviour.
 - the option is in `TeleConfig`, on a settings page in a group, has search keywords where useful, and is in the export/import spec.
 - network use respects the offline switches.
-- exported into `patches/android/`, `docs/PATCHLIST.md` updated, committed per the rules.
+- exported into `patches/android/`, `docs/PATCHLIST.md` updated, and `features.md` updated for a user-facing patch, committed per the rules.
 - a batch, when complete: debug apk assembled and handed over for manual testing.

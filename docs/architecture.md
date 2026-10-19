@@ -24,13 +24,15 @@ the model is inherited from [nitreojs/tele](https://github.com/nitreojs/tele) (p
 ```
 tele_android/
   main/                  this repository (branch: lord, local-only)
+    README.md            what tele is, how to install it, network and privacy notes
+    features.md          every user-facing patch, by settings page (english)
     AGENTS.md            rules for coding agents
-    docs/PATCHLIST.md    the plan: batches, patches, statuses
     UPSTREAM             the base version and commit of DrKLO/Telegram
     patches/android/     exported queue, one file per commit (appears as work lands)
     .github/workflows/   build.yml (build and publish the apk), sync.yml (watch for new upstream releases)
     ci/                  release helpers and the next release's changelog (see releasing.md)
     docs/
+      PATCHLIST.md       the plan: batches, patches, statuses (planning file for agents)
       architecture.md    this file
       development.md     setup, building, the edit→test→export loop
       releasing.md       versions, building and publishing releases, secrets, signing
@@ -96,11 +98,11 @@ fork state export/import (json) mirrors tele's settings backup: the spec table i
 
 ## batches and build gates
 
-work is delivered in batches — see `PATCHLIST.md` for the current plan. rules:
+work is delivered in batches — see [PATCHLIST.md](PATCHLIST.md) (`docs/PATCHLIST.md`) for the current plan. rules:
 
 - a batch is an ordered set of patches that can be built and tested together; infra first, dependent patches after their dependencies.
 - when every patch of a batch is committed (telegram tree) and exported (here), a debug apk is assembled and handed over for manual testing on a device or emulator.
-- a batch is done only after a human verified it. `PATCHLIST.md` statuses: `todo` → `wip` → `built` (batch gate passed) → `done` (manually verified).
+- a batch is done only after a human verified it. `docs/PATCHLIST.md` statuses: `todo` → `wip` → `built` (batch gate passed) → `done` (manually verified).
 
 ## patch files
 

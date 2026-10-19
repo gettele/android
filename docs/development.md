@@ -98,21 +98,21 @@ all work happens in the telegram tree, as commits on `tele`.
 
    this rewrites the numbered patch files from the commits. `git status` in `main/` shows exactly which patches changed. `--no-numbered` keeps subjects stable: without it format-patch stamps `[PATCH n/m]` into every file, so adding one patch rewrites all the others.
 
-5. **update `PATCHLIST.md`** (statuses, new rows) and commit here, one commit per patch:
+5. **update `docs/PATCHLIST.md`** (statuses, new rows) and, for a user-facing patch, [`features.md`](../features.md) (english: one row per feature, with the patch file and the desktop patch it comes from). commit here, one commit per patch:
 
    ```bash
    cd ../main
-   git add patches/android docs/PATCHLIST.md
+   git add patches/android docs/PATCHLIST.md features.md
    git commit -m "feat: <what it does>"
    ```
 
 ## the batch gate
 
-patches are shipped in batches (see `PATCHLIST.md`). when the last patch of a batch is committed and exported:
+patches are shipped in batches (see `docs/PATCHLIST.md`). when the last patch of a batch is committed and exported:
 
 1. `./gradlew :TMessagesProj_App:assembleDebug` with every batch toggle exercised in at least one of: on, off, default state.
 2. hand the apk over for manual testing (device or avd). state plainly what to test and how.
-3. after human verification, mark the batch `done` in `PATCHLIST.md`.
+3. after human verification, mark the batch `done` in `docs/PATCHLIST.md`.
 
 a feature is never claimed working because it compiles.
 
