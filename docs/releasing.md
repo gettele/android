@@ -68,15 +68,18 @@ the app reads `releases/latest/download/tele-update-android.json`, updates when 
 
 ## repository secrets
 
-set under settings → secrets and variables → actions. there are no repository variables.
+set under settings → secrets and variables → actions.
 
 | secret | what it is |
 |---|---|
 | `TELE_API_ID`, `TELE_API_HASH` | the api pair from [my.telegram.org](https://my.telegram.org), written to `local.properties` of the build (see [development](development.md#api-credentials)) |
 | `KEYSTORE_BASE64` | the release keystore, base64 on one line: `base64 -i ~/.tele/tele-release.jks \| tr -d '\n'` |
 | `KEYSTORE_PASSWORD` | the keystore password |
-| `KEY_ALIAS` | the alias of the release key in it |
 | `KEY_PASSWORD` | the key password |
+
+| variable | what it is |
+|---|---|
+| `KEY_ALIAS` | the alias of the release key (`tele`). a variable, not a secret: github masks every secret value in logs and outputs, and a secret `tele` would mask the release tag itself |
 
 every run needs all of them, including pushes: the signature check compares with the pinned certificate.
 
