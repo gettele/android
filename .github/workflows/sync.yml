@@ -1,0 +1,65 @@
+name: Sync
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sync
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    name: Look for a new upstream release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # upstream commits a release as "update to <version> (<code>)" on gradle.properties
+      - name: Look for a new release
+        run: |
+          current=$(sed -n '1s/.*(\([0-9][0-9]*\))$/\1/p' UPSTREAM)
+          if [ -z "$current" ]; then
+            echo "::error::no version code in the first line of UPSTREAM"
+            exit 1
+          fi
+          read -r sha version code < <(gh api 'repos/DrKLO/Telegram/commits?path=gradle.properties&per_page=30' --jq '
+            [.[] | . as $c | .commit.message | capture("^update to (?<version>[0-9.]+) \\((?<code>[0-9]+)\\)")
+             | {sha: $c.sha, version, code: (.code | tonumber)}]
+            | max_by(.code) | "\(.sha) \(.version) \(.code)"')
+          if [ -z "${code:-}" ]; then
+            echo "::error::no 'update to <version> (<code>)' commit among the latest changes of gradle.properties"
+            exit 1
+          fi
+          if [ "$code" -le "$current" ]; then
+            echo "up to date: UPSTREAM is $current, latest upstream release is $version ($code)"
+            bash ci/issue.sh close new-upstream "UPSTREAM is $current now."
+            exit 0
+          fi
+          {
+            echo "Telegram Android [$version ($code)](https://github.com/DrKLO/Telegram/commit/$sha) is out, UPSTREAM is still $current."
+            echo
+            echo "Rebase the patches onto it locally (conflicts are resolved by hand, never in ci), see [development]($GITHUB_SERVER_URL/$GH_REPO/blob/main/docs/development.md#syncing-with-a-new-upstream-release):"
+            echo
+            echo '```'
+            echo "git -C ../Telegram fetch origin"
+            echo "git -C ../Telegram rebase --onto $sha <UPSTREAM commit> tele"
+            echo '```'
+            echo
+            echo "Then re-export the queue, move UPSTREAM to \`$sha\` and commit \`chore: rebase patches onto $version\`."
+          } > issue.md
+          bash ci/issue.sh open new-upstream "telegram android $version ($code) is out" issue.md
