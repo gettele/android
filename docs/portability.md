@@ -2,7 +2,7 @@
 
 ## Что это
 
-[tele](https://github.com/nitreojs/tele/) — патч-очередь для **Telegram Desktop** (tdesktop v7.2.9): исходный разбор — 127 патчей, каждый — отдельная фича или фикс. Вопрос: какие из этих фич можно перенести на **Telegram Android**? Номера патчей в этом документе — **текущие номера очереди десктопа** (очередь была перенумерована, три патча влиты в соседние); карта старый → новый — [desktop-numbers.md](desktop-numbers.md).
+[tele](https://github.com/nitreojs/tele/) — патч-очередь для **Telegram Desktop** (tdesktop): исходный разбор — 127 патчей (v7.2.9), позже очередь выросла до 322 патчей `tdesktop` плюс 8 патчей `lib_ui`; каждый — отдельная фича или фикс. Вопрос: какие из этих фич можно перенести на **Telegram Android**? Номера патчей в этом документе — **текущие номера очереди десктопа** (очередь была перенумерована, три патча влиты в соседние); карта старый → новый — [desktop-numbers.md](desktop-numbers.md). Решения мейнтейнера по спорным патчам — [decisions.md](decisions.md).
 
 Объект переноса:
 
@@ -18,11 +18,13 @@
 
 ## Методика
 
-Каждый из 127 патчей прочитан; оценивалась переносимость **фичи** (не кода — C++/Qt-реализация tele не переиспользуется), с проверкой:
+Каждый из 127 исходных патчей и каждый из 206 новых (0125–0322 и очередь `lib_ui` 0001–0008, текущая нумерация десктопа) прочитан; оценивалась переносимость **фичи** (не кода — C++/Qt-реализация tele не переиспользуется), с проверкой:
 
 1. Какие системы tdesktop задействует патч и есть ли Android-эквиваленты (точки внедрения в `MessagesController`, `SendMessagesHelper`, `ChatActivity`, `PhotoViewer`, `MessagesStorage`, `StoriesController`, tgnet и т.д.). Все названные классы сверены по исходникам 12.10.6.
 2. Есть ли уже готовый аналог в inugram (по `series` и `FEATURES.md`) — такие патчи «переносить не нужно», но указание на аналог даёт готовый каркас.
-3. Desktop-специфика (окна, тайтлбар, трей, мышь, self-update, launch flags) — есть ли осмысленный мобильный эквивалент.
+3. Desktop-специфика (окна, тайтлбар, трей, мышь/тачпад, self-update, launch flags) — есть ли осмысленный мобильный эквивалент.
+4. Есть ли фича уже в стоке Android (🟢) или в нашей очереди `patches/android/` (🔁) — тогда работы нет либо она сводится к остатку.
+5. Решения мейнтейнера ([decisions.md](decisions.md)) имеют приоритет над первичной оценкой: подсистемы деньги/скриптинг/html-пузыри/центр уведомлений/студия подарков/mtproto-консоль перенесены в план, поэтому у их патчей стоят вердикты ✅/⚠️ с большим усилием (L), а не ❌.
 
 ## Легенда
 
@@ -32,12 +34,27 @@
 | ⚠️ **частично** | ядро переносимо, но часть функциональности десктоп-специфична либо висит на отсутствующих подсистемах tele |
 | ❌ **не переносим** | фича принципиально десктопная, либо проблема, которую она решает, на Android отсутствует по построению |
 | 🏗 **инфраструктура** | патч чинит/строит собственную инфраструктуру tele (секция настроек, опции, экспорт); на Android её роль уже играет инфраструктура inugram — переносить нечего, фичи вешаются на неё |
+| 🟢 **уже в стоке** | Telegram Android уже делает то же самое; работы нет (проверено по исходникам 12.10.6) |
+| 🔁 **уже перенесено** | фича уже есть в нашей очереди `patches/android/` (указан номер файла `android NNNN`); остаётся максимум доработка |
 
 ## Сводка
 
-**98 переносимы · 20 частично · 9 не переносимы** (из 127 исходных патчей; в текущей нумерации это 124 номера — старые 0043, 0079 и 0118 влиты в 0017, 0077 и 0107).
+**Исходные 127 патчей:** 98 переносимы · 20 частично · 9 не переносимы (в текущей нумерации это 124 номера — старые 0043, 0079 и 0118 влиты в 0017, 0077 и 0107).
 
-Из 98 «переносимых» **около 40 имеют готовый аналог или готовую базу в inugram** (полное покрытие — hide-stories, show-seconds, strip-tracking, message-menu, cloud-drafts, community-dialogs, id-in-profile, jump-to-beginning, multi-account, hide-call-action, call-confirmation, disable-chat-title-phone, folders-display-mode, branding, settings-ui; остальные — смежная поверхность для расширения), ещё 2 — фактически стоковое поведение Android (0043, 0051). Паттерн реализации — «как у inugram, но своё» (см. раздел «Как переносить»).
+**Новые 206 патчей (0125–0322 и lib_ui 0001–0008):** ✅ 124 · ⚠️ 17 · ❌ 44 · 🟢 17 · 🔁 4 (после решений мейнтейнера; 🏗 включены в ✅).
+
+**Всего оценено 333:** ✅ 222 · ⚠️ 37 · ❌ 53 · 🟢 17 · 🔁 4. Расклад по диапазонам новых патчей:
+
+| диапазон | патчей | ✅ | ⚠️ | ❌ | 🟢 | 🔁 |
+|---|---|---|---|---|---|---|
+| 0125–0164 | 40 | 26 | 4 | 8 | 2 | 0 |
+| 0165–0204 | 40 | 27 | 1 | 8 | 3 | 1 |
+| 0205–0244 | 40 | 33 | 0 | 2 | 5 | 0 |
+| 0245–0284 | 40 | 21 | 1 | 13 | 3 | 2 |
+| 0285–0322 | 38 | 17 | 11 | 6 | 3 | 1 |
+| lib_ui 0001–0008 | 8 | 0 | 0 | 7 | 1 | 0 |
+
+Из новых патчей несколько — **целые подсистемы**, перенос которых решён мейнтейнером: деньги (0285–0313, 0317 + Rust/NDK), скриптинг (0302, 0303, 0320, quickjs-ng через NDK), html-пузыри `.tgw` (0314–0316, litehtml через NDK), центр уведомлений (0205 + JNI-хук tgnet), MTProto-консоль (0195, 0218, 0298), студия подарков (0197, 0198, 0201, 0204, 0234) и массовые действия с подарками (0184–0193, 0213, 0217). Подробности — в разборе патчей и [decisions.md](decisions.md).
 
 Типичные причины «не переносим» (все 9):
 
@@ -54,11 +71,19 @@
 
 Смежные, но обязательные оговорки для «частично»: системный трей не имеет мобильного аналога (0084, 0089 — остаётся иконка приложения/уведомлений, в inugram уже покрыто `hooks/icon-replacement`), launch flags заменяются тумблерами (0079), docked media (0107) и очередь отправки tele (0118, 0119) висят на tele-подсистемах, которых на Android нет и которые пришлось бы портировать отдельно.
 
+Типичные причины «не переносим» среди **новых** патчей (44):
+
+| Категория | Патчи |
+|---|---|
+| Окна, мышь, тачпад, клавиатура, Windows/Qt (оконная геометрия, колесо, PageUp/Home, «Пуск», DirectWrite) | 0131 (по решению мейнтейнера), 0145, 0159, 0191, 0264, 0271, 0273, 0275, 0291, 0297, 0305, 0308, lib_ui 0001, 0003, 0005, 0006, 0008 |
+| Баги и рендер-кэши tdesktop, которых на Android нет (текстовый движок, перерисовка, кэши списков, стили) | 0136, 0174, 0177, 0178, 0180, 0183, 0188, 0250, 0252, 0257, 0270, 0272, 0274, lib_ui 0004 |
+| Нет объекта на Android (rich-редактор и таблицы, экспорт чата, масштаб интерфейса, offline-флаг, шаблоны заголовка, рендер-эффекты) | 0135, 0150 (по решению), 0152, 0163, 0199, 0214, 0216, 0251, 0263, 0277, 0294, 0319, lib_ui 0007 |
+
 ---
 
-## Сводная таблица (исходные 127 патчей, текущие номера)
+## Сводная таблица (исходные 127 патчей и новые 0125–0322, lib_ui; текущие номера)
 
-Названия патчей — по именам файлов в `tele/patches/tdesktop/`.
+Названия патчей — по именам файлов в `tele/patches/tdesktop/` (очередь `lib_ui` — отдельная, `lib_ui NNNN`).
 
 | № | Фича | Вердикт | Ключевая причина / точка внедрения / аналог inugram |
 |---|---|---|---|
@@ -186,6 +211,212 @@
 | 0122 | скрыть бейджи упоминаний/реакций в списке | ✅ | гейт отрисовки в `DialogCell` (расширение 0072) |
 | 0123 | пины чатов сверх лимита (локальные) | ✅ | fork-хранилище пинов + перехват ошибки лимита |
 | 0124 | папки сверх лимита (локальные) | ✅ | fork-хранилище фильтров вне серверной синхронизации |
+| 0125 | скрыть кнопку подарка в поле ввода | ✅ | `ChatActivityEnterView.createGiftButton/updateGiftButton`, `ChatActivityChannelButtonsLayout.BUTTON_GIFT` |
+| 0126 | закладки на сообщения и «вернуться туда, где читал» | ✅ | локальное хранилище `tele.db` (решение мейнтейнера); `ChatActivity`, `ChatMessageCell`, меню сообщения (android 0047) |
+| 0127 | закрепить наборы стикеров/эмодзи в панели | ✅ | `EmojiView` (`frozenStickerSets`, `frozenEmojiPacks`), порядок наборов локально |
+| 0128 | отправлять без звука по умолчанию (глобально / по чату) | ✅ | стоковый pref `silent_<dialogId>` (решение по умолчанию), `SendMessagesHelper`, меню отправки |
+| 0129 | скрыть превью сообщений в списке чатов + компактные строки | ✅ | `DialogCell.buildLayout/onMeasure`; полноценные компактные строки с малыми аватарами, L (решение мейнтейнера) |
+| 0130 | подтверждение отправки стикеров/гифок/голосовых вторым нажатием | ✅ | `EmojiView.EmojiViewDelegate.onStickerSelected/onGifSelected`, `ChatActivityEnterView`; объём как на десктопе (решение по умолчанию) |
+| 0131 | отключить жесты (свайп-ответ, свайп-назад) | ❌ | решение мейнтейнера: десктоп целится в тачпад, на сенсорном экране не нужно |
+| 0132 | скрыть похожие каналы | ✅ | `MessageObject` TYPE_JOINED_CHANNEL, `MessagesController.getChannelRecommendations`, `ProfileActivity` |
+| 0133 | скрыть счётчики непрочитанного | ✅ | `FilterTabsView`, `NotificationsController.setBadge`, `DrawerUserCell/DrawerProfileCell` |
+| 0134 | показать/скрыть панель закрепа из меню чата | ✅ | `ChatActivity` (`closePinned`, pref `pin_<dialogId>`); тумблер по умолчанию выкл (решение по умолчанию) |
+| 0135 | запись голоса без fade-in и обрезки 0.4 с | ❌ | на Android такой обработки нет (`MediaController.recordRunnable`, `jni/audio.c`) |
+| 0136 | фикс карточки профиля tele-чата после ресайза | ❌ | десктопная оконная коллизия (macOS/Qt), на Android нет |
+| 0137 | выключить AI-фичи одним тумблером | ✅ | `AIEditorAlert`, `TranslateController.isSummarizable`, `AiTonesController`; расшифровка голосовых остаётся (решение мейнтейнера) |
+| 0138 | выбор веб-карт для локаций | ✅ | `LocationActivity` (`open_in`); веб-выбор Яндекс/2ГИС/OSM/Google как на десктопе (решение мейнтейнера) |
+| 0139 | копировать сообщение как Markdown / HTML | ✅ | `MessageMenu`-реестр, `AndroidUtilities.addToClipboard(plain, html)` |
+| 0140 | цикл видео в медиа-просмотрщике | 🟢 | в стоке: `PhotoViewer.gallery_menu_loop` / `playerLooping` |
+| 0141 | набранные эмодзи учитываются в «недавних» | ✅ | `Emoji.addRecentEmoji` после отправки (`SendMessagesHelper.sendMessage`) |
+| 0142 | нумерация строк длинных code-блоков | ✅ | `ChatMessageCell` (отрисовка code-блока), `MessageObject.TextLayoutBlock` |
+| 0143 | скрыть тултип коллекционного статуса в профиле | ✅ | `ProfileActivity.collectibleHint/updateCollectibleHint` |
+| 0144 | перезапись ссылки только для превью | ✅ | `EditTextCaption` paste-хук, `ChatActivity.teleAddCustomLinkPreview`; зависит от rewrites (android 0051/0052) |
+| 0145 | меню сообщения по ПКМ рядом с пузырём | ❌ | нужна мышь; на сенсоре есть долгое нажатие |
+| 0146 | шот: отправка в docked-ленту (остальное — UI бокса) | ⚠️ | `TeleShotActivity.send()` → `DockedMedia.dock`; высота окна и кнопка черновиков n/a |
+| 0147 | помнить время прочтения ваших сообщений | ✅ | `TL_updateReadHistoryOutbox`, `MessageSeenView`, таблица в `tele.db`; на Android тумблер по умолчанию выкл |
+| 0148 | подсказки calcmula и отправка без вычисления | ✅ | `Calcmula.kt`, `CalcmulaPreview.kt` (android 0091/0092), меню отправки |
+| 0149 | «view as TL» открывается внутри приложения | ✅ | `ViewAsTl.open` → in-app браузер (`ui/web`), android 0059 |
+| 0150 | `{build}` — голое число, дефолт «TELE #{build}» | ❌ | решение по умолчанию: пропуск, шаблонов заголовка на Android нет |
+| 0151 | какие удалённые сообщения хранить (боты, избранное, свои) | ✅ | `DeletedMessages.shouldArchive`, keep deleted (android 0068) |
+| 0152 | масштаб интерфейса шагом 1% | ❌ | слайдера масштаба UI на Android нет |
+| 0153 | .mkv отправляются как видео | ⚠️ | `SendMessagesHelper` (проверки `mp4`); сначала проверка на устройстве (решение по умолчанию) |
+| 0154 | reduce motion | ✅ | `LiteMode.setAllFlags` / `LiteMode.FLAGS_*` (Lite Mode) |
+| 0155 | уведомление «пришёл в онлайн» | ✅ | `TL_updateUserStatus` в `MessagesController`; keep-alive сервис + постоянное уведомление (решение мейнтейнера) |
+| 0156 | мьют папки на устройстве + «глушить полностью» | ✅ | `MessagesController.isDialogMuted`, `NotificationsController.processNewMessages`; на Android выкл по умолчанию |
+| 0157 | аудиофайл → голосовое сообщение с waveform | ✅ | нативный opus-энкодер `MediaController`, `ChatAttachAlertAudioLayout` (решение по умолчанию: переиспользуем) |
+| 0158 | папка загрузок на чат | ⚠️ | подпапка `Telegram/<чат>` внутри стандартных публичных папок, без SAF (решение мейнтейнера); `MediaController.saveFile` |
+| 0159 | ресайз поля ввода перетаскиванием | ❌ | поле Android растёт само, drag конфликтует с жестами |
+| 0160 | streamer mode | ⚠️ | `FlagSecureReason`, `NotificationsController`, `DrawerProfileCell`; независим от 0113 и 0172 (решение мейнтейнера); окно/трей n/a |
+| 0161 | перевод своего сообщения перед отправкой | 🟢 | в стоке: `AIEditorAlert.TAB_TRANSLATE` (решение по умолчанию, работы нет) |
+| 0162 | папка «unsorted» | ✅ | синтетический `DialogFilter`; тот же механизм, что у локальных папок (0124, пачка 11) |
+| 0163 | тайминг кадров gif + одинаковые имена загрузок | ❌ | `AnimatedFileDrawable` и `MediaStore` уже решают |
+| 0164 | сохранённые gif и избранные стикеры сверх лимита | ✅ | `MediaDataController.addRecentGif/addRecentSticker`, таблица в `tele.db` |
+| 0165 | выбор нескольких чатов в списке | 🟢 | мультивыбор — штатный action mode `DialogsActivity.addOrRemoveSelectedDialog`; shift/ctrl-клик — мышь десктопа |
+| 0166 | скрытие сообщений по слову/regex (глобально и в чате) | ✅ | гейт `TeleHooks.hiddenByWords` поверх игнор-листа (решение по умолчанию: вместе с ним, Java-regex); `ChatActivity`, `DialogCell` |
+| 0167 | пункты tele-меню видны, только когда фича включена | ⚠️ | решение по умолчанию: отдельные `*_menu` под-тумблеры не делаем (закрывает редактор меню 0171); остаётся аудит гейтов пунктов |
+| 0168 | regex-поиск по загруженной истории | ✅ | решение по умолчанию: и в чате, и в поиске чат-листа; скан `ChatActivity.messages` вместо `MediaDataController.searchMessagesInChat` |
+| 0169 | перегруппировка страниц настроек tele | ✅ | решение мейнтейнера: копируем структуру десктопа; `TeleSettingsActivity.buildRows`, `TeleSearch`, `TeleNewSettings` |
+| 0170 | сворачиваемые под-тумблеры в настройках | ✅ | новый тип строки `TeleSettingsActivity` с `parent` |
+| 0171 | редактор меню: группы, подменю, 7 видов меню | ✅ | решение мейнтейнера: все меню как на десктопе, с пресетами и текстовым экспортом/импортом; база `MessageMenu.kt`, `TeleMenuActivity` |
+| 0172 | скрыть телефон в профилях | ✅ | гейт создания `ProfileActivity.phoneRow` |
+| 0173 | как подписывать цитату удалённого (имя / mention / ссылка) | ✅ | `DeletedReply.composeQuote` + entity; зависит от android 0071 |
+| 0174 | анимация отправки приземляется на реальное место | ❌ | баг десктопного `MessageSendingAnimationController`, у Android своя анимация |
+| 0175 | подписи к стикерам | ✅ | решение мейнтейнера: отправка/правка и рендер везде (чат, список, уведомления); `ChatMessageCell`, `MessageObject`, `DialogCell` |
+| 0176 | inline-результат calcmula после `=` | ✅ | решение мейнтейнера: чип над полем, тап вставляет; `CalcmulaPreview.kt`, `ChatActivityEnterView` |
+| 0177 | не перерисовывать чат-лист в простое | ❌ | Qt-специфика (`unread_badge.cpp`) |
+| 0178 | большие crash-дампы в zip | ❌ | у Android нет minidump; `TeleCrash` шлёт текст |
+| 0179 | copy/delete алиаса из меню | ✅ | `Aliases.kt`, меню ссылки `@alias` в `ChatActivity`, `ProfileActivity.tele_aliasRow` |
+| 0180 | юзерпики в компактных строках списка | ❌ | инвалидация Qt-кэша `dialogs_row`, на Android не воспроизводится |
+| 0181 | предпросмотр чата в области чата | 🟢 | long-press «peek» `DialogsActivity.showChatPreview` |
+| 0182 | хранить удалённые/правки после перезапуска | 🔁 | уже android 0068/0069 (`tele.db`); остаток по решению мейнтейнера: срок 1/7/30 дней/навсегда (по умолчанию навсегда) + защита kept-медиа от очистки кэша |
+| 0183 | список «кто отреагировал» = счётчику | ❌ | кэш tdesktop; `ReactedUsersListView` грузит при каждом открытии |
+| 0184 | отправить несколько подарков сразу | ✅ | степпер в `SendGiftSheet`, цикл `StarsController.buyStarGift` |
+| 0185 | приглушить скрытые подарки + мультивыбор | ✅ | `ProfileGiftsContainer`, `GiftSheet.GiftCell`; решение мейнтейнера: массовые действия |
+| 0186 | поиск по подаркам | ✅ | `StarsController.GiftsList` + чипы как `ResaleGiftsFragment.Filter` |
+| 0187 | локальный пароль для звёзд/подарков | ✅ | решение мейнтейнера: свой локальный пароль + биометрия, сброс через облачный пароль; хук `TeleHooks.requirePassword` в `StarsController` |
+| 0188 | список «кто прочитал» следует read-state | ❌ | кэш tdesktop; `MessageSeenView` грузит при показе |
+| 0189 | DC чата по первому фото | ✅ | `PeerId.kt` + `MessagesController.getDialogPhotos`; решение по умолчанию: оставить пометку «uncertain» |
+| 0190 | ещё массовые действия с подарками | ✅ | решение мейнтейнера; раннер `GiftBatch.kt` (общий с 0213), `TL_stars.*` |
+| 0191 | PageUp/PageDown/Home/End в списках | ❌ | клавиатура/мышь десктопа |
+| 0192 | поиск/фильтр/экспорт транзакций звёзд | ✅ | `StarsIntroActivity.StarsTransactionsLayout`; CSV через share sheet (решение по умолчанию) |
+| 0193 | фильтр длинных списков по дате | ✅ | решение по умолчанию: все списки (медиа, подарки, транзакции); `CalendarActivity`, `MediaDataController.loadMedia` |
+| 0194 | oversized-стикеры как файлы, как на сервере | 🟢 | `MessageObject` определяет стикер по атрибутам; `SendMessagesHelper` даёт `application/x-bad-tgsticker` |
+| 0195 | MTProto-консоль | ✅ | решение мейнтейнера: инспектор и консоль, TL-схема в комплекте; WebView + `RawTLObject` через `ConnectionsManager` |
+| 0196 | DC медиа в просмотрщике | ✅ | `PhotoViewer` дата + `StoryViewer` заголовок; тумблер `SHOW_DC` |
+| 0197 | gift studio | ✅ | решение мейнтейнера: студия подарков; `api.changes.tg` за тумблером (по умолчанию выкл., решение по умолчанию); рендер `StarGiftPatterns` |
+| 0198 | fake-апгрейд подарка | ✅ | решение мейнтейнера: с ролл-анимацией; `StarGiftSheet.doUpgrade` с подменой оплаты |
+| 0199 | цитирование rich-сообщений | ❌ | rich-редактора на Android нет |
+| 0200 | выделять сервисные сообщения | ✅ | `ChatActivity.processRowSelect`, `ChatActionCell` |
+| 0201 | прятать номер/модель апгрейда до конца ролла | ✅ | решение мейнтейнера: ролл-анимация портируется вместе с 0198 |
+| 0202 | отчёты о крашах без дампа | ✅ | `TeleCrash.kt` + `ApplicationExitInfo`; за серверным тумблером, нужна поддержка tele-server (решение по умолчанию) |
+| 0203 | отчёты о зависаниях (Tele-Note) | ✅ | watchdog главного потока; та же серверная оговорка (решение по умолчанию) |
+| 0204 | gift grid builder | ✅ | решение мейнтейнера: студия подарков; экран-конструктор поверх рендера 0197 |
+| 0205 | центр уведомлений (лимиты, тосты tele, обновления, краши, notices) | ✅ | нативный JNI-хук FLOOD_WAIT в `ConnectionsManager.cpp`/`TgNetWrapper.cpp` + `TeleNotices` + таблица `tele_notices` в `TeleDatabaseHelper`; вход — строка с бейджем в секции tele (решение мейнтейнера) |
+| 0206 | серверные notices в центре уведомлений | ✅ | разбор `notices` в `TeleServer.kt`/`TeleBadges.kt` (фид и `TeleArgon2` уже есть); нужен `platforms: android` и номера сборок Android в общем фиде (решение по умолчанию) |
+| 0207 | копировать ссылку на коллекцию подарков | ✅ | пункт «Copy link» в `ProfileGiftsContainer` (long-press по вкладке коллекции, рядом с Share) |
+| 0208 | @username вместо пустых/невидимых имён | ✅ | `UserObject.getUserName/getFirstName`; чаты — через `MessagesController.putChat`, только в памяти, в БД не пишется (решение мейнтейнера); `DialogCell`, шапка, пузыри |
+| 0209 | показывать скрытые символы именованными плашками | ✅ | `ProfileActivity` (bio), `MessageObject` текст/caption спанами; общий код символов с 0208 |
+| 0210 | несколько цитат в одном ответе | ✅ | `ChatActivity` (`replyingQuote`, `onQuoteClick`) + `ChatActivityEnterView`: дописывать блок-цитату в поле |
+| 0211 | цитата из расшифровки голосового | ✅ | снять запрет в `ChatActivity.canShowQuote` и вставлять цитату в поле (общий код с 0210) |
+| 0212 | slowmode/download throttling как лимиты + лог | ✅ | тот же tgnet-хук, что 0205; передавать тип (`SLOWMODE_WAIT`/`FLOOD_PREMIUM_WAIT`) в колбэк |
+| 0213 | пачки подарков переживают flood-wait и плохие элементы | ✅ | Kotlin-раннер поверх `StarsController`; зависит от массовых действий 0184–0186/0190/0192/0193 и хука 0205 (решение мейнтейнера) |
+| 0214 | причина, почему не сохранилась загрузка, + сброс папки чата | ❌ | пути сохранения на Android не настраиваются (подпапка `Telegram/<chat>` из 0158 — без SAF, сбрасывать нечего); стоковый тост ошибки записи |
+| 0215 | ретрай упавших кусков загрузки | ✅ | `FileUploadOperation` (колбэк `sendRequest`, 550–677): счётчик ретраев на часть, `FILE_PART_X_MISSING`; в секретных чатах не ретраить |
+| 0216 | `-teleoffline` не глушит локальные фичи | ❌ | launch-флага offline на Android нет (флаги заменены тумблерами, 0081-аналог); просто гейтить только запросы к tele-серверу |
+| 0217 | локальный пароль для платежей ботов и платных сообщений | ✅ | гейт в `PaymentFormActivity`/`AlertsCreator.ensurePaidMessageConfirmation` поверх локального пароля 0187 (решение мейнтейнера) |
+| 0218 | консоль mtproto спрашивает перед опасными методами | ✅ | расширить список опасных методов в портируемой консоли (0195; решение мейнтейнера) |
+| 0219 | неудавшееся серверное удаление возвращает сообщения | ✅ | `MessagesController.deleteMessages` (else-ветка ответа) + `DeletedMessages.kt` (android 0068), причина в `Bulletin` |
+| 0220 | «отправить все неудавшиеся» из меню | ✅ | пункт «Retry all» в `ChatActivity.fillMessageMenu`, регистрация в `MessageMenu.kt` |
+| 0221 | поиск любого участника группы при @-упоминании | 🟢 | уже в стоке: `MentionsAdapter` шлёт `channelParticipantsMentions` |
+| 0222 | журнал звонков: размеры страниц + ретрай | ✅ | `CallLogActivity`: вместо `endReached = true` при ошибке — отложенный повтор |
+| 0223 | архивные стикеры из кэша для каждого аккаунта | 🟢 | `MediaDataController` per-account, десктопного бага нет |
+| 0224 | ретрай загрузки коллекций подарков | ✅ | `StarsController.GiftsCollections.load`: сброс `loading` и повтор через 3 с |
+| 0225 | календарь медиа следует открытому саблисту | 🟢 | уже в стоке: `CalendarActivity` ставит `saved_peer_id` |
+| 0226 | видно и можно отпустить сообщения в очереди за загрузкой | ✅ | `SendOrder.kt` (android 0066): `isHeld/heldText/sendNow`, пункт меню, подпись в пузыре |
+| 0227 | показывать ghost-scheduled сообщения | ✅ | локальное «призрачное» сообщение + handover в `SendMessagesHelper`/`ChatActivity`; после ghost-schedule и per-chat ghost (ранний батч приватности, решение мейнтейнера) |
+| 0228 | ignored/hidden words не уведомляют и не считаются непрочитанными | ✅ | `NotificationsController`, `DialogCell`, счётчики; поверх игнор-листа и 0166 (решение мейнтейнера) |
+| 0229 | невидимые сторис: per-chat ghost, память просмотров, подтверждение | ✅ | `StoriesController.markStoryAsRead`, `StoryViewer`; после per-chat ghost (решение мейнтейнера) |
+| 0230 | чинить gzip-заголовок .tgs (TOPS-20) | ✅ | `SendMessagesHelper.prepareSendingDocument`; студия 0197 портируется; в плане, низкий приоритет (решение по умолчанию) |
+| 0231 | параметр старта на кнопке Start | ✅ | `ChatActivity.bottomOverlayStartButton` + поле `botUser` |
+| 0232 | упоминания и ответы в центре уведомлений | ✅ | подписка на `didReceiveNewMessages` + `tele_notices`; поверх 0205 |
+| 0233 | нет метки «изменено» у ботов | ✅ | `ChatMessageCell` (расчёт `edited`) через `TeleHooks.hidesEditedMark` |
+| 0234 | больше подарков/моделей в студии подарков | ✅ | расширение студии 0197/0204 (решение мейнтейнера); L |
+| 0235 | своя полоса реакций (число, порядок, пины) | ✅ | `ReactionsContainerLayout.setVisibleReactionsList`, строка в `TeleConfig`, страница с drag в `TeleSettingsActivity` |
+| 0236 | подписанные стикеры уходят в docked-медиа | ✅ | `DockedMedia.kt`/`TeleDockedStrip.kt` (android 0096) + `EmojiView`; после подписей стикеров 0175; в плане, низкий приоритет (решение по умолчанию) |
+| 0237 | просмотр изменений всех версий tele | ✅ | история в APK: `changelog_history.json` в `res/raw`, генерируется CI из релизов (решение мейнтейнера); `TeleChangelog.kt` |
+| 0238 | поздно отправленное показывает реальное время | 🟢 | сток подменяет локальное сообщение серверным (`messageReceivedByServer`) |
+| 0239 | центр уведомлений показывает записи целиком | ✅ | ячейка центра 0205: лимит строк + «Show more» |
+| 0240 | скопированные значения в центре уведомлений | ✅ | `TeleNotices.copied(value)` из fork-кода копирования (`AndroidUtilities.addToClipboard`) |
+| 0241 | what's new как страница настроек с живыми тумблерами | ✅ | `TeleSettingsActivity(MODE_NEW)` по версиям, `TeleNewSettings.kt` (android 0088), поиск `TeleSearch.kt`; после 0237 |
+| 0242 | как отправлять беззвучные видео (gif/видео) | ✅ | нужна только обратная опция «silent video as gif»: `VideoEditedInfo.muted` в `SendMessagesHelper`; в плане, низкий приоритет (решение по умолчанию) |
+| 0243 | пропуск terms-окна для доверенных mini app | 🟢 | уже в стоке: `WebAppDisclaimerAlert` только при `botApp.inactive` |
+| 0244 | живые превью в настройках (ghost, невидимые имена, ids) | ✅ | новый `TYPE_PREVIEW` в `TeleSettingsActivity` на Canvas; после 0208/0209, ghost и `PeerId.kt` (android 0025); L, в последнюю очередь |
+| 0245 | markdown рисуется при наборе, строки `>`/`>!` → цитаты | ✅ | декор-спаны `TeleLiveMarkdownSpan` на `ChatActivityEnterView.messageEditText`, конвертация в entities при отправке (`MediaDataController.getEntities`); цитаты — под отдельным подтумблером |
+| 0246 | бейдж «ответ/@» на аватарке в центре уведомлений | ✅ | косметика ячейки записи центра уведомлений (0205, 0232), поле `reply` в хранилище `tele_notices` |
+| 0247 | открыть подарки любого пира в gift grid (импорт) | ✅ | `StarsController` (`getSavedStarGifts`), `ProfileGiftsContainer`; надстройка над grid-билдером 0204 (студия подарков портируется) |
+| 0248 | ранги редкости и «таблетки» в студии подарков | ✅ | `TL_starGiftAttributeRarity*` уже в `TL_stars.java`; правка строки списка частей студии (0197, 0234) |
+| 0249 | не открывать мини-аппы на весь экран | ✅ | `BotWebViewContainer` (`web_app_request_fullscreen` → `UNSUPPORTED`), `BotWebViewSheet.setFullscreen` |
+| 0250 | непереносимые символы выталкивают текст за пузырь | ❌ | баг движка текста tdesktop; `StaticLayout` рвёт слово по символам сам |
+| 0251 | бейдж неудачной отправки размером с часы | ❌ | подгонка собственного бейджа tele (0220); на Android стоковая красная «!» не перекрывает время |
+| 0252 | сообщения с относительными датами вешают клиент | ❌ | баг `checkFormattedDateUpdates` tdesktop; на Android свой механизм `FormattedDateSpan` |
+| 0253 | копировать peer id цифрами без пробелов | ✅ | `ProfileActivity` + новый `PeerId.copyText`; fix-коммит к android 0025 |
+| 0254 | отправка быстрого ответа по точному `/имени` | ✅ | `ChatActivityEnterView.processSendingText`, `QuickRepliesController.findReply(String)` (android 0065) |
+| 0255 | копировать путь файла из меню сообщения | ✅ | `tele_option_copy_file_path` в `ChatActivity`, `FileLoader.getPathToMessage`, реестр `MessageMenu` (android 0047/0057) |
+| 0256 | сохранённые удалённые не влияют на список чатов и счётчики | 🔁 | android 0068: удалённое уходит из стоковой БД, в чате держится только в памяти (`DeletedMessages.keepInChat`) |
+| 0257 | линия под открытой группой настроек | ❌ | вёрстка desktop-страницы настроек; на Android стоковые `ShadowSectionCell` |
+| 0258 | заголовок тайтлбара `tele #N` строчными | 🔁 | android 0005/0020: `TeleBuild.label()` уже `tele N` / `tele dev` |
+| 0259 | пересылать сообщения по одному | ✅ | `SendMessagesHelper.sendMessage(ArrayList<MessageObject>…)`, условие сброса пачки (альбомы остаются вместе) |
+| 0260 | запись голоса 128 кбит/с | 🟢 | `jni/audio.c` уже `OPUS_BITRATE_MAX`, 48 кГц моно |
+| 0261 | сжимать фото слабее (JPEG 94 вместо 87) | 🟢 | закрыто android 0063 (HD-фото, q=99); отдельный тумблер не нужен |
+| 0262 | тонкая кисть в фоторедакторе | ✅ | `Paint/RenderView.brushWeightForSize`, `PaintWeightChooserView` |
+| 0263 | быстрее/крупнее экспорт чата | ❌ | экспорта данных чата на Android нет |
+| 0264 | меньший минимальный размер окна | ❌ | оконная подсистема desktop; мультиокно ведёт ОС |
+| 0265 | показать дату загрузки медиа во вьюере | ✅ | `PhotoViewer` (подзаголовок), `photo.date` / `document.date` |
+| 0266 | копировать id владельца набора стикеров | ✅ | `StickersAlert.optionsButton`, `EmojiPacksAlert`, формула в `PeerId.kt` |
+| 0267 | убрать «хвостики» пузырей | ✅ | `ChatMessageCell.getCurrentBackgroundDrawable`, форсирование `drawPinnedBottom`; нужна проверка на устройстве |
+| 0268 | онлайн участников в больших группах | ⚠️ | в стоке (`getOnlines`, `ChatAvatarContainer`); по решению мейнтейнера дополнительно закрываем край «скрытые участники ≤200» |
+| 0269 | выделять больше 100 сообщений | ✅ | два `>= 100` в `ChatActivity` → `TeleHooks.maxSelected()`, нарезка `MessagesController.deleteMessages` по 100 |
+| 0270 | без обводки у крупного эмодзи | ❌ | обводка — особенность рендера desktop, на Android её нет |
+| 0271 | tele в меню «Пуск» | ❌ | Windows-специфика |
+| 0272 | классические отступы текста в пузырях | ❌ | константа стиля desktop; отступы Android — десятки `dp(…)` в `ChatMessageCell` |
+| 0273 | починка шрифтов из настроек чата | ❌ | Windows/DirectWrite |
+| 0274 | чёткие иконки/эмодзи в масштабированных shot | ❌ | растровый артефакт desktop; Android-shot (android 0093) рисует Canvas'ом |
+| 0275 | плавная прокрутка колесом | ❌ | нет колеса мыши |
+| 0276 | бейджи на «Переслано от» и в шапке ответа | ✅ | `ChatMessageCell` (`forwardedNameLayout`, `replyNameLayout`), `TeleNameBadges.withVerified` (android 0077/0083) |
+| 0277 | выделение ячеек таблиц диапазоном | ❌ | rich-таблиц tele на Android нет |
+| 0278 | включить кошелёк до того, как включит Telegram | ✅ | `AppGlobalConfig.walletAvailable` — один хунк в `ConfigBoolean.get()`; кошелёк портируется (деньги) |
+| 0279 | скрыть дни рождения: баннеры, эффекты, кнопка подарка | ✅ | `BirthdayController.isToday`, подсказки `BIRTHDAY_*` в `DialogsActivity`, `ProfileBirthdayEffect` |
+| 0280 | упоминать нескольких подряд | ✅ | long-press по строке пользователя в `mentionContainer` (решение мейнтейнера), вставка + `@` |
+| 0281 | фильтр поиска в чате по типу сообщения | ✅ | `MediaDataController.searchMessagesInChat` + ряд чипов в поиске `ChatActivity`, включая GIF/кружки |
+| 0282 | подсмотреть скрытый «был(а) в сети» | ✅ | `ContactsController.setPrivacyRules(LASTSEEN)` + обязательное восстановление при старте, тумблер выкл. по умолчанию |
+| 0283 | сохранять удалённые чаты и топики | ✅ | `MessagesController` (`TL_updateChannel` → `deleteDialog`), `TopicsController`; вынужденные удаления и свои выход/удаление |
+| 0284 | прототип секретных чатов | 🟢 | секретные чаты в стоке (`SecretChatHelper`) |
+| 0285 | обновить секретную фразу кошелька без бэкапа | ✅ | механика ротации есть (`GramWallet.prepareDisableBackup/disableBackup`), решение мейнтейнера: портировать и проверить на тестовом кошельке; `WalletKeysBackupFragment` |
+| 0286 | копировать ссылки на транзакции кошелька | ✅ | «copy link» рядом с «open in explorer» в `WalletActivity.openTransactionSheet`, explorer — tonscan.org (решение по умолчанию) |
+| 0287 | отправка при «старом» кошельке на устройстве | 🟢 | в Android старые кошельки (`GramWallet.previousWallets`) на отправку не влияют, конфликта кастоди нет |
+| 0288 | выключить money целиком | ✅ | единая точка `AppGlobalConfig.walletAvailable` + ранние возвраты в `MessageObject`, `ChatActionCell`, `MessagesController` |
+| 0289 | текст «пароль money = пароль tele» | 🟢 | wallet-строки уже внутри `PasscodeActivity`, смысл очевиден из контекста |
+| 0290 | тусклые чередующиеся группы адреса | ✅ | диммирование закомментировано в `WalletActivity.formatTransactionAddress`, уже есть в `WalletImportFragment` |
+| 0291 | клик по элементу коллажа переключает viewer | ❌ | `PhotoViewer` модальный и полноэкранный, переключение — свайпом внутри |
+| 0292 | двойной клик выделяет слова в сервисных/комментариях | 🟢 | комментарий транзакции уже `setTextIsSelectable(true)`; текст сервисных закрывает 0295 |
+| 0293 | закрытие rich-редактора оставляет черновики локально | 🔁 | android 0021: гейт `TeleConfig.LOCAL_DRAFTS` в `MediaDataController.saveDraft` |
+| 0294 | закрытие бокса «сохранить черновик» не блокирует | ❌ | у Android-редактора нет бокса ожидания облака (`RichEditor.persistDraft` синхронный) |
+| 0295 | копировать текст сервисных сообщений | ✅ | пункт в `ChatActivity.fillMessageMenu` (ветка `type == 1`) + `MessageMenu.ALL` |
+| 0296 | копировать/открыть ссылку на транзакцию из перевода | ✅ | тот же блок `fillMessageMenu` для `TL_messageActionGramTransfer`, URL-хелпер из 0286 |
+| 0297 | ресайз окна money | ❌ | оконная фича Qt; Android — полноэкранный фрагмент, переносить нечего |
+| 0298 | MTProto-инспектор/консоль как панели | ⚠️ | панельная часть Qt не нужна; инспектор и консоль портируются через 0195/0218, здесь — только экран консоли |
+| 0299 | размытое фото профиля как фон шапки | ✅ | ветка «фото-фон» в `ProfileActivity.TopView`, блюр-инфраструктура уже есть |
+| 0300 | компактные папки «только иконки» | ⚠️ | в стоке нет режима иконок — новая фича в `FilterTabsView` (решение по умолчанию) |
+| 0301 | удалить все мои сообщения из чата | ✅ | `TL_messages_search(from_id=self)` + `MessagesController.deleteMessages`, новый `RemoveMine.kt` |
+| 0302 | скриптинг (QuickJS, grants, TL, перехватчики) | ⚠️ | решение мейнтейнера: порт целиком, quickjs-ng через NDK; виджет-слой/окна десктопа не переносятся |
+| 0303 | grant «display» — спрашивать перед изменением вида | ⚠️ | consent-слой вместе с 0302, хуки в `MessageObject`/`ChatMessageCell`/`DialogCell` |
+| 0304 | залить весь профиль цветом фото | ⚠️ | решение мейнтейнера: полный override `ResourcesProvider` профиля, регрессионно хрупко |
+| 0305 | zoom колесом в media viewer | ❌ | колесо мыши; pinch/double-tap в `PhotoViewer` родные |
+| 0306 | поиск по человеку + по типу сообщения | ✅ | становится актуален из-за решения по 0281 (чипы в поиске чата): `MediaDataController.searchMessagesInChat` + локальная дофильтрация |
+| 0307 | дизайн карточки money подарком | ⚠️ | решение мейнтейнера: 2D и 3D-шейдер; `WalletCardComponent`, `WalletCard3D`, `WalletCard2DView` |
+| 0308 | плавные «глайды» колеса | ❌ | колесо мыши/частота монитора; Android — `RecyclerView` + vsync |
+| 0309 | квота комиссии смены ключа (BoC) | ⚠️ | собственный BoC-парсер десктопа не нужен; проверить, что обновлённый `wallet-engine` (0310) разбирает ячейки с 2 ссылками |
+| 0310 | wallet-engine из gettele/money (сборка) | ✅ | решение мейнтейнера: перенести diff форка на ревизию `jni/wallet-engine` Android, пересобрать Rust |
+| 0311 | импорт кошельков по приватному ключу | ✅ | решение мейнтейнера: порт целиком; `WalletImportFragment`, `GramWalletStorage`, `WalletEngine2`, зависит от 0310 |
+| 0312 | копировать секретные слова без ожидания | ✅ | кнопка «Copy words» в `showRecoveryPhraseAlert` и `WalletSecretPhraseFragment`, очистка буфера через 60 с |
+| 0313 | скрыть «you also have …» над картой | ✅ | `WalletActivity.updateWalletTopPanel` под тумблер `TeleConfig` |
+| 0314 | сборка litehtml для HTML-пузырей | ✅ | решение мейнтейнера: litehtml через NDK (CMake) |
+| 0315 | HTML-карточки: litehtml + QuickJS | ⚠️ | решение мейнтейнера: порт, рендер litehtml в `Canvas` через JNI, скрипты — QuickJS из 0302; `ChatMessageCell` |
+| 0316 | playground-чат и `.tgw` как карточки | ⚠️ | локальный чат по образцу android 0087; сама карточка зависит от 0315 |
+| 0317 | подарки стикерами на карте money | ⚠️ | решение мейнтейнера: 2D и 3D-карта; слой стикеров в `WalletActivity` (`TAB_COLLECTIBLES`), зависит от 0307 |
+| 0318 | подтверждение отправки стикеров из бокса набора | ✅ | второй клик в `StickersAlert.onStickerSelected`, объём как у 0130 (решение по умолчанию) |
+| 0319 | β убрана с blurred-profile-bg | ❌ | переименование опции; β-меток в настройках Android нет |
+| 0320 | веб-платформа, воркеры, файлы, звук, вебвью для скриптов | ⚠️ | решение мейнтейнера: порт целиком; JS-часть переиспользуется, нативные `tele_script_*.cpp` — на JNI/Kotlin |
+| 0321 | восстановить удалённый пост канала из форварда | ✅ | основа — android 0068 (`DeletedMessages.kt`), перехват перехода по шапке форварда в `ChatMessageCell` |
+| 0322 | фильтр стикеров и эмодзи по формату | ✅ | `StickersActivity` (чипы, сортировка) + фильтр поиска в `EmojiView`; формат — по mime документов набора |
+| lib_ui 0001 | fullscreen mini apps покрывают экран (Qt<6) | ❌ | геометрия окна Qt |
+| lib_ui 0002 | неразрывные символы не скроллят поле вбок | 🟢 | multiline `EditText` переносит длинные слова по символам |
+| lib_ui 0003 | реальные метрики шрифтов на Windows | ❌ | GDI/DirectWrite, только Windows |
+| lib_ui 0004 | иконки-эмодзи чёткие при большом ratio | ❌ | иконки Android — векторные `Drawable`; заметка про шоты ниже |
+| lib_ui 0005 | мягкие шаги колеса в скролл-областях | ❌ | колесо мыши |
+| lib_ui 0006 | кнопка maximize следует состоянию окна | ❌ | тайтлбар окна |
+| lib_ui 0007 | `exchangeText` у лейбла, `rowSpans` у таблицы | ❌ | API Qt-виджетов под виджет-слой скриптов |
+| lib_ui 0008 | глайд с частотой экрана | ❌ | у Android Choreographer/vsync родной |
 
 ---
 
@@ -819,6 +1050,1048 @@
 - **Вердикт:** ✅ переносим — локальное хранилище фильтров вне серверной синхронизации; объём большой, но десктоп-специфики нет.
 - **Android:** `MediaDataController` (dialogFilters), `FilterTabsView`, `DialogsActivity`, InuDatabaseHelper; аналога нет (смежные `folders-display-mode`, `chats-long-tap-folders`).
 
+### 0125–0164
+
+#### 0125 — hide the gift button in the message field
+- **Суть:** тумблер прячет кнопку подарка в личных чатах и подарок каналу в поле ввода.
+- **Вердикт:** ✅ переносим — на Android те же две кнопки есть.
+- **Android:** `ChatActivityEnterView.createGiftButton/updateGiftButton` (личные), `ChatActivity` `showGiftButton` → `BUTTON_GIFT` (каналы); ранний return по `TeleConfig`, пересчёт через `TeleHooks.onConfigChanged`. Effort S.
+
+#### 0126 — bookmarks and return to where you were reading
+- **Суть:** закладки на сообщения (меню, иконка у времени, кнопка-угол, список) и «return point» — кнопка возврата к месту чтения после отправки.
+- **Вердикт:** ✅ переносим — всё локально, в стоке аналогов нет; хранилище `tele.db` — решение мейнтейнера.
+- **Android:** `Bookmarks.kt` + таблицы `tele_bookmarks/tele_return_points`; пункт в реестре `MessageMenu` (android 0047), иконка по образцу `DeletedMessages.drawTrashMarker`, кнопка рядом с `pagedownButton`, переход `scrollToMessageId`. Два тумблера. Effort L.
+
+#### 0127 — pin sticker and emoji sets
+- **Суть:** закрепление наборов стикеров/эмодзи в футере панели, закреплённые идут первыми (только на устройстве).
+- **Вердикт:** ✅ переносим — порядок наборов в стоке серверный, локального закрепления нет.
+- **Android:** `EmojiView` (`frozenStickerSets`, `frozenEmojiPacks`) — пересортировка перед использованием; долгое нажатие по вкладке набора; хранение в `tele_kv`. Effort M.
+
+#### 0128 — send silently by default
+- **Суть:** «без звука по умолчанию» глобально и по чату; в меню отправки «send with sound».
+- **Вердикт:** ✅ переносим — решение по умолчанию: per-chat состояние пишем в стоковый pref `silent_<dialogId>`.
+- **Android:** пункт меню шапки чата (`ChatActivity`), гейт в `SendMessagesHelper` (`TeleHooks.silentByDefault`), второй пункт долгого нажатия кнопки отправки, плейсхолдер `messageEditText.setHint`. Effort M.
+
+#### 0129 — hide message previews in the chat list
+- **Суть:** строки списка чатов ужимаются в одну строку (аватар 28dp, имя, дата, счётчики), превью и топики скрыты.
+- **Вердикт:** ✅ переносим — решение мейнтейнера: полноценные компактные строки с малыми аватарами (L); в стоке только 2/3-строчный режим.
+- **Android:** `DialogCell` (`buildLayout`, `onMeasure`, `onLayout`, `avatarImage`), форум-ячейки, пересчёт `DialogsAdapter` через `onConfigChanged`. Effort L.
+
+#### 0130 — confirm sending stickers, gifs and voice messages
+- **Суть:** второй тап по тому же стикеру/гифке (5 с) отправляет; отдельно — подсказки, инлайн-результаты; голосовые/кружки останавливаются в превью.
+- **Вердикт:** ✅ переносим — решение по умолчанию: объём как на десктопе; защита от случайного тапа осмысленна и на телефоне.
+- **Android:** `EmojiView.EmojiViewDelegate.onStickerSelected/onGifSelected` в `ChatActivityEnterView`, `MentionsAdapter`-результаты, `stopRecording` → `recordedAudioPanel`; таймер 5 с и подсветка ячейки. Effort M.
+
+#### 0131 — disable gestures
+- **Суть:** отключение свайп-ответа и свайп-назад (на десктопе — тачпад), независимо.
+- **Вердикт:** ❌ не переносим — решение мейнтейнера: десктоп целится в тачпад, на сенсорном экране не нужно; вне плана.
+- **Android:** —
+
+#### 0132 — hide similar channels
+- **Суть:** не запрашивать и не показывать похожие каналы после вступления и в профиле.
+- **Вердикт:** ✅ переносим.
+- **Android:** `MessageObject` (не создавать TYPE_JOINED_CHANNEL), `MessagesController.getChannelRecommendations` → пусто, `ProfileActivity` (блок рекомендаций, `hasRecommendations`). Effort S.
+
+#### 0133 — hide unread counters
+- **Суть:** убрать счётчики на вкладках папок, бейдж иконки, архив в бейдже, аккаунты в счётчике.
+- **Вердикт:** ✅ переносим — все четыре поверхности на Android есть.
+- **Android:** `FilterTabsView`/`DialogsActivity.updateFilterTabs`, `NotificationsController.setBadge`/`getTotalAllUnreadCount`, `DrawerUserCell/DrawerProfileCell`; список исключённых аккаунтов в `tele_kv`; под-тумблеры как на десктопе. Effort M.
+
+#### 0134 — toggle the pinned bar from the chat menu
+- **Суть:** в чатах, где нельзя открепить, пункт меню «hide/show pinned bar».
+- **Вердикт:** ✅ переносим — решение по умолчанию: десктопный дефолт «вкл», на Android тумблер выкл (правило AGENTS).
+- **Android:** `ChatActivity` меню шапки при `!allowPin`: show → `preferences.remove("pin_"+dialog_id)` + `updatePinnedMessageView`, hide как `closePinned`. Effort S.
+
+#### 0135 — voice recording without fade-in
+- **Суть:** тумблер убирает обрезку первых 0.4 с и fade-in записи голоса.
+- **Вердикт:** ❌ не переносим — на Android такой обработки нет (`MediaController.recordRunnable`, `jni/audio.c`), проблемы нет.
+- **Android:** —
+
+#### 0136 — fix the tele chat profile card after a window resize
+- **Суть:** фикс закрытия окна-карточки профиля tele-чата после ресайза (macOS).
+- **Вердикт:** ❌ не переносим — десктопная оконная коллизия, на Android нет ресайза и третьей колонки.
+- **Android:** —
+
+#### 0137 — turn off AI features
+- **Суть:** один тумблер: нет AI-правки в поле, стилей, саммари; не открываются соответствующие ссылки.
+- **Вердикт:** ✅ переносим — решение мейнтейнера: расшифровка голосовых не AI-фича, остаётся.
+- **Android:** `TeleConfig.NO_AI`: `TranslateController.isSummarizable` → false, `AiTonesController` не грузить, кнопки AI в `ChatActivityEnterView`/`CaptionPhotoViewer`/`ChatAttachAlert` → `GONE`. Effort M.
+
+#### 0138 — choose a map service for locations
+- **Суть:** локации открываются в выбранном сервисе (Google/OSM/Яндекс/2ГИС/Apple Maps) либо системном приложении.
+- **Вердикт:** ✅ переносим — решение мейнтейнера: веб-выбор карт (Яндекс / 2ГИС / OSM / Google) как на десктопе; Apple Maps не применимо (отчёт оценивал ⚠️).
+- **Android:** `LocationActivity` (`open_in`, `geo:` Intent) — при выбранном сервисе `https://…` из шаблона, настройка `maps_service`. Effort S.
+
+#### 0139 — copy as Markdown / HTML
+- **Суть:** пункты меню «copy as markdown/html» с сохранением форматирования.
+- **Вердикт:** ✅ переносим — энтити сообщения доступны, `addToClipboard(plain, html)` готов.
+- **Android:** `CopyMarkup.kt` (writer entity→Markdown/HTML) через `MessageMenu`-реестр (android 0047), меню выделения в `ChatActivity`; правила по таблице десктопа. Effort M.
+
+#### 0140 — loop videos in the media viewer
+- **Суть:** кнопка/клавиша зацикливает видео.
+- **Вердикт:** 🟢 в стоке — `PhotoViewer.gallery_menu_loop` и автолуп коротких видео.
+- **Android:** — (работы нет).
+
+#### 0141 — typed emoji count as recent
+- **Суть:** эмодзи в отправляемом тексте (в т.ч. кастом) попадают в «недавние».
+- **Вердикт:** ✅ переносим — `Emoji.addRecentEmoji` зовётся только из `EmojiView`/`SuggestEmojiView`; с системной клавиатуры не попадает.
+- **Android:** после успешной отправки (`ChatActivityEnterView.sendMessageInternal`/`SendMessagesHelper.sendMessage`) разбор эмодзи → `Emoji.addRecentEmoji`, кастом — `MediaDataController`; тумблер выкл. Effort S.
+
+#### 0142 — line numbers in code blocks
+- **Суть:** в блоках кода ≥5 строк слева полупрозрачные номера строк.
+- **Вердикт:** ✅ переносим — code-блоки есть (`CodeHighlighting.Span`).
+- **Android:** `ChatMessageCell` (отрисовка `TextLayoutBlock` с `code`), сдвиг текста в `MessageObject.generateLayout`; rich-рендерер `ui/iv` отдельно. Effort M.
+
+#### 0143 — hide the collectible status tooltip
+- **Суть:** в шапке профиля нет подсказки о коллекционном статусе.
+- **Вердикт:** ✅ переносим.
+- **Android:** `ProfileActivity.collectibleHint/updateCollectibleHint` — ранний return перед созданием `HintView2`. Effort S.
+
+#### 0144 — rewrite the link for the preview only
+- **Суть:** правила перезаписи ссылок меняют только превью, текст остаётся оригинальным.
+- **Вердикт:** ✅ переносим — перезапись и ручные превью на Android уже есть.
+- **Android:** `EditTextCaption` paste-хук (`LinkRewrites.applyToText`) вставляет оригинал, переписанный URL — в `ChatActivity.teleAddCustomLinkPreview`; зависит от rewrites (android 0051/0052) и превью (android 0055/0062). Effort S.
+
+#### 0145 — message menu on right click near the bubble
+- **Суть:** ПКМ рядом с пузырём открывает его меню.
+- **Вердикт:** ❌ не переносим — нужна мышь; на сенсоре есть долгое нажатие.
+- **Android:** —
+
+#### 0146 — shot: window height, send to docked strip, drafts button
+- **Суть:** фикс бокса шота; при включённом docked-media шот отправляется в ленту над полем.
+- **Вердикт:** ⚠️ частично — переносима только отправка шота в docked, остальное UI десктопного бокса.
+- **Android:** `TeleShotActivity.send()` → `DockedMedia.dock(...)` с одним `PhotoEntry` при `DockedMedia.enabled()`; зависит от шотов (android 0093) и docked (android 0096). Effort S.
+
+#### 0147 — remember when your messages were read
+- **Суть:** локальный лог прочтений исходящих в личках; меню показывает время, когда сервер уже не отдаёт.
+- **Вердикт:** ✅ переносим — на Android тумблер по умолчанию выкл (правило AGENTS; на десктопе вкл).
+- **Android:** `ReadLog.kt` + таблица `tele_read_log` в `tele.db`; запись в обработчике `TL_updateReadHistoryOutbox`, строка «read at …» в меню (`MessageSeenView`/`fillMessageMenu`). Effort M.
+
+#### 0148 — calcmula suggestions and send without calculating
+- **Суть:** подсказки `warnings` из calcmula над полем; «send without calculating» шлёт текст как есть.
+- **Вердикт:** ✅ переносим — база уже есть.
+- **Android:** `Calcmula.parse` (расширить `Result`), `CalcmulaPreview` (строка подсказки), пункт долгого нажатия отправки + `Calcmula.skipNext`; зависит от calcmula (android 0091/0092). Effort M.
+
+#### 0149 — view as TL inside the app
+- **Суть:** результат открывается во встроенном окне с заголовком = конструктор объекта.
+- **Вердикт:** ✅ переносим — на Android есть встроенный браузер.
+- **Android:** `ViewAsTl.open/openRedirect` (android 0059) через in-app WebView `ui/web`, для больших данных — `loadDataWithBaseURL`; проверить `#data=` 100+ КБ. Effort S.
+
+#### 0150 — `{build}` as a bare number
+- **Суть:** в шаблонах заголовка окна `{build}` — голое число, дефолт «TELE #{build}».
+- **Вердикт:** ❌ не переносим — решение по умолчанию: пропуск, шаблонов заголовка на Android нет (`TeleBuild.label()` фиксирована).
+- **Android:** —
+
+#### 0151 — choose which deleted messages to keep
+- **Суть:** подтумблеры keep-deleted: боты, избранное, удалённые вами.
+- **Вердикт:** ✅ переносим — мастер-тумблер и «self-deleted» уже в android 0068.
+- **Android:** `DeletedMessages.shouldArchive` — проверки `user.bot` и `dialogId == selfId`; `TeleConfig.KEEP_DELETED_BOTS/SAVED`, экран «your data». Effort S.
+
+#### 0152 — interface scale in 1% steps
+- **Суть:** слайдер масштаба UI с шагом 1% вместо 5%.
+- **Вердикт:** ❌ не переносим — слайдера масштаба интерфейса на Android нет; размер текста чата уже с целым шагом.
+- **Android:** —
+
+#### 0153 — send .mkv as video
+- **Суть:** mkv отправляются как видео, а не файлом.
+- **Вердикт:** ⚠️ частично — галерея транскодирует в mp4; прямой путь шлёт документом [INFERENCE: на устройстве не проверялось]; решение по умолчанию: сначала проверка на устройстве.
+- **Android:** `SendMessagesHelper` (`prepareSendingVideo/prepareSendingDocumentInternal`, проверки `endsWith("mp4")`); атрибуты через `MediaMetadataRetriever`. Effort S.
+
+#### 0154 — reduce motion
+- **Суть:** один тумблер включает все ограничения анимаций (кроме звонков); выключение возвращает сохранённое.
+- **Вердикт:** ✅ переносим — на Android это ровно Lite Mode.
+- **Android:** `ReduceMotion.kt`: сохранить `LiteMode.getValue(true)` в `tele_kv`, `LiteMode.setAllFlags(current & FLAG_CALLS_ANIMATIONS)`, при выключении восстановить; флаг на Android = «включено». Effort S.
+
+#### 0155 — notify when people come online
+- **Суть:** выбор людей, уведомление «came online» (кулдаун 10 мин).
+- **Вердикт:** ✅ переносим — решение мейнтейнера: с keep-alive сервисом (стоковый keep-alive + постоянное уведомление).
+- **Android:** `OnlineNotify.kt`: хук `TL_updateUserStatus` в `MessagesController`, список в `tele_kv`, свой канал `tele_online`, пункт в меню профиля/чата, пикер; без FCM (android 0007) сервис обязателен. Effort M.
+
+#### 0156 — mute folders and silence completely
+- **Суть:** «mute folder» из меню вкладки (локально); «silence completely» — без уведомлений даже на упоминания.
+- **Вердикт:** ✅ переносим — Android выкл по умолчанию (решение по умолчанию: десктопный дефолт «вкл» не берём).
+- **Android:** `MessagesController.isDialogMuted` → `Mute.byFolder`, `NotificationsController.processNewMessages` (ветки `mentioned`), меню `FilterTabsView` и меню мьюта чата; `tele_kv`. Effort M.
+
+#### 0157 — audio file as a voice message
+- **Суть:** «send as voice» для аудиофайла: opus 32 кбит/с, waveform, длительность; также в docked-ленте.
+- **Вердикт:** ✅ переносим — решение по умолчанию: переиспользуем нативный энкодер записи.
+- **Android:** `AudioVoice.kt`: `MediaExtractor`+`MediaCodec` → PCM 16 кГц → `startRecord/writeFrame` → `.ogg` → `TL_documentAttributeAudio(voice, waveform)`; вход — `ChatAttachAlertAudioLayout` и docked (android 0096); запись голоса блокируется на время конвертации. Effort L.
+
+#### 0158 — download folder per chat
+- **Суть:** загрузки сохраняются в `<папка>/<имя чата>`, в меню чата — своя папка.
+- **Вердикт:** ⚠️ частично — решение мейнтейнера: подпапка `Telegram/<чат>` внутри стандартных публичных папок, без SAF и произвольных папок.
+- **Android:** `MediaController.saveFile/saveFileInternal` (RELATIVE_PATH `Download|Pictures|Movies/Telegram/<чат>`), `dialogId` передаётся параметром из `ChatActivity`/`PhotoViewer`; санитизация имени, переименование чата оставляет старую папку. Effort M.
+
+#### 0159 — resize the input field by dragging
+- **Суть:** перетаскиванием границы над полем задаётся минимальная высота.
+- **Вердикт:** ❌ не переносим — поле Android растёт само до `maxLines`, drag на сенсоре конфликтует со скроллом.
+- **Android:** —
+
+#### 0160 — streamer mode
+- **Суть:** скрыть окно от захвата, имена/текст в уведомлениях, номера телефонов, заголовок окна; пункт в главном меню.
+- **Вердикт:** ⚠️ частично — заголовок окна/трей n/a; решение мейнтейнера: независим от 0113 и 0172, без правил приоритета.
+- **Android:** `Streamer.kt`: `AndroidUtilities.allowScreenCapture`/`FlagSecureReason` (`LaunchActivity`, `BubbleActivity`), `NotificationsController` (превью выкл), номера в `DrawerProfileCell`/`ProfileActivity`/`SettingsActivity`; пункт в дровере. Effort M.
+
+#### 0161 — translate your message before sending
+- **Суть:** из меню поля бокс выбора языка, перевод подменяет текст в поле.
+- **Вердикт:** 🟢 в стоке — решение по умолчанию: `AIEditorAlert.TAB_TRANSLATE` покрывает, работы нет.
+- **Android:** — (`AIEditorAlert` в `ChatActivityEnterView`).
+
+#### 0162 — unsorted folder
+- **Суть:** виртуальная папка со всеми чатами вне других папок (архив отдельно).
+- **Вердикт:** ✅ переносим — решение по умолчанию: тот же механизм, что у локальных папок (0124, пачка 11).
+- **Android:** `UnsortedFolder.kt`: синтетический `DialogFilter` в `getDialogFilters()`/`sortDialogs`, исключить из `FiltersSetupActivity`; порядок гейтов с hide «All chats» (android 0009). Effort L.
+
+#### 0163 — gif frame timing and unique download names
+- **Суть:** фикс десктопного стриминга gif и защита от перезаписи одноимённых загрузок.
+- **Вердикт:** ❌ не переносим — `AnimatedFileDrawable` сам тайминг, кэш по id документа, `MediaStore` добавляет `(n)`.
+- **Android:** —
+
+#### 0164 — saved gifs and fave stickers past the limit
+- **Суть:** вытесненные сервером gif (200) и избранные стикеры остаются локально; снятие из избранного чистит копию.
+- **Вердикт:** ✅ переносим — выселение известно в `addRecentGif/addRecentSticker`.
+- **Android:** `PastLimit.kt` + таблица `tele_past_limit` в `tele.db`; хук при вытеснении, дописывание хвостов в `getRecentGifs/getRecentStickers(TYPE_FAVE)`, refresh `file_reference`. Effort M.
+
+### 0165–0204
+
+#### 0165 — select several chats in the list
+- **Суть:** ctrl/shift-клик по строкам чат-листа → панель с mark read / archive / mute / folder / delete.
+- **Вердикт:** 🟢 в стоке — мультивыбор через long-press и action mode.
+- **Android:** `DialogsActivity.addOrRemoveSelectedDialog`; работы нет.
+
+#### 0166 — hide messages by keyword or regex
+- **Суть:** глобальные и per-chat правила (слово или `/regex/i`); сообщения чужих с совпадением скрываются как у игнор-листа, превью строки пустое.
+- **Вердикт:** ✅ переносим, решение по умолчанию: поставляется вместе с игнор-листом; семантика Java-regex принята.
+- **Android:** `TeleHooks.hiddenByWords(MessageObject)`; правила в `TeleConfig` и `tele_kv`; хуки `ChatActivity` (загрузка/новые), `DialogCell`, пункт в меню чата. Зависит от игнор-листа (старые 0016/0073). Effort M.
+
+#### 0167 — show tele menu items only when their feature is on
+- **Суть:** на десктопе добавлены под-тумблеры `*_menu` и гейты фич; пункты tele не рисуются при выключенной фиче.
+- **Вердикт:** ⚠️ решение по умолчанию: отдельные `*_menu` под-тумблеры не делаем, скрытие закрывает редактор меню 0171.
+- **Android:** только аудит гейтов tele-пунктов (`ProfileActivity`, `ChatActivity`, `tele_option_*`) мастер-тумблерами. Зависит от 0171. Effort S.
+
+#### 0168 — regex search in loaded history
+- **Суть:** переключатель regex рядом с полем поиска; поиск по загруженной истории с докачкой страниц, подсветка ошибки regex.
+- **Вердикт:** ✅ переносим, решение по умолчанию: и в чате, и в поиске чат-листа.
+- **Android:** при включённом режиме не слать `MediaDataController.searchMessagesInChat`, а сканировать `ChatActivity.messages` с догрузкой `MessagesController.loadMessages`; результаты в тот же UI (`searchCountText`, `scrollToMessageId`); для чат-листа — поиск в `DialogsSearchAdapter` по памяти. SQLite-REGEXP нет. Effort M.
+
+#### 0169 — regroup tele settings pages
+- **Суть:** страницы настроек переразбиты (interface / chats / messages / sending / notifications / menus / privacy / profiles / bots / debug / server / backup / updates).
+- **Вердикт:** ✅ переносим, решение мейнтейнера: копируем новую структуру десктопа.
+- **Android:** `TeleSettingsActivity.buildRows`/`SECTIONS`; обновить `TeleSearch`, `TeleNewSettings.settingIds()`, deeplinks. Базис для 0170 и новых страниц. Effort M.
+
+#### 0170 — collapsible sub-toggles in tele settings
+- **Суть:** родительский тумблер с сворачиваемыми дочерними; дочерние затемнены, пока родитель выключен.
+- **Вердикт:** ✅ переносим.
+- **Android:** новый тип строки в `TeleSettingsActivity` (`parent: Item<Boolean>`), alpha/`setEnabled`. Effort S.
+
+#### 0171 — rearrange menus with groups and submenus in a menu editor
+- **Суть:** редактор раскладки 7 меню (Message, Chat, ChatRow, FolderTab, Profile, Send, Field): порядок, скрытие, разделители, подменю, пресеты, экспорт/импорт текстом.
+- **Вердикт:** ✅ переносим, решение мейнтейнера: все меню как на десктопе, включая пресеты и текстовый экспорт/импорт.
+- **Android:** база — `MessageMenu.kt`, `TeleMenuActivity`; layout JSON вместо hidden+order (миграция), разделители `ActionBarPopupWindow.GapView`, подменю через swipe-back; остальные виды: `ChatActivity.headerItem`, `DialogsActivity`, `FilterTabsView`, `ProfileActivity.otherItem`, `ChatActivityEnterView.sendPopupLayout`. Опирается на android 0047/0057/0058. Effort L.
+
+#### 0172 — hide phone numbers in profiles
+- **Суть:** тумблер: строка телефона в профиле пустая.
+- **Вердикт:** ✅ переносим.
+- **Android:** гейт создания `ProfileActivity.phoneRow` (не `numberRow`); рядом с android 0075. Effort S.
+
+#### 0173 — choose how quoted names of deleted messages link
+- **Суть:** имя автора в цитате удалённого — mention, ссылка `t.me/<username>` или обычный текст.
+- **Вердикт:** ✅ переносим.
+- **Android:** `DeletedReply.composeQuote` + `TL_messageEntityMentionName`/`TextUrl`; `StringItem` `deleted_quote_name`; для ссылки отключить превью. Зависит от android 0071. Effort S.
+
+#### 0174 — land the send animation where the message really is
+- **Суть:** фикс конечной точки `MessageSendingAnimationController` tdesktop.
+- **Вердикт:** ❌ у Android своя анимация отправки, баг не воспроизводится.
+- **Android:** работы нет.
+
+#### 0175 — sticker captions
+- **Суть:** показ подписи под стикером (чат, ответы, список, уведомления), отправка стикера с текстом из поля, правка подписи.
+- **Вердикт:** ✅ переносим, решение мейнтейнера: отправка/правка и рендер везде.
+- **Android:** `SendMessagesHelper.sendSticker(… caption …)` готов; перехват в `ChatActivity.onStickerSelected`; рендер — новая ветка в `ChatMessageCell` для стикера, `DialogCell`, уведомления через `MessageObject`; правка стикеров в edit-режиме. Effort L.
+
+#### 0176 — inline calcmula results after `=`
+- **Суть:** результат выражения `2+2=` призраком в поле, принимается Tab/→.
+- **Вердикт:** ✅ переносим, решение мейнтейнера: чип над полем, тап вставляет.
+- **Android:** `ChatActivityEnterView` (TextWatcher) + `Calcmula.compute/cached`, чип по образцу `CalcmulaPreview.kt`. Effort M.
+
+#### 0177 — stop the chat list repainting while idle
+- **Суть:** кэш кадра emoji-статуса в `unread_badge.cpp`.
+- **Вердикт:** ❌ Qt-специфика.
+- **Android:** работы нет.
+
+#### 0178 — send large crash dumps zipped
+- **Суть:** `crash_report_window`: zip minidump с лимитами размера.
+- **Вердикт:** ❌ у Android нет minidump.
+- **Android:** `TeleCrash` шлёт текстовый Java-отчёт; см. 0202.
+
+#### 0179 — copy or delete aliases from their menu
+- **Суть:** в меню `@alias`-ссылки и строки алиасов профиля — copy / open profile / delete alias.
+- **Вердикт:** ✅ переносим.
+- **Android:** `Aliases.kt` (`remove`, `dialogId`); long-click по ссылке в `ChatActivity`, `ProfileActivity.tele_aliasRow`. Опирается на android 0030/0035. Effort S.
+
+#### 0180 — userpics in compact chat list rows
+- **Суть:** инвалидация кэша userpic в `dialogs_row.cpp`.
+- **Вердикт:** ❌ Qt-кэш; компактные строки Android — отдельная фича 0129.
+- **Android:** работы нет.
+
+#### 0181 — preview chats in the chat area
+- **Суть:** ПКМ по чату → превью без открытия и отметки прочитанным.
+- **Вердикт:** 🟢 в стоке — long-press «peek».
+- **Android:** `DialogsActivity.showChatPreview`; работы нет.
+
+#### 0182 — keep deleted messages and edit history after a restart
+- **Суть:** персистентное хранилище удалённых/правок, срок 1/7/30 дней/навсегда, clear saved history.
+- **Вердикт:** 🔁 основное сделано android 0068/0069; остаток по решению мейнтейнера: срок хранения 1/7/30/навсегда (по умолчанию навсегда).
+- **Android:** `DeletedMessages.kt`, `MessageHistory.kt`, `TeleDatabaseHelper` — prune по `date`; защитить kept-медиа от стоковой очистки кэша; зависит от 0151. Effort S–M.
+
+#### 0183 — who-reacted list matches the reaction count
+- **Суть:** фикс устаревшего кэша списка реакций tdesktop.
+- **Вердикт:** ❌ `ReactedUsersListView` на Android грузит список при каждом открытии.
+- **Android:** работы нет.
+
+#### 0184 — send several gifts at once
+- **Суть:** счётчик Quantity; N последовательных покупок, остановка на первой ошибке.
+- **Вердикт:** ✅ переносим, решение мейнтейнера (массовые действия с подарками), только звёздные подарки.
+- **Android:** степпер в `SendGiftSheet`, цикл по `StarsController.buyStarGift` (`whenDone`); клампить по `per_user_remains`; один запрос пароля на серию (0187). Effort M.
+
+#### 0185 — dim hidden gifts and select several
+- **Суть:** скрытые подарки приглушены с бейджем; мультивыбор: show/hide, pin, transfer.
+- **Вердикт:** ✅ переносим, решение мейнтейнера. (а) затемнение S, (б) мультивыбор L.
+- **Android:** `ProfileGiftsContainer`, `GiftSheet.GiftCell`; `TL_stars.saveStarGift`, `toggleStarGiftsPinnedToTop`, `transferStarGift`; цикл с прогрессом. Effort L.
+
+#### 0186 — search gifts
+- **Суть:** поиск и чипы collection/model/backdrop/symbol по всем подаркам профиля.
+- **Вердикт:** ✅ переносим, решение мейнтейнера.
+- **Android:** `StarsController.GiftsList` догрузить до конца, клиентский фильтр; чипы как `ResaleGiftsFragment.Filter`. Использует общий список 0185. Effort M.
+
+#### 0187 — local password for stars and gift actions
+- **Суть:** отдельный локальный пароль с сбросом через облачный пароль перед тратой звёзд и действиями с подарками (каждое — тумблер).
+- **Вердикт:** ✅ переносим, решение мейнтейнера: свой локальный пароль + биометрия, сброс через облачный пароль, как на десктопе.
+- **Android:** `TeleHooks.requirePassword(action, runnable)` в 6 точках `StarsController` (`payAfterConfirmed`, `sendPaidReaction`, `buyPremiumGift`, `buyStarGift`, `buyResellingGift`) и `StarGiftSheet` (upgrade/transfer/convert/sell); хэш в `tele_kv` (`TeleArgon2`); сброс через `account.getPassword` + SRP. Гейтит 0184–0198, 0195. Effort M.
+
+#### 0188 — who-read list follows the read state
+- **Суть:** обновление списка «кто прочитал» tdesktop.
+- **Вердикт:** ❌ `MessageSeenView` на Android запрашивает данные при показе.
+- **Android:** работы нет.
+
+#### 0189 — show a chat's data center from its first photo
+- **Суть:** DC чата/канала по самому старому фото профиля, с пометкой «uncertain» при неполной истории.
+- **Вердикт:** ✅ переносим, решение по умолчанию: пометку «uncertain» оставляем.
+- **Android:** `PeerId.kt`, `MessagesController.getDialogPhotos` (`dialogPhotosLoaded`), асинхронное обновление `tele_dcRow` в `ProfileActivity`; опирается на android 0025. Effort M.
+
+#### 0190 — more bulk gift actions
+- **Суть:** sell, remove from sale, convert to stars, add to collection; общий `RunBatch` с прогрессом и отменой.
+- **Вердикт:** ✅ переносим, решение мейнтейнера.
+- **Android:** `TL_stars.updateStarGiftPrice`, `convertStarGift`, `updateStarGiftCollection`; раннер `tele/helpers/GiftBatch.kt` (общий с 0213); гейт 0187. Зависит от 0185. Effort M.
+
+#### 0191 — page keys in lists and safer box edges
+- **Суть:** PageUp/PageDown/Home/End и защита от клика у края бокса.
+- **Вердикт:** ❌ клавиатура/мышь десктопа.
+- **Android:** работы нет.
+
+#### 0192 — search, filter and export star transactions
+- **Суть:** поиск, фильтры, итоги, «Load all», CSV-экспорт транзакций звёзд.
+- **Вердикт:** ✅ переносим, решение по умолчанию: CSV через share sheet.
+- **Android:** `StarsIntroActivity.StarsTransactionsLayout`, `StarsController` (`getStarsTransactions` до конца), клиентский фильтр; `FileProvider` + share-intent. Effort M.
+
+#### 0193 — filter long lists by date
+- **Суть:** диапазон дат для общих медиа (серверно), подарков и транзакций (клиентски).
+- **Вердикт:** ✅ переносим, решение по умолчанию: все списки, как на десктопе.
+- **Android:** `MediaDataController.loadMedia` (`min_date`/`max_date`), `CalendarActivity` в режиме диапазона, `SharedMediaLayout`, `ProfileGiftsContainer`, транзакции; зависит от 0186, 0192. Effort M.
+
+#### 0194 — show oversized stickers as files like the server
+- **Суть:** документ без sticker-атрибута — файл; превью TGS >64 КБ не рисуется.
+- **Вердикт:** 🟢 в стоке — стикер по атрибутам, oversize-TGS уходит как файл.
+- **Android:** `MessageObject`, `SendMessagesHelper`; работы нет.
+
+#### 0195 — MTProto console
+- **Суть:** окно для вызова любого API-метода: TL-рантайм по схеме, автокомплит, подтверждение опасных методов с локальным паролем, история, инспектор.
+- **Вердикт:** ✅ переносим, решение мейнтейнера: порт инспектора и консоли, TL-схема в комплекте.
+- **Android:** WebView + `@JavascriptInterface`, `RawTLObject : TLObject` через `ConnectionsManager.sendRequest`, JSON-схема + Kotlin-сериализатор; инспектор (0088) и 0218, 0298; `ViewAsTl.kt` (android 0059); гейт 0187. Effort L.
+
+#### 0196 — show the media's data center in the media viewer
+- **Суть:** `дата · DC N` в подписи просмотрщика и в шапке сторис.
+- **Вердикт:** ✅ переносим.
+- **Android:** `PhotoViewer` (`dateTextView`), `PeerStoriesView`; тумблер `SHOW_DC`, зависит от 0189/android 0025. Effort S.
+
+#### 0197 — gift studio
+- **Суть:** студия картинок уникальных подарков: модель/фон/узор, пресеты, надписи, экспорт PNG/GIF/MP4/WebM/TGS, sweep, избранное.
+- **Вердикт:** ✅ переносим, решение мейнтейнера; `api.changes.tg` за тумблером (третья сторона, по умолчанию выкл. — решение по умолчанию).
+- **Android:** рендер `GiftSheet.GiftCell`/`StarGiftPatterns`; атрибуты `getStarGiftUpgradeAttributes`, `getUniqueStarGift`; PNG — `Canvas`; MP4/WebM — `MediaCodec` + rlottie; GIF — свой энкодер; `tele.db`. Семейство «студия подарков» (0197, 0204, 0234). Effort L.
+
+#### 0198 — fake gift upgrades
+- **Суть:** «Fake upgrade» открывает бокс апгрейда без оплаты, выкатывает случайные атрибуты по rarity, история.
+- **Вердикт:** ✅ переносим, решение мейнтейнера: с анимацией ролла.
+- **Android:** `StarGiftSheet.doUpgrade` с подменой оплаты, локальный `TL_starGiftUnique`, `StarGiftPreviewSheet`; новая ролл-анимация. Effort M.
+
+#### 0199 — quote rich messages
+- **Суть:** цитирование блоков rich-сообщений в rich-редакторе.
+- **Вердикт:** ❌ rich-сообщений на Android нет.
+- **Android:** работы нет.
+
+#### 0200 — select service messages
+- **Суть:** сервисные сообщения выделяются как обычные (удаление), исключаются из copy/forward/download.
+- **Вердикт:** ✅ переносим.
+- **Android:** `ChatActivity.processRowSelect`, `ChatActionCell` (оверлей), `updateActionModeVisibility`/`addToSelectedMessages`. Effort M.
+
+#### 0201 — hide the upgraded gift's number and model until the roll ends
+- **Суть:** во время ролла апгрейда номер и модель скрыты, чтобы не спойлерить итог.
+- **Вердикт:** ✅ переносим, решение мейнтейнера: ролл-анимация делается в 0198, значит и этот фикс.
+- **Android:** `StarGiftSheet` в ролл-анимации (0198). Effort S–M.
+
+#### 0202 — send crash reports without a dump
+- **Суть:** отправка отчёта без дампа, заметки `Tele-Note:`, причина в заголовке диалога.
+- **Вердикт:** ✅ переносим, решение по умолчанию: как на десктопе, за серверным тумблером; нужна поддержка tele-server (открытый вопрос серверному мейнтейнеру).
+- **Android:** `TeleCrash.kt`, на старте `ApplicationExitInfo` (`REASON_CRASH_NATIVE`, `REASON_ANR`), диалог android 0085 расширить причиной. Effort S.
+
+#### 0203 — report freezes
+- **Суть:** watchdog главного потока, 15 с без ответа → маркер, на следующем старте диалог и отправка.
+- **Вердикт:** ✅ переносим, решение по умолчанию: серверный тумблер, нужна поддержка tele-server.
+- **Android:** watchdog в `ApplicationLoader`, стек главного потока в каталог `TeleCrash`; путь отправки общий с 0202. Effort M.
+
+#### 0204 — gift grid builder
+- **Суть:** конструктор сетки подарков в стиле профиля: drag-reorder, ribbon-тексты, экспорт PNG/GIF/MP4 с рамкой профиля.
+- **Вердикт:** ✅ переносим, решение мейнтейнера (студия подарков); `api.changes.tg` за тумблером.
+- **Android:** отдельный экран с сеткой `GiftCell`, `ItemTouchHelper`; рендер/экспорт общие с 0197. Effort L.
+
+### 0205–0244
+
+#### 0205 — notification centre
+- **Суть:** хранилище notices на аккаунт (до 300 записей / 30 дней): Limit, Server, Tele, Update, Crash, Online. Rate limits из события FloodWait: тост с обратным отсчётом от 5 с, плашка над списком чатов от 60 с, запись «you can send again».
+- **Вердикт:** ✅ L — решение мейнтейнера: порт с нативным JNI-хуком в tgnet для flood-wait (первый hunk форка в `jni/`); вход — строка с бейджем в секции tele (опционально и локальный чат tele).
+- **Android:** хук в `ConnectionsManager.cpp` (блок 420, ~1389–1431) + колбэк по образцу `onPremiumFloodWait` в `TgNetWrapper.cpp`; карта `token → класс запроса` для `Classify`; `tele_notices` в `TeleDatabaseHelper`; экран `MODE_NOTIFICATIONS` + плашка в `DialogsHintCell`; источники `TeleUpdater`/`TeleCrash`. Тумблеры off. Kind=Online — вместе с 0155.
+
+#### 0206 — server notices
+- **Суть:** опциональный массив `notices` в фиде `/v1/badges` (тон, текст, фото ≤1 МБ, ≤2 кнопки, фильтры builds/platforms/users, до 64); запись в центре, тост один раз на id, ревизии заменяют запись.
+- **Вердикт:** ✅ M — решение по умолчанию: открытый вопрос к мейнтейнеру сервера, общий фид должен принимать платформу `android` и номера сборок Android.
+- **Android:** `TeleServer.kt` (HTTP, ETag), `TeleBadges.kt` (парсинг, `TeleArgon2` для `users`), `TeleNotices` из 0205; тумблер `notices_server`, загрузка только при включённом сервере (правило AGENTS п. 12). Зависит от 0205, android 0073/0074.
+
+#### 0207 — copy a gift collection's link
+- **Суть:** в меню коллекции в профиле — «copy link» и share → `https://t.me/<username>/c/<id>`.
+- **Вердикт:** ✅ S.
+- **Android:** `ProfileGiftsContainer.java` (~1195–1260, `ItemOptions` по long-press): уже есть Share и ссылка; добавить «Copy link» (`AndroidUtilities.addToClipboard` + `BulletinFactory.createCopyLinkBulletin`).
+
+#### 0208 — show usernames for invisible names
+- **Суть:** пустое или состоящее из невидимых символов имя заменяется на `@username`, без юзернейма — фраза или id. Хук в `updateNameDelayed`, поддержка в списке, шапке, пузырях.
+- **Вердикт:** ✅ M — решение мейнтейнера: пользователи и чаты (названия чатов через `putChat`, только в памяти, никогда не пишутся в БД).
+- **Android:** `UserObject.getUserName/getFirstName` (слой `LocalNames`, android 0029) + `ContactsController.formatName`; `DialogCell`, `ChatAvatarContainer`, `ChatMessageCell`, `ProfileActivity`; для чатов хук в `MessagesController.putChat` без правки `TLRPC.Chat`. Kotlin-хелпер с таблицей кодпоинтов; тумблеры `invisible_names`, fallback, phrase.
+
+#### 0209 — show hidden characters
+- **Суть:** био/адрес/имя/сообщение из одних невидимых символов показываются именованными плашками (`U+200B zero width space`), клик объясняет.
+- **Вердикт:** ✅ M — общая таблица символов с 0208.
+- **Android:** `ProfileActivity` (about), `MessageObject.messageText`/caption при пустом видимом тексте — подмена `CharSequence` спанами без правки `messageOwner.message`. Тумблер `show_hidden_chars`.
+
+#### 0210 — multiple quotes in one reply
+- **Суть:** повторное цитирование не заменяет цитату в ответе, а дописывает блок-цитату в поле ввода (с автором, с учётом лимита длины).
+- **Вердикт:** ✅ M — остаётся plain-ветка (rich-редактора на Android нет).
+- **Android:** `ChatActivity.java:3606` (`replyingQuote` в `onQuoteClick`): при уже существующей цитате вставлять `TL_messageEntityBlockquote` через `setFieldText` в `ChatActivityEnterView`, обрезка по `maxMessageLength`. Тумблер `multi_quote`.
+
+#### 0211 — quote voice message transcriptions
+- **Суть:** выделенный фрагмент расшифровки голосового цитируется в поле как блок-цитата, ответ обычный.
+- **Вердикт:** ✅ S — решение мейнтейнера 0137: транскрипция не AI, функция остаётся.
+- **Android:** снять запрет `isVoiceTranscriptionOpen()` в `ChatActivity.canShowQuote` (~3564); вставка цитаты — общий код с 0210 (`quote_text` для голосового на сервере невалиден).
+
+#### 0212 — rate limit notices for slowmode and download throttling
+- **Суть:** `SLOWMODE_WAIT` не показывается тостом, `FLOOD_PREMIUM_WAIT` на трансферах исключён; лимиты можно только логировать (раздельные тумблеры).
+- **Вердикт:** ✅ S поверх 0205.
+- **Android:** `ConnectionsManager.cpp` уже различает `FLOOD_PREMIUM_WAIT_` и `SLOWMODE_WAIT_`; передавать тип в общий JNI-колбэк 0205. Тумблер `notices_log_limits`.
+
+#### 0213 — gift batches survive flood waits and bad items
+- **Суть:** общий `RunGiftBatch`: шаги по одному, flood-wait виден в прогрессе, проблемные элементы пропускаются и перечисляются с причинами.
+- **Вердикт:** ✅ M — решение мейнтейнера: массовые подарочные действия и раннер 0213 портируются.
+- **Android:** Kotlin-раннер последовательных запросов `StarsController` (`saveStarGift`, `convertStarGift`, `transferStarGift`, `updateStarGiftPrice`) с подпиской на хук 0205. Зависит от 0184–0186, 0190, 0192, 0193, 0205; tgnet уже ждёт flood нативно, поэтому суть — прогресс и пропуск.
+
+#### 0214 — say why a download couldn't be saved
+- **Суть:** диалог с причиной ошибки записи и сброс папки чата (0158) / глобального пути.
+- **Вердикт:** ❌ — на Android пути сохранения не настраиваются: решение мейнтейнера по 0158 — подпапка `Telegram/<chat>` в стандартных публичных папках без SAF, сбрасывать нечего.
+- **Android:** — (при желании причина в стоковом `FileLoadOperation` fail — отдельная идея).
+
+#### 0215 — retry failed upload parts
+- **Суть:** упавший кусок загрузки перепосылается до 3 раз с паузой 1,2,4,8,16 с; `FILE_PART_N_MISSING` — перечитать часть N; в конце тост об ошибке.
+- **Вердикт:** ✅ M — always-on фикс.
+- **Android:** `FileUploadOperation.java` (колбэк `sendRequest`, 550–677): сейчас любая ошибка → `state = 4` + `didFailedUploadingFile`. Счётчик ретраев на `requestNum`, отложенная отправка того же запроса; для секретных чатов (IV шифрования) ретрай не делать.
+
+#### 0216 — -teleoffline keeps features that only use Telegram
+- **Суть:** убрать `OfflineForLaunch()` из гейтов gif-конвертации, превью ссылок и шотов.
+- **Вердикт:** ❌ — launch-флага `-teleoffline` на Android нет (флаги заменены тумблерами).
+- **Android:** — (заметка: будущие offline-переключатели, `Calcmula.kt:58`, гейтить только запросы к tele-серверу и сторонним хостам).
+
+#### 0217 — local password for bot payments and paid messages
+- **Суть:** отдельные тумблеры локального пароля перед платежами ботов, платными сообщениями и suggested posts.
+- **Вердикт:** ✅ S — решение мейнтейнера: локальный пароль 0187 + 0217 портируются (свой пароль + биометрия, сброс через облачный пароль).
+- **Android:** гейт в `PaymentFormActivity`, `AlertsCreator.ensurePaidMessageConfirmation` и `StarsController`-оплатах. Зависит от 0187.
+
+#### 0218 — confirm more irreversible methods in the mtproto console
+- **Суть:** список «опасных» методов расширен (+11 и паттерны `.delete*`, `*leave*`, `*TTL`).
+- **Вердикт:** ✅ S — решение мейнтейнера: инспектор и консоль mtproto портируются.
+- **Android:** перенести список в консоль, порт которой идёт по 0195 (TL-схема в комплекте; 0088).
+
+#### 0219 — deletions that fail on the server come back
+- **Суть:** сообщение удаляется локально сразу; при ошибке сервера возвращается (перечитывается по id), снимается пометка «удалено», тост с причиной.
+- **Вердикт:** ✅ M.
+- **Android:** `MessagesController.deleteMessages` (~9302–9480): в ветке `error != null` — `messages.getMessages`/`channels.getMessages` → `MessagesStorage.putMessages` → `didReceiveNewMessages`; снять запись в `DeletedMessages.kt` (android 0068), причина в `Bulletin`. Осторожно с pending-task: FLOOD/сеть tgnet повторит сам, откатывать только жёсткие ошибки.
+
+#### 0220 — retry failed messages
+- **Суть:** в меню неудавшегося сообщения — «отправить все неудавшиеся» (текст, документы, фото).
+- **Вердикт:** ✅ S.
+- **Android:** «Retry» для одного уже есть (`OPTION_RETRY`, `retrySendMessage`); добавить «Retry all» в `fillMessageMenu` (обход `isSendError()`, `ensurePaidMessageConfirmation`), id опции в реестр `MessageMenu.kt` (android 0047/0057).
+
+#### 0221 — find any group member when mentioning
+- **Суть:** `@` в большой группе ищет участников на сервере (`channelParticipantsMentions`, с topic).
+- **Вердикт:** 🟢 уже в стоке.
+- **Android:** `MentionsAdapter.java:1478–1530` шлёт `TL_channels_getParticipants` с `TL_channelParticipantsMentions`; работы нет.
+
+#### 0222 — load the call log in the right page sizes
+- **Суть:** ошибка загрузки журнала звонков → экспоненциальный ретрай (1…30 с) вместо вечной остановки.
+- **Вердикт:** ✅ S — только часть про ретрай, размеры страниц на Android корректны (50 → 100).
+- **Android:** `CallLogActivity.java:1311–1440`: в ветке ошибки `endReached = true` заменить отложенным повтором. Always-on.
+
+#### 0223 — read archived stickers from cache for every account
+- **Суть:** на десктопе `static bool` мешал второму аккаунту читать кэш архивных стикеров.
+- **Вердикт:** 🟢 в стоке — `MediaDataController` per-account, бага нет.
+- **Android:** — .
+
+#### 0224 — retry loading gift collections
+- **Суть:** упавшая загрузка коллекций подарков перезапускается через 3 с.
+- **Вердикт:** ✅ S.
+- **Android:** `StarsController.GiftsCollections.load` (~3108–3150): при ошибке `loading` остаётся `true` навсегда; добавить `else` со сбросом и `runOnUIThread(this::load, 3000)`. Always-on.
+
+#### 0225 — shared media calendar follows the open sublist
+- **Суть:** календарь медиа в Saved messages → саблист добавляет `saved_peer_id`.
+- **Вердикт:** 🟢 уже в стоке.
+- **Android:** `CalendarActivity.java:483–486` ставит `req.saved_peer_id` при `topicId != 0` и `dialogId == clientUserId`.
+
+#### 0226 — see and release messages queued behind an upload
+- **Суть:** сообщение в очереди показывает «queued, waiting for …», пункт «send now», предупреждение «N queued messages will be lost» при отмене загрузки.
+- **Вердикт:** ✅ M.
+- **Android:** `SendOrder.kt` (android 0066): `isHeld`, `heldText`, `sendNow` поверх `Held`; пункт меню через `MessageMenu.kt`; подпись во второй строке у времени в `ChatMessageCell`; предупреждение в диалоге отмены (`SendMessagesHelper.cancelSendingMessage`). Под тумблером `queue_behind_media`.
+
+#### 0227 — show pending ghost-scheduled messages
+- **Суть:** ghost-режим отправляет «как запланированные через N секунд»; такие сообщения видны в чате, меню «send now»/«cancel», handover на реальное сообщение.
+- **Вердикт:** ✅ L — решение мейнтейнера: база приватности (игнор-лист, per-chat ghost и ghost-schedule — остаток старого 0032) идёт в ранний батч, затем 0227.
+- **Android:** локальное «призрачное» сообщение со статусом sending в `SendMessagesHelper`/`ChatActivity` (стоковое отложенное живёт в `MODE_SCHEDULED`), подмена id при `updateNewScheduledMessage`; «send now» = `messages.sendScheduledMessages`, «cancel» = `deleteScheduledMessages`. Зависит от ghost-schedule.
+
+#### 0228 — ignored users and hidden words can stay silent
+- **Суть:** тумблер `mute_ignored`: сообщения игнорируемых/по словам не уведомляют и не считаются непрочитанными, превью чата берёт предыдущее подходящее (до 512).
+- **Вердикт:** ✅ M — решение мейнтейнера: игнор-лист и 0166 (hidden words, вместе с игнор-листом) идут в ранний батч, 0228 поверх них.
+- **Android:** `NotificationsController.processNewMessages`, `DialogCell`/`MessageObject` (последнее видимое), кнопки упоминаний в `ChatActivity`. Серверный unread не поменять — корректируются только уведомления и бейджи.
+
+#### 0229 — invisible stories follow ghost settings and survive restarts
+- **Суть:** `InvisibleStories(peer) = watch-invisibly || (ghost_stories && Ghosted(peer))`; локальная память «просмотрено до id» 48 ч; подтверждение «раскроет вас» перед реакцией/ответом; лайв — вопрос вместо запрета.
+- **Вердикт:** ✅ M — решение мейнтейнера: после per-chat ghost в раннем батче приватности.
+- **Android:** `StoriesController.markStoryAsRead` (~1287–1322, гейт `INVISIBLE_STORIES`; `dialogIdToMaxReadId` локально уже пишется — проверить, что `getAllStories` не откатывает), диалог в `StoryViewer`; лайв — `StoryViewer.java:388` заменить блок на диалог. Зависит от android 0021 (0004 desktop).
+
+#### 0230 — .tgs stickers Telegram would reject
+- **Суть:** gzip-заголовок с OS=10 (TOPS-20) при отправке `.tgs` заменяется на 3 (Unix).
+- **Вердикт:** ✅ S — решение по умолчанию: в плане, поздний батч, низкий приоритет (студия 0197 портируется, экспортная часть тоже).
+- **Android:** `SendMessagesHelper.prepareSendingDocumentInternal` (путь `.tgs`) мелким always-on хелпером; экспорт студии — 0197.
+
+#### 0231 — show the start parameter on the start button
+- **Суть:** у бота по ссылке кнопка Start показывает `Start · <param>` с тултипом.
+- **Вердикт:** ✅ S.
+- **Android:** `ChatActivity.java:8546–8574` (`bottomOverlayStartButton`, `R.string.BotStart2`), параметр — поле `botUser`; полная строка по long-click. Тумблер `show_start_param`.
+
+#### 0232 — mentions and replies in the notification centre
+- **Суть:** упоминания и ответы мне из групп (в т. ч. muted) пишутся в центр (до 300), клик ведёт к сообщению, правка обновляет текст.
+- **Вердикт:** ✅ M — решение мейнтейнера: часть центра уведомлений.
+- **Android:** подписка на `NotificationCenter.didReceiveNewMessages` (не `processNewMessages` — там нет muted), фильтр по `mentioned`/entity/ответу на своё; переход deeplink'ом в `LaunchActivity`; правка — `messageEdited`. Kind `Mention` в `tele_notices`, тумблер `notices_mentions`. Зависит от 0205.
+
+#### 0233 — no edited mark on bot messages
+- **Суть:** `HidesEditedMark(item)` → автор-бот или `viaBot`.
+- **Вердикт:** ✅ S.
+- **Android:** `ChatMessageCell.java:18472–18490` добавить `&& !TeleHooks.hidesEditedMark(messageObject)` (`user.bot` или `via_bot_id != 0`); тумблер `hide_bot_edited`, перерисовка через `TeleHooks.onConfigChanged`.
+
+#### 0234 — more gifts and models in the gift studio
+- **Суть:** расширение студии подарков: случайный старт, новые коллекции, оригинальная модель, свои `.tgs`, обычные подарки, переименование модели/фона/символа.
+- **Вердикт:** ✅ L — решение мейнтейнера: студия подарков (0197, 0204, 0234) портируется; студия по умолчанию ходит на api.changes.tg за тумблером (off).
+- **Android:** поверх порта студии 0197 (рендер карточки, экспорт png/gif/mp4/tgs) и 0198/0204; зависит от них.
+
+#### 0235 — your own reaction strip
+- **Суть:** выбор числа реакций над меню сообщения и порядка, закрепление реакций; хранится строкой `reactions_order`.
+- **Вердикт:** ✅ M — M-вариант: страница со списком и drag-reorder (живое превью — L).
+- **Android:** `ReactionsContainerLayout.setVisibleReactionsList` (~583), создание в `ChatActivity.java:32677` и для тегов на ~10488; источник `MediaDataController.getTopReactions/getEnabledReactionsList`; `TeleConfig`-строка (emoji / `documentId`), закреплённые первыми; страница drag в `TeleSettingsActivity` («chats», как `TeleMenuActivity`).
+
+#### 0236 — captioned stickers go to the docked media
+- **Суть:** стикеры с подписью и стикеры/GIF из панелей прикрепляются в docked-медиа над полем, в меню стикера — «attach».
+- **Вердикт:** ✅ M — решение по умолчанию: в плане, поздний батч, низкий приоритет; подписи стикеров 0175 портируются (решение мейнтейнера).
+- **Android:** `DockedMedia.kt`, `DockedStore.kt`, `TeleDockedStrip.kt` (android 0096) + `EmojiView` (контекст стикера/GIF); подпись — `sendMedia` с `message` вместо `sendSticker`. Зависит от 0175.
+
+#### 0237 — browse every tele version's changes
+- **Суть:** встроенный `changelog_history.json` (все релизы по пунктам), вкладки версий и поиск.
+- **Вердикт:** ✅ M — решение мейнтейнера: история в APK, CI генерирует `changelog_history.json` из релизных changelog в `res/raw`.
+- **Android:** `TeleChangelog.kt` (формат `{tag,title,url,categories,…}`), страница версий/поиска в `TeleSettingsActivity` (`MODE_NEW`, 0241); скрипт CI.
+
+#### 0238 — late-sent messages show their real sent time
+- **Суть:** после поздней отправки дата заменяется серверной, чат-лист обновляется.
+- **Вердикт:** 🟢 уже в стоке.
+- **Android:** `SendMessagesHelper` (~8369–8460) подставляет `res.date`, `ChatActivity.messageReceivedByServer` делает `obj.messageOwner = newMsgObj`; позицию определяет id.
+
+#### 0239 — notification centre shows whole entries
+- **Суть:** записи целиком, длинные — «Show more» (6 строк), рябь нажатия.
+- **Вердикт:** ✅ S — закладывается сразу в ячейку центра 0205.
+- **Android:** новая `Cell` в `tele/ui/` (`StaticLayout` с лимитом строк). Зависит от 0205.
+
+#### 0240 — copied values in the notification centre
+- **Суть:** тосты «скопировано» логируются со значением (клик копирует снова), склейка одинаковых.
+- **Вердикт:** ✅ S поверх 0205.
+- **Android:** fork-код копирования вызывает `TeleNotices.copied(value)` рядом с `AndroidUtilities.addToClipboard`/`BulletinFactory.createCopyBulletin`; kind `Copy`, тумблер `notices_copies`; стоковые вызовы не трогать.
+
+#### 0241 — what's new as a settings page with live toggles
+- **Суть:** страница «new in tele» с вкладками версий, поиском и живыми тумблерами внутри.
+- **Вердикт:** ✅ M — решение мейнтейнера по 0237/0169: структура и поиск настроек как на десктопе.
+- **Android:** `TeleSettingsActivity(MODE_NEW)`: секции по версиям с теми же `Row`/`buildRows`, поиск `TeleSearch.kt`, `TeleNewSettings.kt` (android 0088). После 0237.
+
+#### 0242 — choose how silent videos are sent
+- **Суть:** опция «беззвучное видео — как gif или как видео», `KeepSendingAsGif` для анимаций.
+- **Вердикт:** ✅ S — решение по умолчанию: в плане, низкий приоритет; сток уже шлёт беззвучное видео как видео, нужна лишь обратная опция.
+- **Android:** `SendMessagesHelper.prepareSendingVideo` (~11213): определить отсутствие аудиодорожки и выставить `VideoEditedInfo.muted` при включённом тумблере; связь с android 0095 (gif как видео, отложен).
+
+#### 0243 — skip the mini-app terms box for trusted apps
+- **Суть:** открывавшаяся ссылка на mini app не показывает окно terms.
+- **Вердикт:** 🟢 уже в стоке.
+- **Android:** `LaunchActivity.java:5600–5608`: `WebAppDisclaimerAlert` только при `botApp.inactive`.
+
+#### 0244 — live previews in settings
+- **Суть:** на страницах ghost mode, invisible names и peer ids — живой макет (профиль, пузыри, кольца сторис, строка id), реагирующий на тумблеры.
+- **Вердикт:** ✅ L — чистый UX-слой; зависимости (ghost, 0208/0209) портируются по решениям мейнтейнера.
+- **Android:** новый `TYPE_PREVIEW` в `TeleSettingsActivity` (кастомный `View` на Canvas/`TextView`-макетах, без `ChatMessageCell`); после 0208, 0209, ghost-опций и `PeerId.kt` (android 0025). Делать в последнюю очередь.
+
+### 0245–0284
+
+#### 0245 — markdown renders as you type
+- **Суть:** маркеры `**`/`__`/`~~`/`||`/`` ` ``/``` ``` ``` остаются в тексте поля ввода, но рисуются форматированно; строки `> ` и `>! ` уходят цитатой / раскрывающейся цитатой.
+- **Вердикт:** ✅ переносим; решение мейнтейнера: только декор-спаны, в entities конвертируются при отправке; `>` / `>!` — за отдельным подтумблером.
+- **Android:** `TextWatcher` на `ChatActivityEnterView.messageEditText` и полях подписи; отдельный класс спанов `TeleLiveMarkdownSpan` (не `TextStyleSpan`), игнорируется в стоковой сборке entity; парсинг цитат перед `MediaDataController.getEntities`. `tele/helpers/LiveMarkdown.kt`, `TeleConfig.LIVE_MARKDOWN`. Effort L.
+
+#### 0246 — reply and mention badges in the notification centre
+- **Суть:** записи «упоминание» в центре уведомлений получают на аватарке значок «ответ» либо «@».
+- **Вердикт:** ✅ переносим — центр уведомлений портируется (решение мейнтейнера), патч чисто косметический.
+- **Android:** правка ячейки записи центра уведомлений и поле `reply` в `tele_notices`; `IsReply` через `replyMessageObject` / `mentioned`. Зависит от 0205, 0232. Effort S.
+
+#### 0247 — open anyone's gifts in the gift grid
+- **Суть:** импорт подарков чужого пира или коллекции в gift grid (пагинация по 50, лимит 2000 строк, исключение строк, скрытие подарков).
+- **Вердикт:** ✅ переносим — студия подарков (0197, 0204, 0234) портируется по решению мейнтейнера.
+- **Android:** `StarsController` (`TL_stars.getSavedStarGifts`), `ProfileGiftsContainer`, пункт меню профиля/коллекции; надстройка над grid-билдером 0204 (экспорт сетки в видео — отдельно в 0204). Effort M.
+
+#### 0248 — rarity tiers and pills in the gift studio
+- **Суть:** ранги редкости (uncommon/rare/epic/legendary) вместо permille и цветные «таблетки» в студии подарков.
+- **Вердикт:** ✅ переносим — студия подарков портируется (решение мейнтейнера).
+- **Android:** `TL_starGiftAttributeRarity{,Uncommon,Rare,Epic,Legendary}` уже есть в `TL_stars.java`; правка рендера строки списка частей студии. Зависит от 0197, 0234. Effort S.
+
+#### 0249 — never open web apps in fullscreen
+- **Суть:** мини-аппы всегда в окне: из URL срезается `tgWebAppFullscreen`, на `web_app_request_fullscreen` отвечаем `fullscreen_failed: UNSUPPORTED`.
+- **Вердикт:** ✅ переносим — 2–3 точки гейта.
+- **Android:** `BotWebViewContainer` (`web_app_request_fullscreen`, `onFullscreenRequested`), `BotWebViewSheet.setFullscreen` / `props.fullscreen`, `BotWebViewAttachedSheet`; `TeleConfig.WEBAPPS_NO_FULLSCREEN`. Effort S.
+
+#### 0250 — unbreakable characters no longer push message text past the bubble
+- **Суть:** серия неразрывных символов (hangul filler) выталкивала текст за пузырь в `Ui::Text::String` и `InputField`.
+- **Вердикт:** ❌ не переносим — баг движка текста tdesktop.
+- **Android:** — ; `StaticLayout` рвёт слишком широкое слово по символам. [INFERENCE] на устройстве не проверялось.
+
+#### 0251 — the failed send badge is clock-sized and no longer covers the time
+- **Суть:** подгонка размера собственного бейджа «не отправлено» (из 0220) под размер часов.
+- **Вердикт:** ❌ не переносим — правит рендер tele-бейджа, которого на Android нет.
+- **Android:** — ; стоковая красная «!» и `OPTION_RETRY` не перекрывают время.
+
+#### 0252 — messages with relative dates no longer freeze tele
+- **Суть:** `checkFormattedDateUpdates` многократно дёргал `requestItemTextRefresh` для одного item; добавлена дедупликация.
+- **Вердикт:** ❌ не переносим — баг конкретной реализации tdesktop.
+- **Android:** — ; относительные даты обслуживает `FormattedDateSpan` + `ChatMessageCell`. [INFERENCE] зависание не воспроизводилось.
+
+#### 0253 — copy peer ids as plain digits
+- **Суть:** копирование id из строки профиля даёт чистое число без пробелов; учитывается Bot API-форма.
+- **Вердикт:** ✅ переносим — тот же дефект на Android (копируется форматированный `PeerId.rowText`); учтено как follow-up (решение мейнтейнера/дельта).
+- **Android:** `ProfileActivity` (контекстное меню строки id) → новая `PeerId.copyText(account, userId, chatId)`. Отдельный fix-коммит к android 0025, без тумблера. Effort S.
+
+#### 0254 — send quick replies by their exact name
+- **Суть:** сообщение, целиком равное `/имя` быстрого ответа, отправляет этот шорткат; точное совпадение в автодополнении — первым.
+- **Вердикт:** ✅ переносим.
+- **Android:** ранний `return` в `ChatActivityEnterView.processSendingText`, `QuickRepliesController.findReply(String)` / `sendQuickReplyTo`, для групп — `ChatActivity.teleResendQuickReply` (android 0065); порядок подсказок в `MentionsAdapter`. Не для ботов, stars, scheduled/ttl. Effort S.
+
+#### 0255 — copy file paths from the message menu
+- **Суть:** пункт «copy file path» для скачанных файлов в меню сообщения.
+- **Вердикт:** ✅ переносим.
+- **Android:** `tele_option_copy_file_path` в `ChatActivity` рядом с `tele_option_copy_emoji_id`, регистрация в `MessageMenu.ALL` (редактор меню, android 0047/0057), `FileLoader.getPathToMessage`; показывать, только если файл скачан. Effort S.
+
+#### 0256 — leave kept deleted messages out of the chat list
+- **Суть:** сохранённые удалённые не влияют на последнее сообщение, счётчики и уведомления.
+- **Вердикт:** 🔁 уже перенесено android 0068 — удалённое реально уходит из стоковой БД.
+- **Android:** android 0068 (`DeletedMessages.keepInChat`, `MessagesStorage`); тумблер не нужен.
+
+#### 0257 — a line under every open group of tele settings
+- **Суть:** разделитель в конце раскрытой группы настроек (0170).
+- **Вердикт:** ❌ не переносим — вёрстка desktop-страницы настроек.
+- **Android:** — ; секции разделяют стоковые `ShadowSectionCell`.
+
+#### 0258 — lowercase the default title bar label
+- **Суть:** `TELE #N` → `tele #N` в тайтлбаре.
+- **Вердикт:** 🔁 уже перенесено android 0005/0020.
+- **Android:** `TeleBuild.label()` уже даёт `tele N` / `tele dev`.
+
+#### 0259 — forward messages one by one
+- **Суть:** пересылка уходит отдельными запросами по одному сообщению; альбомы остаются вместе.
+- **Вердикт:** ✅ переносим.
+- **Android:** `SendMessagesHelper.sendMessage(ArrayList<MessageObject>…)` — в условие сброса пачки добавить `ForwardOrder.separate(...)` (разные `getGroupId()`). `TeleConfig.FORWARD_ONE_BY_ONE`; в описании предупреждение о flood wait. Effort S.
+
+#### 0260 — record voice in higher quality
+- **Суть:** битрейт голосовых 32 → 128 кбит/с.
+- **Вердикт:** 🟢 уже в стоке — энкодер `jni/audio.c` с `OPUS_BITRATE_MAX`, 48 кГц моно.
+- **Android:** `jni/audio.c`, `MediaController`; тумблер не нужен. [INFERENCE] фактический битрейт не мерили.
+
+#### 0261 — compress photos less
+- **Суть:** JPEG-качество фото 87 → 94.
+- **Вердикт:** 🟢 решение мейнтейнера/лида: закрыто android 0063 (HD-фото) — работы нет.
+- **Android:** `SendMessagesHelper.generatePhotoSizes` (q=80 обычное, q=99 HD), `TeleConfig.HD_PHOTOS` из android 0063.
+
+#### 0262 — thinner brush in the photo editor
+- **Суть:** минимальный размер кисти 3.4 px → 1 px.
+- **Вердикт:** ✅ переносим.
+- **Android:** `Paint/RenderView.brushWeightForSize` (уменьшить свободный член), проверить `PaintWeightChooserView` и `Swatch.brushWeight`; `TeleConfig.THIN_BRUSH`. Effort S.
+
+#### 0263 — bigger, faster chat export
+- **Суть:** 10000 сообщений на HTML-файл и части по 1 МБ в экспорте чата.
+- **Вердикт:** ❌ не переносим — экспорта данных чата на Android нет.
+- **Android:** —
+
+#### 0264 — smaller minimum window size
+- **Суть:** минимальный размер окна 256×256.
+- **Вердикт:** ❌ не переносим — окна нет.
+- **Android:** — ; мультиокно управляется ОС.
+
+#### 0265 — show when media was uploaded in the media viewer
+- **Суть:** во вьюере добавляется «uploaded <дата>», если дата медиа отличается от даты сообщения больше чем на 5 минут.
+- **Вердикт:** ✅ переносим.
+- **Android:** `PhotoViewer` (подзаголовок после `formatDateAudio`), `photo.date` / `document.date`; при портировании 0196 (DC медиа) — через « · ». `TeleConfig.MEDIA_UPLOAD_DATE`. Effort S.
+
+#### 0266 — copy the owner id of sticker sets
+- **Суть:** пункт «copy owner ID» в меню набора стикеров/эмодзи; id вычисляется из id набора.
+- **Вердикт:** ✅ переносим — арифметика над `set.id` (формула эмпирическая, точность в UI не обещать).
+- **Android:** `StickersAlert.optionsButton` + `onSubItemClick`, `EmojiPacksAlert`; формула в `tele/helpers/PeerId.kt`; `TeleConfig.STICKER_SET_OWNER`. Effort S.
+
+#### 0267 — hide bubble tails
+- **Суть:** хвостик пузыря скругляется как остальные углы; также в превью масштаба и у подписей стикеров.
+- **Вердикт:** ✅ переносим с оговоркой по вёрстке.
+- **Android:** `ChatMessageCell.getCurrentBackgroundDrawable`, `Theme.MessageDrawable`; предпочтительно форсировать `drawPinnedBottom = true` (отступы/высоты/аватар зависят от него); проверить mediaBackground, группы документов, кнопки бота. `TeleConfig.HIDE_BUBBLE_TAILS`; нужна проверка на устройстве. Effort M.
+
+#### 0268 — show online members in big groups
+- **Суть:** в шапке и профиле больших групп показывается «N участников, M в сети» через `messages.getOnlines`.
+- **Вердикт:** ⚠️ частично — в стоке уже есть (`shortPollOnlines`); решение мейнтейнера: закрыть ещё и край скрытых участников ≤200.
+- **Android:** `MessagesController` (~`shortPollOnlines`), `ChatAvatarContainer` — при `participants == null` брать `info.online_count`. Effort S.
+
+#### 0269 — select more than 100 messages
+- **Суть:** лимит выделения 100 → 10000; удаление, пересылка и report-spam уходят частями по 100.
+- **Вердикт:** ✅ переносим — решение мейнтейнера: снять лимит 100 с нарезкой запросов.
+- **Android:** два жёстких `>= 100` в `ChatActivity` → `TeleHooks.maxSelected()`; `MessagesController.deleteMessages` нарезать по 100 (в т.ч. `TL_channels_deleteMessages`); пересылка уже режет по 100; проверить report-spam и «в избранное». Связан с 0259. Effort M.
+
+#### 0270 — no outline on large emoji
+- **Суть:** убирает белую обводку у одиночного крупного эмодзи.
+- **Вердикт:** ❌ не переносим — обводка из рендера desktop.
+- **Android:** — ; `MessageObject.TYPE_EMOJIS` рисуется без обводки.
+
+#### 0271 — add tele to the start menu
+- **Суть:** ярлык `tele.lnk` в меню «Пуск» Windows.
+- **Вердикт:** ❌ не переносим — Windows.
+- **Android:** — ; лончер-иконка — часть брендинга (android 0004/0039).
+
+#### 0272 — classic text padding in bubbles
+- **Суть:** `st::msgPadding` = 13/7/13/8 px, как в старом tdesktop; зависит от 0267.
+- **Вердикт:** ❌ не переносим — стиль-константа desktop.
+- **Android:** — ; отступы пузыря — разбросанные `dp(…)` в `ChatMessageCell`.
+
+#### 0273 — fix fonts picked in chat settings
+- **Суть:** измерение шрифта по реальным глифам и отрисовка через DirectWrite.
+- **Вердикт:** ❌ не переносим — Windows/Qt.
+- **Android:** — ; выбора системного шрифта чата нет.
+
+#### 0274 — sharp boost icons and button emoji in scaled shots
+- **Суть:** в масштабированных shot иконки буста и эмодзи в кнопках бота рисовались мыльными (lib_ui 0004).
+- **Вердикт:** ❌ не переносим — артефакт растеризации desktop.
+- **Android:** — ; android 0093 рисует `Canvas`-ом из View.
+
+#### 0275 — smooth wheel scrolling
+- **Суть:** плавные шаги колеса мыши (+ lib_ui 0005).
+- **Вердикт:** ❌ не переносим — нет колеса мыши.
+- **Android:** — ; fling уже плавный.
+
+#### 0276 — badges on forwarded and reply headers
+- **Суть:** кастомная иконка верификации и галочка показываются также в «Переслано от» и в шапке ответа.
+- **Вердикт:** ✅ переносим.
+- **Android:** `ChatMessageCell` — `forwardedNameLayout`, `replyNameLayout`; обернуть имя в `TeleNameBadges.withVerified`, ключ `tele_bubbleKey` по `fwd_from.from_id`, учесть ширину иконки в layout. Зависит от 0012 (android 0077/0083). Горячий файл, проверка на устройстве. Effort M.
+
+#### 0277 — select table cells as a range
+- **Суть:** прямоугольное выделение ячеек таблицы в rich-страницах и копирование в Excel.
+- **Вердикт:** ❌ не переносим — rich-сообщений/таблиц tele на Android нет.
+- **Android:** —
+
+#### 0278 — turn on the wallet before Telegram does
+- **Суть:** принудительно `walletAvailable() == true` (сервер может отказать).
+- **Вердикт:** ✅ переносим — кошелёк на Android гейтится `AppGlobalConfig.walletAvailable` (в debug уже true); ветка «деньги» портируется по решению мейнтейнера.
+- **Android:** один хунк в `ConfigBoolean.get()` для `wallet_available` через `TeleHooks` вместо ~10 точек; нужен рестарт; `TeleConfig.FORCE_WALLET`, секция debug/experimental. Effort S.
+
+#### 0279 — hide birthday banners and effects
+- **Суть:** убрать баннеры дней рождения над списком чатов, конфетти в профилях, торт в строке, кнопку подарка в поле ввода.
+- **Вердикт:** ✅ переносим.
+- **Android:** `BirthdayController.isToday` → false при тумблере, `ProfileBirthdayEffect`, подсказки `BIRTHDAY_CONTACTS_TODAY` / `BIRTHDAY_SETUP` в `DialogsActivity`; применение без рестарта через `TeleHooks.onConfigChanged`. `TeleConfig.HIDE_BIRTHDAYS`. Effort S.
+
+#### 0280 — mention several people in a row
+- **Суть:** вставка упоминания и немедленное открытие списка для следующего; ctrl+клик — упоминание по имени.
+- **Вердикт:** ✅ переносим — решение мейнтейнера: long-press по строке подсказки (жесты desktop заменены).
+- **Android:** `ChatActivity` (~`replaceWithText(... "@" + username + " ")`) + `mentionContainer.getListView().setOnItemLongClickListener` для строк пользователей; не для inline-ботов. `TeleConfig.CHAIN_MENTIONS`. Effort S.
+
+#### 0281 — filter chat search by message type
+- **Суть:** в поиске по чату фильтры: фото, видео, файлы, музыка, голосовые, кружки, гифки, ссылки; без текста — все сообщения типа.
+- **Вердикт:** ✅ переносим — решение по умолчанию: ряд чипов в поиске по чату, включая GIF и кружки.
+- **Android:** `MediaDataController.searchMessagesInChat` (параметр фильтра `TL_inputMessagesFilter*`), UI в `ChatActivity.searchItem`; разрешить пустой запрос при выбранном типе; связь с 0168 (regex-поиск). `TeleConfig.SEARCH_TYPES`. Effort M.
+
+#### 0282 — peek at a hidden last seen
+- **Суть:** при скрытом вашем «был(а) в сети» tele на миг добавляет собеседника в разрешённые (`account.setPrivacy`), читает статус и откатывает правила.
+- **Вердикт:** ✅ переносим — решение мейнтейнера: тумблер выкл. по умолчанию, предупреждение в описании, обязательное восстановление при старте приложения.
+- **Android:** `ContactsController.setPrivacyRules(…LASTSEEN)`, `ChatAvatarContainer` / `ProfileActivity` (статус «peeked»), сохранённые правила для отката в `tele_*`-таблице (`TeleDatabaseHelper`), восстановление на старте и из `TeleCrash`-хука; повторы/задержки сетевого слоя. `TeleConfig.PEEK_LAST_SEEN`. Effort L.
+
+#### 0283 — keep deleted chats and topics
+- **Суть:** при «Keep deleted messages» удалённые/покинутые/выкинутые чаты и удалённые админом топики остаются в списке с загруженными сообщениями.
+- **Вердикт:** ✅ переносим — решение мейнтейнера: как desktop (вынужденные удаления и свои выход/удаление).
+- **Android:** `MessagesController` (`TL_updateChannel`/`TL_updateChat`, `deleteDialog` на всех путях), `TopicsController.onTopicsDeletedServerSide`/`deleteTopics`, пометка в `DialogCell`, плашка вместо поля ввода (`bottomOverlayChat`), `tele_kept_dialogs`. Зависит от 0019, 0151, 0256 (android 0068); связан с retention (0182). Effort L.
+
+#### 0284 — secret chats prototype
+- **Суть:** прототип E2E-секретных чатов (ключи, TTL, медиа, скриншот-уведомления), нужен из-за их отсутствия в tdesktop.
+- **Вердикт:** 🟢 уже в стоке — секретные чаты есть полностью.
+- **Android:** `SecretChatHelper`, `EncryptedChat`; связанные правки уже сделаны (android 0021–0024).
+
+### 0285–0322
+
+#### 0285 — update wallet secret phrase without backup
+- **Суть:** тумблер добавляет в «Keys & backup» кнопку «Update secret phrase» для кошелька без бэкапа: новые слова, старые перестают работать, сеть берёт небольшую комиссию; переиспользуется поток ротации ключа.
+- **Вердикт:** ✅ решение мейнтейнера: портировать и проверить на тестовом кошельке; исход на сервере без `disableBackup` не подтверждён.
+- **Android:** `WalletKeysBackupFragment.fillItems` (при `!isBackupEnabled()`), `GramWallet.emulateDisableBackup/prepareDisableBackup/disableBackup`; нужна копия `PendingDisableBackup.disableBackup()` без `TL_wallet.disableBackup`. Тумблер `TeleConfig` (off) на `MODE_MONEY`. Зависит от 0278; effort M.
+
+#### 0286 — copy wallet transaction links
+- **Суть:** ПКМ по транзакции в списке money — «copy link» / «open in explorer»; ссылки идут на tonscan.org.
+- **Вердикт:** ✅ «open in explorer» в Android уже есть, не хватает «copy link»; tonscan.org как на десктопе — решение по умолчанию.
+- **Android:** `WalletActivity.openTransactionSheet` (рядом с `WalletViewInExplorer`), `ItemOptions` по long-press в `TransactionCell`; общий URL-хелпер для 0296. Explorer — настройка/дефолт tonscan.org вместо `tonBlockchainExplorerUrl`. Effort S.
+
+#### 0287 — send while an old wallet stays on the device
+- **Суть:** десктоп блокирует отправку при ключах прежнего кошелька на устройстве; патч разрешает её, если есть и ключ текущего.
+- **Вердикт:** 🟢 у Android другая модель, конфликта кастоди нет.
+- **Android:** `GramWalletStorage` на адрес, `GramWallet.previousWallets` лишь перечисляет старые кошельки и на отправку не влияет; работы нет.
+
+#### 0288 — turn off money
+- **Суть:** тумблер «Turn off Money» (нужен рестарт): `wallet_available` = false, переводы в чатах — обычные сервисные сообщения, ссылки на money отказывают тостом.
+- **Вердикт:** ✅ единая точка `config.walletAvailable`; при on «no money» побеждает 0278.
+- **Android:** `AppGlobalConfig.ConfigBoolean.get()` — `tele_`-override только для `walletAvailable` (стоковые гейты заработают сами); отдельные ранние возвраты: `MessageObject` (тексты переводов/ton-connect), `ChatActionCell.hasWalletActionLayout()`, `TL_updateWallet*` в `MessagesController`, `LaunchActivity`. Страница `MODE_MONEY`. Effort S.
+
+#### 0289 — money passcode is the tele passcode (text)
+- **Суть:** уточнён текст опции money-пароля: тот же код, что локальный пароль tele.
+- **Вердикт:** 🟢 в Android wallet-блокировка уже внутри экрана «Passcode».
+- **Android:** `PasscodeActivity.walletHeaderRow/walletPasscodeRow/walletInfoRow`; при желании — подмена строки в `strings_tele.xml`, отдельный патч не нужен.
+
+#### 0290 — dim every other address group
+- **Суть:** адрес кошелька в деталях — четыре строки по четыре группы, чётные/нечётные приглушены (как в iOS).
+- **Вердикт:** ✅ в Android почти готово.
+- **Android:** `WalletImportFragment.formatAddressTwoLines` уже диммирует (`TextAlphaSpan(0.75f)`); в `WalletActivity.formatTransactionAddress` (~3002–3006) блок закомментирован — включить под тумблер; `WalletCardComponent.formatAddress` — по желанию. Effort S.
+
+#### 0291 — clicking another album item switches the open viewer
+- **Суть:** в десктопе viewer — отдельное окно, клик по другому элементу альбома закрывал его вместо переключения.
+- **Вердикт:** ❌ `PhotoViewer` полноэкранный и модальный, до чата под ним не дотянуться.
+- **Android:** —; переключение элементов альбома — свайп внутри viewer'а.
+
+#### 0292 — double click selects words in service messages and comments
+- **Суть:** фикс выделения двойным кликом в сервисных сообщениях и комментарии перевода.
+- **Вердикт:** 🟢 комментарий транзакции в Android уже `setTextIsSelectable(true)`; цель «взять текст сервисного» закрывает 0295.
+- **Android:** `WalletActivity` (~2432, 2449); работы нет.
+
+#### 0293 — closing the rich editor keeps drafts local
+- **Суть:** при «local drafts» закрытие rich-редактора всё равно шло в облако; вынесено общее `KeepsDraftsLocally(thread)`.
+- **Вердикт:** 🔁 уже закрыто android 0021.
+- **Android:** единственный `TL_messages_saveDraft` в `MediaDataController.saveDraft` гейтится `TeleConfig.LOCAL_DRAFTS`; `RichEditor.persistDraft` идёт через него же. Рекомендуется ручная проверка rich-черновика.
+
+#### 0294 — closing the save-draft box does not block the editor
+- **Суть:** бокс ожидания сохранения черновика в облако в `ArticleSession`; отмена бокса оставляла сессию в зависшем состоянии.
+- **Вердикт:** ❌ в Android такого бокса и ожидания облака нет.
+- **Android:** —; `RichEditor.persistDraft` синхронный и локальный.
+
+#### 0295 — copy text of service messages
+- **Суть:** в меню сервисного сообщения пункт «copy text» (с учётом запрета копирования), регистрируется в реестре меню.
+- **Вердикт:** ✅ в стоке у action-сообщений «Copy» нет.
+- **Android:** `ChatActivity.fillMessageMenu`, ветка `type == 1` (~46606): `AndroidUtilities.addToClipboard(message.messageText)` с учётом `noforwards`; код `tele_option_copy_service_text` + `MessageMenu.ALL`; тумблер `TeleConfig` (default off). Проверить long-press на wallet-карте в `ChatActionCell`. Effort S.
+
+#### 0296 — copy/open transaction link from a transfer message
+- **Суть:** ПКМ по сообщению перевода — «Copy Transaction Link» и «View in explorer».
+- **Вердикт:** ✅ после 0286; tonscan.org — решение по умолчанию.
+- **Android:** тот же блок `fillMessageMenu` для `TL_messageActionGramTransfer` при `walletAvailable`; хэш — `GramWallet.findTransaction(msg).tx_hash` (если транзакции нет в загруженных — пункт не показывать); коды `tele_option_copy_tx_link`, `tele_option_view_tx`. Зависит от 0286, 0278. Effort S.
+
+#### 0297 — resize the money window
+- **Суть:** колонка money по центру окна при ресайзе.
+- **Вердикт:** ❌ окно Qt; входит в money-ветку решения мейнтейнера, но у Android полноэкранный фрагмент — нечего переносить.
+- **Android:** —
+
+#### 0298 — MTProto inspector and console as panels
+- **Суть:** окна `RpWindow` переведены на `SeparatePanel` (ресайз, фокус в webview).
+- **Вердикт:** ⚠️ решение мейнтейнера: инспектор и консоль портируются; панельная часть Qt не нужна.
+- **Android:** отдельной работы нет — экран консоли идёт в составе 0195/0218 (0088, схема TL в комплекте); эффект на Android — только вёрстка полноэкранного фрагмента. Effort S.
+
+#### 0299 — blurred profile photo as profile header background
+- **Суть:** шапка профиля берёт блюр 96×96 от аватара, затемнённый до целевой яркости; краевой цвет задаёт цвет ActionBar'а; приоритет над peer color и фоном подарка.
+- **Вердикт:** ✅ переносим.
+- **Android:** `ProfileActivity.TopView` (`setBackgroundColorId`, `setBackgroundEmojiId`, `onDraw`) — ветка «фото-фон» из `avatarImage.getImageReceiver().getBitmap()`; блюр — `ProfileGalleryBlurView`/`ProfileMetaballView.profileBlurQueue`. Тумблер `MODE_IDS` или `interface`. Effort M.
+
+#### 0300 — compact folders, icons only
+- **Суть:** в режиме «иконки» иконки и кнопки сайдбара и табов уменьшаются (масштаб 0.6–0.75).
+- **Вердикт:** ⚠️ в стоке Android нет режима иконок; решение по умолчанию: делаем как новую фичу.
+- **Android:** `FilterTabsView` (иконки по `TL_dialogFilter.emoticon`/типу папки), затем компактный вариант; `DialogsActivity`. Effort L.
+
+#### 0301 — remove all my messages from a chat
+- **Суть:** пункт «Remove my messages» в меню чата/диалога/топика: `messages.search(from_id=self)` пачками, удаление для всех, паузы, `FLOOD_WAIT`, подсчёт, остановка тем же пунктом.
+- **Вердикт:** ✅ переносим.
+- **Android:** новый `tele/helpers/RemoveMine.kt`: `TL_messages_search` с `InputPeerSelf` + `MessagesController.deleteMessages(..., forAll=true)`; меню в `ChatActivity`, `DialogsActivity`, `TopicsFragment`; учесть android 0068 (kept deleted не считать удалёнными); настройка в `MODE_MENU`. Effort M.
+
+#### 0302 — scripting prototype
+- **Суть:** TS/JS-скрипты (`defineScript`, grants, consent-бокс, hot reload, raw-вызов любого метода, `onUpdate`, middleware `BeforeSend/BeforeResult/BeforeUpdate`, перехваты отправки), ~30k строк собственного C++ + `runtime.js`; документация `docs/scripting.md`.
+- **Вердикт:** ⚠️ решение мейнтейнера: портировать целиком, quickjs-ng через NDK; десктопные UI-поверхности (виджет-слой, окна, Monaco) не переносятся.
+- **Android:** воронка `ConnectionsManager.sendRequest`, апдейты — `MessagesController.processUpdates`, отправка — `SendMessagesHelper.sendMessage`; TL-мост поверх Java-классов `TLObject` (схемы `.tl` нет, `TLRPC.java` не правим). Папка скриптов — `getExternalFilesDir()` + SAF-импорт, отдельный поток скриптов (решение по умолчанию). Семейство «скриптинг», зависит от 0088 (инспектор). Effort L.
+
+#### 0303 — ask before changing how messages and people look
+- **Суть:** новый grant `display`, consent-бокс объясняет простыми словами.
+- **Вердикт:** ⚠️ реализуется вместе с 0302 (решение мейнтейнера: скриптинг целиком).
+- **Android:** `AlertDialog`-консент в `tele/scripting`; хуки — `MessageObject.messageText`, `ChatMessageCell`, `DialogCell`. Зависит от 0302; effort M.
+
+#### 0304 — fill the whole profile with the photo color
+- **Суть:** при 0299 опция «Fill the whole profile»: профиль перекрашивается палитрой от нижнего края фото (контраст ≥ 4.5), `window_palette` подменяет слоты.
+- **Вердикт:** ⚠️ решение мейнтейнера: полный override `ResourcesProvider`; «один в один» с Qt-палитрой не выйдет.
+- **Android:** `ProfileActivity` (`listView`, ячейки секций, `getThemedColor`), подмена `ResourcesProvider` на время профиля по образцу тем чата с peer color. Регрессионно хрупко. Зависит от 0299; effort L.
+
+#### 0305 — wheel zoom in the media viewer
+- **Суть:** ctrl-колесо зумит/переключает фото.
+- **Вердикт:** ❌ колесо мыши; pinch/double-tap в `PhotoViewer` родные.
+- **Android:** —
+
+#### 0306 — search a person's messages by type
+- **Суть:** фикс десктопа: серверный «от X» + фильтр типа не работает, tele спрашивает «в обе стороны» и дофильтровывает локально.
+- **Вердикт:** ✅ в отчёте был ❌ (в Android нет комбинации «от X + тип»); решение по умолчанию по 0281 (чипы в поиске чата, включая GIF/кружки) делает фикс релевантным.
+- **Android:** `MediaDataController.searchMessagesInChat` + локальная фильтрация по `MessageObject`. Зависит от 0281; effort M.
+
+#### 0307 — money card design from a gift
+- **Суть:** карточка money берёт цвета, паттерн и модель коллекционного подарка (меню «⋮» → card design); отправленные переводы рисуются теми же цветами.
+- **Вердикт:** ⚠️ решение мейнтейнера: 2D и 3D-шейдер; Android-карта — GL/Canvas с собственными флеками, не простая заливка.
+- **Android:** `WalletCardComponent` (`WalletCard3D`+`WalletCardGLRenderer`, `WalletCard2DView`), `WalletCardFlecks`, `WalletActionLayout`; источник — `TL_starGiftUnique` (как в `StarGiftSheet`/`Gifts.kt`); страница card design в `WalletActivity`. Зависит от 0278; effort L.
+
+#### 0308 — smooth wheel glides in chats
+- **Суть:** плавные «глайды» колеса мыши, учёт частоты монитора, кэш-слой отрисовки.
+- **Вердикт:** ❌ колесо мыши; Android — `RecyclerView` + vsync.
+- **Android:** —
+
+#### 0309 — key-change fee quote (BoC)
+- **Суть:** `gram_boc.cpp` принимал ячейку лишь с 1 ссылкой, при смене ключа со старым ключом их 2.
+- **Вердикт:** ⚠️ собственный парсер десктопа не нужен: BoC обрабатывает Rust-движок.
+- **Android:** после 0310 проверить, что движок (`gram-wallet`: `is_valid_cell_boc`, `message_body_hash`) принимает ячейки с 2 ссылками; при необходимости актуализировать ревизию сабмодуля. Зависит от 0285, 0310; effort S.
+
+#### 0310 — wallet-engine from gettele/money (build)
+- **Суть:** сборка движка берёт форк `gettele/money` (ветка `tele/<rev>/5` поверх `i582/wallet-engine`) с поддержкой приватных ключей.
+- **Вердикт:** ✅ решение мейнтейнера: перенести diff форка на Android-ревизию движка и пересобрать Rust.
+- **Android:** сабмодуль `jni/wallet-engine` (gitlink другой ревизии), `jni/gram-wallet/wallet-engine.patch`, `jni/prebuild/include/wallet-engine/`, `rust-toolchain.toml`; ветка форка привязана к ревизии десктопа — нужен re-port. Семейство «деньги»; effort L.
+
+#### 0311 — import wallets by private key
+- **Суть:** импорт кошелька по приватному ключу, такой кошелёк не бэкапится в Telegram, позже можно перейти на 12 слов (ротация); маркер `tele/private-key-wallets`, квиз-слова, очистка буфера через 60 с.
+- **Вердикт:** ✅ решение мейнтейнера: портировать включая приватные ключи; безопасность критична.
+- **Android:** `WalletImportFragment`, `GramWallet.importWallet`, `GramWalletStorage.init` (тип секрета сейчас — слова), `WalletEngine2` (вариант «по ключу» из форк-движка); маркер в таблице `tele_*`; `ClipboardManager` + `Handler` 60 с; `MODE_MONEY` (off). Зависит от 0310, 0278; effort L.
+
+#### 0312 — copy secret words without waiting
+- **Суть:** в каждом списке слов ссылка «Copy Words», «Continue» не ждёт 10 секунд.
+- **Вердикт:** ✅ таймера в Android нет, остаётся кнопка копирования; default off (правило AGENTS).
+- **Android:** `WalletKeysBackupFragment.showRecoveryPhraseAlert`, `WalletSecretPhraseFragment`, `WalletTestPhraseFragment`; `AndroidUtilities.addToClipboard` + очистка через 60 с. Effort S.
+
+#### 0313 — hide the "you also have …" rows above the card
+- **Суть:** (off) скрыть строки других балансов над картой; ПКМ — «Hide these rows».
+- **Вердикт:** ✅ переносим.
+- **Android:** `WalletActivity.updateWalletTopPanel` — три `walletTopPanel.setViewVisible` (`waltButton`, `oldWalletsButton`, `gramEarningsButton`) под `TeleConfig`; быстрый «hide» — `ItemOptions` по long-press. Effort S.
+
+#### 0314 — build litehtml for HTML bubbles
+- **Суть:** CMake-зависимость litehtml для HTML-карточек (0315).
+- **Вердикт:** ✅ решение мейнтейнера: рендерер litehtml через NDK.
+- **Android:** CMake/NDK в `TMessagesProj/jni`. Семейство «litehtml»; effort M.
+
+#### 0315 — HTML cards: litehtml + QuickJS
+- **Суть:** `.tgw`-файлы показываются как HTML-карточки, скрипты — в QuickJS; лимиты (≤64 картинок, ≤4 МБ, 5000 элементов, глубина 256), `light-dark()`; другие клиенты видят файл.
+- **Вердикт:** ⚠️ решение мейнтейнера: порт, рендер litehtml; перенос ~2.2k строк `tele_html.cpp` на `Canvas` JNI.
+- **Android:** `ChatMessageCell` (новый тип блока для документа `*.tgw` по `file_name`) + контейнер litehtml на `Canvas`; скрипты — QuickJS из 0302. Зависит от 0302, 0314; effort L.
+
+#### 0316 — playground chat and .tgw as HTML cards
+- **Суть:** локальный чат-песочница, где написанное становится карточкой; полученные `.tgw` открываются карточками.
+- **Вердикт:** ⚠️ носитель реализуем, сама карточка зависит от 0315.
+- **Android:** по образцу android 0087 (локальный tele-чат, `TeleChangelog`); `tele/ui/HtmlPlayground`, `ChatMessageCell`. Зависит от 0315; effort L.
+
+#### 0317 — gifts as stickers on the money card
+- **Суть:** подарки перетаскиваются на карту money как стикеры (в боксе card design или во вкладке collectibles), клик снимает.
+- **Вердикт:** ⚠️ решение мейнтейнера: карта 2D и 3D; сложность — драг/анимации.
+- **Android:** `WalletActivity` (`TAB_COLLECTIBLES`, `fillCollectibles`, `CollectibleCell`) + слой стикеров поверх `WalletCardView`; `GramWallet.CollectiblesList`. Зависит от 0307; effort L.
+
+#### 0318 — confirm stickers sent from the set box
+- **Суть:** продолжение 0130: второй клик и подсветка выбранного для `StickerSetBox`.
+- **Вердикт:** ✅ объём по 0130 — решение по умолчанию (следуем десктопу).
+- **Android:** `StickersAlert.onStickerSelected` (стр. ~202 и ~1189) — гейт «второй клик» с общим `TeleSendConfirm`, подсветка в `StickerEmojiCell`. Зависит от 0130; effort S.
+
+#### 0319 — β removed from blurred-profile-bg
+- **Суть:** переименование опции (убран маркер β).
+- **Вердикт:** ❌ нечего переносить.
+- **Android:** —; β-пометок в настройках Android нет, тумблер 0299 живёт без неё.
+
+#### 0320 — web platform and more APIs for scripts
+- **Суть:** расширение 0302: `fetch/WebSocket/URL/crypto.subtle/Intl/Workers`, файловая область, звук, webview-панели, сторис, подарки/stars, групповые звонки, media viewer, кнопки под сообщениями, npm-пакеты, обновления скриптов по ссылке, каталог на gettele.app.
+- **Вердикт:** ⚠️ решение мейнтейнера: портировать включая веб-платформу; UI-поверхности (`panels`, `mediaviewer`, `groupcalls`, `chatui`) адаптируются под Android по мере необходимости.
+- **Android:** `tele_script_*.cpp` на JNI/Kotlin; `Resources/tele/scripting/*.js` (runtime, web, websocket, crypto, intl, worker) движко-независимы; сеть скриптов — OkHttp с проверкой offline-флагов. Зависит от 0302; effort L.
+
+#### 0321 — restore a deleted channel post from a forward
+- **Суть:** при открытии удалённого поста канала из форварда tele восстанавливает пост из пересланного, помечает «kept deleted» и подсказкой «recovered from forward».
+- **Вердикт:** ✅ переносим.
+- **Android:** основа — android 0068 (`DeletedMessages.kt`: `archiveMessage`, `getMessage`, `isKept`); перехват клика по шапке форварда в `ChatMessageCell` → `ChatActivity.scrollToMessageId` по `fwd_from.channel_post`, сборка `TLRPC.Message` из пересланного (альбом по `grouped_id`); маркер — в fork-таблице и в тултипе времени. Зависит от 0019 (keep deleted); effort M.
+
+#### 0322 — filter stickers and emoji by format
+- **Суть:** в списках установленных стикеров/эмодзи фильтр по формату (static/animated/video/mixed), сортировка, «архивировать/удалить все показанные»; поиск панели тоже фильтрует по формату.
+- **Вердикт:** ✅ групповое архивирование в стоке есть (`MENU_ARCHIVE`), нужны фильтр, сортировка и формат.
+- **Android:** `StickersActivity` (`fillItems`, `currentType`, `MediaDataController.getStickerSets(type)`); формат по mime документов набора (`application/x-tgsticker` — animated, `video/webm` — video); фильтр поиска — `EmojiView` (`EmojiSearchAdapter`/`StickersSearchAdapter`); чипы над списком, тумблер в `MODE_INTERFACE`. Effort M.
+
+### lib_ui 0001–0008
+
+#### lib_ui 0001 — fullscreen mini apps cover the screen (Qt < 6)
+- **Суть:** `QWindow::setGeometry` для окна до показа.
+- **Вердикт:** ❌ Qt-окна.
+- **Android:** —
+
+#### lib_ui 0002 — non-breaking symbols do not scroll the field sideways
+- **Суть:** в многострочном `InputField` горизонтальный диапазон принудительно 0.
+- **Вердикт:** 🟢 `EditText` (в т.ч. `EditTextBoldCursor`) в multiline переносит длинные «слова» по символам.
+- **Android:** —
+
+#### lib_ui 0003 — real font metrics on Windows
+- **Суть:** `CustomFix` + `PreferVerticalHinting` под GDI.
+- **Вердикт:** ❌ только Windows/Qt.
+- **Android:** —
+
+#### lib_ui 0004 — icon emoji stay sharp at high ratio
+- **Суть:** `PaintIconEmoji` берёт ratio устройства рисования (для шотов 2×–4×).
+- **Вердикт:** ❌ иконки Android — векторные `Drawable`/`ColoredImageSpan`, масштабируются через `canvas.scale`.
+- **Android:** заметка для проверки шотов: `tele/ui/ShotFrame.kt` (`render(scale)` до 4×) рисует кастом-эмодзи/стикеры растровым кэшем `ImageReceiver`, при 3–4× возможна мыльность — глянуть при ручной проверке android 0093.
+
+#### lib_ui 0005 — soft wheel steps in scroll areas
+- **Суть:** мягкие шаги колеса мыши в скролл-областях Qt.
+- **Вердикт:** ❌ колесо мыши.
+- **Android:** —; скролл на Choreographer.
+
+#### lib_ui 0006 — maximize button follows the real window state
+- **Суть:** кнопка maximize в тайтлбаре повторяет реальное состояние окна.
+- **Вердикт:** ❌ тайтлбар окна.
+- **Android:** —
+
+#### lib_ui 0007 — label `exchangeText`, table `rowSpans`
+- **Суть:** API Qt-виджетов под виджет-слой скриптов (0302/0320).
+- **Вердикт:** ❌ Qt-виджеты; виджет-слой скриптов на Android не переносится.
+- **Android:** —
+
+#### lib_ui 0008 — glide at screen refresh rate
+- **Суть:** высокочастотные тики менеджера анимаций Qt под частоту экрана.
+- **Вердикт:** ❌ у Android Choreographer/vsync родной.
+- **Android:** —
+
 ---
 
 ## Готовые аналоги в inugram (ориентир, не источник)
@@ -866,9 +2139,12 @@
 - **Хранение локальных списков** (алиасы 0071/0103/0124, игнор 0016, имена 0078, пины 0123, папки 0124, версии правок 0018/0062): только fork-хранилище + хуки на stock load/save.
 - **Офф-скрин рендер** (шоты 0087/0107/0114): `ChatMessageCell` умеет рисовать в произвольный Canvas, но потребуется собрать «виртуальный» чат (фон, пузыри, тема) — самая трудоёмкая из переносимых фич.
 - **tele-server фичи** (0009, 0037, 0091, 0108): перезапись флагов пира в `MessagesController.putUser/processChat` + один HTTPS-фетч; архитектура сервера описана в README tele и платформенно-нейтральна.
+- **Нативные подсистемы** (центр уведомлений 0205, деньги 0310/0311, скриптинг 0302, litehtml 0314): первые хунки форка в `jni/` и первые сторонние нативные библиотеки (quickjs-ng, litehtml, Rust wallet-engine) — каждая в своём CMake-подкаталоге, сборка под все ABI; в stock-файлы `jni/` идёт один вызов, остальное — новые файлы.
+- **Приватность поверх списка игнора** (0166, 0227, 0228, 0229): сначала база (список игнора 0016/0073, per-chat ghost и ghost-schedule из 0032), только потом патчи, которые на неё опираются; фильтр уведомлений в `NotificationsController` проектируется сразу под все четыре.
+- **Тумблеры десктопа, включённые по умолчанию** (0134, 0147, 0156): на Android default off — правило форка важнее десктопного дефолта.
 
 ## Источники
 
-- tele: `tele/AGENTS.md`, `tele/README.md` (таблица всех 127 патчей), `tele/docs/architecture.md`, патчи в `tele/patches/tdesktop/`
+- tele: `tele/AGENTS.md`, `tele/README.md` (таблица патчей), `tele/docs/architecture.md`, патчи в `tele/patches/tdesktop/` и `tele/patches/Telegram/lib_ui/`
 - Telegram Android 12.10.6 (7112): `Telegram/TMessagesProj/`
 - Образец: inugram `AGENTS.md`, `FEATURES.md`, `series`, патчи `inugram/patches/{bugfix,feature,debloat,hooks,misc}`
