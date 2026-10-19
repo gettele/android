@@ -24,9 +24,9 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 14. **commits** are one line: `feat: …` / `fix: …` / `debloat: …` / `misc: …` in the telegram tree; `docs:` / `chore:` / `feat:` also here. lowercase, imperative, what the user gets. no body, no trailers, no co-author lines, no tool or ai attribution. the subject becomes the patch file name.
 15. **never edit `.patch` files by hand.** change the commits in the telegram tree and export (see [docs/development.md](docs/development.md)).
 16. **never bump `UPSTREAM` in a feature change.** moving to a new upstream release is its own change (`chore: rebase patches onto <version>`).
-17. **don't run `git push` or network git commands** in this repository unless asked. the remote is local-only for now.
+17. **don't run `git push` or network git commands** in this repository unless asked. the remote is github.com/gettele/android (`main` there = local `lord`); pushing to `main` starts a ci build (see [docs/releasing.md](docs/releasing.md)).
 18. **every user-facing patch also updates [features.md](features.md).** one row per feature, in english, in the section of the settings page that holds its switch: what it does in one plain sentence, where to find it, the default, the patch file in `patches/android/` and the desktop patch it comes from (by its number in the current desktop queue). it goes into the same commit as the patch export, never later.
-19. **[docs/PATCHLIST.md](docs/PATCHLIST.md) is the planning file for agents.** the batch plan, statuses and per-patch notes live there (in russian, by the old desktop numbering); read it before picking up work and keep its statuses true. [features.md](features.md) is what users read, so don't put plans or implementation notes in it.
+19. **[docs/PATCHLIST.md](docs/PATCHLIST.md) is the planning file for agents.** the batch plan, statuses and per-patch notes live there (in russian, by the current desktop numbering — see [docs/desktop-numbers.md](docs/desktop-numbers.md) for old numbers); the maintainer's decisions are in [docs/decisions.md](docs/decisions.md) and the step-by-step guide for every planned batch is in [docs/batches/](docs/batches/). read them before picking up work and keep statuses true. [features.md](features.md) is what users read, so don't put plans or implementation notes in it.
 
 ## workflow
 
