@@ -28,9 +28,12 @@ tele_android/
     docs/PATCHLIST.md    the plan: batches, patches, statuses
     UPSTREAM             the base version and commit of DrKLO/Telegram
     patches/android/     exported queue, one file per commit (appears as work lands)
+    .github/workflows/   build.yml (build and publish the apk), sync.yml (watch for new upstream releases)
+    ci/                  release helpers and the next release's changelog (see releasing.md)
     docs/
       architecture.md    this file
       development.md     setup, building, the edit→test→export loop
+      releasing.md       versions, building and publishing releases, secrets, signing
       portability.md     snapshot of the 127-patch portability analysis
   Telegram/              DrKLO/Telegram checkout, branch `tele` — the code tree
 ```
@@ -88,6 +91,7 @@ fork state export/import (json) mirrors tele's settings backup: the spec table i
   - `tele-update-android.json` — `{"tag", "base", "counter", "url", "apk_sha256"}`: `base` is `APP_VERSION_CODE` (the installed version code without the abi digit), `counter` is `TELE_BUILD`, `url` points into `releases/download/<tag>/` and ends with `.apk`. the client fetches it from `releases/latest/download/`, updates when `(base, counter)` is newer than the running build, checks the sha256 and hands the apk to the system installer; android itself rejects an apk signed with another key.
   - `tele-changelog.json` — `{"tag", "title", "url", "categories": [...], "items": [{"text", "where", "category"}]}`, the same format as tele desktop. after an update every account gets it once in the local tele chat (0075); a missing file is explained instead (0111).
 - the tele server client (patches 0009/0093/…) downloads a public, hashed list over https and matches locally; it never uploads account data. the protocol is defined by tele desktop's readme and is platform-neutral.
+- how a release is built, signed and published (and what the secrets are) is in [releasing.md](releasing.md).
 - crash reports (0037) leave the device only after the user taps send, and the text is shown first.
 
 ## batches and build gates
