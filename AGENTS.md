@@ -1,6 +1,6 @@
 # AGENTS.md
 
-instructions for ai coding agents working on tele (android). humans: start with [docs/architecture.md](docs/architecture.md) and [PATCHLIST.md](PATCHLIST.md).
+instructions for ai coding agents working on tele (android). humans: start with [docs/architecture.md](docs/architecture.md) and [docs/PATCHLIST.md](docs/PATCHLIST.md).
 
 tele is telegram android kept as a patch queue: this repository holds `UPSTREAM` (the base version of [DrKLO/Telegram](https://github.com/DrKLO/Telegram)), `patches/android/*.patch` and the docs. the code you edit lives in a separate telegram checkout (`../Telegram` by default) on a branch called `tele`, where the queue is applied as one commit per patch on top of the `UPSTREAM` commit. you change that tree with commits, then export them back into patches here.
 
@@ -34,9 +34,9 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 4. **run and test.** install on a device or emulator and exercise the feature by hand with the option on and off. if you can't run the app, say so plainly and hand over exact steps to test; never claim a feature works because it compiles.
    - driving the emulator/device ui (taps, gestures, typing) is the maintainer's job. hand over a numbered step list and wait; the assistant does code, builds, installs, logcat and screenshots.
    - when a ui detail or behavior is unclear, ask the maintainer directly instead of inferring; two minutes of questions beats half an hour of reasoning.
-5. **export** into this repository: `git format-patch <UPSTREAM commit> -o patches/android/ --zero-commit --no-signature` (from `../Telegram`, see [docs/development.md](docs/development.md)), then update `PATCHLIST.md` statuses.
-6. **batch gate.** patches are delivered in batches (see `PATCHLIST.md`). when every patch of a batch is committed and exported, assemble a debug apk and hand it over for manual testing. a batch is done only after that build is verified by a human.
-7. **commit here.** `git add patches PATCHLIST.md && git commit -m "feat: <what it does>"` (one commit per patch; docs and infra changes use their prefixes).
+5. **export** into this repository: `git format-patch <UPSTREAM commit> -o patches/android/ --zero-commit --no-signature` (from `../Telegram`, see [docs/development.md](docs/development.md)), then update `docs/PATCHLIST.md` statuses.
+6. **batch gate.** patches are delivered in batches (see `docs/PATCHLIST.md`). when every patch of a batch is committed and exported, assemble a debug apk and hand it over for manual testing. a batch is done only after that build is verified by a human.
+7. **commit here.** `git add patches docs/PATCHLIST.md && git commit -m "feat: <what it does>"` (one commit per patch; docs and infra changes use their prefixes).
 
 ## known pitfalls
 
@@ -58,5 +58,5 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 - off by default, and off is exactly stock's behaviour.
 - the option is in `TeleConfig`, on a settings page in a group, has search keywords where useful, and is in the export/import spec.
 - network use respects the offline switches.
-- exported into `patches/android/`, `PATCHLIST.md` updated, committed per the rules.
+- exported into `patches/android/`, `docs/PATCHLIST.md` updated, committed per the rules.
 - a batch, when complete: debug apk assembled and handed over for manual testing.

@@ -102,7 +102,7 @@ all work happens in the telegram tree, as commits on `tele`.
 
    ```bash
    cd ../main
-   git add patches/android PATCHLIST.md
+   git add patches/android docs/PATCHLIST.md
    git commit -m "feat: <what it does>"
    ```
 

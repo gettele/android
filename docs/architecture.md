@@ -25,7 +25,7 @@ the model is inherited from [nitreojs/tele](https://github.com/nitreojs/tele) (p
 tele_android/
   main/                  this repository (branch: lord, local-only)
     AGENTS.md            rules for coding agents
-    PATCHLIST.md         the plan: batches, patches, statuses
+    docs/PATCHLIST.md    the plan: batches, patches, statuses
     UPSTREAM             the base version and commit of DrKLO/Telegram
     patches/android/     exported queue, one file per commit (appears as work lands)
     docs/
