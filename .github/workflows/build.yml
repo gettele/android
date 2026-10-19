@@ -1,0 +1,284 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - UPSTREAM
+      - 'patches/**'
+      - 'ci/**'
+      - .github/workflows/build.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: publish a release (only from main)
+        type: boolean
+        default: false
+      number:
+        description: release number to build as (must be above every existing one), empty for the next free one
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build the apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      number: ${{ steps.release.outputs.number }}
+      version: ${{ steps.release.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: tele
+          persist-credentials: false
+
+      - name: Check the request
+        env:
+          REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+          API_ID: ${{ secrets.TELE_API_ID }}
+          API_HASH: ${{ secrets.TELE_API_HASH }}
+          KEYSTORE: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ "$REQUESTED" = true ] && [ "$PUBLISH" != true ]; then
+            echo "::error::releases are published from main only, this run is on $GITHUB_REF_NAME"
+            exit 1
+          fi
+          for name in API_ID API_HASH KEYSTORE STORE_PASSWORD ALIAS KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::set the TELE_API_ID, TELE_API_HASH, KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD repository secrets"
+              exit 1
+            fi
+          done
+
+      # the sdk, ndk and the native build need the room
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
+
+      - name: Fetch telegram
+        run: |
+          upstream=$(sed -n 's/^commit  *//p' tele/UPSTREAM | tr -d '[:space:]')
+          repo=$(sed -n 's/^repo  *//p' tele/UPSTREAM | tr -d '[:space:]')
+          if ! [[ "$upstream" =~ ^[0-9a-f]{40}$ ]] || [ -z "$repo" ]; then
+            echo "::error::UPSTREAM has no commit and repo lines"
+            exit 1
+          fi
+          mkdir Telegram
+          git -C Telegram init --quiet
+          git -C Telegram remote add origin "$repo"
+          git -C Telegram fetch --quiet --depth 1 origin "$upstream"
+          git -C Telegram -c advice.detachedHead=false checkout --quiet -b tele FETCH_HEAD
+          echo "UPSTREAM_COMMIT=$upstream" >> "$GITHUB_ENV"
+
+      - name: Apply patches
+        env:
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git -C Telegram config user.name "$GIT_COMMITTER_NAME"
+          git -C Telegram config user.email "$GIT_COMMITTER_EMAIL"
+          git -C Telegram am --keep-cr --3way "$GITHUB_WORKSPACE"/tele/patches/android/*.patch
+          echo "applied $(git -C Telegram rev-list --count "$UPSTREAM_COMMIT"..HEAD) patches"
+
+      - name: Fetch submodules
+        run: git -C Telegram submodule update --init --depth 1 --jobs 8
+
+      - name: Pick the release
+        id: release
+        env:
+          NUMBER: ${{ inputs.number }}
+        run: |
+          version=$(sed -n 's/^APP_VERSION_NAME=//p' Telegram/gradle.properties | tr -d '\r')
+          code=$(sed -n 's/^APP_VERSION_CODE=//p' Telegram/gradle.properties | tr -d '\r')
+          if ! [[ "$version" =~ ^[0-9][0-9.]*$ ]] || ! [[ "$code" =~ ^[0-9]+$ ]]; then
+            echo "::error::no APP_VERSION_NAME and APP_VERSION_CODE in gradle.properties"
+            exit 1
+          fi
+          # numbers go on across upstream bumps: the app compares build numbers
+          number=$( {
+            gh release list --limit 1000 --json tagName --jq '.[].tagName'
+            gh api "repos/$GH_REPO/git/matching-refs/tags/v" --paginate --jq '.[].ref'
+          } | python3 tele/ci/next_number.py --number "$NUMBER")
+          tag="v$version-tele.$number"
+          {
+            echo "version=$version"
+            echo "code=$code"
+            echo "number=$number"
+            echo "tag=$tag"
+          } | tee -a "$GITHUB_OUTPUT"
+          echo "building $tag"
+
+      # before the long build: a changelog that can't be published fails now
+      - name: Check the changelog
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          mkdir out
+          previous=()
+          # only a release has to differ from the last one, builds that aren't published don't
+          if [ "$PUBLISH" = true ] && gh release download --pattern tele-changelog.json --dir previous 2> /dev/null; then
+            previous=(--previous previous/tele-changelog.json)
+          fi
+          python3 tele/ci/changelog.py tele/ci/changelog.json --tag "$TAG" --repo "$GH_REPO" "${previous[@]}" \
+            --json out/tele-changelog.json --notes out/notes.md
+
+      - name: Read the toolchain versions
+        run: |
+          gradle=Telegram/TMessagesProj/build.gradle
+          {
+            echo "SDK_PLATFORM=$(sed -n 's/^ *compileSdkVersion  *\([0-9][0-9]*\).*/\1/p' $gradle | head -n1)"
+            echo "BUILD_TOOLS=$(sed -n "s/^ *buildToolsVersion  *'\(.*\)'.*/\1/p" $gradle | head -n1)"
+            echo "NDK=$(sed -n 's/^ *ndkVersion  *"\(.*\)".*/\1/p' $gradle | head -n1)"
+            echo "CMAKE=$(sed -n "s/^ *version  *'\([0-9.]*\)'.*/\1/p" $gradle | head -n1)"
+          } | tee -a "$GITHUB_ENV"
+
+      - name: Set up java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up the android sdk
+        run: |
+          for name in SDK_PLATFORM BUILD_TOOLS NDK CMAKE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::no $name in TMessagesProj/build.gradle"
+              exit 1
+            fi
+          done
+          sdkmanager --licenses < <(yes) > /dev/null
+          sdkmanager --install "platforms;android-$SDK_PLATFORM" "build-tools;$BUILD_TOOLS" "ndk;$NDK" "cmake;$CMAKE" > /dev/null
+          echo "sdk.dir=$ANDROID_HOME" > Telegram/local.properties
+
+      - name: Set up gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          build-root-directory: Telegram
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Write the build secrets
+        env:
+          API_ID: ${{ secrets.TELE_API_ID }}
+          API_HASH: ${{ secrets.TELE_API_HASH }}
+          KEYSTORE: ${{ secrets.KEYSTORE_BASE64 }}
+          NUMBER: ${{ steps.release.outputs.number }}
+        run: |
+          {
+            echo "TELE_API_ID=$API_ID"
+            echo "TELE_API_HASH=$API_HASH"
+            echo "TELE_BUILD=$NUMBER"
+          } >> Telegram/local.properties
+          printf '%s' "$KEYSTORE" | base64 -d > Telegram/TMessagesProj/config/release.keystore
+
+      - name: Build
+        working-directory: Telegram
+        env:
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew --no-daemon :TMessagesProj_App:assembleAfatRelease \
+            "-PRELEASE_STORE_PASSWORD=$STORE_PASSWORD" "-PRELEASE_KEY_ALIAS=$ALIAS" "-PRELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+
+      - name: Remove the build secrets
+        if: always()
+        run: rm -f Telegram/local.properties Telegram/TMessagesProj/config/release.keystore
+
+      - name: Collect the apk
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          apks=(Telegram/TMessagesProj_App/build/outputs/apk/afat/release/*.apk)
+          if [ ${#apks[@]} -ne 1 ] || [ ! -f "${apks[0]}" ]; then
+            echo "::error::expected one apk in the afat release outputs, found: ${apks[*]}"
+            exit 1
+          fi
+          cp "${apks[0]}" "out/tele-$TAG.apk"
+          ls -l out
+
+      - name: Check the signature
+        run: bash tele/ci/check-cert.sh out/tele-*.apk tele/ci/release-cert-sha256.txt "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner"
+
+      - name: Write the update feed
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          CODE: ${{ steps.release.outputs.code }}
+        run: |
+          python3 tele/ci/feed.py --tag "$TAG" --base "$CODE" --apk "out/tele-$TAG.apk" --repo "$GH_REPO" --out out/tele-update-android.json
+          cat out/tele-update-android.json
+
+      - name: Attest the build
+        if: env.PUBLISH == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-path: out/tele-${{ steps.release.outputs.tag }}.apk
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: |
+            out/tele-${{ steps.release.outputs.tag }}.apk
+            out/tele-update-android.json
+            out/tele-changelog.json
+            out/notes.md
+          if-no-files-found: error
+          retention-days: ${{ env.PUBLISH == 'true' && 1 || 7 }}
+
+  publish:
+    name: Publish
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+      NUMBER: ${{ needs.build.outputs.number }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download the build
+        uses: actions/download-artifact@v8
+        with:
+          name: release
+
+      - name: Check the files
+        run: |
+          [ "$(jq -r .tag tele-update-android.json)" = "$TAG" ]
+          [ "$(jq -r .tag tele-changelog.json)" = "$TAG" ]
+          [ "$(jq -r .apk_sha256 tele-update-android.json)" = "$(sha256sum "tele-$TAG.apk" | cut -c1-64)" ]
+
+      # a draft until every asset is in, so clients never see half a release
+      - name: Create the release
+        run: |
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "tele $NUMBER · $VERSION" --notes-file notes.md \
+            "tele-$TAG.apk" tele-update-android.json tele-changelog.json
+          gh release edit "$TAG" --draft=false --latest
+          echo "published $TAG"
