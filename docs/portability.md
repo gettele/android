@@ -2,7 +2,7 @@
 
 ## Что это
 
-[tele](https://github.com/nitreojs/tele/) — патч-очередь для **Telegram Desktop** (tdesktop v7.2.9): 127 патчей, каждый — отдельная фича или фикс. Вопрос: какие из этих фич можно перенести на **Telegram Android**?
+[tele](https://github.com/nitreojs/tele/) — патч-очередь для **Telegram Desktop** (tdesktop v7.2.9): исходный разбор — 127 патчей, каждый — отдельная фича или фикс. Вопрос: какие из этих фич можно перенести на **Telegram Android**? Номера патчей в этом документе — **текущие номера очереди десктопа** (очередь была перенумерована, три патча влиты в соседние); карта старый → новый — [desktop-numbers.md](desktop-numbers.md).
 
 Объект переноса:
 
@@ -35,40 +35,40 @@
 
 ## Сводка
 
-**98 переносимы · 20 частично · 9 не переносимы** (из 127).
+**98 переносимы · 20 частично · 9 не переносимы** (из 127 исходных патчей; в текущей нумерации это 124 номера — старые 0043, 0079 и 0118 влиты в 0017, 0077 и 0107).
 
-Из 98 «переносимых» **около 40 имеют готовый аналог или готовую базу в inugram** (полное покрытие — hide-stories, show-seconds, strip-tracking, message-menu, cloud-drafts, community-dialogs, id-in-profile, jump-to-beginning, multi-account, hide-call-action, call-confirmation, disable-chat-title-phone, folders-display-mode, branding, settings-ui; остальные — смежная поверхность для расширения), ещё 2 — фактически стоковое поведение Android (0044, 0052). Паттерн реализации — «как у inugram, но своё» (см. раздел «Как переносить»).
+Из 98 «переносимых» **около 40 имеют готовый аналог или готовую базу в inugram** (полное покрытие — hide-stories, show-seconds, strip-tracking, message-menu, cloud-drafts, community-dialogs, id-in-profile, jump-to-beginning, multi-account, hide-call-action, call-confirmation, disable-chat-title-phone, folders-display-mode, branding, settings-ui; остальные — смежная поверхность для расширения), ещё 2 — фактически стоковое поведение Android (0043, 0051). Паттерн реализации — «как у inugram, но своё» (см. раздел «Как переносить»).
 
 Типичные причины «не переносим» (все 9):
 
 | Категория | Патчи |
 |---|---|
-| Оконная подсистема Windows/Qt (рамки, развёрнутые окна, mouse-drag) | 0036, 0057 |
-| Заголовок окна / тайтлбар как объект | 0099 |
-| Проблема отсутствует: Android хранит сообщения по mid — «позднее» сообщение само встаёт вниз | 0050 |
-| Проблема решена ОС: App Links / Intent сами открывают ссылки в нативных приложениях | 0052 |
-| Нет объекта: на мобильном нет hover-поведения мыши | 0077 |
+| Оконная подсистема Windows/Qt (рамки, развёрнутые окна, mouse-drag) | 0036, 0056 |
+| Заголовок окна / тайтлбар как объект | 0097 |
+| Проблема отсутствует: Android хранит сообщения по mid — «позднее» сообщение само встаёт вниз | 0049 |
+| Проблема решена ОС: App Links / Intent сами открывают ссылки в нативных приложениях | 0051 |
+| Нет объекта: на мобильном нет hover-поведения мыши | 0076 |
 | Фича о несуществующем на Android объекте (страница Experimental настроек tdesktop) | 0020 |
-| Баг десктопного ffmpeg-стримингового движка (Android — ExoPlayer/MediaCodec) | 0117 |
-| Фича о rich-сообщениях tele, которых на Android нет | 0068 |
+| Баг десктопного ffmpeg-стримингового движка (Android — ExoPlayer/MediaCodec) | 0115 |
+| Фича о rich-сообщениях tele, которых на Android нет | 0067 |
 
-Смежные, но обязательные оговорки для «частично»: системный трей не имеет мобильного аналога (0086, 0091 — остаётся иконка приложения/уведомлений, в inugram уже покрыто `hooks/icon-replacement`), launch flags заменяются тумблерами (0081), docked media (0109, 0118) и очередь отправки tele (0121, 0122) висят на tele-подсистемах, которых на Android нет и которые пришлось бы портировать отдельно.
+Смежные, но обязательные оговорки для «частично»: системный трей не имеет мобильного аналога (0084, 0089 — остаётся иконка приложения/уведомлений, в inugram уже покрыто `hooks/icon-replacement`), launch flags заменяются тумблерами (0079), docked media (0107) и очередь отправки tele (0118, 0119) висят на tele-подсистемах, которых на Android нет и которые пришлось бы портировать отдельно.
 
 ---
 
-## Сводная таблица (все 127)
+## Сводная таблица (исходные 127 патчей, текущие номера)
 
 Названия патчей — по именам файлов в `tele/patches/tdesktop/`.
 
 | № | Фича | Вердикт | Ключевая причина / точка внедрения / аналог inugram |
 |---|---|---|---|
-| 0001 | build number в тайтлбаре | ✅ | шапка списка чатов «Telegram» (`DialogsActivity`, `actionBar.setTitle(AppName)`) + рядом с версией в настройках (0048) |
+| 0001 | build number в тайтлбаре | ✅ | шапка списка чатов «Telegram» (`DialogsActivity`, `actionBar.setTitle(AppName)`) + рядом с версией в настройках (0047) |
 | 0002 | секция tele в настройках | ✅🏗 | своя инфраструктура в духе InuConfig (кредиты inugram): TeleConfig + страницы настроек |
 | 0003 | скрыть сторис | ✅ | `StoriesController`; аналог `debloat/hide-stories` |
 | 0004 | смотреть сторис незаметно | ✅ | подавление `StoriesController.markStoryAsRead`/просмотров |
 | 0005 | пейлоады кнопок ботов в тултипах | ✅ | тултип/поповер при зажатии кнопки; парсинг `TL_keyboardButton*` (связан с 0028) |
 | 0006 | self-update из GitHub релизов | ✅ | свой in-app updater с релизов репозитория tele (будет выложен позже); подход — как in-app апдейтер inugram (порт Nekogram) |
-| 0007 | переименовать приложение в tele | ✅ | manifest/strings + лончер-иконка (связан с 0091); ориентир `misc/branding` |
+| 0007 | переименовать приложение в tele | ✅ | manifest/strings + лончер-иконка (связан с 0089); ориентир `misc/branding` |
 | 0008 | quick replies в группах/каналах | ✅ | отправка шортката как обычных сообщений (`SendMessagesHelper`) |
 | 0009 | метки с tele-сервера (verified/scam/fake) | ✅ | HTTP-фетч + перезапись флагов в `MessagesController.putUser/processChat` |
 | 0010 | живой шаблон тайтлбара | ⚠️ | шаблонизатор → кастомный заголовок списка чатов (inugram уже имеет базу) |
@@ -78,7 +78,7 @@
 | 0014 | id пира в профиле | ✅ | `ProfileActivity`; аналог `feature/id-in-profile` |
 | 0015 | deeplink-ссылки на настройки tele | ✅🏗 | уже есть: SearchRegistry/deeplinks inugram |
 | 0016 | игнор-лист: скрыть/затухание | ✅ | data-layer фильтр; близко `feature/hide-blocked-messages` (без fade) |
-| 0017 | секунды во времени сообщений | ✅ | `LocaleController`; аналог `feature/show-seconds` |
+| 0017 | секунды во времени сообщений (+ время в сервисных сообщениях, влит бывший 0043) | ✅ | `LocaleController`; к тексту `TL_messageService` в `MessageObject` дописывается « · HH:mm:ss»; аналог `feature/show-seconds` |
 | 0018 | история правок сообщения | ✅ | хук `updateMessageEdited` + `inu_`-таблица версий |
 | 0019 | хранить удалённые сообщения | ✅ | хук `deleteMessages`/`processDeleteMessages` + `inu_`-таблица |
 | 0020 | fade недоступных опций Experimental | ❌ | страницы Experimental на Android нет |
@@ -104,91 +104,88 @@
 | 0040 | звать приложение tele везде | ✅ | ресурсы/лейбл; аналог `misc/branding` |
 | 0041 | шаблоны заголовка окна | ⚠️ | системного заголовка нет; шаблон → заголовок экрана диалогов |
 | 0042 | группировка+поиск настроек tele | ✅🏗 | уже есть в инфраструктуре inugram |
-| 0043 | время в сервисных сообщениях | ✅ | аппенд к тексту `TL_messageService` в `MessageObject`; расширяет `feature/show-seconds` |
-| 0044 | параллельная загрузка медиа в чаты | ✅ | фактически сток Android (uploads независимы) |
-| 0045 | таймстампы реплаев к IV-медиа | ⚠️ | для обычных медиа уже есть; IV-часть привязана к десктопному рендереру |
-| 0046 | вычисление «= выражение» (calcmula) | ✅ | перехват отправки → HTTP → пересборка текста |
-| 0047 | show peer ids в настройки tele | ✅🏗 | аналог `feature/id-in-profile` |
-| 0048 | build в главном меню | ✅ | `SettingsActivity` versionView / шапка fork-дровера |
-| 0049 | коллекционные подарки в see.tg | ✅ | кнопка + deep link в `StarGiftSheet`/`GiftSheet` |
-| 0050 | двигать поздно отправленные вниз | ❌ | Android упорядочивает по mid — проблема не существует |
-| 0051 | очередь за загружающимся медиа | ✅ | hold текста до конца upload; состояние уже трекается в `SendMessagesHelper` |
-| 0052 | открывать ссылки в десктоп-приложениях | ❌ | App Links/Intent делают это системно |
-| 0053 | чистка трекинг-параметров | ✅ | аналог `feature/strip-tracking` (правила AdGuard) |
-| 0054 | спойлеры раскрыты всегда | ✅ | глобальный гейт в `MessageObject`/`SpoilerEffect` |
-| 0055 | tele-пункты внизу меню сообщения | ✅ | покрыто кастомизируемым меню inugram (`feature/message-menu`) |
-| 0056 | копировать id кастомного эмодзи | ✅ | hit-test спанов в `ChatMessageCell` + пункт меню |
-| 0057 | скорость вместо перетаскивания в media viewer | ❌ | Qt mouse-хак; у Android PhotoViewer свои жесты |
-| 0058 | переупорядочить/скрыть пункты меню сообщения | ✅ | уже есть: `feature/message-menu` (порт NagramX) |
-| 0059 | хранить и самоудалённые сообщения | ✅ | развитие 0019 |
-| 0060 | server/updates на странице tele | ✅🏗 | инфраструктура inugram |
-| 0061 | пипетка в фоторедакторе | ✅ | в стоке пипетка есть в `ColorPickerBottomSheet` (три тапа); порт — кнопка в один тап у палитры `LPhotoPaintView` со стоковой лупой |
-| 0062 | история правок как чат | ✅ | снапшоты версий + фрагмент с ячейками чата |
-| 0063 | скрыть/подтвердить кнопки звонков | ✅ | аналоги `feature/hide-call-action` + `feature/call-confirmation` |
-| 0064 | группировка настроек tele | ✅🏗 | инфраструктура inugram |
-| 0065 | больше ghost-опций | ✅ | подавление `TL_account.updateStatus`/readReactions после действий |
-| 0066 | id обычных подарков | ✅ | данные есть, строка в карточке подарка |
-| 0067 | инлайн-результаты без via | ✅ | вместо `TL_messages_sendInlineBotResult` собрать обычное сообщение |
-| 0068 | отключить rich-paste промпт | ❌ | rich-сообщения — фича tele, на Android промпта нет |
-| 0069 | локальные фоны чатов | ⚠️ | per-chat обои уже в стоке; добавка — форс-локальность и удаление навязанного |
-| 0070 | реплай на удалённое: скип/цитата | ✅ | фильтрация `reply_to` при отправке |
-| 0071 | аккаунты test-сервера | ⚠️ | нужен нативный per-account флаг `isTestBackend` (JNI), жест → long-press |
-| 0072 | username-алиасы | ✅ | `inu_kv`-маппинг + `MentionsAdapter` + подстановка при отправке |
-| 0073 | скрыть кнопки упоминаний/реакций | ✅ | гейт `showButton` в `ChatActivitySideControlsButtonsLayout` |
-| 0074 | пикеры для игнора/ghost-чатов | ✅ | стандартный пикер пиров; аналоги `hide-blocked-messages`/`paranoia` |
-| 0075 | what's new как локальный чат | ⚠️ | реализуемо (синтетический чат или экран в стиле чата); решение требует обдумывания |
-| 0076 | имена вместо номеров в шапке | ✅ | аналог `debloat/disable-chat-title-phone` |
-| 0077 | панели только по клику (без hover) | ❌ | hover нет, на мобильном уже только тап |
-| 0078 | перезапись вставляемых ссылок | ✅ | хук вставки; база — `feature/strip-tracking`/`web-preview` |
-| 0079 | редактор правил перезаписи | ✅🏗 | страница на инфраструктуре inugram |
-| 0080 | локальные имена людей | ✅ | подмена на слое `putUser`/`UserObject.getUserName` |
-| 0081 | launch flags для сети tele | ⚠️ | нет launch flags; эквивалент — тумблеры; вешается на updater inugram |
-| 0082 | превью calcmula над полем | ✅ | переносится вместе с 0046 (calcmula) |
-| 0083 | очистка кэша бейджей tele | ✅ | кнопка + тултипы на инфраструктуре настроек |
-| 0084 | мгновенное перемещение чатов | ⚠️ | freeze-механика десктопная; переносима только идея без анимации |
-| 0085 | цена коллекционного юзернейма/номера на дату покупки | ✅ | HTTPS (курс TON) + кэш; карточка `FragmentUsernameBottomSheet`, не подарки |
-| 0086 | свои иконки приложения и трея | ⚠️ | иконки приложения/уведомлений — есть (`hooks/icon-replacement`); трея нет |
-| 0087 | управление превью ссылок | ⚠️ | выбор/отключение — есть (web-preview); форс чужого превью — доработка |
-| 0088 | @username → t.me в окне ссылки | ✅ | regex в `showInputDialog` создания ссылки |
-| 0089 | сообщение как картинка (shot) | ✅ | офф-скрин рендер `ChatMessageCell` в Canvas |
-| 0090 | debug-логи + MTProto-инспектор | ⚠️ | лог/JSON-вьюер переносим; полнота инспектора упирается в JNI tgnet |
-| 0091 | иконки приложения и трея tele | ⚠️ | лончер-иконки — есть; трей — нет |
-| 0092 | имя пункта «Copy Callback Data» | ✅ | покрыто `feature/message-menu` (long-tap кнопки бота) |
-| 0093 | юзернеймы с tele-сервера | ✅ | HTTP-фетч + встройка в список юзернеймов профиля |
-| 0094 | кликабельные кастом-эмодзи в эмодзи-only | ✅ | хендлеры в `ChatMessageCell` (AnimatedEmojiSpan) |
-| 0095 | GIF как видео и видео как GIF | ✅ | подмена атрибутов документа при отправке; близко `feature/send-mp4-as-video` |
-| 0096 | черновики только на устройстве | ✅ | аналог `debloat/cloud-drafts` |
-| 0097 | отложенные отправляются вовремя | ✅ | локальный планировщик + «send now» |
-| 0098 | id и DC в одной строке | ✅ | компоновка строк профиля; база `feature/id-in-profile` |
-| 0099 | редактор шаблона заголовка окна | ❌ | объект фичи — заголовок окна |
-| 0100 | не применять replies-счётчики к отложенным | ✅ | guard в `MessageObject` (replies) |
-| 0101 | сохранённые черновики (много на чат) | ⚠️ | ядро реализуемо; rich-IV-черновики и Ctrl+S — десктоп |
-| 0102 | фото в HD по умолчанию | ✅ | форс `photoEntry.highQuality` в `PhotoViewer`/attach-панели |
-| 0103 | поиск чатов по алиасам | ✅ | встройка в `DialogsSearchAdapter` из `inu_`-таблицы (зависит от 0072) |
-| 0104 | seen/reacted счётчики раздельно | ✅ | `MessageSeenView` |
-| 0105 | отправить inline-запрос как текст | ✅ | пункт при активном inline-боте → обычный sendMessage |
-| 0106 | какое приложение открывает сервис | ⚠️ | технически Intent с setPackage; но это уже делают App Links/chooser ОС |
-| 0107 | шоты 1x–4x, свои сообщения как входящие | ✅ | масштабированный офф-скрин рендер (зависит от 0089) |
-| 0108 | экспорт/импорт настроек tele | ✅🏗 | уже есть: export/import JSON в inugram |
-| 0109 | docked media над полем ввода (beta) | ⚠️ | концепт переносим; висит на tele-инфраструктуре черновиков/очереди |
-| 0110 | бейджи tele на личном канале в профиле | ✅ | строка личного канала; база `feature/linked-channel-in-profile` |
-| 0111 | объяснение отсутствующего changelog | ⚠️ | UX-идея → в готовый updater inugram |
-| 0112 | новые настройки после апдейта | ✅🏗 | бейджи «new» поверх SettingsPageActivity |
-| 0113 | никогда не блокировать скриншоты | ✅ | не ставить `FLAG_SECURE` (в т.ч. secret chats/PhotoViewer) |
-| 0114 | что показывать в шотах | ✅ | флаги офф-скрин рендера (зависит от 0089) |
-| 0115 | короткие описания настроек | ✅🏗 | строки форка в ресурсах; принцип уже соблюдён |
-| 0116 | пересылка защищённых как копии | ✅ | перехват форварда → пересборка/перекачка в `SendMessagesHelper` |
-| 0117 | видео останавливается на конце | ❌ | баг десктопного AudioTrack/миксера ffmpeg |
-| 0118 | подписи к docked media | ⚠️ | продолжение 0109 |
-| 0119 | скрывать настройки до включения родителя | ✅🏗 | уже есть: условные секции/ExpandableBoolGroup inugram |
-| 0120 | скрывать сообщества | ✅ | аналог `debloat/community-dialogs` (display modes) |
-| 0121 | ответы мимо очереди за медиа | ⚠️ | логика есть, носитель (очередь tele 0051) надо портировать |
-| 0122 | отправить сейчас по двойному Enter | ⚠️ | Enter нет; нужен другой триггер + очередь 0051 |
-| 0123 | перегруппировка настроек отправки | ✅🏗 | страницы инфраструктуры inugram |
-| 0124 | алиасы для inline-ботов | ✅ | подстановка перед resolve (зависит от 0072) |
-| 0125 | скрыть бейджи упоминаний/реакций в списке | ✅ | гейт отрисовки в `DialogCell` (расширение 0073) |
-| 0126 | пины чатов сверх лимита (локальные) | ✅ | fork-хранилище пинов + перехват ошибки лимита |
-| 0127 | папки сверх лимита (локальные) | ✅ | fork-хранилище фильтров вне серверной синхронизации |
+| 0043 | параллельная загрузка медиа в чаты | ✅ | фактически сток Android (uploads независимы) |
+| 0044 | таймстампы реплаев к IV-медиа | ⚠️ | для обычных медиа уже есть; IV-часть привязана к десктопному рендереру |
+| 0045 | вычисление «= выражение» (calcmula) | ✅ | перехват отправки → HTTP → пересборка текста |
+| 0046 | show peer ids в настройки tele | ✅🏗 | аналог `feature/id-in-profile` |
+| 0047 | build в главном меню | ✅ | `SettingsActivity` versionView / шапка fork-дровера |
+| 0048 | коллекционные подарки в see.tg | ✅ | кнопка + deep link в `StarGiftSheet`/`GiftSheet` |
+| 0049 | двигать поздно отправленные вниз | ❌ | Android упорядочивает по mid — проблема не существует |
+| 0050 | очередь за загружающимся медиа | ✅ | hold текста до конца upload; состояние уже трекается в `SendMessagesHelper` |
+| 0051 | открывать ссылки в десктоп-приложениях | ❌ | App Links/Intent делают это системно |
+| 0052 | чистка трекинг-параметров | ✅ | аналог `feature/strip-tracking` (правила AdGuard) |
+| 0053 | спойлеры раскрыты всегда | ✅ | глобальный гейт в `MessageObject`/`SpoilerEffect` |
+| 0054 | tele-пункты внизу меню сообщения | ✅ | покрыто кастомизируемым меню inugram (`feature/message-menu`) |
+| 0055 | копировать id кастомного эмодзи | ✅ | hit-test спанов в `ChatMessageCell` + пункт меню |
+| 0056 | скорость вместо перетаскивания в media viewer | ❌ | Qt mouse-хак; у Android PhotoViewer свои жесты |
+| 0057 | переупорядочить/скрыть пункты меню сообщения | ✅ | уже есть: `feature/message-menu` (порт NagramX) |
+| 0058 | хранить и самоудалённые сообщения | ✅ | развитие 0019 |
+| 0059 | server/updates на странице tele | ✅🏗 | инфраструктура inugram |
+| 0060 | пипетка в фоторедакторе | ✅ | в стоке пипетка есть в `ColorPickerBottomSheet` (три тапа); порт — кнопка в один тап у палитры `LPhotoPaintView` со стоковой лупой |
+| 0061 | история правок как чат | ✅ | снапшоты версий + фрагмент с ячейками чата |
+| 0062 | скрыть/подтвердить кнопки звонков | ✅ | аналоги `feature/hide-call-action` + `feature/call-confirmation` |
+| 0063 | группировка настроек tele | ✅🏗 | инфраструктура inugram |
+| 0064 | больше ghost-опций | ✅ | подавление `TL_account.updateStatus`/readReactions после действий |
+| 0065 | id обычных подарков | ✅ | данные есть, строка в карточке подарка |
+| 0066 | инлайн-результаты без via | ✅ | вместо `TL_messages_sendInlineBotResult` собрать обычное сообщение |
+| 0067 | отключить rich-paste промпт | ❌ | rich-сообщения — фича tele, на Android промпта нет |
+| 0068 | локальные фоны чатов | ⚠️ | per-chat обои уже в стоке; добавка — форс-локальность и удаление навязанного |
+| 0069 | реплай на удалённое: скип/цитата | ✅ | фильтрация `reply_to` при отправке |
+| 0070 | аккаунты test-сервера | ⚠️ | нужен нативный per-account флаг `isTestBackend` (JNI), жест → long-press |
+| 0071 | username-алиасы | ✅ | `inu_kv`-маппинг + `MentionsAdapter` + подстановка при отправке |
+| 0072 | скрыть кнопки упоминаний/реакций | ✅ | гейт `showButton` в `ChatActivitySideControlsButtonsLayout` |
+| 0073 | пикеры для игнора/ghost-чатов | ✅ | стандартный пикер пиров; аналоги `hide-blocked-messages`/`paranoia` |
+| 0074 | what's new как локальный чат | ⚠️ | реализуемо (синтетический чат или экран в стиле чата); решение требует обдумывания |
+| 0075 | имена вместо номеров в шапке | ✅ | аналог `debloat/disable-chat-title-phone` |
+| 0076 | панели только по клику (без hover) | ❌ | hover нет, на мобильном уже только тап |
+| 0077 | перезапись вставляемых ссылок + редактор правил и пресетов (влит бывший 0079) | ✅ | хук вставки; база — `feature/strip-tracking`/`web-preview`; страница редактора на инфраструктуре форка |
+| 0078 | локальные имена людей | ✅ | подмена на слое `putUser`/`UserObject.getUserName` |
+| 0079 | launch flags для сети tele | ⚠️ | нет launch flags; эквивалент — тумблеры; вешается на updater inugram |
+| 0080 | превью calcmula над полем | ✅ | переносится вместе с 0045 (calcmula) |
+| 0081 | очистка кэша бейджей tele | ✅ | кнопка + тултипы на инфраструктуре настроек |
+| 0082 | мгновенное перемещение чатов | ⚠️ | freeze-механика десктопная; переносима только идея без анимации |
+| 0083 | цена коллекционного юзернейма/номера на дату покупки | ✅ | HTTPS (курс TON) + кэш; карточка `FragmentUsernameBottomSheet`, не подарки |
+| 0084 | свои иконки приложения и трея | ⚠️ | иконки приложения/уведомлений — есть (`hooks/icon-replacement`); трея нет |
+| 0085 | управление превью ссылок | ⚠️ | выбор/отключение — есть (web-preview); форс чужого превью — доработка |
+| 0086 | @username → t.me в окне ссылки | ✅ | regex в `showInputDialog` создания ссылки |
+| 0087 | сообщение как картинка (shot) | ✅ | офф-скрин рендер `ChatMessageCell` в Canvas |
+| 0088 | debug-логи + MTProto-инспектор | ⚠️ | лог/JSON-вьюер переносим; полнота инспектора упирается в JNI tgnet |
+| 0089 | иконки приложения и трея tele | ⚠️ | лончер-иконки — есть; трей — нет |
+| 0090 | имя пункта «Copy Callback Data» | ✅ | покрыто `feature/message-menu` (long-tap кнопки бота) |
+| 0091 | юзернеймы с tele-сервера | ✅ | HTTP-фетч + встройка в список юзернеймов профиля |
+| 0092 | кликабельные кастом-эмодзи в эмодзи-only | ✅ | хендлеры в `ChatMessageCell` (AnimatedEmojiSpan) |
+| 0093 | GIF как видео и видео как GIF | ✅ | подмена атрибутов документа при отправке; близко `feature/send-mp4-as-video` |
+| 0094 | черновики только на устройстве | ✅ | аналог `debloat/cloud-drafts` |
+| 0095 | отложенные отправляются вовремя | ✅ | локальный планировщик + «send now» |
+| 0096 | id и DC в одной строке | ✅ | компоновка строк профиля; база `feature/id-in-profile` |
+| 0097 | редактор шаблона заголовка окна | ❌ | объект фичи — заголовок окна |
+| 0098 | не применять replies-счётчики к отложенным | ✅ | guard в `MessageObject` (replies) |
+| 0099 | сохранённые черновики (много на чат) | ⚠️ | ядро реализуемо; rich-IV-черновики и Ctrl+S — десктоп |
+| 0100 | фото в HD по умолчанию | ✅ | форс `photoEntry.highQuality` в `PhotoViewer`/attach-панели |
+| 0101 | поиск чатов по алиасам | ✅ | встройка в `DialogsSearchAdapter` из `inu_`-таблицы (зависит от 0071) |
+| 0102 | seen/reacted счётчики раздельно | ✅ | `MessageSeenView` |
+| 0103 | отправить inline-запрос как текст | ✅ | пункт при активном inline-боте → обычный sendMessage |
+| 0104 | какое приложение открывает сервис | ⚠️ | технически Intent с setPackage; но это уже делают App Links/chooser ОС |
+| 0105 | шоты 1x–4x, свои сообщения как входящие | ✅ | масштабированный офф-скрин рендер (зависит от 0087) |
+| 0106 | экспорт/импорт настроек tele | ✅🏗 | уже есть: export/import JSON в inugram |
+| 0107 | docked media над полем ввода + подписи и паритет с send-боксом (влит бывший 0118) | ⚠️ | концепт переносим; висит на tele-инфраструктуре черновиков/очереди |
+| 0108 | бейджи tele на личном канале в профиле | ✅ | строка личного канала; база `feature/linked-channel-in-profile` |
+| 0109 | объяснение отсутствующего changelog | ⚠️ | UX-идея → в готовый updater inugram |
+| 0110 | новые настройки после апдейта | ✅🏗 | бейджи «new» поверх SettingsPageActivity |
+| 0111 | никогда не блокировать скриншоты | ✅ | не ставить `FLAG_SECURE` (в т.ч. secret chats/PhotoViewer) |
+| 0112 | что показывать в шотах | ✅ | флаги офф-скрин рендера (зависит от 0087) |
+| 0113 | короткие описания настроек | ✅🏗 | строки форка в ресурсах; принцип уже соблюдён |
+| 0114 | пересылка защищённых как копии | ✅ | перехват форварда → пересборка/перекачка в `SendMessagesHelper` |
+| 0115 | видео останавливается на конце | ❌ | баг десктопного AudioTrack/миксера ffmpeg |
+| 0116 | скрывать настройки до включения родителя | ✅🏗 | уже есть: условные секции/ExpandableBoolGroup inugram |
+| 0117 | скрывать сообщества | ✅ | аналог `debloat/community-dialogs` (display modes) |
+| 0118 | ответы мимо очереди за медиа | ⚠️ | логика есть, носитель (очередь tele 0050) надо портировать |
+| 0119 | отправить сейчас по двойному Enter | ⚠️ | Enter нет; нужен другой триггер + очередь 0050 |
+| 0120 | перегруппировка настроек отправки | ✅🏗 | страницы инфраструктуры inugram |
+| 0121 | алиасы для inline-ботов | ✅ | подстановка перед resolve (зависит от 0071) |
+| 0122 | скрыть бейджи упоминаний/реакций в списке | ✅ | гейт отрисовки в `DialogCell` (расширение 0072) |
+| 0123 | пины чатов сверх лимита (локальные) | ✅ | fork-хранилище пинов + перехват ошибки лимита |
+| 0124 | папки сверх лимита (локальные) | ✅ | fork-хранилище фильтров вне серверной синхронизации |
 
 ---
 
@@ -199,7 +196,7 @@
 #### 0001 — show the tele build number in the title bar
 - **Суть:** новое ядро `tele_build` (номер релиза из CMake-переменной TELE_BUILD), метка «TELE #N / TELE DEV» рисуется в тайтлбаре окна.
 - **Вердикт:** ✅ переносим — на Android есть эквивалент «тайтлбара»: шапка списка чатов с надписью «Telegram» (крупный сворачивающийся заголовок в стиле SliverAppBar).
-- **Android:** номер сборки рядом с «Telegram» в шапке списка чатов — `DialogsActivity` (`actionBar.setTitle(getString(R.string.AppName))`, ~строка 3517, внутренний хедер-класс) — плюс рядом с версией в настройках (0048).
+- **Android:** номер сборки рядом с «Telegram» в шапке списка чатов — `DialogsActivity` (`actionBar.setTitle(getString(R.string.AppName))`, ~строка 3517, внутренний хедер-класс) — плюс рядом с версией в настройках (0047).
 
 #### 0002 — add a tele section to the settings
 - **Суть:** инфраструктура — новая секция настроек `settings_tele` с кнопкой в главном меню настроек.
@@ -222,14 +219,14 @@
 - **Android:** `org.telegram.tgnet.tl.TL_keyboard` (`TL_keyboardButtonCallback` и др.) + long-press-поповер над кнопкой в `ChatMessageCell`/`ChatActivity`; связан с 0028 (копирование пейлоада).
 
 #### 0006 — update from the tele github releases
-- **Суть:** self-updater: проверка GitHub-релизов, скачивание, «restart to update», тумблер автообновления.
+- **Суть:** self-updater: проверка GitHub-релизов, скачивание, «restart to update», тумблер автообновления. Докачка (`.part`, `Range: bytes=N-`, проверка `Content-Range`, 416 = уже скачано, 200 вместо 206 = с нуля), sha256 по готовому файлу, при сетевых ошибках повтор по лестнице 1 / 5 / 15 / 60 мин.
 - **Вердикт:** ✅ переносим — свой in-app updater с релизов репозитория tele (репозиторий будет выложен позже): проверка последнего релиза → скачивание APK → установка.
 - **Android:** свой хелпер в духе UpdateHelper inugram (порт Nekogram, с кредитами): `SharedConfig` (сохранённая версия) + `LaunchActivity` (проверка при старте) + скачивание/установка APK.
 
 #### 0007 — rename the app to tele
 - **Суть:** брендинг: имя, bundle id, ресурсы, «Telegram Desktop» → «tele» во всех строках.
 - **Вердикт:** ✅ переносим — текстовые/ресурсные замены, механика один в один.
-- **Android:** applicationId/label (build.gradle, strings.xml, LaunchActivity, уведомления) **+ лончер-иконка tele** (связан с 0091); ориентир: `misc/branding` inugram.
+- **Android:** applicationId/label (build.gradle, strings.xml, LaunchActivity, уведомления) **+ лончер-иконка tele** (связан с 0089); ориентир: `misc/branding` inugram.
 
 #### 0008 — send quick replies in groups and channels
 - **Суть:** Business quick replies предлагаются в автокомплите групп/каналов и отправляются как обычные сообщения (сервер шорткаты туда не принимает).
@@ -277,9 +274,9 @@
 - **Android:** хук выборки сообщений в `ChatActivity`/`MessageObject`, список в `inu_`-таблице; близкий аналог в inugram: `feature/hide-blocked-messages` (без режима fade).
 
 #### 0017 — show seconds in message times
-- **Суть:** опция добавляет секунды к времени у сообщений и «edited at».
-- **Вердикт:** ✅ переносим — тривиальный формат времени.
-- **Android:** `LocaleController.formattingChatTimestamp`/`formatterDay`, ячейки; аналог в inugram: `feature/show-seconds`.
+- **Суть:** опция добавляет секунды к времени у сообщений и «edited at»; сервисные сообщения (вход, пин и т.п.) тоже получают время («user joined · 14:03:21») по той же опции (влит бывший 0043); при смене опции у сервисных сообщений принудительное обновление текста.
+- **Вердикт:** ✅ переносим — формат времени плюс расширение текста сервисного сообщения при рендере.
+- **Android:** `LocaleController.formattingChatTimestamp`/`formatterDay`, ячейки; для сервисных — композиция `messageText` у `TL_messageService` в `MessageObject.generateLayout` + `ChatMessageCell`; аналог в inugram: `feature/show-seconds`.
 
 #### 0018 — keep the edit history of messages
 - **Суть:** перехват applyEdition, версии текста/медиа сохраняются в памяти; пункт меню «Edit history» показывает список версий.
@@ -356,7 +353,7 @@
 - **Вердикт:** ✅ переносим — вся механика — подавление исходящих API-вызовов и schedule-трюк; полностью data-layer.
 - **Android:** `MessagesController.markDialogAsRead` (receipts), `sendTyping`, `TL_account.updateStatus` (онлайн), `StoriesController.markStoryAsRead`, schedule-отправка через `sendMessage`; тумблеры InuConfig. Прямого аналога в inugram нет (`feature/paranoia` — про скрытие/маскировку чатов, другую семантику).
 
-### 0033–0058
+### 0033–0057
 
 #### 0033 — view messages and telegram objects as TL
 - **Суть:** пункты «View as TL» в меню сообщений, чатов, профилей, стикеров, эмодзи, подарков, историй и папок: TL-объект дозапрашивается с сервера, сериализуется и открывается на schema.jppgr.am.
@@ -408,431 +405,416 @@
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — роль секции tele на Android играет инфраструктура inugram, где группировка и поиск уже есть.
 - **Android:** аналог в inugram: `misc/settings-ui` (+ «search and deeplinks for fork settings»).
 
-#### 0043 — show times on service messages
-- **Суть:** к тексту сервисных сообщений (вход, пин и т.п.) добавляется « · HH:mm».
-- **Вердикт:** ✅ переносим — расширение текста сервисного сообщения при рендере.
-- **Android:** композиция messageText для `TL_messageService` в `MessageObject` + `ChatMessageCell`; расширение аналога `feature/show-seconds`.
-
-#### 0044 — upload media in several chats at once
+#### 0043 — upload media in several chats at once
 - **Суть:** тумблер параллельных загрузок: планировщик выбирает следующий файл из другого чата.
 - **Вердикт:** ✅ переносим — по большей части уже есть: на Android каждый файл грузится своим `FileUploadOperation`, несколько загрузок уже идут параллельно; желаемое поведение — по сути сток.
 - **Android:** `SendMessagesHelper` (uploadMessages) + `FileUploadOperation`; аналога в inugram нет и не требуется.
 
-#### 0045 — reply timestamps for media in rich messages
+#### 0044 — reply timestamps for media in rich messages
 - **Суть:** если реплай цитирует Instant View-страницу с видео/документом, таймстампы в реплае становятся рабочими (перемотка).
 - **Вердикт:** ⚠️ частично — «таймстамп → перемотка» для обычных медиа Android уже умеет; IV-часть привязана к десктопному рендереру (на Android IV — webview), ценность сомнительна.
 - **Android:** `ui/web/WebInstantView.java`, обработка timestamp-ссылок в `ChatMessageCell`; аналога нет.
 
-#### 0046 — compute messages starting with = via calcmula
+#### 0045 — compute messages starting with = via calcmula
 - **Суть:** сообщение с «= » вычисляется через HTTP-API calcmula.app и отправляется как «запрос в цитате + ответ».
 - **Вердикт:** ✅ переносим — механика полностью сетевая: перехват отправки → HTTP → пересборка текста с Blockquote → отправка.
 - **Android:** перехват в `ChatActivity`/`SendMessagesHelper` (sendMessage), HTTP стандартными средствами; аналога нет.
 
-#### 0047 — move show peer ids into tele settings
+#### 0046 — move show peer ids into tele settings
 - **Суть:** перенос тумблера «show peer id» из экспериментальных настроек tdesktop в секцию tele.
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — перекладывание опции между меню; фича «ID в профиле» в inugram уже реализована.
 - **Android:** аналог в inugram: `feature/id-in-profile` (+ InuConfig как место тумблера).
 
-#### 0048 — show the tele build in the main menu
+#### 0047 — show the tele build in the main menu
 - **Суть:** к строке версии в главном меню добавляется «build #N» / «dev build».
 - **Вердикт:** ✅ переносим — тривиальная правка отображения версии.
 - **Android:** `ui/SettingsActivity.java` (versionView) либо шапка fork-дровера inugram.
 
-#### 0049 — open collectible gifts in see.tg
+#### 0048 — open collectible gifts in see.tg
 - **Суть:** кнопка «Open in see.tg» в окне коллекционного подарка: мини-приложение t.me/seetgbot/nft?startapp=<slug>; тумблер.
 - **Вердикт:** ✅ переносим — добавление ссылки/кнопки в UI подарка и открытие deep link.
 - **Android:** `ui/Stars/StarGiftSheet.java` / `ui/Stars/ProfileGiftsView.java` / `ui/Gifts/GiftSheet.java`; аналога нет.
 
-#### 0050 — move late sent messages to the bottom
+#### 0049 — move late sent messages to the bottom
 - **Суть:** если медленная загрузка завершилась позже отправки более новых сообщений, элемент переносится в низ истории.
 - **Вердикт:** ❌ не переносим — проблема десктопная: tdesktop держит элементы в порядке дат/блоков. Android хранит и отображает сообщения строго по mid (`MessagesStorage`: ORDER BY mid), «позднее» сообщение получает больший mid и само встаёт вниз.
 - **Android:** —
 
-#### 0051 — queue messages behind an uploading media
+#### 0050 — queue messages behind an uploading media
 - **Суть:** тумблер: текстовые сообщения, отправленные во время загрузки медиа в тот же чат, удерживаются и уходят строго после медиа.
 - **Вердикт:** ✅ переносим — проблема существует и на Android (текст уходит сразу), состояние «в этом диалоге идёт загрузка» уже трекается.
 - **Android:** `SendMessagesHelper` (uploadMessages/uploadingMessagesIdDialogs как источник состояния) + перехват отправки текста; аналога нет.
 
-#### 0052 — open links in their desktop apps
+#### 0051 — open links in their desktop apps
 - **Суть:** клик по ссылке открывает нативное десктоп-приложение (spotify:, steam://, discord:// и т.п.).
 - **Вердикт:** ❌ не переносим — патч закрывает десктопный пробел «браузер не умеет открывать в приложениях». Android делает это системно: ACTION_VIEW с https-URL резолвится через App Links/Intent-резолвер.
 - **Android:** — (стоковое поведение Intent/App Links).
 
-#### 0053 — clean tracking parameters from links
+#### 0052 — clean tracking parameters from links
 - **Суть:** чистка трекинг-параметров (utm_*, fbclid, si, …) из ссылок при отправке и при открытии, с набором правил.
 - **Вердикт:** ✅ переносим — чистая строковая обработка URL в двух точках.
 - **Android:** аналог в inugram: `feature/strip-tracking` («strip tracking params from links before opening and/or when pasting — rules from AdGuard»).
 
-#### 0054 — reveal spoilers automatically
+#### 0053 — reveal spoilers automatically
 - **Суть:** глобальный тумблер: спойлеры (текст, превью диалогов, реплаи, медиа) рендерятся раскрытыми.
 - **Вердикт:** ✅ переносим — глобальный гейт «не считать контент спойлерным» на уровне данных/отрисовки.
 - **Android:** `MessageObject`, `ChatMessageCell`, `ui/Components/spoilers/SpoilerEffect`; аналога нет (inugram `hide-spoiler-pending`/`better-spoilers` — другое).
 
-#### 0055 — move tele tools to the bottom of the message menu
+#### 0054 — move tele tools to the bottom of the message menu
 - **Суть:** перестановка: собственные пункты tele вставляются в самый низ контекстного меню сообщения.
 - **Вердикт:** ✅ переносим — расстановка пунктов самого форка; inugram имеет полностью настраиваемое меню, пункты встают куда нужно.
 - **Android:** аналог в inugram: `feature/message-menu`.
 
-#### 0056 — copy custom emoji ids from the message menu
+#### 0055 — copy custom emoji ids from the message menu
 - **Суть:** «Copy emoji ID» при правом клике по кастомному эмодзи в сообщении; тумблер.
 - **Вердикт:** ✅ переносим — hit-test кастомного эмодзи по координатам долгого тапа + пункт меню.
 - **Android:** `ChatMessageCell` (textLayoutBlocks/AnimatedEmojiSpan, hit-test), пункт в меню `ChatActivity`; аналога нет (смежное — «Save to Downloads for stickers»).
 
-#### 0057 — change the speed instead of moving the media viewer window
+#### 0056 — change the speed instead of moving the media viewer window
 - **Суть:** однострочный фикс десктопного просмотрщика: при speed boost перетаскивание мышью меняет скорость, а не двигает окно.
 - **Вердикт:** ❌ не переносим — фикс различения mouse-drag и удержания в Qt-виджете; у Android PhotoViewer своя touch-механика — ситуация не существует.
 - **Android:** —
 
-#### 0058 — reorder and hide message menu items
+#### 0057 — reorder and hide message menu items
 - **Суть:** фреймворк: порядок/видимость пунктов контекстного меню сообщения, редактор в настройках.
 - **Вердикт:** ✅ переносим — точно такая же фича уже есть в inugram (порт NagramX).
 - **Android:** аналог в inugram: `feature/message-menu` (переупорядочивание, скрытие, long-tap-варианты, quick actions).
 
-### 0059–0090
+### 0058–0088
 
-#### 0059 — keep messages you delete yourself
+#### 0058 — keep messages you delete yourself
 - **Суть:** расширяет «хранить удалённые»: локально сохраняются и самоудалённые сообщения (до перезапуска).
 - **Вердикт:** ✅ переносим — перехват удаления на слое данных, ничего десктопного.
 - **Android:** путь удаления в `MessagesController`, снапшоты `MessageObject` в памяти, рендер в `ChatMessageCell`; смежный аналог: `feature/show-deleted-replies`.
 
-#### 0060 — show server and updates on the tele settings page
+#### 0059 — show server and updates on the tele settings page
 - **Суть:** секции «Server» и «Updates» переносятся на корневую страницу настроек tele.
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — внутренняя страница настроек форка; переносить не нужно.
 - **Android:** InuConfig + SettingsPageActivity inugram.
 
-#### 0061 — pick brush colors from the image
+#### 0060 — pick brush colors from the image
 - **Суть:** пипетка в палитре кисти фоторедактора: увеличительный фрагмент, тап — цвет применяется.
 - **Вердикт:** ✅ переносим — сэмпл пикселя из битмапа и запись в палитру.
 - **Android:** `ui/Components/Paint/Views/LPhotoPaintView.java`, `ColorPickerBottomSheet.java`; аналога нет.
 
-#### 0062 — show edit history as a chat
+#### 0061 — show edit history as a chat
 - **Суть:** локальные снапшоты сообщения перед каждой правкой; история правок открывается как чат с пузырями.
 - **Вердикт:** ✅ переносим — точка захвата есть (`TL_updateEditMessage`), рендер версий существующими ячейками; трудозатратно, но без десктоп-специфики.
 - **Android:** `MessagesController` (updateEditMessage), `MessageObject` (хранение версий), фрагмент с `ChatMessageCell`.
 
-#### 0063 — hide or confirm call and voice chat buttons
+#### 0062 — hide or confirm call and voice chat buttons
 - **Суть:** кнопки звонков: показ/скрытие/подтверждение; подтверждение перед групповым звонком/стримом.
 - **Вердикт:** ✅ переносим — обе части напрямую реализуемы.
 - **Android:** аналоги в inugram: `feature/call-confirmation` + `feature/hide-call-action`; точки: `ChatActivity`, `ProfileActivity`, `VoIPService`, `VoIPFragment`.
 
-#### 0064 — group the tele interface and profile settings
+#### 0063 — group the tele interface and profile settings
 - **Суть:** группировка опций на страницах настроек tele.
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — косметика; на Android есть готовый фреймворк.
 - **Android:** InuConfig + SettingsPageActivity inugram.
 
-#### 0065 — more ghost mode options
+#### 0064 — more ghost mode options
 - **Суть:** «offline после отправки», не подтверждать прочтение реакций, переключатель ghost в меню чата.
 - **Вердикт:** ✅ переносим — не-отправка API-запросов (`TL_account.updateStatus(false)` после отправки, локальная пометка реакций).
 - **Android:** `MessagesController` (`TL_account.updateStatus`, путь чтения реакций); аналога нет.
 
-#### 0066 — show ids on regular gifts
+#### 0065 — show ids on regular gifts
 - **Суть:** строка «Gift ID» с копированием в карточке обычного (не коллекционного) подарка.
 - **Вердикт:** ✅ переносим — id приходит в TLRPC-объектах, чистый UI; TLRPC.java не трогается (данные только читаются).
 - **Android:** `ui/Gifts/GiftSheet.java`, `ui/Stars/StarGiftSheet.java`; аналога нет.
 
-#### 0067 — send inline results without via
+#### 0066 — send inline results without via
 - **Суть:** инлайн-результаты ботов отправляются как собственные сообщения пользователя, без `via @bot`.
 - **Вердикт:** ✅ переносим — вместо `TL_messages_sendInlineBotResult` собирается обычное `TL_message` из контента результата.
 - **Android:** `SendMessagesHelper` (путь sendInlineBotResult), `MessagesController`, `ChatActivity`; аналога нет.
 
-#### 0068 — skip the rich message prompt on paste
+#### 0067 — skip the rich message prompt on paste
 - **Суть:** отключение тоста «отправить как rich message» при вставке форматированного текста.
 - **Вердикт:** ❌ не переносим — rich-сообщения — десктопная фича самого tele; на Android этого промпта не существует.
 - **Android:** смежное в inugram: `debloat/hide-rich-editor-button` (другая механика).
 
-#### 0069 — set or remove chat backgrounds only for you
+#### 0068 — set or remove chat backgrounds only for you
 - **Суть:** установка/удаление фонов чатов «только для себя» — локально, без серверной синхронизации.
 - **Вердикт:** ⚠️ частично — сток Android уже умеет per-chat обои; портабельна только добавка: форс-локальное применение и удаление навязанного собеседником фона без серверного запроса.
 - **Android:** `ThemeActivity`, `WallpapersListActivity`, `MessagesController.setWallpaperToPeer`; аналог в inugram: `debloat/disable-chat-themes`.
 
-#### 0070 — skip or quote deleted messages when replying
+#### 0069 — skip or quote deleted messages when replying
 - **Суть:** при ответе на удалённое сообщение — вырезать reply или процитировать текст удалённого.
 - **Вердикт:** ✅ переносим — фильтрация `reply_to` при отправке + подстановка цитаты; данные локального сообщения доступны.
 - **Android:** `SendMessagesHelper` (препроцессинг reply_to), `ChatActivity`; смежный аналог: `feature/show-deleted-replies`.
 
-#### 0071 — add test server accounts with a plain right click
+#### 0070 — add test server accounts with a plain right click
 - **Суть:** правый клик по «добавить аккаунт» предлагает аккаунт на test-сервере.
 - **Вердикт:** ⚠️ частично — ядро портабельно (`isTestBackend` в tgnet), но установка флага для нового аккаунта требует нативного/JNI-дополнения (Java-сеттера нет); жест — long-press.
 - **Android:** `tgnet/ConnectionsManager` (`isTestBackend`, нативный бэкенд в `jni/tgnet/`), переключатель аккаунтов; аналога нет.
 
-#### 0072 — link usernames to profiles locally
+#### 0071 — link usernames to profiles locally
 - **Суть:** локальные алиасы «@имя → профиль»: подстановка при отправке, автодополнение упоминаний, переход по клику.
 - **Вердикт:** ✅ переносим — хранилище маппинга (`inu_kv`), препроцессинг исходящего текста, дополнение в поле ввода.
 - **Android:** `MentionsAdapter` (автодополнение), `SendMessagesHelper`/`MessagesController` (замена), путь `getUserByName` для перехода; аналога нет.
 
-#### 0073 — hide the mentions and reactions buttons
+#### 0072 — hide the mentions and reactions buttons
 - **Суть:** опции скрывают кнопки «непрочитанные упоминания» и «непрочитанные реакции» над полем ввода.
 - **Вердикт:** ✅ переносим — скрытие — гейт на одном вызове.
 - **Android:** `ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java` (BUTTON_MENTION/BUTTON_REACTIONS, `showButton`) + `ChatActivity`; аналога нет.
 
-#### 0074 — pick ignored users and ghost chats like privacy exceptions
+#### 0073 — pick ignored users and ghost chats like privacy exceptions
 - **Суть:** списки игнорируемых и ghost-чатов через универсальный пикер контактов/чатов.
 - **Вердикт:** ✅ переносим — стандартный механизм выбора пиров уже используется в privacy-настройках и форк-списках.
 - **Android:** аналоги в inugram: `feature/hide-blocked-messages`, `feature/paranoia` (пикеры списков пиров).
 
-#### 0075 — show what's new in a local tele chat
+#### 0074 — show what's new in a local tele chat
 - **Суть:** «What's New» как настоящий локальный чат с аватаркой, бейджем и историей.
 - **Вердикт:** ⚠️ частично — но не так страшно, как казалось: запрет на «синтетический чат» — это правило inugram, а не платформенное ограничение; у нас свои правила. Варианты: синтетический диалог в списке либо отдельный экран в стиле чата. Требует обдумывания.
 - **Android:** синтетика в `DialogsActivity`/`MessagesStorage`/fork-БД (обдумать атомарность, сортировку и поведение в поиске) либо экран в стиле чата на форк-инфраструктуре; база — свой updater (0006).
 
-#### 0076 — show names instead of phone numbers in chat headers
+#### 0075 — show names instead of phone numbers in chat headers
 - **Суть:** люди, не внесённые в контакты, показываются именем, а не номером в шапке чата.
 - **Вердикт:** ✅ переносим — один хук формирования подзаголовка; фича уже есть в inugram почти дословно.
 - **Android:** аналог в inugram: `debloat/disable-chat-title-phone`; точки: `ChatActivity`, `UserObject.formatName`.
 
-#### 0077 — open the emoji panel and attach menu by click only
+#### 0076 — open the emoji panel and attach menu by click only
 - **Суть:** панели открываются только по клику, отменяется открытие при наведении мыши.
 - **Вердикт:** ❌ не переносим — компенсация десктопного hover; на Android панели уже открываются только тапом.
 - **Android:** — (нечего отключать).
 
-#### 0078 — rewrite pasted links with your own rules
-- **Суть:** пользовательские regex-правила перезаписывают вставляемые ссылки (twitter→fixupx и т.п.).
-- **Вердикт:** ✅ переносим — обработка текста при вставке; inugram уже перехватывает вставку для strip-tracking.
+#### 0077 — rewrite pasted links with your own rules
+- **Суть:** пользовательские правила перезаписывают вставляемые ссылки (twitter→fixupx и т.п.): домены и regex; редактор правил с пресетами (влит бывший 0079). При чтении правил цель `vxtiktok.com` (сервис закрылся) молча заменяется на `tnktok.com`; пресет TikTok — только `tnktok.com`, к пресету X/Twitter добавлен `samekosabax.com` (и в regex правила трекинга).
+- **Вердикт:** ✅ переносим (🏗 редактор — страница настроек на инфраструктуре форка) — обработка текста при вставке; inugram уже перехватывает вставку для strip-tracking.
 - **Android:** база — `feature/strip-tracking`/`feature/web-preview`; точки: `ChatActivity`, `EditTextCaption`.
 
-#### 0079 — edit link rewrite rules and presets
-- **Суть:** UI-редактор правил перезаписи с пресетами (дополнение к 0078).
-- **Вердикт:** ✅ переносим (🏗 инфраструктура) — страница настроек целиком ложится на фреймворк форка; в паре с 0078.
-- **Android:** SettingsPageActivity inugram.
-
-#### 0080 — name people only for you
+#### 0078 — name people only for you
 - **Суть:** локальные имена людей: подменяют имя во всём интерфейсе.
 - **Вердикт:** ✅ переносим — подмена на слое данных пользователя; хранилище — `inu_kv`.
 - **Android:** `MessagesController.putUser`, `UserObject.getUserName` (через это проходит отображение любого пира); аналога нет.
 
-#### 0081 — add launch flags to turn off tele's own network
+#### 0079 — add launch flags to turn off tele's own network
 - **Суть:** флаги запуска `-noteleserver/-noteleupdate/-teleoffline` гейтят сетевые активности самого tele.
 - **Вердикт:** ⚠️ частично — ядро (гейтинг исходящих запросов форка) портабельно, но launch flags на Android нет — эквивалент тумблеры; updater-платформа десктопна.
 - **Android:** тумблеры InuConfig + хуки вокруг updater inugram.
 
-#### 0082 — preview calcmula results while typing
+#### 0080 — preview calcmula results while typing
 - **Суть:** живое превью результата calcmula над полем ввода при наборе.
-- **Вердикт:** ✅ переносим — переносится вместе с 0046 (calcmula): панель-превью над полем ввода, отправка по кнопке.
+- **Вердикт:** ✅ переносим — переносится вместе с 0045 (calcmula): панель-превью над полем ввода, отправка по кнопке.
 - **Android:** `ChatActivityEnterView` + `ChatActivity` (панель над полем — как reply/attach-панели); аналога нет.
 
-#### 0083 — clear server data and explain custom verification
+#### 0081 — clear server data and explain custom verification
 - **Суть:** кнопка очистки кэша бейджей tele-сервера и объясняющие тултипы кастомной верификации.
 - **Вердикт:** ✅ переносим — HTTP-фетч + локальный кэш (`inu_kv`) + тривиальные UI-дополнения.
 - **Android:** `ProfileActivity` (бот-верификация), кнопка в настройках форка; аналога нет.
 
-#### 0084 — move chats instantly in the chat list
+#### 0082 — move chats instantly in the chat list
 - **Суть:** отключение «заморозки» списка на время переупорядочивания.
 - **Вердикт:** ⚠️ частично — freeze-механика (`skipChatsListFreeze`, движение мыши) десктопна; на Android при drag-переупорядочивании её нет. Портабельна только идея «мгновенного перемещения без анимации».
 - **Android:** `DialogsActivity` (drag-реордер, movingDialogFilters), отключение move-анимации; аналога нет.
 
-#### 0085 — show collectible prices at the purchase date
+#### 0083 — show collectible prices at the purchase date
 - **Суть:** цена покупки коллекционного подарка на дату приобретения: запрос истории курса TON + локальный кэш.
 - **Вердикт:** ✅ переносим — HTTPS-запрос с кэшем + строка в карточке.
 - **Android:** `ui/Gifts/GiftSheet.java`, `ui/Stars/StarGiftSheet.java`, `ResaleGiftsFragment`; аналога нет.
 
-#### 0086 — set your own app and tray icons
+#### 0084 — set your own app and tray icons
 - **Суть:** пользовательские иконки приложения и трея из любого изображения.
 - **Вердикт:** ⚠️ частично — иконка приложения через activity-alias уже реализована в inugram; трей — десктопная концепция (максимум — иконка уведомления, покрыта).
 - **Android:** аналог в inugram: `hooks/icon-replacement` (+ тумблер иконки уведомления).
 
-#### 0087 — choose when links get previews and set your own
+#### 0085 — choose when links get previews and set your own
 - **Суть:** управление превью ссылок: когда показывать, и задание собственного превью любой ссылки.
 - **Вердикт:** ⚠️ частично — выбор/отключение превью переносимо (инфраструктура web preview у inugram есть); форс «чужой ссылки как превью» требует дописывания webpage-черновика в отправку.
 - **Android:** аналоги в inugram: `feature/web-preview`, `bugfix/web-preview-refetch`, `feature/web-preview-spoiler`; точки: `ChatActivity`, `SendMessagesHelper`, `MessageObject`.
 
-#### 0088 — turn username into a t.me link in the link box
+#### 0086 — turn username into a t.me link in the link box
 - **Суть:** в диалоге «создать ссылку» `@username` превращается в `https://t.me/username`.
 - **Вердикт:** ✅ переносим — одна regex-подстановка в валидации.
 - **Android:** `EditTextCaption` (`showInputDialog`, вызывается из `ChatActivity` по R.id.menu_link); аналога нет.
 
-#### 0089 — save messages as a picture
+#### 0087 — save messages as a picture
 - **Суть:** пункт «Shot»: рендер выбранных сообщений в PNG с опциями.
 - **Вердикт:** ✅ переносим — ячейки умеют рисоваться в произвольный Canvas; офф-скрин Bitmap + сохранение.
 - **Android:** `ChatMessageCell` (отрисовка), меню `ChatActivity`, сохранение через MediaController/FileProvider; аналога нет.
 
-#### 0090 — debug logs and an mtproto inspector
+#### 0088 — debug logs and an mtproto inspector
 - **Суть:** просмотрщик логов + MTProto-инспектор: перехват TL-запросов/ответов и просмотр в HTML/JS-вьюере.
 - **Вердикт:** ⚠️ частично — лог/JSON-вьюер переносим (inugram уже показывает JSON); полнота инспектора упирается в JNI (`ConnectionsManager.sendRequest` — native), покрытие ниже, чем в tdesktop.
 - **Android:** `tgnet/ConnectionsManager` (обёртки sendRequest), точки `TLdeserialize`; отображение — WebView/SettingsPageActivity; смежное: JSON-показ inugram, NotificationDebugHelper.
 
-### 0091–0127
+### 0089–0124
 
-#### 0091 — new tele app and tray icons
+#### 0089 — new tele app and tray icons
 - **Суть:** замена бинарных ассетов: иконки приложения и системного трея.
 - **Вердикт:** ⚠️ частично — лончер-иконки переносятся; иконки трея — чистый десктоп (на мобильном аналог — иконка уведомлений).
 - **Android:** mipmap/launcher-иконки, иконка уведомлений; аналог в inugram: `hooks/icon-replacement` (+ тумблер notification icon).
 
-#### 0092 — name the item Copy Callback Data like telegram does
+#### 0090 — name the item Copy Callback Data like telegram does
 - **Суть:** косметика — пункты «Copy callback data» переименованы для унификации.
 - **Вердикт:** ✅ переносим — правка строки форк-меню; покрыто готовым патчем.
 - **Android:** аналог в inugram: `feature/message-menu` (long-tap inline callback button → copy callback data).
 
-#### 0093 — usernames from the tele server
+#### 0091 — usernames from the tele server
 - **Суть:** фид бейджей расширяется секцией «usernames» (алиас→username, позиция); подмешиваются к реальным в профиле.
 - **Вердикт:** ✅ переносим — HTTP-фетч + парсинг JSON + встройка в список юзернеймов профиля.
 - **Android:** HTTP + Kotlin-хелпер, встройка в `ProfileActivity` (список юзернеймов); аналога нет.
 
-#### 0094 — open custom emoji in rich and emoji-only messages
+#### 0092 — open custom emoji in rich and emoji-only messages
 - **Суть:** фикс: кастомные эмодзи в эмоби-only/развёрнутых сообщениях открывают набор по клику.
 - **Вердикт:** ✅ переносим — хендлеры на каждую позицию эмодзи в ячейке.
 - **Android:** `ChatMessageCell` (pressedLink/AnimatedEmojiSpan) + открытие сета через стикер-шит; аналога нет.
 
-#### 0095 — send gifs as videos and videos as gifs
+#### 0093 — send gifs as videos and videos as gifs
 - **Суть:** пункты «отправить как GIF/как видео»: переключение атрибутов документа при отправке.
 - **Вердикт:** ✅ переносим — подмена `TL_documentAttributeVideo/Animated` перед отправкой + пункт меню.
 - **Android:** `SendMessagesHelper` (атрибуты документа), меню `ChatActivity`; ближайший аналог в inugram: `feature/send-mp4-as-video`.
 
-#### 0096 — keep drafts on this device
+#### 0094 — keep drafts on this device
 - **Суть:** тумблер «локальные черновики»: не выгружать черновики в облако, кнопка очистки облачных.
 - **Вердикт:** ✅ переносим — готовая фича в inugram.
 - **Android:** аналог в inugram: `debloat/cloud-drafts` (disable cloud drafts upload); точки: `MediaDataController`/drafts.
 
-#### 0097 — send scheduled messages on time
-- **Суть:** тумблер: клиент сам отправляет отложенные в назначенную минуту, пока онлайн.
+#### 0095 — send scheduled messages on time
+- **Суть:** тумблер: клиент сам отправляет отложенные в назначенную минуту, пока онлайн. Ошибка отправки не глотается: `FLOOD_WAIT`/`SLOWMODE_WAIT` → повтор через N+1 с; сетевые ошибки и 5xx → лестница 5 с / 15 с / 1 / 5 / 15 мин, максимум 5 попыток на сообщение; при неудаче уведомление «couldn't send a scheduled message on time» и тост; сканируются и архивные чаты.
 - **Вердикт:** ✅ переносим — планировщик над локальными отложенными + «send now».
 - **Android:** `MessagesController`/`SendMessagesHelper` (отправка отложенных), выборка по scheduleDate из `MessagesStorage`, Handler/AlarmManager; аналога нет.
 
-#### 0098 — show id and dc in one row
+#### 0096 — show id and dc in one row
 - **Суть:** ID и DC показываются в одной строке профиля.
 - **Вердикт:** ✅ переносим — компоновка строк; обе фичи-базы уже есть.
 - **Android:** `ProfileActivity`; база — `feature/id-in-profile` (+ DC-строка из 0023).
 
-#### 0099 — redesign the title template editor
+#### 0097 — redesign the title template editor
 - **Суть:** редактор шаблона заголовка окна (подсветка переменных, превью, чипы).
 - **Вердикт:** ❌ не переносим — объект фичи — заголовок окна/тайтлбар; на мобильном не к чему вешать.
 - **Android:** — (кастомный заголовок списка чатов inugram — другая фича).
 
-#### 0100 — ignore reply counters on scheduled messages
+#### 0098 — ignore reply counters on scheduled messages
 - **Суть:** фикс: не применять replies-данные (счётчик комментариев) к отложенным сообщениям.
 - **Вердикт:** ✅ переносим — guard в одной точке.
 - **Android:** `MessageObject` (обработка `message.replies`).
 
-#### 0101 — save drafts for later
+#### 0099 — save drafts for later
 - **Суть:** подсистема «сохранённых черновиков»: снапшот состояния поля (текст, медиа, reply, опции), браузер черновиков, восстановление.
 - **Вердикт:** ⚠️ частично — ядро (несколько черновиков на чат: текст+медиа+reply) реализуемо; rich-IV-черновики и хоткей Ctrl+S — десктоп.
 - **Android:** `ChatActivityEnterView`/`ChatActivity` (снимок/восстановление), `SendMessagesHelper` (сериализация медиа), fork DB; аналога нет.
 
-#### 0102 — send photos in hd by default
+#### 0100 — send photos in hd by default
 - **Суть:** тумблер: каждый send-бокс стартует с включенным HD.
 - **Вердикт:** ✅ переносим — форс начального состояния флага.
 - **Android:** `PhotoViewer` (photoEntry.highQuality), `ChatAttachAlertPhotoLayout`; тумблер InuConfig; аналога нет.
 
-#### 0103 — find chats by their aliases
+#### 0101 — find chats by their aliases
 - **Суть:** поиск чатов по tele-алиасам: совпадения поднимаются в выдачу поиска.
 - **Вердикт:** ✅ переносим — поиск по собственной таблице + вставка результатов; зависит от 0072.
 - **Android:** `DialogsActivity`/`DialogsSearchAdapter`, `MessagesStorage`, fork DB; аналога нет.
 
-#### 0104 — show seen and reacted counts separately
+#### 0102 — show seen and reacted counts separately
 - **Суть:** счётчики читателей и реагировавших показываются раздельно («Seen 5 · Reacted 3»).
 - **Вердикт:** ✅ переносим — правка текста/подсчёта в UI «who read».
 - **Android:** `MessageSeenView` + меню просмотров в `ChatActivity`; смежное: seen-by inugram.
 
-#### 0105 — send an inline bot query as text
+#### 0103 — send an inline bot query as text
 - **Суть:** при активном inline-боте в меню отправки появляется «отправить запрос как текст».
 - **Вердикт:** ✅ переносим — детект inline-режима + альтернативный обычный sendMessage.
 - **Android:** `ChatActivity` (onTextChanged, inline-бот), `ChatActivityEnterView` (меню отправки), `SendMessagesHelper`; аналога нет.
 
-#### 0106 — choose which app opens each service
+#### 0104 — choose which app opens each service
 - **Суть:** настройка «какое приложение открывает каждый сервис» (spotify/discord/steam/zoom…).
 - **Вердикт:** ⚠️ частично — технически воспроизводимо (Intent с setPackage), но системные App Links/«Открывать по умолчанию» уже решают это на уровне ОС; ценность на мобильном близка к нулю.
 - **Android:** открытие ссылок в `ChatActivity`/`LaunchActivity`; системный аналог существует.
 
-#### 0107 — scale shots up to 4x and show your messages as incoming
+#### 0105 — scale shots up to 4x and show your messages as incoming
 - **Суть:** развитие «шотов»: рендер 1x–4x с острым ре-рендером, опция «мои как входящие».
 - **Вердикт:** ✅ переносим — офф-скрин рендер с масштабом; трудоёмко, но реализуемо; зависит от 0089.
 - **Android:** `ChatMessageCell` (офф-скрин Canvas), сборка bitmap + FileProvider; аналога нет.
 
-#### 0108 — export and import tele settings
+#### 0106 — export and import tele settings
 - **Суть:** экспорт/импорт всех настроек tele в JSON с превью.
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — на Android уже есть и работает; новые фичи вешаются на готовый экспорт/импорт.
 - **Android:** аналог в inugram: `misc/settings-ui` (export/import JSON).
 
-#### 0109 — attach media above the field (beta)
-- **Суть:** «пристыкованные медиа»: постоянная панель над полем ввода с готовящимся медиа/черновиком (можно листать чат и писать дальше).
-- **Вердикт:** ⚠️ частично — концепт переносим (панель над `ChatActivityEnterView`), но фича построена на tele-инфраструктуре очередей отправки и локальных черновиков, которой на Android нет; перестройка layout'а чата.
-- **Android:** `ChatActivity` + `ChatActivityEnterView` (кастомный докед-вид), метка в `DialogCell`; аналога нет.
+#### 0107 — attach media above the field
+- **Суть:** «пристыкованные медиа»: постоянная панель над полем ввода с готовящимся медиа/черновиком (можно листать чат и писать дальше); подписи, паритет с send-боксом (цена paid media, TTL, invert caption, large photos, scheduled; влит бывший 0118), нарезка >N файлов на альбомы при отправке из черновика. На десктопе docked вышел из беты.
+- **Вердикт:** ⚠️ частично — концепт переносим (панель над `ChatActivityEnterView`), но фича построена на tele-инфраструктуре очередей отправки и локальных черновиков, которой на Android нет; перестройка layout'а чата. Переносимы подписи и паритет состояния.
+- **Android:** `ChatActivity` + `ChatActivityEnterView` (кастомный докед-вид), `ChatAttachAlert` (подписи), метка в `DialogCell`; аналога нет.
 
-#### 0110 — show server badges on the personal channel in profile
+#### 0108 — show server badges on the personal channel in profile
 - **Суть:** серверные бейджи tele отрисовываются на строке личного канала в профиле.
 - **Вердикт:** ✅ переносим — HTTP-фид (как 0009/0093) + отрисовка рядом с текстом.
 - **Android:** строка личного канала в `ProfileActivity`; поверхность совпадает с `feature/linked-channel-in-profile` inugram.
 
-#### 0111 — explain a missing changelog instead of doing nothing
+#### 0109 — explain a missing changelog instead of doing nothing
 - **Суть:** когда заметки о релизе не найдены, показывается объяснение вместо молчания.
 - **Вердикт:** ⚠️ частично — подсистема changelog tele напрямую не переносится; UX-идея переносится во встроенный обновлятор, который в inugram уже есть.
 - **Android:** показ в обновляторе форка (UpdateHelper inugram).
 
-#### 0112 — show new settings after an update
+#### 0110 — show new settings after an update
 - **Суть:** после апдейта новые пункты настроек помечаются «new», появляется категория с непросмотренными.
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — вешается на готовый фреймворк настроек форка.
 - **Android:** SettingsPageActivity + SearchRegistry inugram (бейджи «new» поверх).
 
-#### 0113 — never block screen capture
+#### 0111 — never block screen capture
 - **Суть:** тумблер «никогда не блокировать скриншоты»: перехват включения защиты экрана, защищённые чаты включительно.
 - **Вердикт:** ✅ переносим — мобильный эквивалент: не ставить `FLAG_SECURE` на окнах; известная фича форков.
 - **Android:** точки установки FLAG_SECURE (`PhotoViewer`, `SecretMediaViewer`, окна secret-чатов и др.); аналога в inugram нет.
 
-#### 0114 — choose what shots show
+#### 0112 — choose what shots show
 - **Суть:** опции шота: скрыть inline-кнопки, нижнюю инфу, превью ссылок, реакции при рендере в картинку.
-- **Вердикт:** ✅ переносим — флаги офф-скрин отрисовки; внутри будущей фичи «сообщение как картинка» (0089/0107).
+- **Вердикт:** ✅ переносим — флаги офф-скрин отрисовки; внутри будущей фичи «сообщение как картинка» (0087/0107).
 - **Android:** `ChatMessageCell` (условия отрисовки при офф-скрин-рендере); аналога нет.
 
-#### 0115 — trim settings descriptions
+#### 0113 — trim settings descriptions
 - **Суть:** копирайтинг: сокращены описания, расширены ключевые слова поиска настроек.
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — строки форка в ресурсах; принцип уже соблюдён.
 - **Android:** strings_inu.xml + SearchRegistry inugram.
 
-#### 0116 — forward protected messages as copies
+#### 0114 — forward protected messages as copies
 - **Суть:** тумблер: контент из чатов с запретом пересылки отправляется заново (текст + перекачанные медиа) вместо настоящего форварда.
 - **Вердикт:** ✅ переносим — перехват форварда и пересборка сообщений как новых; весь конвейер отправки доступен.
 - **Android:** `SendMessagesHelper` (отправка копий), пункты меню/снятие блокировок в `ChatActivity`/`PhotoViewer`; аналога нет (inugram `forward-options`/`cycle-forward-mode` — про другое).
 
-#### 0117 — stop videos at their end
+#### 0115 — stop videos at their end
 - **Суть:** фикс стриминга tdesktop: аудиомиксер сбросил трек → playPosition возвращает завершение, чтобы видео корректно останавливалось.
 - **Вердикт:** ❌ не переносим — баг собственного ffmpeg-стримингового движка десктопа (AudioTrack/миксер); медиастек Android другой (ExoPlayer/MediaCodec), класс бага отсутствует.
 - **Android:** нет соответствия.
 
-#### 0118 — caption docked media and bring it to parity with the send box
-- **Суть:** подписи к пристыкованным медиа, паритет с send-боксом, интеграция с черновиками tele.
-- **Вердикт:** ⚠️ частично — продолжение 0109: та же зависимость от tele-инфраструктуры; переносимы подписи и паритет состояния.
-- **Android:** `ChatActivityEnterView`/`ChatAttachAlert` (подписи к выбранным медиа); аналога нет.
-
-#### 0119 — hide settings until their parent is on
+#### 0116 — hide settings until their parent is on
 - **Суть:** фреймворк зависимостей в настройках: пункт скрыт, пока не включен родительский тумблер.
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — аналогичная возможность уже есть в фреймворке настроек форка.
 - **Android:** аналог в inugram: SettingsPageActivity + ExpandableBoolGroup/условные секции.
 
-#### 0120 — hide communities
+#### 0117 — hide communities
 - **Суть:** тумблер: связанные группы/комьюнити не показываются в списке чатов, профилях, подсказках.
 - **Вердикт:** ✅ переносим — в inugram уже есть режимы отображения сообществ.
 - **Android:** аналог в inugram: `debloat/community-dialogs` (regular / open on avatar long-tap / invisible); точки: `DialogsActivity`, `DialogCell`, `ProfileActivity`.
 
-#### 0121 — send replies to older messages past the queue
+#### 0118 — send replies to older messages past the queue
 - **Суть:** опция к очереди tele: ответы на сообщения старше грузящегося медиа уходят сразу, минуя очередь.
-- **Вердикт:** ⚠️ частично — логика внепорядковой отправки переносима, но вшита в очередь tele (0051), которой на Android нет; без порта очереди фича без носителя.
+- **Вердикт:** ⚠️ частично — логика внепорядковой отправки переносима, но вшита в очередь tele (0050), которой на Android нет; без порта очереди фича без носителя.
 - **Android:** `SendMessagesHelper` (delayedMessages/очередь отправки); аналога нет.
 
-#### 0122 — send right away on double enter
+#### 0119 — send right away on double enter
 - **Суть:** опция к очереди tele: двойной Enter отправляет удержанные сообщения немедленно.
 - **Вердикт:** ⚠️ частично — логика форсирования переносима; клавиатурного жеста нет (нужен эквивалент, напр. двойной тап по кнопке отправки), плюс зависимость от очереди 0051.
 - **Android:** `ChatActivityEnterView` (кнопка отправки/IME-экшен); аналога нет.
 
-#### 0123 — regroup the sending settings
+#### 0120 — regroup the sending settings
 - **Суть:** перегруппировка секций страницы настроек tele (sending order, uploads, message field, scheduled).
 - **Вердикт:** ✅ переносим (🏗 инфраструктура) — компоновка на готовом фреймворке.
 - **Android:** аналог в inugram: BehaviorSettingsActivity / MessagesSettingsActivity.
 
-#### 0124 — use aliases for inline bots
+#### 0121 — use aliases for inline bots
 - **Суть:** inline-запрос «@алиас …» резолвится через tele-алиасы в реальный username бота.
 - **Вердикт:** ✅ переносим — подстановка в двух точках (детект inline-бота, resolveUsername); зависит от 0072.
 - **Android:** `ChatActivity` (детект inline), `MessagesController` (resolveUsername); аналога нет.
 
-#### 0125 — hide mention and reaction badges in the chat list
-- **Суть:** тумблы 0073 расширены: скрытие кнопок также убирает бейджи @ и ❤️ из строк списка чатов и табов.
+#### 0122 — hide mention and reaction badges in the chat list
+- **Суть:** тумблы 0072 расширены: скрытие кнопок также убирает бейджи @ и ❤️ из строк списка чатов и табов.
 - **Вердикт:** ✅ переносим — фильтрация состояния бейджей при отрисовке строки чата.
 - **Android:** `DialogCell` (отрисовка mention/reaction-бейджей), `DialogsActivity`; аналога нет (`feature/old-mention-indicator` — про стиль).
 
-#### 0126 — pin chats past the limit
-- **Суть:** «локальные пины»: чаты сверх серверного лимита хранятся локально, hollow-иконка пина, аккуратный фолбэк при ошибке сервера.
+#### 0123 — pin chats past the limit
+- **Суть:** «локальные пины»: чаты сверх серверного лимита хранятся локально, hollow-иконка пина, аккуратный фолбэк при ошибке сервера. У каждого пина флаг `local`, **один общий порядок** серверных и локальных пинов (серверные вливаются в локальный список), перетаскивание вперемешку (серверу уходит только его часть); те же списки для топиков форума, Saved Messages, папок и Archive; снятие пина у серверного+локального оставляет серверный.
 - **Вердикт:** ✅ переносим — fork-хранилище пинов + перехват ошибок лимита + правки реордера/отрисовки; в рамках правил форка.
 - **Android:** `MessagesController` (pinned dialogs/ошибки лимита), `DialogsActivity` (реордер), `DialogCell` (иконка), InuDatabaseHelper; аналога нет (есть только багфиксы пинов inugram).
 
-#### 0127 — folders past the limit
+#### 0124 — folders past the limit
 - **Суть:** папки сверх серверного лимита, живущие только на клиенте (не синхронизируются), с редактором и лимитами чатов «без лимита».
 - **Вердикт:** ✅ переносим — локальное хранилище фильтров вне серверной синхронизации; объём большой, но десктоп-специфики нет.
 - **Android:** `MediaDataController` (dialogFilters), `FilterTabsView`, `DialogsActivity`, InuDatabaseHelper; аналога нет (смежные `folders-display-mode`, `chats-long-tap-folders`).
@@ -848,23 +830,23 @@
 | 0003 | `debloat/hide-stories` |
 | 0007, 0035, 0040 | `misc/branding` |
 | 0011 | `feature/multi-account` |
-| 0014, 0047, 0098 | `feature/id-in-profile` |
-| 0016 (без fade), 0074 | `feature/hide-blocked-messages`, `feature/paranoia` |
-| 0017, 0043 | `feature/show-seconds` |
-| 0021, 0063 | `feature/hide-call-action`, `feature/call-confirmation` |
-| 0028, 0055, 0058, 0092 | `feature/message-menu` |
+| 0014, 0046, 0096 | `feature/id-in-profile` |
+| 0016 (без fade), 0073 | `feature/hide-blocked-messages`, `feature/paranoia` |
+| 0017 | `feature/show-seconds` |
+| 0021, 0062 | `feature/hide-call-action`, `feature/call-confirmation` |
+| 0028, 0054, 0057, 0090 | `feature/message-menu` |
 | 0030 | `feature/folders-display-mode` |
 | 0031 | `feature/jump-to-beginning` |
-| 0037 (база), 0039, 0111 | in-app updater + crash report sheet (порт Nekogram) |
-| 0042, 0060, 0064, 0079, 0108, 0112, 0115, 0119, 0123 | `misc/settings-ui` (InuConfig/SettingsPageActivity/SearchRegistry) |
-| 0053, 0078 | `feature/strip-tracking` (+ `feature/web-preview`) |
-| 0069 (частично) | `debloat/disable-chat-themes` |
-| 0076 | `debloat/disable-chat-title-phone` |
-| 0086, 0091 (иконки) | `hooks/icon-replacement` |
-| 0096 | `debloat/cloud-drafts` |
-| 0110 (поверхность) | `feature/linked-channel-in-profile` |
-| 0120 | `debloat/community-dialogs` |
-| 0044, 0052 | стоковое поведение Android / системные App Links |
+| 0037 (база), 0039, 0109 | in-app updater + crash report sheet (порт Nekogram) |
+| 0042, 0059, 0063, 0077, 0106, 0110, 0113, 0116, 0120 | `misc/settings-ui` (InuConfig/SettingsPageActivity/SearchRegistry) |
+| 0052, 0077 | `feature/strip-tracking` (+ `feature/web-preview`) |
+| 0068 (частично) | `debloat/disable-chat-themes` |
+| 0075 | `debloat/disable-chat-title-phone` |
+| 0084, 0089 (иконки) | `hooks/icon-replacement` |
+| 0094 | `debloat/cloud-drafts` |
+| 0108 (поверхность) | `feature/linked-channel-in-profile` |
+| 0117 | `debloat/community-dialogs` |
+| 0043, 0051 | стоковое поведение Android / системные App Links |
 
 ## Как переносить (свой форк, паттерн по inugram)
 
@@ -881,9 +863,9 @@
 ### Типичные ловушки при переносе конкретных групп
 
 - **Подавление серверных вызовов** (ghost 0032/0065, сторис 0004, исчезающие медиа 0026): гейтить надо *все* пути отправки, включая difference/catch-up (`onNewMessage` у inugram уже ловит все пути прихода).
-- **Хранение локальных списков** (алиасы 0072/0103/0124, игнор 0016, имена 0080, пины 0126, папки 0127, версии правок 0018/0062): только fork-хранилище + хуки на stock load/save.
-- **Офф-скрин рендер** (шоты 0089/0107/0114): `ChatMessageCell` умеет рисовать в произвольный Canvas, но потребуется собрать «виртуальный» чат (фон, пузыри, тема) — самая трудоёмкая из переносимых фич.
-- **tele-server фичи** (0009, 0037, 0093, 0110): перезапись флагов пира в `MessagesController.putUser/processChat` + один HTTPS-фетч; архитектура сервера описана в README tele и платформенно-нейтральна.
+- **Хранение локальных списков** (алиасы 0071/0103/0124, игнор 0016, имена 0078, пины 0123, папки 0124, версии правок 0018/0062): только fork-хранилище + хуки на stock load/save.
+- **Офф-скрин рендер** (шоты 0087/0107/0114): `ChatMessageCell` умеет рисовать в произвольный Canvas, но потребуется собрать «виртуальный» чат (фон, пузыри, тема) — самая трудоёмкая из переносимых фич.
+- **tele-server фичи** (0009, 0037, 0091, 0108): перезапись флагов пира в `MessagesController.putUser/processChat` + один HTTPS-фетч; архитектура сервера описана в README tele и платформенно-нейтральна.
 
 ## Источники
 
