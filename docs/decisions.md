@@ -84,3 +84,7 @@
 3. 0095: точный отложенный — учёт попыток, `FLOOD_WAIT`/`SLOWMODE_WAIT`, лестница повторов, максимум 5 попыток, уведомление.
 4. 0006: апдейтер — докачка (`Range`, `.part`), лестница повторов 1/5/15/60 мин при сетевых ошибках.
 5. 0253: копирование голых цифр peer id из строки профиля (android 0025 копирует отформатированный текст строки).
+
+## Deferred portability checks
+
+- **0153 (MKV sending):** do not schedule the Android port yet. First test whether the system picker returns MKV to this app and whether stock sends the file unchanged or transcodes it. Re-evaluate after that device check.

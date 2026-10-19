@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Подробные инструкции для исполнителей: [11](batches/batch-11.md) · [12](batches/batch-12.md) · [13](batches/batch-13.md) · [14](batches/batch-14.md) · [15](batches/batch-15.md) · [16](batches/batch-16.md) · [17](batches/batch-17.md) · [18](batches/batch-18.md) · [19](batches/batch-19.md) · [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md)
+Гайды исполнителей: [11 — база приватности](batches/batch-11.md) · [12 — follow-up и быстрые тумблеры](batches/batch-12.md) · [13](batches/batch-13.md) · [14](batches/batch-14.md) · [15](batches/batch-15.md) · [16](batches/batch-16.md) · [17](batches/batch-17.md) · [18](batches/batch-18.md) · [19](batches/batch-19.md) · [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md)
 
 инфраструктурные патчи (без номера tele) помечены `infra` и реализуют сразу пачку настроек tele: `0002`, `0015`, `0059`, `0063`, `0077` (редактор), `0106`, `0110`, `0113`, `0116`, `0120`.
 
@@ -170,11 +170,29 @@
 | 0040 | брендинг «tele» во внутренних строках | done | `0038-feat-call-the-app-tele-in-its-own-texts`: стоковые строки, называющие приложение, перекрываются из `TMessagesProj_App/src/main/res/values/tele_strings.xml` (app-модуль побеждает библиотеку на merge) — стоковые strings.xml не тронуты. сервисные упоминания (Premium, модераторы, FAQ) и имена папок на диске оставлены как есть |
 | 0042 | секции и поиск настроек tele | done | `0040-feat-split-tele-settings-into-sections-and-add-them-.patch`; `TeleSettingsActivity(mode)` — корень открывает interface/privacy/ids/your data, каждая секция — свой экран; `tele/ui/settings/TeleSearch.kt` добавляет все секции и тумблеры в массив поиска `ProfileActivity.SearchAdapter` (guid 950+, хлебные крошки tele > секция), хук — оборачивание возвращаемого массива `onCreateSearchArray`. `0044`: строки секций в корне — `SettingsActivity.SettingCell` с цветными иконками и подписями, в одной секции с версией tele |
 
-## пачка 11 — доработки перенесённого и быстрые тумблеры
+## пачка 11 — база приватности
 
-пять правок к уже перенесённым патчам (десктоп изменил их после переноса, список — [docs/decisions.md](decisions.md)) и семь мелких тумблеров в один хук. всё независимое, обкатка очереди после рефакторинга. effort: S×10, M×2.
+игнор-лист, per-chat ghost и ghost-schedule — база приватности по решению мейнтейнера, поэтому она теперь первая после уже завершённых пачек.
 
-ворота: debug-apk, на устройстве: у сервисных сообщений при включённых секундах есть время; пресеты ссылок мигрируют, TikTok только `tnktok.com`; отложенное с `FLOOD_WAIT` не долбит сервер и показывает тост при отказе; апдейтер докачивает после обрыва сети; Copy id в профиле копирует цифры; каждый новый тумблер on/off (off = сток).
+ворота: debug-apk; с опциями on/off проверить локальные фильтры, уведомления, ghost-отправку и обязательное восстановление privacy rule после force-stop.
+
+| № | патч | статус | примечание |
+|---|---|---|---|
+| 0016, 0073 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | перенос из пачки 2; хранилище готово — `tele_kv` в `TeleDatabaseHelper` (набор id через запятую, новая таблица не нужна); стоковый `PrivacyUsersActivity` не переиспользуем — он зашит на `TYPE_BLOCKED` и читает блок-лист `ContactsController`, нужен форк пикера; фильтр в `DialogCell` (список) и `ChatMessageCell` (в чате); сразу проектировать под 0166/0228 (фильтр `NotificationsController`); база приватности, решение мейнтейнера; M |
+| 0032, 0073 | per-chat ghost: исключения и ghost по чатам | todo | остаток 0032, не сделан в пачке 2; список чатов с пикером 0073 (общим с игнор-листом), хранение в `tele_kv`; гейты ghost (online/typing/read/contents-read, android 0023) учитывают чат; база приватности, решение мейнтейнера; M |
+| 0032, 0064 | ghost-schedule и offline-after-send | todo | остаток 0032/0064, не сделан в пачке 2: schedule-трюк (`SendMessagesHelper.sendMessage(... scheduleDate)`) и возврат в offline после отправки; основа для 0227; база приватности, решение мейнтейнера; M |
+| 0166 | скрытие по слову/regex | todo | `ChatActivity`, `DialogCell`, `privacy`; M; зависит от игнор-лист (старые 0016/0073); по умолч.; вместе с игнор-листом, Java-regex |
+| 0228 | ignored/hidden words молчат | todo | `NotificationsController`, `DialogCell`; M; зависит от игнор-лист, 0166; реш.: privacy base, 0166 с игнор-листом; серверный unread не поменять |
+| 0227 | показ ghost-scheduled сообщений | todo | `SendMessagesHelper`, `ChatActivity`; L; зависит от ghost-schedule, per-chat ghost, игнор-лист; реш.: privacy base первым, затем 0227; локальное призрачное сообщение + handover |
+| 0229 | невидимые сторис и per-chat ghost | todo | `StoriesController`, `StoryViewer`; M; зависит от per-chat ghost, android 0021; реш.: privacy base, затем 0229; проверить откат `max_read_id` |
+| 0282 | подсмотреть скрытый last seen | todo | `ContactsController`, `ProfileActivity`, `TeleDatabaseHelper`; L; реш.: 0282 выкл., restore на старте; предупреждение в описании |
+| 0160 | streamer mode (частично) | todo | `FlagSecureReason`, `NotificationsController`, `DrawerProfileCell`; M; реш.: 0160 независим от 0113/0172; заголовок окна n/a |
+
+## пачка 12 — доработки перенесённого и быстрые тумблеры
+
+пять исправлений уже перенесённых фич и семь небольших тумблеров; это первая пачка после privacy base. effort: S×10, M×2.
+
+ворота: debug-apk; докачка, scheduled retries, link migration и каждый новый тумблер проверены on/off.
 
 | № | патч | статус | примечание |
 |---|---|---|---|
@@ -190,24 +208,6 @@
 | 0172 | скрыть телефон в профилях | todo | `ProfileActivity.phoneRow`; S; зависит от android 0075; только phoneRow |
 | 0233 | нет метки «изменено» у ботов | todo | `ChatMessageCell`, `TeleHooks`; S; `bot` или `via_bot_id` |
 | 0231 | параметр старта на кнопке Start | todo | `ChatActivity`; S; тултип по long-click |
-
-## пачка 12 — база приватности
-
-игнор-лист, ghost по чатам и ghost-schedule — основа, на которой стоят скрытые слова, тихие уведомления, «призрачные» отложенные и невидимые сторис (решение мейнтейнера: база первой). фильтр `NotificationsController` проектируется сразу под игнор-лист, 0166 и 0228. effort: M×7, L×2.
-
-ворота: debug-apk, на устройстве: игнор-лист скрывает/гасит сообщения в чате и списке, пикер как в privacy; ghost по чату; отложенное ghost-сообщение видно локально и уходит; скрытые слова и игнор-лист не шлют уведомления; невидимые сторис не отмечаются прочитанными; last seen вернулся после убийства процесса и холодного старта (0282); streamer mode не светит содержимое.
-
-| № | патч | статус | примечание |
-|---|---|---|---|
-| 0016, 0073 | игнор-лист (скрыть/затухание) с пикером как в privacy | todo | перенос из пачки 2; хранилище готово — `tele_kv` в `TeleDatabaseHelper` (набор id через запятую, новая таблица не нужна); стоковый `PrivacyUsersActivity` не переиспользуем — он зашит на `TYPE_BLOCKED` и читает блок-лист `ContactsController`, нужен форк пикера; фильтр в `DialogCell` (список) и `ChatMessageCell` (в чате); сразу проектировать под 0166/0228 (фильтр `NotificationsController`); база приватности, решение мейнтейнера; M |
-| 0032, 0073 | per-chat ghost: исключения и ghost по чатам | todo | остаток 0032, не сделан в пачке 2; список чатов с пикером 0073 (общим с игнор-листом), хранение в `tele_kv`; гейты ghost (online/typing/read/contents-read, android 0023) учитывают чат; база приватности, решение мейнтейнера; M |
-| 0032, 0064 | ghost-schedule и offline-after-send | todo | остаток 0032/0064, не сделан в пачке 2: schedule-трюк (`SendMessagesHelper.sendMessage(... scheduleDate)`) и возврат в offline после отправки; основа для 0227; база приватности, решение мейнтейнера; M |
-| 0166 | скрытие по слову/regex | todo | `ChatActivity`, `DialogCell`, `privacy`; M; зависит от игнор-лист (старые 0016/0073); по умолч.; вместе с игнор-листом, Java-regex |
-| 0228 | ignored/hidden words молчат | todo | `NotificationsController`, `DialogCell`; M; зависит от игнор-лист, 0166; реш.: privacy base, 0166 с игнор-листом; серверный unread не поменять |
-| 0227 | показ ghost-scheduled сообщений | todo | `SendMessagesHelper`, `ChatActivity`; L; зависит от ghost-schedule, per-chat ghost, игнор-лист; реш.: privacy base первым, затем 0227; локальное призрачное сообщение + handover |
-| 0229 | невидимые сторис и per-chat ghost | todo | `StoriesController`, `StoryViewer`; M; зависит от per-chat ghost, android 0021; реш.: privacy base, затем 0229; проверить откат `max_read_id` |
-| 0282 | подсмотреть скрытый last seen | todo | `ContactsController`, `ProfileActivity`, `TeleDatabaseHelper`; L; реш.: 0282 выкл., restore на старте; предупреждение в описании |
-| 0160 | streamer mode (частично) | todo | `FlagSecureReason`, `NotificationsController`, `DrawerProfileCell`; M; реш.: 0160 независим от 0113/0172; заголовок окна n/a |
 
 ## пачка 13 — структура настроек и редактор меню
 
