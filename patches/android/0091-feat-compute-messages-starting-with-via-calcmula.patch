@@ -1,0 +1,337 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 05:08:28 +0300
+Subject: [PATCH] feat: compute messages starting with = via calcmula
+
+---
+ .../messenger/SendMessagesHelper.java         |   5 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/Calcmula.kt    | 243 ++++++++++++++++++
+ .../main/java/tele/helpers/DeletedReply.kt    |   2 +-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
+ 6 files changed, 252 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 5f8126b6c..f477eb1f0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -4316,6 +4316,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+     }
+ 
+     public void sendMessage(SendMessageParams sendMessageParams) {
++        if (tele.helpers.Calcmula.interceptText(currentAccount, sendMessageParams)) {
++            return;
++        }
+         final SendMessageChatArguments sendMessageChatArguments = sendMessageParams.sendMessageChatArguments != null ?
+                 sendMessageParams.sendMessageChatArguments : SendMessageChatArguments.EMPTY;
+         String message = sendMessageParams.message;
+@@ -10765,7 +10768,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         final long forcedPollGroupId = pollSendParams != null ? pollSendParams.groupId : 0;
+         final boolean forceDisableCheckSentMedia = forcedPollGroupId != 0;
+         final boolean groupMediaFinal = groupMedia;
+-        mediaSendQueue.postRunnable(() -> {
++        tele.helpers.Calcmula.postMedia(mediaSendQueue, media, editingMessageObject, () -> {
+             long beginTime = System.currentTimeMillis();
+             HashMap<SendingMediaInfo, MediaSendPrepareWorker> workers;
+             int count = media.size();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 84c5504b1..142e42b89 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -167,6 +167,8 @@ object TeleConfig {
+     val DOUBLE_ENTER_SEND = BoolItem("double_enter_send", false)
+     @JvmField
+     val QUICK_REPLIES_IN_GROUPS = BoolItem("quick_replies_in_groups", false)
++    @JvmField
++    val CALCMULA = BoolItem("calcmula", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt b/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
+new file mode 100644
+index 000000000..cb9784cfc
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
+@@ -0,0 +1,243 @@
++package tele.helpers
++
++import android.os.Looper
++import android.widget.Toast
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.messenger.DispatchQueue
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.LaunchActivity
++import tele.TeleConfig
++import java.io.ByteArrayOutputStream
++import java.net.HttpURLConnection
++import java.net.SocketTimeoutException
++import java.net.URL
++import java.net.URLEncoder
++import java.util.Collections
++import java.util.WeakHashMap
++import java.util.concurrent.Executors
++
++object Calcmula {
++    private const val ENDPOINT = "https://calcmula.app/api/calc?q="
++    private const val TIMEOUT = 10_000
++    private const val MAX_BODY = 64 * 1024
++
++    class Result(@JvmField val value: String?, @JvmField val error: String?)
++
++    private val pool = Executors.newCachedThreadPool { runnable ->
++        Thread(runnable, "calcmula").also { it.isDaemon = true }
++    }
++
++    // survives the paid-confirmation re-entry, which resends the same params object
++    private val processed: MutableSet<SendMessagesHelper.SendMessageParams> =
++        Collections.newSetFromMap(WeakHashMap())
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.CALCMULA.value
++
++    @JvmStatic
++    fun query(text: CharSequence?): String {
++        val trimmed = text?.toString()?.trim() ?: return ""
++        return if (trimmed.startsWith("= ")) trimmed.substring(2).trim() else ""
++    }
++
++    // the single network choke point: gate any future offline switch here
++    private fun fetch(query: String): Result {
++        var connection: HttpURLConnection? = null
++        var code = 0
++        try {
++            val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
++            connection = URL(ENDPOINT + encoded).openConnection() as HttpURLConnection
++            connection.connectTimeout = TIMEOUT
++            connection.readTimeout = TIMEOUT
++            connection.setRequestProperty("Accept", "application/json")
++            code = connection.responseCode
++            val stream = (if (code >= 400) connection.errorStream else connection.inputStream)
++                ?: return fail("http $code")
++            val out = ByteArrayOutputStream()
++            stream.use { input ->
++                val buffer = ByteArray(8 * 1024)
++                while (true) {
++                    val read = input.read(buffer)
++                    if (read < 0) break
++                    out.write(buffer, 0, read)
++                    if (out.size() > MAX_BODY) return fail("response is too large")
++                }
++            }
++            return parse(out.toString("UTF-8"), code)
++        } catch (e: SocketTimeoutException) {
++            return fail("request timed out")
++        } catch (e: Exception) {
++            return fail(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
++        } finally {
++            connection?.disconnect()
++        }
++    }
++
++    private fun parse(body: String, code: Int): Result {
++        val json = try {
++            JSONObject(body)
++        } catch (e: Exception) {
++            return fail(if (code in 200..299) "malformed response" else "http $code")
++        }
++        if (!json.optBoolean("ok", false)) {
++            return fail(json.optString("error", "").trim().ifEmpty { "unknown error" })
++        }
++        val result = json.optJSONObject("result")
++        val value = result?.optString("formatted", "")?.trim().orEmpty()
++            .ifEmpty { result?.optJSONObject("doc")?.optString("summary", "")?.trim().orEmpty() }
++        return if (value.isEmpty()) fail("empty result") else Result(value, null)
++    }
++
++    private fun fail(error: String): Result {
++        FileLog.e("Calcmula: $error")
++        return Result(null, error)
++    }
++
++    @JvmStatic
++    fun compute(query: String, done: (Result) -> Unit) {
++        pool.execute {
++            val result = fetch(query)
++            AndroidUtilities.runOnUIThread { done(result) }
++        }
++    }
++
++    @JvmStatic
++    fun compose(query: String, value: String): Pair<String, ArrayList<TLRPC.MessageEntity>> {
++        val blockquote = TLRPC.TL_messageEntityBlockquote()
++        blockquote.offset = 0
++        blockquote.length = query.length
++        return Pair("$query\n= $value", arrayListOf<TLRPC.MessageEntity>(blockquote))
++    }
++
++    private fun isTextMessage(p: SendMessagesHelper.SendMessageParams): Boolean {
++        if (p.message == null) return false
++        if (p.photo != null || p.document != null || p.location != null || p.user != null || p.game != null) return false
++        if (p.poll != null || p.todo != null || p.invoice != null || p.richMessage != null || p.sendingStory != null) return false
++        if (p.retryMessageObject != null || p.suggestionParams != null) return false
++        if (p.params?.containsKey("query_id") == true) return false
++        val chatArguments = p.sendMessageChatArguments
++        if (chatArguments != null && (chatArguments.welcomeMessageChatId != 0L || chatArguments.quickReplyShortcut != null || chatArguments.quickReplyShortcutId != 0)) return false
++        if (p.quick_reply_shortcut != null || p.quick_reply_shortcut_id != 0) return false
++        return true
++    }
++
++    @JvmStatic
++    fun interceptText(account: Int, p: SendMessagesHelper.SendMessageParams): Boolean {
++        if (!enabled() || !isTextMessage(p) || p in processed) return false
++        val query = query(p.message)
++        if (query.isEmpty()) return false
++        if (Looper.myLooper() == Looper.getMainLooper()) {
++            computeAndSend(account, p, query)
++        } else {
++            AndroidUtilities.runOnUIThread { computeAndSend(account, p, query) }
++        }
++        return true
++    }
++
++    private fun computeAndSend(account: Int, p: SendMessagesHelper.SendMessageParams, query: String) {
++        compute(query) { result ->
++            if (result.value == null) {
++                notify(result.error)
++                restoreDraft(account, p)
++                return@compute
++            }
++            val composed = compose(query, result.value)
++            p.message = composed.first
++            p.entities = composed.second
++            // the flying bubble was prepared for a message that shows up at once
++            p.sendAnimationData = null
++            processed.add(p)
++            SendMessagesHelper.getInstance(account).sendMessage(p)
++        }
++    }
++
++    @JvmStatic
++    fun postMedia(queue: DispatchQueue, media: ArrayList<SendMessagesHelper.SendingMediaInfo>, editing: MessageObject?, body: Runnable) {
++        val pending = if (!enabled() || editing != null) emptyList() else media.filter { query(it.caption).isNotEmpty() }
++        if (pending.isEmpty()) {
++            queue.postRunnable(body)
++            return
++        }
++        var left = pending.size
++        var lastError: String? = null
++        for (info in pending) {
++            val query = query(info.caption)
++            compute(query) { result ->
++                if (result.value != null) {
++                    val composed = compose(query, result.value)
++                    info.caption = composed.first
++                    info.entities = composed.second
++                } else {
++                    lastError = result.error
++                }
++                if (--left == 0) {
++                    lastError?.let { notify(it) }
++                    queue.postRunnable(body)
++                }
++            }
++        }
++    }
++
++    private fun notify(error: String?) {
++        val text = "calcmula: " + (error ?: "unknown error").lowercase()
++        val fragment = LaunchActivity.getLastFragment()
++        if (fragment != null) {
++            BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, text).show()
++        } else {
++            Toast.makeText(ApplicationLoader.applicationContext, text, Toast.LENGTH_SHORT).show()
++        }
++    }
++
++    private fun restoreDraft(account: Int, p: SendMessagesHelper.SendMessageParams) {
++        val original = p.message ?: return
++        val chat = (LaunchActivity.getLastFragment() as? ChatActivity)
++            ?.takeIf { it.currentAccount == account && it.dialogId == p.peer }
++        // the field is cleared lazily after a send, which would wipe the restored text
++        chat?.chatActivityEnterView?.startMessageTransition()
++        val thread = chat?.draftThreadId ?: (p.replyToTopMsg?.id ?: 0).toLong()
++        val controller = MediaDataController.getInstance(account)
++
++        var existingText = ""
++        var existingEntities: List<TLRPC.MessageEntity> = emptyList()
++        if (chat != null) {
++            // an open chat keeps its live text in the field; the stored draft is stale
++            val field = chat.chatActivityEnterView?.fieldText
++            if (!field.isNullOrEmpty()) {
++                val holder = arrayOf<CharSequence?>(AndroidUtilities.getTrimmedString(field))
++                existingEntities = controller.getEntities(holder, true)
++                existingText = holder[0]?.toString().orEmpty()
++            }
++        } else {
++            val draft = controller.getDraft(p.peer, thread)
++            if (draft != null && draft.message != null) {
++                existingText = draft.message
++                existingEntities = draft.entities
++            }
++        }
++
++        val text: String
++        val entities = ArrayList<TLRPC.MessageEntity>()
++        p.entities?.let { entities.addAll(it) }
++        if (existingText.isEmpty()) {
++            text = original
++        } else {
++            text = original + "\n" + existingText
++            val shift = original.length + 1
++            existingEntities.forEach { entities.add(DeletedReply.copyEntity(it, shift)) }
++        }
++
++        val replyTo = p.replyToMsg
++        val replyMessage = if (replyTo != null && !replyTo.isTopicMainMessage && replyTo.replyToForumTopic == null) replyTo.messageOwner else null
++        controller.saveDraft(p.peer, thread, text, entities, replyMessage, p.replyQuote, null, 0, !p.searchLinks, false)
++        chat?.applyDraftMaybe(true, true)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
+index 1c359e2db..0a70a02a7 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
+@@ -64,7 +64,7 @@ object DeletedReply {
+         return null
+     }
+ 
+-    private fun copyEntity(entity: TLRPC.MessageEntity, shift: Int): TLRPC.MessageEntity {
++    internal fun copyEntity(entity: TLRPC.MessageEntity, shift: Int): TLRPC.MessageEntity {
+         val copy = when (entity) {
+             is TLRPC.TL_messageEntityBold -> TLRPC.TL_messageEntityBold()
+             is TLRPC.TL_messageEntityItalic -> TLRPC.TL_messageEntityItalic()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index f86569c25..0567e4f6e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -108,6 +108,7 @@ object TeleSearch {
+             section(GUID_SERVER + 6, "badges next to names in messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1107, "collectible prices at the purchase date", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1108, "open collectible gifts in see.tg", "ids", TeleSettingsActivity.MODE_IDS),
++            section(1100, "calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_UPDATES, "update automatically", "updates", TeleSettingsActivity.MODE_ROOT),
+             section(GUID_UPDATES + 1, "check for updates", "updates", TeleSettingsActivity.MODE_ROOT),
+             section(GUID_UPDATES + 2, "show what's new after updates", "updates", TeleSettingsActivity.MODE_ROOT),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 186896b9f..93f980568 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -390,6 +390,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("send right away on double enter", TeleConfig.DOUBLE_ENTER_SEND),
+                 toggle("offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
+                 toggle("forward protected messages as copies", TeleConfig.COPY_PROTECTED),
++                toggle("calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_SERVER -> listOf(
