@@ -1,0 +1,830 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 20 Oct 2026 06:49:58 +0300
+Subject: [PATCH] feat: ignore users by hiding or fading their messages
+
+---
+ .../messenger/MessagesController.java         |   1 +
+ .../telegram/ui/Cells/ChatMessageCell.java    |  12 +
+ .../org/telegram/ui/Cells/DialogCell.java     |  18 +
+ .../src/main/java/tele/TeleConfig.kt          |   6 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |  10 +
+ .../main/java/tele/helpers/PrivacyRules.kt    | 275 +++++++++++++++
+ .../tele/ui/settings/TelePeersActivity.kt     | 325 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  11 +-
+ 9 files changed, 658 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 05d23c71d..63828d5e5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -16169,6 +16169,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         }
+         getUserConfig().clearConfig();
+         SharedPrefsHelper.cleanupAccount(currentAccount);
++        tele.helpers.PrivacyRules.onAccountRemoved(currentAccount);
+ 
+         boolean shouldHandle = true;
+         ArrayList<NotificationCenter.NotificationCenterDelegate> observers = getNotificationCenter().getObservers(NotificationCenter.appDidLogout);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index b2a6e332d..b3b8194dd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -6797,6 +6797,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+ 
+     private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
+         teleKeptDeleted = messageObject != null && tele.helpers.DeletedMessages.isKept(messageObject);
++        teleIgnoreMode = messageObject != null ? tele.helpers.PrivacyRules.messageMode(currentAccount, messageObject.getDialogId(), messageObject) : null;
+         if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
+             currentMessageObject = null;
+         }
+@@ -13390,6 +13391,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         }
+     }
+     private boolean teleKeptDeleted;
++    private String teleIgnoreMode;
+ 
+ 
+     private int getAdditionalWidthForPosition(MessageObject.GroupedMessagePosition position) {
+@@ -13703,6 +13705,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+ 
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
++        if (teleIgnoreMode != null && teleIgnoreMode.equals(tele.helpers.PrivacyRules.MODE_HIDE)) {
++            setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 0);
++            return;
++        }
+         if (currentMessageObject != null && (currentMessageObject.checkLayout() || lastHeight != AndroidUtilities.displaySize.y)) {
+             inLayout = true;
+             MessageObject messageObject = currentMessageObject;
+@@ -20172,6 +20178,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     @SuppressLint("WrongCall")
+     @Override
+     protected void onDraw(Canvas canvas) {
++        if (teleIgnoreMode != null && teleIgnoreMode.equals(tele.helpers.PrivacyRules.MODE_FADE)) {
++            int save = canvas.saveLayerAlpha(0, 0, getWidth(), getHeight(), 90);
++            drawInternal(canvas);
++            canvas.restoreToCount(save);
++            return;
++        }
+         drawInternal(canvas);
+     }
+     public void drawInternal(Canvas canvas) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+index 5ee87a99b..0914bcb35 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+@@ -429,6 +429,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     private ArrayList<MessageObject> groupMessages;
+     private boolean clearingDialog;
+     private CharSequence lastMessageString;
++    private String teleIgnoreMode;
+     private int dialogsType;
+     private int folderId;
+     private int messageId;
+@@ -3297,6 +3298,13 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                         groupMessages = MessagesController.getInstance(currentAccount).dialogMessage.get(dialog.id);
+                         message = groupMessages != null && groupMessages.size() > 0 ? groupMessages.get(0) : null;
+                         lastUnreadState = message != null && message.isUnread();
++                        teleIgnoreMode = null;
++                        if (message != null) {
++                            teleIgnoreMode = tele.helpers.PrivacyRules.previewMode(currentAccount, currentDialogId, message);
++                            if (teleIgnoreMode != null && teleIgnoreMode.equals(tele.helpers.PrivacyRules.MODE_HIDE)) {
++                                message = null;
++                            }
++                        }
+                         TLRPC.Chat localChat = MessagesController.getInstance(currentAccount).getChat(-dialog.id);
+                         boolean isForumCell = localChat != null && localChat.forum && !isTopic;
+                         if (localChat != null && (localChat.forum || localChat.monoforum && ChatObject.canManageMonoForum(currentAccount, localChat))) {
+@@ -3820,6 +3828,16 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     @SuppressLint("DrawAllocation")
+     @Override
+     protected void onDraw(Canvas canvas) {
++        if (teleIgnoreMode != null && teleIgnoreMode.equals(tele.helpers.PrivacyRules.MODE_FADE)) {
++            int save = canvas.saveLayerAlpha(0, 0, getWidth(), getHeight(), 120);
++            drawDialogContent(canvas);
++            canvas.restoreToCount(save);
++            return;
++        }
++        drawDialogContent(canvas);
++    }
++
++    private void drawDialogContent(Canvas canvas) {
+         if (currentDialogId == 0 && customDialog == null) {
+             return;
+         }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 19a80c9e6..9fadf2aec 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -73,6 +73,12 @@ object TeleConfig {
+     @JvmField
+     val GHOST_CONTENTS_READ = BoolItem("ghost_contents_read", false)
+     @JvmField
++    val IGNORE_USERS = BoolItem("ignore_users", false)
++    @JvmField
++    val GHOST_PER_CHAT = BoolItem("ghost_per_chat", false)
++    @JvmField
++    val HIDDEN_WORDS = BoolItem("hidden_words", false)
++    @JvmField
+     val NEVER_BLOCK_SCREENSHOTS = BoolItem("never_block_screenshots", false)
+     @JvmField
+     val ALLOW_SCREENSHOTS_DISAPPEARING = BoolItem("allow_screenshots_disappearing", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 109e6b6c4..e78895d96 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -34,6 +34,7 @@ object TeleHooks {
+         TeleCrash.install(context)
+         TeleServer.start()
+         tele.helpers.TeleUpdater.start()
++        tele.helpers.PrivacyRules.init()
+     }
+ 
+     @JvmStatic
+@@ -99,6 +100,15 @@ object TeleHooks {
+         }
+     }
+ 
++    @JvmStatic
++    fun onPrivacyRulesChanged() {
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            val center = AccountInstance.getInstance(account).notificationCenter
++            center.postNotificationName(NotificationCenter.dialogsNeedReload)
++            center.postNotificationName(NotificationCenter.messagesDidLoad)
++        }
++    }
++
+     @JvmStatic
+     fun isDisappearing(message: MessageObject?): Boolean {
+         val media = message?.messageOwner?.media ?: return false
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+new file mode 100644
+index 000000000..ad007d8d0
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+@@ -0,0 +1,275 @@
++package tele.helpers
++
++import org.json.JSONObject
++import org.telegram.messenger.MessageObject
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.regex.Pattern
++import java.util.regex.PatternSyntaxException
++
++/**
++ * Local privacy rules of the fork: ignored peers, per-chat ghost overrides and hidden words.
++ * Everything is stored in tele_kv, scoped by account, and never leaves the device.
++ */
++object PrivacyRules {
++
++    const val MODE_HIDE = "hide"
++    const val MODE_FADE = "fade"
++    const val GHOST_ALWAYS = "always"
++    const val GHOST_NEVER = "never"
++
++    private const val KEY_IGNORE = "privacy_ignore"
++    private const val KEY_GHOST = "privacy_ghost"
++    private const val KEY_WORDS = "privacy_hidden_words"
++
++    private val lock = Any()
++    private val ignored = HashMap<Int, MutableMap<Long, String>>()
++    private val ghosts = HashMap<Int, MutableMap<Long, String>>()
++    private val globalWords = HashMap<Int, List<Rule>>()
++    private val chatWords = HashMap<String, List<Rule>>()
++
++    private class Rule(val pattern: Pattern)
++
++    @JvmStatic
++    fun init() {
++        Thread {
++            for (account in 0 until org.telegram.messenger.UserConfig.MAX_ACCOUNT_COUNT) {
++                synchronized(lock) {
++                    if (!ignored.containsKey(account)) ignored[account] = readPeers(ignoreKey(account))
++                    if (!ghosts.containsKey(account)) ghosts[account] = readPeers(ghostKey(account))
++                }
++            }
++        }.start()
++    }
++
++    private fun ignoreKey(account: Int) = "$KEY_IGNORE:$account"
++
++    private fun ghostKey(account: Int) = "$KEY_GHOST:$account"
++
++    private fun wordsKey(account: Int) = "$KEY_WORDS:$account"
++
++    private fun chatWordsKey(account: Int, dialogId: Long) = "$KEY_WORDS:$account:$dialogId"
++
++    private fun readPeers(key: String): MutableMap<Long, String> {
++        val map = HashMap<Long, String>()
++        val raw = TeleDatabaseHelper.get(key) ?: return map
++        runCatching {
++            val json = JSONObject(raw)
++            for (name in json.keys()) {
++                val id = name.toLongOrNull() ?: continue
++                when (json.optString(name)) {
++                    MODE_HIDE, MODE_FADE, GHOST_ALWAYS, GHOST_NEVER -> map[id] = json.optString(name)
++                }
++            }
++        }
++        return map
++    }
++
++    private fun writePeers(key: String, map: Map<Long, String>) {
++        val json = JSONObject()
++        for ((id, mode) in map) {
++            json.put(id.toString(), mode)
++        }
++        TeleDatabaseHelper.put(key, json.toString())
++    }
++
++    // ignored peers
++
++    @JvmStatic
++    fun ignoredPeers(account: Int): Map<Long, String> = synchronized(lock) {
++        ignored.getOrPut(account) { readPeers(ignoreKey(account)) }.toMap()
++    }
++
++    @JvmStatic
++    fun ignoredMode(account: Int, dialogId: Long): String? = synchronized(lock) {
++        ignored[account]?.get(dialogId)
++    }
++
++    @JvmStatic
++    fun setIgnored(account: Int, dialogId: Long, mode: String?) = synchronized(lock) {
++        val map = ignored.getOrPut(account) { readPeers(ignoreKey(account)) }
++        if (mode == null) {
++            map.remove(dialogId)
++        } else {
++            map[dialogId] = mode
++        }
++        writePeers(ignoreKey(account), map)
++    }
++
++    // per-chat ghost overrides
++
++    @JvmStatic
++    fun ghostPeers(account: Int): Map<Long, String> = synchronized(lock) {
++        ghosts.getOrPut(account) { readPeers(ghostKey(account)) }.toMap()
++    }
++
++    @JvmStatic
++    fun ghostMode(account: Int, dialogId: Long): String? = synchronized(lock) {
++        ghosts[account]?.get(dialogId)
++    }
++
++    @JvmStatic
++    fun setGhost(account: Int, dialogId: Long, mode: String?) = synchronized(lock) {
++        val map = ghosts.getOrPut(account) { readPeers(ghostKey(account)) }
++        if (mode == null) {
++            map.remove(dialogId)
++        } else {
++            map[dialogId] = mode
++        }
++        writePeers(ghostKey(account), map)
++    }
++
++    /** The chat is listed as always ghosted, whatever the global switches say. */
++    @JvmStatic
++    fun ghosted(account: Int, dialogId: Long): Boolean = ghostMode(account, dialogId) == GHOST_ALWAYS
++
++    private fun ghostClass(account: Int, dialogId: Long, global: Boolean): Boolean {
++        if (!TeleConfig.GHOST_PER_CHAT.value) {
++            return global
++        }
++        return when (ghostMode(account, dialogId)) {
++            GHOST_ALWAYS -> true
++            GHOST_NEVER -> false
++            else -> global
++        }
++    }
++
++    @JvmStatic
++    fun ghostRead(account: Int, dialogId: Long): Boolean = ghostClass(account, dialogId, TeleConfig.GHOST_READ.value)
++
++    @JvmStatic
++    fun ghostTyping(account: Int, dialogId: Long): Boolean = ghostClass(account, dialogId, TeleConfig.GHOST_TYPING.value)
++
++    @JvmStatic
++    fun ghostContentsRead(account: Int, dialogId: Long): Boolean = ghostClass(account, dialogId, TeleConfig.GHOST_CONTENTS_READ.value)
++
++    // hidden words
++
++    @JvmStatic
++    fun hiddenWords(account: Int): String = TeleDatabaseHelper.get(wordsKey(account)) ?: ""
++
++    @JvmStatic
++    fun setHiddenWords(account: Int, text: String) {
++        TeleDatabaseHelper.put(wordsKey(account), text)
++        synchronized(lock) {
++            globalWords.remove(account)
++        }
++    }
++
++    @JvmStatic
++    fun chatHiddenWords(account: Int, dialogId: Long): String = TeleDatabaseHelper.get(chatWordsKey(account, dialogId)) ?: ""
++
++    @JvmStatic
++    fun setChatHiddenWords(account: Int, dialogId: Long, text: String) {
++        TeleDatabaseHelper.put(chatWordsKey(account, dialogId), text)
++        synchronized(lock) {
++            chatWords.remove(chatWordsKey(account, dialogId))
++        }
++    }
++
++    /** Parses one rule per line: plain text or /regex/ and /regex/i. Returns null for an invalid regex. */
++    @JvmStatic
++    fun parseRule(line: String): Pattern? {
++        if (line.length > 2 && line[0] == '/') {
++            val end = line.lastIndexOf('/')
++            if (end > 0) {
++                val flags = line.substring(end + 1)
++                if (flags.isEmpty() || flags.equals("i", ignoreCase = true)) {
++                    return try {
++                        Pattern.compile(line.substring(1, end), Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE)
++                    } catch (e: PatternSyntaxException) {
++                        null
++                    }
++                }
++            }
++        }
++        return Pattern.compile(Pattern.quote(line), Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE)
++    }
++
++    private fun rules(text: String): List<Rule> {
++        val result = ArrayList<Rule>()
++        val seen = HashSet<String>()
++        for (raw in text.split('\n')) {
++            val line = raw.trim()
++            if (line.isEmpty()) {
++                continue
++            }
++            if (!seen.add(line.lowercase())) {
++                continue
++            }
++            val pattern = parseRule(line) ?: continue
++            result.add(Rule(pattern))
++        }
++        return result
++    }
++
++    private fun globalRules(account: Int): List<Rule> = synchronized(lock) {
++        globalWords.getOrPut(account) { rules(hiddenWords(account)) }
++    }
++
++    private fun chatRules(account: Int, dialogId: Long): List<Rule> = synchronized(lock) {
++        val key = chatWordsKey(account, dialogId)
++        chatWords.getOrPut(key) { rules(chatHiddenWords(account, dialogId)) }
++    }
++
++    @JvmStatic
++    fun matchesWords(account: Int, dialogId: Long, text: CharSequence?): Boolean {
++        if (text.isNullOrEmpty()) {
++            return false
++        }
++        val list = ArrayList<Rule>(globalRules(account))
++        list.addAll(chatRules(account, dialogId))
++        for (rule in list) {
++            if (rule.pattern.matcher(text).find()) {
++                return true
++            }
++        }
++        return false
++    }
++
++    // message classification
++
++    private fun messageText(message: MessageObject): CharSequence? = message.messageText ?: message.caption
++
++    /**
++     * Mode of the local privacy rules for one message: hide, fade or null when the message stays untouched.
++     * Own messages, service messages and sponsored messages are never touched.
++     */
++    @JvmStatic
++    fun messageMode(account: Int, dialogId: Long, message: MessageObject?): String? {
++        if (message == null) {
++            return null
++        }
++        if (message.isOutOwner() || message.messageOwner is TLRPC.TL_messageService || message.isSponsored()) {
++            return null
++        }
++        if (TeleConfig.IGNORE_USERS.value) {
++            ignoredMode(account, dialogId)?.let { return it }
++            val sender = message.getFromChatId()
++            if (sender != dialogId) {
++                ignoredMode(account, sender)?.let { return it }
++            }
++        }
++        if (TeleConfig.HIDDEN_WORDS.value && matchesWords(account, dialogId, messageText(message))) {
++            return MODE_HIDE
++        }
++        return null
++    }
++
++    /** The chat list preview of one message: hide, fade or null. */
++    @JvmStatic
++    fun previewMode(account: Int, dialogId: Long, message: MessageObject?): String? = messageMode(account, dialogId, message)
++
++    @JvmStatic
++    fun onAccountRemoved(account: Int) {
++        synchronized(lock) {
++            ignored.remove(account)
++            ghosts.remove(account)
++            globalWords.remove(account)
++        }
++        TeleDatabaseHelper.put(ignoreKey(account), null)
++        TeleDatabaseHelper.put(ghostKey(account), null)
++        TeleDatabaseHelper.put(wordsKey(account), null)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+new file mode 100644
+index 000000000..eb90a1fe9
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+@@ -0,0 +1,325 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.text.Editable
++import android.text.TextWatcher
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ContactsController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.TextCheckCell
++import org.telegram.ui.Cells.TextInfoPrivacyCell
++import org.telegram.ui.Components.EditTextBoldCursor
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.helpers.PrivacyRules
++
++/**
++ * Fork picker of privacy exceptions: it looks like the privacy screens, but it edits the local
++ * lists of the fork instead of the server block list.
++ */
++class TelePeersActivity(private val account: Int, private val mode: String) : BaseFragment() {
++
++    private class Peer(val dialogId: Long, val title: String, val subtitle: String)
++
++    private var peers: List<Peer> = emptyList()
++    private var query = ""
++    private var adapter: Adapter? = null
++    private var searchField: EditTextBoldCursor? = null
++    private var searchRunnable: Runnable? = null
++
++    private val isIgnoreMode get() = mode == MODE_IGNORE
++
++    private fun title(): String = when (mode) {
++        MODE_GHOST_ALWAYS -> "always ghost in"
++        MODE_GHOST_NEVER -> "never ghost in"
++        else -> "ignored users"
++    }
++
++    private fun modeOf(dialogId: Long): String? = if (isIgnoreMode) {
++        PrivacyRules.ignoredMode(account, dialogId)
++    } else {
++        PrivacyRules.ghostMode(account, dialogId)
++    }
++
++    private fun applyMode(dialogId: Long, newMode: String?) {
++        if (isIgnoreMode) {
++            PrivacyRules.setIgnored(account, dialogId, newMode)
++        } else {
++            PrivacyRules.setGhost(account, dialogId, newMode)
++        }
++        tele.TeleHooks.onPrivacyRulesChanged()
++    }
++
++    private fun peerTitle(dialogId: Long): String {
++        val controller = MessagesController.getInstance(account)
++        if (dialogId > 0) {
++            val user = controller.getUser(dialogId)
++            if (user != null) {
++                return ContactsController.formatName(user.first_name, user.last_name)
++            }
++        } else {
++            val chat = controller.getChat(-dialogId)
++            if (chat != null) {
++                return chat.title
++            }
++        }
++        return "id $dialogId"
++    }
++
++    private fun peerSubtitle(dialogId: Long): String {
++        val controller = MessagesController.getInstance(account)
++        if (dialogId > 0) {
++            val user = controller.getUser(dialogId)
++            if (user != null) {
++                return if (user.bot) "bot" else "user"
++            }
++        } else {
++            val chat = controller.getChat(-dialogId)
++            if (chat != null) {
++                return if (chat.megagroup) "group" else "channel"
++            }
++        }
++        return ""
++    }
++
++    private fun loadLocalPeers(): List<Peer> {
++        val result = ArrayList<Peer>()
++        val seen = HashSet<Long>()
++        val controller = MessagesController.getInstance(account)
++        val dialogs = controller.getAllDialogs()
++        for (dialog in dialogs) {
++            if (dialog.isFolder || dialog is TLRPC.TL_dialogCommunity) {
++                continue
++            }
++            val dialogId = dialog.id
++            if (dialogId == 0L || !seen.add(dialogId)) {
++                continue
++            }
++            if (dialogId > 0) {
++                val user = controller.getUser(dialogId) ?: continue
++                if (UserObject.isDeleted(user) || user.self) {
++                    continue
++                }
++            }
++            if (query.isNotEmpty() && !peerTitle(dialogId).contains(query, ignoreCase = true)) {
++                continue
++            }
++            result.add(Peer(dialogId, peerTitle(dialogId), peerSubtitle(dialogId)))
++        }
++        return result
++    }
++
++    private fun searchUsers(text: String) {
++        val request = TLRPC.TL_contacts_search()
++        request.q = text
++        request.limit = 50
++        ConnectionsManager.getInstance(account).sendRequest(request) { response, error ->
++            if (error != null || response !is TLRPC.TL_contacts_found) {
++                return@sendRequest
++            }
++            val found = ArrayList<Peer>()
++            for (user in response.users) {
++                if (user.self || UserObject.isDeleted(user) || UserObject.isService(user.id)) {
++                    continue
++                }
++                found.add(Peer(user.id, ContactsController.formatName(user.first_name, user.last_name), "user"))
++            }
++            android.os.Handler(android.os.Looper.getMainLooper()).post {
++                if (query != text) {
++                    return@post
++                }
++                peers = merge(found, peers)
++                adapter?.notifyDataSetChanged()
++            }
++        }
++    }
++
++    private fun merge(first: List<Peer>, second: List<Peer>): List<Peer> {
++        val result = ArrayList<Peer>(first)
++        val seen = HashSet<Long>()
++        for (peer in first) {
++            seen.add(peer.dialogId)
++        }
++        for (peer in second) {
++            if (seen.add(peer.dialogId)) {
++                result.add(peer)
++            }
++        }
++        return result
++    }
++
++    private fun reload() {
++        peers = loadLocalPeers()
++        adapter?.notifyDataSetChanged()
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(title())
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) {
++                    finishFragment()
++                }
++            }
++        })
++
++        val frameLayout = FrameLayout(context)
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = frameLayout
++
++        val field = EditTextBoldCursor(context)
++        field.setSingleLine(true)
++        field.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 17f)
++        field.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++        field.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText))
++        field.setBackgroundDrawable(null)
++        field.setLineColors(
++            Theme.getColor(Theme.key_windowBackgroundWhiteInputField),
++            Theme.getColor(Theme.key_windowBackgroundWhiteInputFieldActivated),
++            Theme.getColor(Theme.key_text_RedRegular)
++        )
++        field.hint = "search"
++        field.setPadding(0, 0, 0, 0)
++        val fieldContainer = FrameLayout(context)
++        fieldContainer.setPadding(AndroidUtilities.dp(20f), AndroidUtilities.dp(8f), AndroidUtilities.dp(20f), AndroidUtilities.dp(8f))
++        fieldContainer.addView(field, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 42f))
++        field.addTextChangedListener(object : TextWatcher {
++            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
++            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
++            override fun afterTextChanged(s: Editable?) {
++                query = s?.toString()?.trim() ?: ""
++                reload()
++                searchRunnable?.let { android.os.Handler(android.os.Looper.getMainLooper()).removeCallbacks(it) }
++                if (query.length >= 2) {
++                    val runnable = Runnable { searchUsers(query) }
++                    searchRunnable = runnable
++                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(runnable, 400)
++                }
++            }
++        })
++        searchField = field
++        frameLayout.addView(fieldContainer, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP))
++
++        val listView = RecyclerListView(context)
++        listView.setLayoutManager(LinearLayoutManager(context))
++        listView.setVerticalScrollBarEnabled(false)
++        listView.setPadding(0, 0, 0, AndroidUtilities.dp(12f))
++        listView.setClipToPadding(false)
++        adapter = Adapter(context)
++        listView.setAdapter(adapter)
++        listView.setOnItemClickListener { _, position ->
++            val peer = peers.getOrNull(position - 1) ?: return@setOnItemClickListener
++            val current = modeOf(peer.dialogId)
++            val next = if (current != null) null else if (isIgnoreMode) PrivacyRules.MODE_FADE else mode
++            applyMode(peer.dialogId, next)
++            adapter?.notifyDataSetChanged()
++        }
++        listView.setOnItemLongClickListener { _, position ->
++            val peer = peers.getOrNull(position - 1) ?: return@setOnItemLongClickListener false
++            showModeDialog(peer)
++            true
++        }
++        frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.TOP))
++        listView.setPadding(0, AndroidUtilities.dp(52f), 0, AndroidUtilities.dp(12f))
++
++        reload()
++        return frameLayout
++    }
++
++    private fun showModeDialog(peer: Peer) {
++        val activity = parentActivity ?: return
++        val builder = AlertDialog.Builder(activity)
++        builder.setTitle(peer.title)
++        val current = modeOf(peer.dialogId)
++        val options = if (isIgnoreMode) {
++            arrayOf("hide", "fade", "remove")
++        } else {
++            arrayOf("always ghost", "never ghost", "remove")
++        }
++        builder.setItems(options) { _, which ->
++            when (which) {
++                0 -> applyMode(peer.dialogId, if (isIgnoreMode) PrivacyRules.MODE_HIDE else PrivacyRules.GHOST_ALWAYS)
++                1 -> applyMode(peer.dialogId, if (isIgnoreMode) PrivacyRules.MODE_FADE else PrivacyRules.GHOST_NEVER)
++                else -> applyMode(peer.dialogId, null)
++            }
++            adapter?.notifyDataSetChanged()
++        }
++        if (current != null) {
++            builder.setNegativeButton("cancel", null)
++        }
++        showDialog(builder.create())
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++
++        override fun getItemCount(): Int = peers.size + 2
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = holder.adapterPosition in 1..peers.size
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_HEADER -> HeaderCell(context)
++                TYPE_SHADOW -> TextInfoPrivacyCell(context)
++                else -> TextCheckCell(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            when (val cell = holder.itemView) {
++                is HeaderCell -> cell.setText(title())
++                is TextInfoPrivacyCell -> cell.setText(
++                    if (isIgnoreMode) "tap to add or remove, long press to hide or fade the messages"
++                    else "tap to add or remove, long press to switch between always and never"
++                )
++                else -> {
++                    val peer = peers[position - 1]
++                    val current = modeOf(peer.dialogId)
++                    val value = when {
++                        current == null -> peer.subtitle
++                        isIgnoreMode && current == PrivacyRules.MODE_HIDE -> "hidden"
++                        isIgnoreMode -> "faded"
++                        current == PrivacyRules.GHOST_ALWAYS -> "always"
++                        else -> "never"
++                    }
++                    (cell as TextCheckCell).setTextAndValueAndCheck(peer.title, value, current != null, false, false)
++                }
++            }
++        }
++
++        override fun getItemViewType(position: Int): Int = when (position) {
++            0 -> TYPE_HEADER
++            peers.size + 1 -> TYPE_SHADOW
++            else -> TYPE_ENTRY
++        }
++    }
++
++    companion object {
++        const val MODE_IGNORE = "ignore"
++        const val MODE_GHOST_ALWAYS = "ghost_always"
++        const val MODE_GHOST_NEVER = "ghost_never"
++
++        private const val TYPE_ENTRY = 1
++        private const val TYPE_HEADER = 2
++        private const val TYPE_SHADOW = 3
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 826eb2be7..57a260740 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -67,6 +67,7 @@ object TeleSearch {
+             section(GUID_PRIVACY + 11, "inline results without via", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 14, "hide sponsored messages", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 15, "hide the proxy sponsor channel", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            screen(1110, "ignored users") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_IGNORE) },
+ 
+             section(GUID_IDS, "tele ids", "ids", TeleSettingsActivity.MODE_IDS),
+             section(GUID_IDS + 1, "show peer id in profile", "ids", TeleSettingsActivity.MODE_IDS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 88cf8b2a7..438a4f2b6 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -8,6 +8,7 @@ import org.telegram.messenger.Utilities
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.BuildVars
+ import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+@@ -189,6 +190,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+                 TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
+                 MODE_MENU -> presentFragment(TeleMenuActivity())
++                "peers_ignore" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_IGNORE))
+                 TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
+                 TeleDraftsActivity.MODE_DRAFTS -> presentFragment(TeleDraftsActivity())
+                 MODE_RULES -> presentFragment(TeleRulesActivity())
+@@ -312,7 +314,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "usernames from the server" to "Show usernames and aliases provided by the tele server.",
+             "send crash reports" to "Offer to send crash reports to the tele server.",
+             "update automatically" to "Check GitHub for new tele releases automatically.",
+-            "show what's new after updates" to "Post release notes to the local tele chat after an update."
++            "show what's new after updates" to "Post release notes to the local tele chat after an update.",
++            "ignore users" to "Hide or fade the messages of the people you pick. Nothing is sent to the server."
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -421,6 +424,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(toggle("hide sponsored messages", TeleConfig.HIDE_SPONSORED))
+                 rows.add(toggle("hide the proxy sponsor channel", TeleConfig.HIDE_PROXY_SPONSOR))
+                 rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "ignored"))
++                rows.add(toggle("ignore users", TeleConfig.IGNORE_USERS))
++                if (TeleConfig.IGNORE_USERS.value) {
++                    rows.add(link("ignored users", "peers_ignore"))
++                }
++                rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "links"))
+                 rows.add(toggle("clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
+                 rows.add(toggle("clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS))
