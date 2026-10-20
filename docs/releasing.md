@@ -40,6 +40,7 @@ the run:
 4. checks that the apk verifies and is signed by the certificate pinned in `ci/release-cert-sha256.txt`: a build signed by any other key fails here, before anything is published.
 5. writes the update feed and the changelog, attests the apk, uploads everything as the `release` artifact.
 6. the `publish` job (only for a manual run with `publish=true`) is the only one with write access. it re-checks the feed against the apk, creates the release as a draft with every asset, then publishes it and marks it the latest release, so a client never sees a release without its files.
+7. the `announce` job posts the release to the telegram channel with `ci/announce.py`, made from the release's `tele-changelog.json`. the channel also gets tele desktop's releases, so the post is titled `tele for android N · <APP_VERSION_NAME>` and ends with a `#android` footer. without the `TELE_BOT_TOKEN` and `TELE_CHANNEL` secrets it posts nothing. a failed post doesn't touch the release: re-run the job, or post any published release with `gh workflow run announce.yml -f tag=<tag>`.
 
 runs on one branch queue one after another, so two releases never pick the same number.
 
@@ -76,12 +77,14 @@ set under settings → secrets and variables → actions.
 | `KEYSTORE_BASE64` | the release keystore, base64 on one line: `base64 -i ~/.tele/tele-release.jks \| tr -d '\n'` |
 | `KEYSTORE_PASSWORD` | the keystore password |
 | `KEY_PASSWORD` | the key password |
+| `TELE_BOT_TOKEN` | token of the bot that posts announcements, an admin of the channel that may post messages |
+| `TELE_CHANNEL` | the channel's chat id (`-100…`) |
 
 | variable | what it is |
 |---|---|
 | `KEY_ALIAS` | the alias of the release key (`tele`). a variable, not a secret: github masks every secret value in logs and outputs, and a secret `tele` would mask the release tag itself |
 
-every run needs all of them, including pushes: the signature check compares with the pinned certificate.
+every run needs all of them except the two announcement secrets, including pushes: the signature check compares with the pinned certificate.
 
 ## new upstream releases
 
