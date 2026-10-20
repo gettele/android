@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 20 Oct 2026 08:04:37 +0300
+Subject: [PATCH] feat: show pending ghost scheduled messages
+
+---
+ .../java/org/telegram/messenger/SendMessagesHelper.java  | 9 +++++----
+ TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt | 5 +++++
+ .../main/java/tele/ui/settings/TeleSettingsActivity.kt   | 3 +++
+ 3 files changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index d281e6953..5a428d6c8 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -5385,7 +5385,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             newMsgObj.sendAnimationData = sendAnimationData;
+             newMsgObj.wasJustSent = true;
+             newMsgObj.sentHighQuality = sendMessageParams.sendingHighQuality;
+-            newMsgObj.scheduled = scheduleDate != 0;
++            newMsgObj.scheduled = scheduleDate != 0 && !tele.helpers.PrivacyRules.showPendingInChat(currentAccount, peer);
+             if (!newMsgObj.isForwarded() && (newMsgObj.type == MessageObject.TYPE_VIDEO || videoEditedInfo != null || newMsgObj.type == MessageObject.TYPE_VOICE) && !TextUtils.isEmpty(newMsg.attachPath)) {
+                 newMsgObj.attachPathExists = true;
+             }
+@@ -5404,7 +5404,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 final int mode;
+                 if (isWelcomeMessageTemplate) {
+                     mode = ChatActivity.MODE_WELCOME_MESSAGES;
+-                } else if (scheduleDate != 0) {
++                } else if (scheduleDate != 0 && !tele.helpers.PrivacyRules.showPendingInChat(currentAccount, peer)) {
+                     mode = ChatActivity.MODE_SCHEDULED;
+                 } else if (quick_reply_shortcut != null) {
+                     mode = ChatActivity.MODE_QUICK_REPLIES;
+@@ -8589,13 +8589,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                                 getNotificationCenter().postNotificationName(NotificationCenter.messageReceivedByServer, oldId, newMsgObj.id, newMsgObj, newMsgObj.dialog_id, 0L, existFlags, scheduled);
+                                 getNotificationCenter().postNotificationName(NotificationCenter.messageReceivedByServer2, oldId, newMsgObj.id, newMsgObj, newMsgObj.dialog_id, 0L, existFlags, scheduled);
+                                 getMessagesStorage().getStorageQueue().postRunnable(() -> {
+-                                    int mode = scheduled ? ChatActivity.MODE_SCHEDULED : 0;
++                                    final boolean telePending = scheduled && tele.helpers.PrivacyRules.showPendingInChat(currentAccount, MessageObject.getDialogId(newMsgObj));
++                                    int mode = scheduled && !telePending ? ChatActivity.MODE_SCHEDULED : 0;
+                                     if (MessageObject.isWelcomeMessage(newMsgObj)) {
+                                         mode = ChatActivity.MODE_WELCOME_MESSAGES;
+                                     } else if (newMsgObj.quick_reply_shortcut_id != 0 || newMsgObj.quick_reply_shortcut != null) {
+                                         mode = ChatActivity.MODE_QUICK_REPLIES;
+                                     }
+-                                    getMessagesStorage().updateMessageStateAndId(newMsgObj.random_id, MessageObject.getPeerId(newMsgObj.peer_id), oldId, newMsgObj.id, 0, false, scheduled ? 1 : 0, newMsgObj.quick_reply_shortcut_id);
++                                    getMessagesStorage().updateMessageStateAndId(newMsgObj.random_id, MessageObject.getPeerId(newMsgObj.peer_id), oldId, newMsgObj.id, 0, false, scheduled && !telePending ? 1 : 0, newMsgObj.quick_reply_shortcut_id);
+                                     getMessagesStorage().putMessages(sentMessages, true, false, false, 0, mode, newMsgObj.quick_reply_shortcut_id);
+                                     if (MessageObject.isEphemeralAndNotWelcome(newMsgObj)) {
+                                         final long dialogId = MessageObject.getPeerId(newMsgObj.peer_id);
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+index 46499dbd4..c937ff0fb 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+@@ -153,6 +153,11 @@ object PrivacyRules {
+     @JvmStatic
+     fun ghostSchedule(account: Int, dialogId: Long): Boolean = TeleConfig.GHOST_SCHEDULE.value && ghostActive(account, dialogId)
+ 
++    /** A ghost scheduled message is shown in the chat right away, before the server sends it. */
++    @JvmStatic
++    fun showPendingInChat(account: Int, dialogId: Long): Boolean =
++        TeleConfig.GHOST_SCHEDULED_MESSAGES.value && ghostSchedule(account, dialogId)
++
+     private val ghostSends = HashMap<Int, Long>()
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5ff15c2ee..27b0973bf 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -458,6 +458,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     rows.add(link("never ghost in", "peers_ghost_never"))
+                 }
+                 rows.add(toggle("send messages as scheduled", TeleConfig.GHOST_SCHEDULE))
++                if (TeleConfig.GHOST_SCHEDULE.value) {
++                    rows.add(toggle("show waiting messages in the chat", TeleConfig.GHOST_SCHEDULED_MESSAGES))
++                }
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "links"))
+                 rows.add(toggle("clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
