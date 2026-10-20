@@ -97,6 +97,7 @@
 | иконка stealth | взята стоковая `R.drawable.msg_stories_stealth2` — та, что telegram использует для premium-пункта «Hide My View» в историях (`PeerStoriesView`). свой вектор с перечёркнутым глазом удалён |
 | краш в профиле | `TeleHooks.onPrivacyRulesChanged` отправлял `NotificationCenter.messagesDidLoad` без аргументов — `ChatActivity` читал `args[10]` и падал с AIOOBE. теперь чаты перебиндовывают ячейки по счётчику ревизии (`TeleHooks.uiRevision`), а список чатов обновляется через `dialogsNeedReload` |
 | peek last seen | если правила приватности ещё не в кэше, tele грузит их с сервера и ждёт до 10 секунд, вместо сообщения «the privacy rules are not loaded yet» |
+| регистр строк форка | строки форка (экраны, пункты, диалоги, тосты, поиск) с заглавной буквы — как в android-телеграме; в десктопе всё в нижнем регистре. «tele» всегда строчными, включая «tele server URL» и «New in tele». технические строки (sql, регулярки, ключи, коды ошибок) и статусы вида «online»/«recently» не менялись |
 
 ## правки к уже перенесённым патчам
 
