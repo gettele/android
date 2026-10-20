@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 20 Oct 2026 06:57:11 +0300
+Subject: [PATCH] feat: add per chat ghost mode exceptions
+
+---
+ .../messenger/LocationController.java         |  2 +-
+ .../messenger/MessagesController.java         | 10 +++++-----
+ .../tele/ui/settings/TelePeersActivity.kt     | 20 +++++++++++--------
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  3 +++
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 12 ++++++++++-
+ 5 files changed, 32 insertions(+), 15 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/LocationController.java b/TMessagesProj/src/main/java/org/telegram/messenger/LocationController.java
+index c3450c70b..40691c3ed 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/LocationController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/LocationController.java
+@@ -915,7 +915,7 @@ public class LocationController extends BaseController implements NotificationCe
+             return;
+         }
+         lastReadLocationTime.put(dialogId, currentDate);
+-        if (tele.TeleConfig.GHOST_CONTENTS_READ.getValue()) {
++        if (tele.helpers.PrivacyRules.ghostContentsRead(currentAccount, dialogId)) {
+             return;
+         }
+         TLObject request;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 63828d5e5..c3e996cc4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -11390,7 +11390,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public boolean sendTyping(long dialogId, long threadMsgId, int action, String emojicon, int classGuid) {
+-        if (tele.TeleConfig.GHOST_TYPING.getValue()) {
++        if (tele.helpers.PrivacyRules.ghostTyping(currentAccount, dialogId)) {
+             return false;
+         }
+         if (action < 0 || action >= sendingTypings.length || dialogId == 0) {
+@@ -14418,7 +14418,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         long dialogId = messageObject.getDialogId();
+         getMessagesStorage().markMessagesContentAsRead(dialogId, arrayList, 0, 0);
+         getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, dialogId, arrayList);
+-        if (tele.TeleConfig.GHOST_CONTENTS_READ.getValue()) {
++        if (tele.helpers.PrivacyRules.ghostContentsRead(currentAccount, dialogId)) {
+         } else if (messageObject.getId() < 0) {
+             markMessageAsRead(messageObject.getDialogId(), messageObject.messageOwner.random_id, Integer.MIN_VALUE);
+         } else {
+@@ -14447,7 +14447,7 @@ public class MessagesController extends BaseController implements NotificationCe
+ 
+     public void markMentionMessageAsRead(int mid, long channelId, long did) {
+         getMessagesStorage().markMentionMessageAsRead(-channelId, mid, did);
+-        if (tele.TeleConfig.GHOST_CONTENTS_READ.getValue()) {
++        if (tele.helpers.PrivacyRules.ghostContentsRead(currentAccount, -channelId)) {
+         } else if (channelId != 0) {
+             TLRPC.TL_channels_readMessageContents req = new TLRPC.TL_channels_readMessageContents();
+             req.channel = getInputChannel(channelId);
+@@ -14527,7 +14527,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         if (createDeleteTask) {
+             getMessagesStorage().createTaskForMid(dialogId, mid, time, time, ttl, false);
+         }
+-        if (tele.TeleConfig.GHOST_CONTENTS_READ.getValue()) {
++        if (tele.helpers.PrivacyRules.ghostContentsRead(currentAccount, dialogId)) {
+         } else if (inputChannel != null) {
+             TLRPC.TL_channels_readMessageContents req = new TLRPC.TL_channels_readMessageContents();
+             req.channel = inputChannel;
+@@ -14573,7 +14573,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     private void completeReadTask(ReadTask task) {
+-        if (tele.TeleConfig.GHOST_READ.getValue()) {
++        if (tele.helpers.PrivacyRules.ghostRead(currentAccount, task.dialogId)) {
+             return;
+         }
+         if (task.replyId != 0 && task.monoForumPeerId == 0) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+index eb90a1fe9..fefce472b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+@@ -51,12 +51,16 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+         else -> "ignored users"
+     }
+ 
+-    private fun modeOf(dialogId: Long): String? = if (isIgnoreMode) {
+-        PrivacyRules.ignoredMode(account, dialogId)
+-    } else {
+-        PrivacyRules.ghostMode(account, dialogId)
++    private fun modeOf(dialogId: Long): String? {
++        if (isIgnoreMode) {
++            return PrivacyRules.ignoredMode(account, dialogId)
++        }
++        val ghost = PrivacyRules.ghostMode(account, dialogId) ?: return null
++        return if (ghost == ghostMode()) ghost else null
+     }
+ 
++    private fun ghostMode(): String = if (mode == MODE_GHOST_NEVER) PrivacyRules.GHOST_NEVER else PrivacyRules.GHOST_ALWAYS
++
+     private fun applyMode(dialogId: Long, newMode: String?) {
+         if (isIgnoreMode) {
+             PrivacyRules.setIgnored(account, dialogId, newMode)
+@@ -228,7 +232,7 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+         listView.setOnItemClickListener { _, position ->
+             val peer = peers.getOrNull(position - 1) ?: return@setOnItemClickListener
+             val current = modeOf(peer.dialogId)
+-            val next = if (current != null) null else if (isIgnoreMode) PrivacyRules.MODE_FADE else mode
++            val next = if (current != null) null else if (isIgnoreMode) PrivacyRules.MODE_FADE else ghostMode()
+             applyMode(peer.dialogId, next)
+             adapter?.notifyDataSetChanged()
+         }
+@@ -252,12 +256,12 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+         val options = if (isIgnoreMode) {
+             arrayOf("hide", "fade", "remove")
+         } else {
+-            arrayOf("always ghost", "never ghost", "remove")
++            arrayOf(if (mode == MODE_GHOST_NEVER) "never ghost" else "always ghost", "remove")
+         }
+         builder.setItems(options) { _, which ->
+             when (which) {
+-                0 -> applyMode(peer.dialogId, if (isIgnoreMode) PrivacyRules.MODE_HIDE else PrivacyRules.GHOST_ALWAYS)
+-                1 -> applyMode(peer.dialogId, if (isIgnoreMode) PrivacyRules.MODE_FADE else PrivacyRules.GHOST_NEVER)
++                0 -> applyMode(peer.dialogId, if (isIgnoreMode) PrivacyRules.MODE_HIDE else ghostMode())
++                1 -> if (isIgnoreMode) applyMode(peer.dialogId, PrivacyRules.MODE_FADE) else applyMode(peer.dialogId, null)
+                 else -> applyMode(peer.dialogId, null)
+             }
+             adapter?.notifyDataSetChanged()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 57a260740..b802c0976 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -68,6 +68,9 @@ object TeleSearch {
+             section(GUID_PRIVACY + 14, "hide sponsored messages", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 15, "hide the proxy sponsor channel", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             screen(1110, "ignored users") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_IGNORE) },
++            section(1111, "ghost mode exceptions", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            screen(1112, "always ghost in") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_ALWAYS) },
++            screen(1113, "never ghost in") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_NEVER) },
+ 
+             section(GUID_IDS, "tele ids", "ids", TeleSettingsActivity.MODE_IDS),
+             section(GUID_IDS + 1, "show peer id in profile", "ids", TeleSettingsActivity.MODE_IDS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 438a4f2b6..cac1727f0 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -191,6 +191,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
+                 MODE_MENU -> presentFragment(TeleMenuActivity())
+                 "peers_ignore" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_IGNORE))
++                "peers_ghost_always" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_ALWAYS))
++                "peers_ghost_never" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_NEVER))
+                 TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
+                 TeleDraftsActivity.MODE_DRAFTS -> presentFragment(TeleDraftsActivity())
+                 MODE_RULES -> presentFragment(TeleRulesActivity())
+@@ -315,7 +317,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "send crash reports" to "Offer to send crash reports to the tele server.",
+             "update automatically" to "Check GitHub for new tele releases automatically.",
+             "show what's new after updates" to "Post release notes to the local tele chat after an update.",
+-            "ignore users" to "Hide or fade the messages of the people you pick. Nothing is sent to the server."
++            "ignore users" to "Hide or fade the messages of the people you pick. Nothing is sent to the server.",
++            "ghost mode exceptions" to "Ghost a chat even when the global ghost switches are off, or keep it visible when they are on."
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -430,6 +433,13 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     rows.add(link("ignored users", "peers_ignore"))
+                 }
+                 rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "ghost"))
++                rows.add(toggle("ghost mode exceptions", TeleConfig.GHOST_PER_CHAT))
++                if (TeleConfig.GHOST_PER_CHAT.value) {
++                    rows.add(link("always ghost in", "peers_ghost_always"))
++                    rows.add(link("never ghost in", "peers_ghost_never"))
++                }
++                rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "links"))
+                 rows.add(toggle("clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
+                 rows.add(toggle("clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS))
