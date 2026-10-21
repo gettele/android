@@ -240,7 +240,7 @@
 | 0132 | скрыть похожие каналы | built | `0135-feat-hide-the-similar-channels.patch`; запрос рекомендаций не уходит, вкладка похожих каналов и блок в чате скрыты, конфиг `hide_similar_channels` |
 | 0143 | скрыть тултип коллекционного статуса | built | `0136-feat-hide-the-collectible-status-hint.patch`; подсказка коллекционного статуса не показывается, конфиг `hide_collectible_hint` |
 | 0154 | reduce motion | todo | `LiteMode`; S; сохранение и восстановление флагов |
-| 0172 | скрыть телефон в профилях | todo | `ProfileActivity.phoneRow`; S; зависит от android 0075; только phoneRow |
+| 0172 | скрыть телефон в профилях | built | `0137-feat-hide-phone-numbers-in-profiles.patch`; строка телефона не создаётся в профиле, конфиг `hide_phone_in_profiles` |
 | 0233 | нет метки «изменено» у ботов | todo | `ChatMessageCell`, `TeleHooks`; S; `bot` или `via_bot_id` |
 | 0231 | параметр старта на кнопке Start | todo | `ChatActivity`; S; тултип по long-click |
 
