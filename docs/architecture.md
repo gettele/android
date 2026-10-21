@@ -29,7 +29,7 @@ tele_android/
     AGENTS.md            rules for coding agents
     UPSTREAM             the base version and commit of DrKLO/Telegram
     patches/android/     exported queue, one file per commit (appears as work lands)
-    .github/workflows/   build.yml (build and publish the apk), sync.yml (watch for new upstream releases)
+    .github/workflows/   build.yml (build, publish and announce the apk), announce.yml (announce a published release by hand), sync.yml (watch for new upstream releases)
     ci/                  release helpers and the next release's changelog (see releasing.md)
     docs/
       PATCHLIST.md       the plan: batches, patches, statuses (planning file for agents)
