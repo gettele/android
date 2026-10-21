@@ -242,7 +242,7 @@
 | 0154 | reduce motion | built | `0138-feat-reduce-motion.patch`; состояние LiteMode сохраняется и возвращается, конфиг `reduce_motion` |
 | 0172 | скрыть телефон в профилях | built | `0137-feat-hide-phone-numbers-in-profiles.patch`; строка телефона не создаётся в профиле, конфиг `hide_phone_in_profiles` |
 | 0233 | нет метки «изменено» у ботов | built | `0139-feat-no-edited-mark-on-bot-messages.patch`; метка «изменено» прячется для сообщений бота и via_bot_id, конфиг `hide_bot_edited_label` |
-| 0231 | параметр старта на кнопке Start | todo | `ChatActivity`; S; тултип по long-click |
+| 0231 | параметр старта на кнопке Start | built | `0140-feat-show-the-start-parameter.patch`; долгий тап по кнопке Start показывает параметр, конфиг `show_start_parameter` |
 
 ## пачка 13 — структура настроек и редактор меню
 

@@ -83,6 +83,7 @@ settings → tele → privacy.
 | streamer mode | block screen capture in every window and hide the sender and the message of the notifications. it wins over never block screenshots | tele → privacy → streamer mode | off | [0107](patches/android/0107-feat-add-a-streamer-mode.patch), [0111](patches/android/0111-fix-hide-phones-in-streamer-mode.patch): the phone number is hidden in the chat header, in the name and in the profile | [160](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0160-feat-streamer-mode.patch) |
 | hide phone numbers in profiles | the phone number row is not shown in a profile, yours and of the others | tele → privacy | off | [0137](patches/android/0137-feat-hide-phone-numbers-in-profiles.patch) | [172](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0172-feat-hide-phone-numbers-in-profiles.patch) |
 | no edited mark on bot messages | the edited mark is hidden on the messages of a bot, the human messages keep it | tele → interface | off | [0139](patches/android/0139-feat-no-edited-mark-on-bot-messages.patch) | [233](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0233-feat-no-edited-mark-on-bot-messages.patch) |
+| show the start parameter | a long press on the start button of a bot shows the parameter it sends | tele → interface | off | [0140](patches/android/0140-feat-show-the-start-parameter.patch) | [231](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0231-feat-show-the-start-parameter-on-the-start-button.patch) |
 
 ## links
 
