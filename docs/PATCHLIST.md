@@ -229,6 +229,8 @@
 
 ворота: debug-apk; докачка, scheduled retries, link migration и каждый новый тумблер проверены on/off.
 
+логи пачки: `TeleSeconds` (account/mid/status), `TeleLinkRewrite` (тип правила и число миграций), `TelePunctualScheduled` (account/dialog/mid/статус), `TeleUpdater` (state/tag/offset/http-класс), `TeleToggle` (ключ и состояние); текст сообщений, url и личные данные не пишутся.
+
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0017 (доработка) | время у сервисных сообщений при включённых секундах | built | `0129-feat-show-the-time-of-a-service-message.patch`; время сервисных сообщений через `TeleHooks.withServiceTime` в `ChatActionCell` |
