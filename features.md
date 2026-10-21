@@ -29,7 +29,7 @@ settings → tele → interface.
 
 | feature | what it does | where | default | android | desktop |
 |---|---|---|---|---|---|
-| show seconds in message times | message times show seconds, like 14:03:21 | tele → interface | off | [0008](patches/android/0008-feat-show-seconds-in-message-times.patch) | [17](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0017-feat-show-seconds-in-message-times.patch) |
+| show seconds in message times | message times show seconds, like 14:03:21 | tele → interface | off | [0008](patches/android/0008-feat-show-seconds-in-message-times.patch), [0129](patches/android/0129-feat-show-the-time-of-a-service-message.patch): the service messages show their time too | [17](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0017-feat-show-seconds-in-message-times.patch) |
 | hide the all chats folder | the all chats folder disappears from the folder tabs, the list opens on your first folder | tele → interface | off | [0009](patches/android/0009-debloat-hide-the-all-chats-folder.patch) | [30](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0030-feat-hide-the-all-chats-folder.patch) |
 | hide call buttons | no call buttons in private chats and profiles | tele → interface | off | [0010](patches/android/0010-debloat-hide-call-buttons.patch) | [21](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0021-feat-hide-call-buttons.patch) |
 | confirm calls before starting | starting a call asks first and names who you're calling | tele → interface | off | [0011](patches/android/0011-feat-confirm-calls-before-starting.patch) | [62](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0062-feat-hide-or-confirm-call-and-voice-chat-buttons.patch) |
