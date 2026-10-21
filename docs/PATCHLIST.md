@@ -238,7 +238,7 @@
 | 0253 (доработка) | копировать peer id голыми цифрами | built | `0133-fix-copy-a-peer-id-as-plain-digits.patch`; новый `PeerId.copyText` отдаёт голые цифры, копирование в профиле использует его |
 | 0125 | скрыть кнопку подарка в поле | built | `0134-feat-hide-the-gift-button-in-the-message-field.patch`; кнопка подарка в поле и подарок в канале скрываются, конфиг `hide_gift_button` |
 | 0132 | скрыть похожие каналы | built | `0135-feat-hide-the-similar-channels.patch`; запрос рекомендаций не уходит, вкладка похожих каналов и блок в чате скрыты, конфиг `hide_similar_channels` |
-| 0143 | скрыть тултип коллекционного статуса | todo | `ProfileActivity`; S; ранний return |
+| 0143 | скрыть тултип коллекционного статуса | built | `0136-feat-hide-the-collectible-status-hint.patch`; подсказка коллекционного статуса не показывается, конфиг `hide_collectible_hint` |
 | 0154 | reduce motion | todo | `LiteMode`; S; сохранение и восстановление флагов |
 | 0172 | скрыть телефон в профилях | todo | `ProfileActivity.phoneRow`; S; зависит от android 0075; только phoneRow |
 | 0233 | нет метки «изменено» у ботов | todo | `ChatMessageCell`, `TeleHooks`; S; `bot` или `via_bot_id` |
