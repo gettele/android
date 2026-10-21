@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 21 Oct 2026 10:56:24 +0300
+Subject: [PATCH] fix: improve the ghost preview
+
+---
+ .../java/tele/ui/settings/TeleGhostPreview.kt | 89 +++++++++++++++----
+ 1 file changed, 74 insertions(+), 15 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGhostPreview.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGhostPreview.kt
+index b5a2e8e69..bd7bc31a4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGhostPreview.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGhostPreview.kt
+@@ -32,6 +32,9 @@ object TeleGhostPreview {
+     /** The stock icon of the premium "Hide My View" mode of the stories. */
+     private val STEALTH_ICON = R.drawable.msg_stories_stealth2
+ 
++    /** The eye of the "Who can see" item of the story menu. */
++    private val SEE_ICON = R.drawable.msg_view_file
++
+     private class Cell(
+         val title: String,
+         val subtitle: String? = null,
+@@ -42,7 +45,9 @@ object TeleGhostPreview {
+         val out: Boolean = false,
+         val profile: Boolean = false,
+         val story: Boolean = false,
+-        val views: Boolean = false
++        val views: Boolean = false,
++        val stealth: Boolean = false,
++        val check: Int = 0
+     )
+ 
+     private class PreviewRow(val option: BoolItem?, val left: Cell, val right: Cell)
+@@ -104,17 +109,17 @@ object TeleGhostPreview {
+         PreviewRow(
+             TeleConfig.GHOST_READ,
+             Cell("See you tomorrow?", bubble = true),
+-            if (TeleConfig.GHOST_READ.value) {
+-                Cell("See you tomorrow?", bubble = true, out = true)
+-            } else {
+-                Cell("See you tomorrow?", subtitle = "read", bubble = true, out = true)
+-            }
++            Cell(
++                "See you tomorrow?", bubble = true, out = true,
++                // one check means the message looks unread, two checks mean it was read
++                check = if (TeleConfig.GHOST_READ.value) 1 else 2
++            )
+         ),
+         PreviewRow(
+-            null,
++            TeleConfig.INVISIBLE_STORIES,
+             Cell("Their story", subtitle = "You watch it", story = true),
+             if (TeleConfig.INVISIBLE_STORIES.value) {
+-                Cell("11 views", subtitle = "Without you", views = true)
++                Cell("11 views", subtitle = "Without you", views = true, stealth = true)
+             } else {
+                 Cell("12 views", subtitle = "Including you", views = true)
+             }
+@@ -172,7 +177,8 @@ object TeleGhostPreview {
+             card.orientation = LinearLayout.HORIZONTAL
+             card.gravity = Gravity.CENTER_VERTICAL
+             val icon = ImageView(context)
+-            icon.setImageResource(STEALTH_ICON)
++            // the eye of the story menu while the stories are watched normally, the stealth one after
++            icon.setImageResource(if (data.stealth) STEALTH_ICON else SEE_ICON)
+             icon.setColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
+             card.addView(icon, LinearLayout.LayoutParams(dp(20f), dp(20f)))
+             val texts = LinearLayout(context)
+@@ -226,10 +232,14 @@ object TeleGhostPreview {
+                 12f
+             )
+             bubble.addView(title, LinearLayout.LayoutParams(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
+-            if (data.out) {
+-                // one check means the message is not read yet
++            if (data.out && data.check > 0) {
++                // one check means the message is not read yet, two checks mean it was read
+                 val check = ImageView(context)
+-                check.setImageResource(R.drawable.msg_check_s)
++                if (data.check == 2) {
++                    check.setImageDrawable(DoubleCheckDrawable())
++                } else {
++                    check.setImageResource(R.drawable.msg_check_s)
++                }
+                 val checkParams = LinearLayout.LayoutParams(dp(12f), dp(12f))
+                 checkParams.leftMargin = dp(6f)
+                 bubble.addView(check, checkParams)
+@@ -266,10 +276,15 @@ object TeleGhostPreview {
+         val image = userAvatar(context, dp(28f))
+         avatar.addView(image, FrameLayout.LayoutParams(dp(28f), dp(28f)))
+         if (data.badge) {
+-            // the desktop puts the stealth badge on the avatar
+-            val badgeParams = FrameLayout.LayoutParams(dp(12f), dp(12f))
++            // the desktop puts the stealth badge on the avatar, on a circle so it stays readable
++            val badge = ImageView(context)
++            badge.setImageResource(STEALTH_ICON)
++            badge.setColorFilter(Color.WHITE)
++            badge.background = circle(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText))
++            badge.setPadding(dp(2f), dp(2f), dp(2f), dp(2f))
++            val badgeParams = FrameLayout.LayoutParams(dp(14f), dp(14f))
+             badgeParams.gravity = Gravity.BOTTOM or Gravity.END
+-            avatar.addView(badge(context), badgeParams)
++            avatar.addView(badge, badgeParams)
+         }
+         row.addView(avatar, LinearLayout.LayoutParams(dp(28f), dp(28f)))
+ 
+@@ -393,5 +408,49 @@ object TeleGhostPreview {
+         return drawable
+     }
+ 
++    private fun circle(color: Int): GradientDrawable {
++        val drawable = GradientDrawable()
++        drawable.setShape(GradientDrawable.OVAL)
++        drawable.setColor(color)
++        return drawable
++    }
++
++    /** The read mark of a sent message: two checkmarks. */
++    private class DoubleCheckDrawable : android.graphics.drawable.Drawable() {
++        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
++            color = Color.WHITE
++            style = android.graphics.Paint.Style.STROKE
++            strokeWidth = 1.6f
++            strokeCap = android.graphics.Paint.Cap.ROUND
++            strokeJoin = android.graphics.Paint.Join.ROUND
++        }
++        private val path = android.graphics.Path()
++
++        override fun draw(canvas: android.graphics.Canvas) {
++            val b = bounds
++            val w = b.width().toFloat()
++            val h = b.height().toFloat()
++            path.reset()
++            path.moveTo(b.left + w * 0.04f, b.top + h * 0.55f)
++            path.lineTo(b.left + w * 0.28f, b.top + h * 0.82f)
++            path.lineTo(b.left + w * 0.55f, b.top + h * 0.22f)
++            path.moveTo(b.left + w * 0.36f, b.top + h * 0.55f)
++            path.lineTo(b.left + w * 0.5f, b.top + h * 0.82f)
++            path.lineTo(b.left + w * 0.96f, b.top + h * 0.18f)
++            canvas.drawPath(path, paint)
++        }
++
++        override fun setAlpha(alpha: Int) {
++            paint.alpha = alpha
++        }
++
++        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {
++            paint.colorFilter = colorFilter
++        }
++
++        @Deprecated("Deprecated in Java")
++        override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
++    }
++
+     private fun dp(value: Float): Int = AndroidUtilities.dp(value)
+ }
