@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 21 Oct 2026 15:36:19 +0300
+Subject: [PATCH] feat: list the ignored users
+
+---
+ .../telegram/ui/Adapters/DialogsAdapter.java  |   4 -
+ .../tele/ui/settings/TelePeersActivity.kt     | 219 ++++++++++++++----
+ 2 files changed, 168 insertions(+), 55 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
+index 87d903641..690be0c3e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
+@@ -1628,10 +1628,6 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+             if (array == null) {
+                 array = new ArrayList<>();
+             }
+-            if (parentFragment instanceof tele.ui.settings.TelePeersActivity) {
+-                // the ignored list holds people only, the ghost lists can hold any chat
+-                array = ((tele.ui.settings.TelePeersActivity) parentFragment).filterUsers(array);
+-            }
+         }
+ 
+         dialogsCount = array.size();
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+index d8b4c633d..387d3c4bc 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+@@ -1,53 +1,122 @@
+ package tele.ui.settings
+ 
+-import android.os.Bundle
++import android.content.Context
++import android.graphics.Typeface
++import android.util.TypedValue
++import android.view.Gravity
+ import android.view.View
++import android.view.ViewGroup
++import android.widget.BaseAdapter
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.ListView
++import android.widget.TextView
++import org.telegram.messenger.AccountInstance
++import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.DialogObject
++import org.telegram.messenger.ImageLocation
++import org.telegram.messenger.R
++import org.telegram.messenger.UserObject
+ import org.telegram.tgnet.TLRPC
+-import org.telegram.ui.DialogsActivity
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.AvatarDrawable
++import org.telegram.ui.Components.BackupImageView
+ import tele.helpers.PrivacyRules
+ 
+ /**
+- * Picker of the fork privacy exceptions. It reuses the stock forward screen: the chat list with
+- * the checkmarks and the bottom bar, so it looks like sending a message to several chats.
++ * The picker of the privacy exceptions: a plain list of the chats with the checkmarks, the count
++ * of the picked ones and a done button. The ignored list holds people and bots only.
+  */
+-class TelePeersActivity(account: Int, private val mode: String) : DialogsActivity(argsFor(mode)) {
++class TelePeersActivity(private val account: Int, private val mode: String) : BaseFragment() {
+ 
+-    private val account = account
++    private val selected = HashSet<Long>()
++    private var items: List<TLRPC.Dialog> = emptyList()
++    private var counter: TextView? = null
+ 
+-    override fun onFragmentCreate(): Boolean {
+-        val result = super.onFragmentCreate()
+-        setDelegate { fragment, dids, _, _, _, _, _, _ ->
+-            applySelection(dids.map { it.dialogId })
+-            fragment.finishFragment()
+-            true
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setTitle(title())
++
++        val root = LinearLayout(context)
++        root.orientation = LinearLayout.VERTICAL
++        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++
++        val list = ListView(context)
++        list.divider = null
++        list.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++        list.setOnItemClickListener { _, _, position, _ ->
++            val dialog = items.getOrNull(position) ?: return@setOnItemClickListener
++            if (!selected.remove(dialog.id)) {
++                selected.add(dialog.id)
++            }
++            updateCounter()
++            (list.adapter as BaseAdapter).notifyDataSetChanged()
+         }
+-        for (did in currentSelection()) {
+-            addOrRemoveSelectedDialog(did, null)
++        list.adapter = object : BaseAdapter() {
++            override fun getCount(): Int = items.size
++            override fun getItem(position: Int): Any = items[position]
++            override fun getItemId(position: Int): Long = items[position].id
++            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
++                row(convertView, items[position])
+         }
+-        return result
++        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
++
++        val bar = LinearLayout(context)
++        bar.orientation = LinearLayout.HORIZONTAL
++        bar.gravity = Gravity.CENTER_VERTICAL
++        bar.setPadding(
++            AndroidUtilities.dp(16f), AndroidUtilities.dp(8f),
++            AndroidUtilities.dp(8f), AndroidUtilities.dp(8f)
++        )
++        bar.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++        val count = TextView(context)
++        count.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        count.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++        bar.addView(count, LinearLayout.LayoutParams(0, -2, 1f))
++        counter = count
++        val done = TextView(context)
++        done.text = "Done"
++        done.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        done.setTypeface(Typeface.DEFAULT, Typeface.BOLD)
++        done.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText))
++        done.setPadding(
++            AndroidUtilities.dp(12f), AndroidUtilities.dp(8f),
++            AndroidUtilities.dp(12f), AndroidUtilities.dp(8f)
++        )
++        done.setOnClickListener { applySelection() }
++        bar.addView(done)
++        root.addView(bar, LinearLayout.LayoutParams(-1, -2))
++
++        load()
++        return root
+     }
+ 
+-    override fun addOrRemoveSelectedDialog(did: Long, cell: View?): Boolean {
+-        if (mode == MODE_IGNORE && !DialogObject.isUserDialog(did)) {
+-            // the desktop ignores people only, channels and groups stay
+-            return false
+-        }
+-        return super.addOrRemoveSelectedDialog(did, cell)
++    private fun title(): String = when (mode) {
++        MODE_IGNORE -> "Ignored users"
++        MODE_GHOST_ALWAYS -> "Always ghost in"
++        else -> "Never ghost in"
+     }
+ 
+-    /** The picker of the ignored list shows people only, the ghost lists can hold any chat. */
+-    fun filterUsers(dialogs: ArrayList<TLRPC.Dialog>): ArrayList<TLRPC.Dialog> {
+-        val messagesController = org.telegram.messenger.AccountInstance.getInstance(account).getMessagesController()
+-        val filtered = ArrayList<TLRPC.Dialog>()
+-        for (dialog in dialogs) {
+-            if (dialog is DialogsActivity.DialogsHeader) continue
+-            // a chat or a channel has no user behind the dialog
+-            if (messagesController.getUser(dialog.id) != null) {
+-                filtered.add(dialog)
++    private fun load() {
++        val messagesController = AccountInstance.getInstance(account).getMessagesController()
++        val all = messagesController.getDialogs(0) ?: emptyList()
++        items = all.filter { dialog ->
++            if (mode != MODE_IGNORE) {
++                !DialogObject.isFolderDialogId(dialog.id)
++            } else {
++                isUser(dialog)
+             }
+         }
+-        return filtered
++        selected.clear()
++        selected.addAll(currentSelection())
++        updateCounter()
++    }
++
++    /** A person or a bot: the peer of the dialog is a user, not a chat. */
++    private fun isUser(dialog: TLRPC.Dialog): Boolean {
++        val messagesController = AccountInstance.getInstance(account).getMessagesController()
++        return messagesController.getUser(dialog.id) != null && messagesController.getChat(dialog.id) == null
+     }
+ 
+     private fun currentSelection(): List<Long> {
+@@ -60,19 +129,24 @@ class TelePeersActivity(account: Int, private val mode: String) : DialogsActivit
+         return peers.filter { if (mode == MODE_IGNORE) true else it.value == wanted }.map { it.key }
+     }
+ 
+-    private fun applySelection(ids: List<Long>) {
+-        val selected = ids.toSet()
++    private fun updateCounter() {
++        counter?.text = if (selected.isEmpty()) "None selected" else "${selected.size} selected"
++    }
++
++    private fun applySelection() {
++        val picked = selected.toSet()
+         for (did in currentSelection()) {
+-            if (did !in selected) {
++            if (did !in picked) {
+                 setMode(did, null)
+             }
+         }
+-        for (did in selected) {
++        for (did in picked) {
+             setMode(did, if (mode == MODE_IGNORE) PrivacyRules.MODE_HIDE else {
+                 if (mode == MODE_GHOST_NEVER) PrivacyRules.GHOST_NEVER else PrivacyRules.GHOST_ALWAYS
+             })
+         }
+         tele.TeleHooks.onPrivacyRulesChanged()
++        finishFragment()
+     }
+ 
+     private fun setMode(dialogId: Long, mode: String?) {
+@@ -83,25 +157,68 @@ class TelePeersActivity(account: Int, private val mode: String) : DialogsActivit
+         }
+     }
+ 
++    private fun row(convertView: View?, dialog: TLRPC.Dialog): View {
++        val context = convertView?.context ?: parentActivity ?: return View(context)
++        val holder = convertView as? LinearLayout ?: LinearLayout(context).apply {
++            orientation = LinearLayout.HORIZONTAL
++            gravity = Gravity.CENTER_VERTICAL
++            setPadding(
++                AndroidUtilities.dp(12f), AndroidUtilities.dp(6f),
++                AndroidUtilities.dp(12f), AndroidUtilities.dp(6f)
++            )
++            val avatar = BackupImageView(context)
++            avatar.setRoundRadius(AndroidUtilities.dp(23f))
++            addView(avatar, LinearLayout.LayoutParams(AndroidUtilities.dp(46f), AndroidUtilities.dp(46f)))
++            val name = TextView(context)
++            name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++            name.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++            name.maxLines = 1
++            val nameParams = LinearLayout.LayoutParams(0, -2, 1f)
++            nameParams.leftMargin = AndroidUtilities.dp(12f)
++            addView(name, nameParams)
++            val check = ImageView(context)
++            check.setImageResource(R.drawable.msg_check_s)
++            check.setColorFilter(Theme.getColor(Theme.key_checkboxCheck))
++            addView(check, LinearLayout.LayoutParams(AndroidUtilities.dp(24f), AndroidUtilities.dp(24f)))
++        }
++
++        val messagesController = AccountInstance.getInstance(account).getMessagesController()
++        val user = messagesController.getUser(dialog.id)
++        val chat: TLRPC.Chat? = messagesController.getChat(dialog.id)
++        val avatar = holder.getChildAt(0) as BackupImageView
++        val name = holder.getChildAt(1) as TextView
++        val check = holder.getChildAt(2) as ImageView
++
++        name.text = if (user != null) {
++            UserObject.getFirstName(user)
++        } else {
++            chat?.title ?: ""
++        }
++        check.visibility = if (selected.contains(dialog.id)) View.VISIBLE else View.INVISIBLE
++
++        if (user != null) {
++            val placeholder = AvatarDrawable()
++            placeholder.setTextSize(AndroidUtilities.dp(23f).toInt())
++            avatar.setImage(
++                ImageLocation.getForUser(account, user, ImageLocation.TYPE_SMALL),
++                "50_50", placeholder, user
++            )
++        } else if (chat != null) {
++            val placeholder = AvatarDrawable()
++            placeholder.setTextSize(AndroidUtilities.dp(23f).toInt())
++            avatar.setImage(
++                ImageLocation.getForUserOrChat(account, chat, ImageLocation.TYPE_SMALL),
++                "50_50", placeholder, chat
++            )
++        } else {
++            avatar.setImageDrawable(null)
++        }
++        return holder
++    }
++
+     companion object {
+         const val MODE_IGNORE = "ignore"
+         const val MODE_GHOST_ALWAYS = "ghost_always"
+         const val MODE_GHOST_NEVER = "ghost_never"
+-
+-        private fun argsFor(mode: String): Bundle {
+-            val args = Bundle()
+-            args.putBoolean("onlySelect", true)
+-            // the ignored list holds people only, the ghost lists can hold any chat
+-            args.putInt(
+-                "dialogsType",
+-                if (mode == MODE_IGNORE) DialogsActivity.DIALOGS_TYPE_USERS_ONLY else DialogsActivity.DIALOGS_TYPE_FORWARD
+-            )
+-            // the alert string turns the screen into the multi select one: the checkmarks and the
+-            // bottom bar with the recipients count, like when a message is sent to several chats
+-            args.putString("selectAlertString", "Choose a chat")
+-            args.putBoolean("checkCanWrite", false)
+-            args.putBoolean("allowGlobalSearch", false)
+-            return args
+-        }
+     }
+ }
