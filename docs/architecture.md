@@ -40,7 +40,7 @@ tele_android/
   Telegram/              DrKLO/Telegram checkout, branch `tele` — the code tree
 ```
 
-`UPSTREAM` holds the exact base commit (for 13.0.2 (7175): `commit`). every patch is a commit on top of it; `git log <UPSTREAM>..tele` in the checkout is the applied queue.
+`UPSTREAM` holds the exact base commit (for 13.0.3 (7183): `commit`). every patch is a commit on top of it; `git log <UPSTREAM>..tele` in the checkout is the applied queue.
 
 never bump `UPSTREAM` in a feature change: syncing to a new release is its own change, after which every patch is rebased and re-exported.
 

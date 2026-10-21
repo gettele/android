@@ -4,7 +4,7 @@ for maintainers. releases are built and published by github actions and need the
 
 ## versions
 
-- a release is tagged `v<APP_VERSION_NAME>-tele.<N>`, for example `v13.0.2-tele.1`, and titled `tele N · <APP_VERSION_NAME>`. `APP_VERSION_NAME` and `APP_VERSION_CODE` come from `gradle.properties` of the patched telegram tree, so they follow `UPSTREAM`.
+- a release is tagged `v<APP_VERSION_NAME>-tele.<N>`, for example `v13.0.3-tele.1`, and titled `tele N · <APP_VERSION_NAME>`. `APP_VERSION_NAME` and `APP_VERSION_CODE` come from `gradle.properties` of the patched telegram tree, so they follow `UPSTREAM`.
 - `N` is one above the highest existing `v*-tele.*` release or tag, whatever upstream it was built on: numbers go on across upstream bumps, because the app compares build numbers. build.yml picks it, or takes the `number` input when it's above every existing one.
 - `N` is compiled in as `TELE_BUILD` (`local.properties` of the build, read by `TMessagesProj/build.gradle`). the app shows it as the build number and builds without it (`TELE_BUILD` unset, so local and dev builds) never update themselves.
 - the self-updater orders builds by `APP_VERSION_CODE` first and `N` second, so a release on a newer upstream always wins.

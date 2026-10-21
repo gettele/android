@@ -6,7 +6,7 @@
 
 Объект переноса:
 
-- [Telegram Android](https://github.com/drklo/telegram) — локальный чекаут **13.0.2 (7175)**, папка `Telegram/` (TMessagesProj).
+- [Telegram Android](https://github.com/drklo/telegram) — локальный чекаут **13.0.3 (7183)**, папка `Telegram/` (TMessagesProj).
 - Образец патч-культуры Android-форков — [inugram](https://github.com/teidesu/inugram) (stgit-патчсет поверх свежего Telegram Android). Его правила задают то, *как* патч должен выглядеть на Android:
   - минимальный хук в stock-коде + ранняя проверка тумблера (`InuConfig.*.getValue()`) + вся логика в Kotlin-хелперах (`src/kotlin/helpers/`);
   - default off = поведение стока один в один;
@@ -2146,5 +2146,5 @@
 ## Источники
 
 - tele: `tele/AGENTS.md`, `tele/README.md` (таблица патчей), `tele/docs/architecture.md`, патчи в `tele/patches/tdesktop/` и `tele/patches/Telegram/lib_ui/`
-- Telegram Android 13.0.2 (7175): `Telegram/TMessagesProj/`
+- Telegram Android 13.0.3 (7183): `Telegram/TMessagesProj/`
 - Образец: inugram `AGENTS.md`, `FEATURES.md`, `series`, патчи `inugram/patches/{bugfix,feature,debloat,hooks,misc}`
