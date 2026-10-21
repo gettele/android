@@ -235,7 +235,7 @@
 | 0077 (доработка) | пресеты перезаписи ссылок: TikTok → tnktok.com, samekosabax.com | built | `0130-fix-update-the-link-rewrite-presets.patch`; пресет TikTok только `tnktok.com`, в X добавлен `samekosabax.com`, миграция `vxtiktok.com` при чтении правил, домен в `Tracking.kt` |
 | 0095 (доработка) | отложенные вовремя: ретраи и уведомление | built | `0131-fix-retry-a-scheduled-message-with-a-delay.patch`; состояние ретрая по (account, dialog, mid), `FLOOD_WAIT_N`/`SLOWMODE_WAIT_N` ждут N+1 с, лестница 5/15/60/300/900 с, максимум 5 попыток, тост и уведомление в канале `tele_scheduled` |
 | 0006 (доработка) | апдейтер: докачка и лестница повторов | built | `0132-fix-resume-an-interrupted-update-download.patch`; `.part` переживает сетевую ошибку, докачка через `Range` и 206 с проверкой `Content-Range`, 200 — с нуля, 416 — сразу к sha256, лестница ретраев 1/5/15/60 мин |
-| 0253 (доработка) | копировать peer id голыми цифрами | todo | fix-коммит к android 0025: пункт Copy в `ProfileActivity` копирует `PeerId.rowText(...)` (с разделителями и `(DC…)`); добавить `PeerId.copyText(account, userId, chatId)` = `botApiAdjusted(...).toString()`; S |
+| 0253 (доработка) | копировать peer id голыми цифрами | built | `0133-fix-copy-a-peer-id-as-plain-digits.patch`; новый `PeerId.copyText` отдаёт голые цифры, копирование в профиле использует его |
 | 0125 | скрыть кнопку подарка в поле | todo | `ChatActivityEnterView`, ChatActivity (канал); S; по умолч. (тумблер выкл); личные чаты и каналы |
 | 0132 | скрыть похожие каналы | todo | `MessageObject`, `MessagesController`, `ProfileActivity`; S; гейт запроса рекомендаций |
 | 0143 | скрыть тултип коллекционного статуса | todo | `ProfileActivity`; S; ранний return |
