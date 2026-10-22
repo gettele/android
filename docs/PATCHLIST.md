@@ -388,7 +388,7 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 |---|---|---|---|
 | 0208 | @username вместо невидимых имён | todo | `UserObject`, `putChat`, `DialogCell`, `ChatMessageCell`; M; зависит от android 0029 (LocalNames); реш.: 0208 users+chats, в памяти; чаты только в памяти, не в БД |
 | 0209 | показ скрытых символов | todo | `ProfileActivity`, `MessageObject`; M; зависит от 0208; общая таблица кодпоинтов с 0208 |
-| 0189 | DC чата по первому фото | todo | `PeerId`, `ProfileActivity`; M; зависит от android 0025; по умолч.: «uncertain»; async строка |
+| 0189 | DC чата по первому фото | built | `0141-feat-show-the-chat-dc-from-the-oldest-photo.patch`; `PeerDc` грузит историю аватаров чата (`messages.search` с `inputMessagesFilterChatPhotos`, как `getDialogPhotos` на десктопе), при пустом ответе — фото-сообщения (`inputMessagesFilterPhotos`), до 500 фото; DC берётся у самого старого фото, пометка «uncertain» остаётся, когда история неполная, DC разные или текущий аватар с другим DC; запрос только при включённом `show_dc`, лог `PeerIdHistory` |
 | 0196 | DC медиа в просмотрщике | todo | `PhotoViewer`, `StoryViewer`; S; зависит от 0189, android 0025; тумблер SHOW_DC |
 | 0265 | дата загрузки медиа во вьюере | todo | `PhotoViewer`; S; зависит от 0196 (опц.); с DC через « · » при 0196 |
 | 0173 | подпись имени в цитате удалённого | todo | `DeletedReply`; S; зависит от android 0071; mention/ссылка, без превью |
