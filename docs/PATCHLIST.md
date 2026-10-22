@@ -260,7 +260,7 @@
 | 0167 | пункты меню по включённой фиче | built | `0144-feat-gate-tele-menu-items.patch`; пункты меню сообщений (message id, TL, emoji id, shot, mark viewed) не показываются, пока их фича выключена, в редакторе они серые |
 | 0179 | copy/delete алиаса из меню | todo | `ChatActivity`, `ProfileActivity`; S; зависит от android 0030, android 0035; long-click по ссылке/строке |
 | 0200 | выделять сервисные сообщения | todo | `ChatActivity`, `ChatActionCell`; M; исключить из copy/forward |
-| 0255 | копировать путь файла из меню | todo | `ChatActivity`, `MessageMenu`, `FileLoader`; S; зависит от 0171 меню, android 0047, android 0057; только скачанные файлы |
+| 0255 | копировать путь файла | built | `0147-feat-copy-downloaded-file-paths.patch`; пункт меню сообщений только для скачанных файлов, путь берётся через FileLoader, по умолчанию выключен |
 | 0266 | копировать id владельца набора | todo | `StickersAlert`, `EmojiPacksAlert`, `PeerId.kt`; S; формула эмпирическая |
 | 0295 | копировать текст сервисных сообщений | built | `0145-feat-copy-service-message-text.patch`; пункт меню сообщений только для сервисных сообщений, копирует локализованный текст, по умолчанию выключен |
 | 0149 | view as TL в приложении | todo | `ViewAsTl`, `ui/web`; S; зависит от android 0059; проверить большие #data |
