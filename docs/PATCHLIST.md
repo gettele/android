@@ -258,7 +258,7 @@
 | 0170 | сворачиваемые под-тумблеры | built | `0143-feat-collapse-tele-setting-suboptions.patch`; группы keep deleted messages, show peer id, queue behind media, calcmula: у родителя стрелка и счётчик «N on», дети скрыты в свёрнутом виде и их значения не теряются, родитель включает всех детей, если включённых нет |
 | 0171 | редактор меню: группы, подменю | built | `0146-feat-customize-all-tele-menus.patch`; `TeleMenuLayout` с семью видами меню, `TeleMenuActivity`: перестановка, скрытие, разделители, подменю, четыре пресета, текстовый экспорт и импорт в буфер; старые `message_menu_hidden`/`message_menu_order` мигрируют в layout; реестр и runtime пока только для меню сообщений |
 | 0167 | пункты меню по включённой фиче | built | `0144-feat-gate-tele-menu-items.patch`; пункты меню сообщений (message id, TL, emoji id, shot, mark viewed) не показываются, пока их фича выключена, в редакторе они серые |
-| 0179 | copy/delete алиаса из меню | todo | `ChatActivity`, `ProfileActivity`; S; зависит от android 0030, android 0035; long-click по ссылке/строке |
+| 0179 | copy/delete алиаса из меню | built | `0148-feat-manage-aliases-from-menus.patch`; пункты «Copy alias» и «Delete alias» в меню сообщений, когда в сообщении есть известный алиас, удаление с подтверждением |
 | 0200 | выделять сервисные сообщения | todo | `ChatActivity`, `ChatActionCell`; M; исключить из copy/forward |
 | 0255 | копировать путь файла | built | `0147-feat-copy-downloaded-file-paths.patch`; пункт меню сообщений только для скачанных файлов, путь берётся через FileLoader, по умолчанию выключен |
 | 0266 | копировать id владельца набора | todo | `StickersAlert`, `EmojiPacksAlert`, `PeerId.kt`; S; формула эмпирическая |
