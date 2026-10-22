@@ -262,7 +262,7 @@
 | 0200 | выделять сервисные сообщения | todo | `ChatActivity`, `ChatActionCell`; M; исключить из copy/forward |
 | 0255 | копировать путь файла из меню | todo | `ChatActivity`, `MessageMenu`, `FileLoader`; S; зависит от 0171 меню, android 0047, android 0057; только скачанные файлы |
 | 0266 | копировать id владельца набора | todo | `StickersAlert`, `EmojiPacksAlert`, `PeerId.kt`; S; формула эмпирическая |
-| 0295 | копировать текст сервисных сообщений | todo | `ChatActivity.fillMessageMenu`, `MessageMenu.ALL`; S; зависит от меню-редактор; default off, проверить wallet-карту |
+| 0295 | копировать текст сервисных сообщений | built | `0145-feat-copy-service-message-text.patch`; пункт меню сообщений только для сервисных сообщений, копирует локализованный текст, по умолчанию выключен |
 | 0149 | view as TL в приложении | todo | `ViewAsTl`, `ui/web`; S; зависит от android 0059; проверить большие #data |
 
 ## пачка 14 — хранилище tele.db: удалённые, закладки, лимиты gif
