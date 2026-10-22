@@ -259,9 +259,9 @@
 | 0171 | редактор меню: группы, подменю | built | `0146-feat-customize-all-tele-menus.patch`; `TeleMenuLayout` с семью видами меню, `TeleMenuActivity`: перестановка, скрытие, разделители (с отдельным тумблером), подменю (создание, переименование, перенос пункта внутрь), четыре пресета, текстовый экспорт и импорт в буфер, диалог подтверждения при выходе с несохранёнными изменениями; старые `message_menu_hidden`/`message_menu_order` мигрируют в layout; реестр и runtime пока только для меню сообщений, пункты подменю в меню разворачиваются в место подменю |
 | 0167 | пункты меню по включённой фиче | built | `0144-feat-gate-tele-menu-items.patch`; пункты меню сообщений (message id, TL, emoji id, shot, mark viewed) не показываются, пока их фича выключена, в редакторе они серые |
 | 0179 | copy/delete алиаса из меню | built | `0148-feat-manage-aliases-from-menus.patch`; пункты «Copy alias» и «Delete alias» в меню сообщений, когда в сообщении есть известный алиас, удаление с подтверждением |
-| 0200 | выделять сервисные сообщения | todo | `ChatActivity`, `ChatActionCell`; M; исключить из copy/forward |
+| 0200 | выделять сервисные сообщения | built | `0150-feat-select-service-messages.patch`; default off; выбор доступен только для сервисных сообщений, которые можно удалить; скрывает copy/reply/forward/save actions |
 | 0255 | копировать путь файла | built | `0147-feat-copy-downloaded-file-paths.patch`; пункт меню сообщений только для скачанных файлов, путь берётся через FileLoader, по умолчанию выключен |
-| 0266 | копировать id владельца набора | todo | `StickersAlert`, `EmojiPacksAlert`, `PeerId.kt`; S; формула эмпирическая |
+| 0266 | копировать id владельца набора | todo | `StickerSet`/`messages_StickerSet` из TLRPC не содержат owner user ID (только `creator: Boolean`, ID набора и access hash); нужен подтверждённый owner-ID source и эталонный набор, access hash нельзя преобразовывать в ID |
 | 0295 | копировать текст сервисных сообщений | built | `0145-feat-copy-service-message-text.patch`; пункт меню сообщений только для сервисных сообщений, копирует локализованный текст, по умолчанию выключен |
 | 0149 | view as TL в приложении | built | `0149-feat-view-TL-in-app.patch`; страница TL открывается во встроенном браузере приложения, длинные ссылки остаются во внешнем |
 
