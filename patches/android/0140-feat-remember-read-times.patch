@@ -1,18 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Fri, 23 Oct 2026 22:59:58 +0300
-Subject: [PATCH 140/141] feat: remember read times
+Subject: [PATCH 140/143] feat: remember read times
 
 ---
  .../messenger/MessagesController.java         |  1 +
- .../java/org/telegram/ui/ChatActivity.java    | 10 +++-
+ .../java/org/telegram/ui/ChatActivity.java    | 12 +++-
  .../ui/Components/MessagePrivateSeenView.java | 15 ++++-
  .../src/main/java/tele/TeleConfig.kt          |  2 +
  .../main/java/tele/db/TeleDatabaseHelper.kt   | 56 +++++++++++++++++++
  .../src/main/java/tele/helpers/ReadLog.kt     | 52 +++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |  3 +
- 8 files changed, 138 insertions(+), 2 deletions(-)
+ 8 files changed, 139 insertions(+), 3 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReadLog.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
@@ -28,18 +28,26 @@ index a827e6487..ca349c869 100644
              } else if (baseUpdate instanceof TL_update.TL_updateDeleteMessages) {
                  TL_update.TL_updateDeleteMessages update = (TL_update.TL_updateDeleteMessages) baseUpdate;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index f32454b81..7c50d531e 100644
+index baa208789..0e3cb22ae 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-@@ -31902,6 +31902,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -31911,6 +31911,7 @@ public class ChatActivity extends BaseFragment implements
              final boolean showMessageSeen = !suggestEdit && !isEphemeral && !isReactionsViewAvailable && !isInScheduleMode() && currentChat != null && message.isOutOwner() && message.isSent() && !message.isEditing() && !message.isSending() && !message.isSendError() && !message.isContentUnread() && !message.isUnread() && (ConnectionsManager.getInstance(currentAccount).getCurrentTime() - message.messageOwner.date < getMessagesController().chatReadMarkExpirePeriod) && (ChatObject.isMegagroup(currentChat) || !ChatObject.isChannel(currentChat)) && chatInfo != null && chatInfo.participants_count <= getMessagesController().chatReadMarkSizeThreshold && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest) && chatMode != MODE_SAVED && message.canSetReaction() && !ChatObject.isMonoForum(currentChat);
              final boolean showMessageAuthor = !suggestEdit && !isEphemeral && currentChat != null && !message.isOut() && ChatObject.isMonoForum(currentChat) && ChatObject.canManageMonoForum(currentAccount, currentChat) && -currentChat.linked_monoforum_id == message.getFromChatId();
              final boolean showPrivateMessageSeen = !suggestEdit && !isEphemeral && !isReactionsViewAvailable && currentChat == null && currentEncryptedChat == null && (currentUser != null && !UserObject.isUserSelf(currentUser) && !UserObject.isReplyUser(currentUser) && !UserObject.isAnonymous(currentUser) && !currentUser.bot && !UserObject.isService(currentUser.id)) && (userInfo == null || !userInfo.read_dates_private) && !isInScheduleMode() && message.isOutOwner() && message.isSent() && !message.isEditing() && !message.isSending() && !message.isSendError() && !message.isContentUnread() && !message.isUnread() && (ConnectionsManager.getInstance(currentAccount).getCurrentTime() - message.messageOwner.date < getMessagesController().pmReadDateExpirePeriod) && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest);
-+            final boolean showTeleReadTime = !showPrivateMessageSeen && !suggestEdit && !isEphemeral && currentChat == null && currentEncryptedChat == null && !isInScheduleMode() && message.isSent() && !message.isEditing() && !message.isSending() && !message.isSendError() && !message.isUnread() && tele.helpers.ReadLog.available(currentAccount, message) && tele.helpers.ReadLog.date(currentAccount, message.getDialogId(), message.getId()) > 0;
++            final boolean showTeleReadTime = !suggestEdit && !isEphemeral && currentChat == null && currentEncryptedChat == null && !isInScheduleMode() && message.isSent() && !message.isEditing() && !message.isSending() && !message.isSendError() && !message.isUnread() && tele.helpers.ReadLog.available(currentAccount, message) && tele.helpers.ReadLog.date(currentAccount, message.getDialogId(), message.getId()) > 0;
              final boolean showPrivateMessageEdit = !suggestEdit && !isEphemeral && (currentUser == null || !UserObject.isReplyUser(currentUser) && !UserObject.isAnonymous(currentUser)) && !isInScheduleMode() && message.isEdited() && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest);
              final boolean showPrivateMessageFwdOriginal = !suggestEdit && !isEphemeral && false && (currentUser == null || !UserObject.isReplyUser(currentUser) && !UserObject.isAnonymous(currentUser)) && !isInScheduleMode() && message.isForwarded() && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest);
              final boolean showSponsorInfo = !suggestEdit && !isEphemeral && selectedObject != null && selectedObject.isSponsored() && (selectedObject.sponsoredInfo != null || selectedObject.sponsoredAdditionalInfo != null || selectedObject.sponsoredUrl != null && !selectedObject.sponsoredUrl.startsWith("https://" + getMessagesController().linkPrefix));
-@@ -32361,6 +32362,13 @@ public class ChatActivity extends BaseFragment implements
+@@ -32363,13 +32364,20 @@ public class ChatActivity extends BaseFragment implements
+ 
+                     popupLayout.addView(messageSeenLayout, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 44));
+                     addGap = true;
+-                } else if (showPrivateMessageSeen) {
++                } else if (showPrivateMessageSeen && !showTeleReadTime) {
+                     MessagePrivateSeenView messagePrivateSeenView = new MessagePrivateSeenView(getContext(), MessagePrivateSeenView.TYPE_SEEN, message, () -> {
+                         closeMenu(true);
+                     }, themeDelegate);
                      popupLayout.addView(messagePrivateSeenView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 36));
                      addGap = true;
                  }
@@ -53,7 +61,7 @@ index f32454b81..7c50d531e 100644
                  if (showPrivateMessageEdit) {
                      MessagePrivateSeenView messagePrivateSeenView = new MessagePrivateSeenView(getContext(), MessagePrivateSeenView.TYPE_EDIT, message, () -> {
                          closeMenu(true);
-@@ -32378,7 +32386,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -32387,7 +32395,7 @@ public class ChatActivity extends BaseFragment implements
                  boolean showRateTranscription = selectedObject != null && selectedObject.isVoice() && selectedObject.messageOwner != null && getUserConfig().isPremium() && !TextUtils.isEmpty(selectedObject.messageOwner.voiceTranscription) && selectedObject.messageOwner != null && !selectedObject.messageOwner.voiceTranscriptionRated && selectedObject.messageOwner.voiceTranscriptionId != 0 && selectedObject.messageOwner.voiceTranscriptionOpen;
  
                  if (!showRateTranscription && message.probablyRingtone() && currentEncryptedChat == null) {
@@ -103,7 +111,7 @@ index 079ed6f20..78d66c4f6 100644
                      valueTextView.setText(LocaleController.getString(R.string.PmReadUnknown));
                      premiumTextView.setVisibility(View.GONE);
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-index c8efd88ec..323d1d2b4 100644
+index dcf843cd6..adf7c9dd3 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 @@ -143,6 +143,8 @@ object TeleConfig {
@@ -260,10 +268,10 @@ index ac13aef0d..cbb4851ca 100644
              screen(GUID_DATA + 9, "Manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
              section(GUID_DATA + 10, "Mark deleted messages with", "messages", TeleSettingsActivity.MODE_MESSAGES),
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index 664024584..4f8e146ef 100644
+index 447843c39..db80db1c0 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-@@ -651,6 +651,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -657,6 +657,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
              "Ones you delete" to "Keep the messages you delete from this device.",
              "Recover channel posts from forwards" to "Show a deleted channel post from its forward when you open it from there.",
              "Keep edit history" to "Save previous versions of edited messages on this device.",
@@ -271,7 +279,7 @@ index 664024584..4f8e146ef 100644
              "Username aliases" to "Link local aliases to chats and usernames.",
              "Usernames from the server" to "Show usernames and aliases provided by the tele server.",
              "Send crash reports" to "Offer to send crash reports to the tele server.",
-@@ -821,6 +822,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -827,6 +828,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
                  toggle("Message bookmarks", TeleConfig.BOOKMARKS),
                  toggle("Return to where you were reading", TeleConfig.RETURN_POINT),
                  link("Bookmarks", TeleBookmarksActivity.MODE_BOOKMARKS),

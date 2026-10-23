@@ -1,19 +1,47 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Fri, 23 Oct 2026 23:02:13 +0300
-Subject: [PATCH 141/141] feat: keep gifs past limit
+Subject: [PATCH 141/143] feat: keep gifs past limit
 
 ---
- .../messenger/MediaDataController.java        |  37 ++-
+ .../telegram/messenger/FileRefController.java |   7 +
+ .../messenger/MediaDataController.java        |  37 +-
+ .../messenger/MessagesController.java         |   4 +
+ .../messenger/SendMessagesHelper.java         |   1 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
- .../main/java/tele/db/TeleDatabaseHelper.kt   |  39 +++
- .../src/main/java/tele/helpers/PastLimit.kt   | 290 ++++++++++++++++++
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  71 ++++
+ .../src/main/java/tele/helpers/PastLimit.kt   | 396 ++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
- 7 files changed, 373 insertions(+), 5 deletions(-)
+ 10 files changed, 523 insertions(+), 5 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/FileRefController.java b/TMessagesProj/src/main/java/org/telegram/messenger/FileRefController.java
+index 8db013014..fbbcbe24a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/FileRefController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/FileRefController.java
+@@ -411,6 +411,7 @@ public class FileRefController extends BaseController {
+                 parentObject = messageObject.messageOwner.media.webpage;
+             }
+         }
++        parentObject = tele.helpers.PastLimit.refreshParent(currentAccount, parentObject, location);
+         String parentKey = getKeyForParentObject(parentObject);
+ 
+         if (parentKey == null) {
+@@ -551,6 +552,12 @@ public class FileRefController extends BaseController {
+             TLRPC.TL_messages_getAttachMenuBot req = new TLRPC.TL_messages_getAttachMenuBot();
+             req.bot = getMessagesController().getInputUser(bot.bot_id);
+             getConnectionsManager().sendRequest(req, (response, error) -> onRequestComplete(locationKey, parentKey, response, error, true, false));
++        } else if (parentObject instanceof tele.helpers.PastLimit.Refresh) {
++            tele.helpers.PastLimit.Refresh refresh = (tele.helpers.PastLimit.Refresh) parentObject;
++            getConnectionsManager().sendRequest(refresh.request, (response, error) -> {
++                refresh.apply(response);
++                onRequestComplete(locationKey, parentKey, response, error, false, false);
++            });
+         } else if (parentObject instanceof MessageObject) {
+             MessageObject messageObject = (MessageObject) parentObject;
+             long channelId = messageObject.getChannelId();
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
 index e57795128..f785c019e 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
@@ -151,8 +179,42 @@ index e57795128..f785c019e 100644
                      if (gif) {
                          recentGifs = documents;
                      } else {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index ca349c869..de9241a56 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -10371,6 +10371,9 @@ public class MessagesController extends BaseController implements NotificationCe
+         if (parentObject == null || !MessageObject.isGifDocument(document)) {
+             return;
+         }
++        if (parentObject instanceof MessageObject) {
++            tele.helpers.PastLimit.noteOrigin(currentAccount, document, (MessageObject) parentObject);
++        }
+         TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
+         req.id = new TLRPC.TL_inputDocument();
+         req.id.id = document.id;
+@@ -21977,6 +21980,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                             save = true;
+                         }
+                         if (save) {
++                            tele.helpers.PastLimit.noteOrigin(currentAccount, message.messageOwner.media.document, message);
+                             getMediaDataController().addRecentGif(message.messageOwner.media.document, message.messageOwner.date, message.wasJustSent);
+                         }
+                     } else if (!message.isAnimatedEmoji() && (message.isSticker() || message.isAnimatedSticker())) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 5a428d6c8..b40fcb536 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -9123,6 +9123,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         save = true;
+                     }
+                     if (save) {
++                        tele.helpers.PastLimit.noteOrigin(currentAccount, sentMedia.document, sentMessage);
+                         getMediaDataController().addRecentGif(sentMedia.document, sentMessage.date, true);
+                     }
+                 } else if (MessageObject.isStickerDocument(sentMedia.document) || MessageObject.isAnimatedStickerDocument(sentMedia.document, true)) {
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-index 323d1d2b4..c2c2addf7 100644
+index adf7c9dd3..30303938e 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 @@ -211,6 +211,8 @@ object TeleConfig {
@@ -179,10 +241,10 @@ index 4d1ce6ea5..a1b560427 100644
  
      @JvmStatic
 diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
-index c3428f824..a6690aa0e 100644
+index c3428f824..cb0ba5943 100644
 --- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
 +++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
-@@ -470,6 +470,44 @@ object TeleDatabaseHelper {
+@@ -470,6 +470,74 @@ object TeleDatabaseHelper {
          return 0
      }
  
@@ -222,25 +284,57 @@ index c3428f824..a6690aa0e 100644
 +    fun removePastLimit(account: Int) {
 +        val db = helper?.writableDatabase ?: return
 +        db.delete("tele_past_limit", "account = ?", arrayOf(account.toString()))
++        db.delete("tele_gif_origin", "account = ?", arrayOf(account.toString()))
++    }
++
++    class GifOriginRow(val docId: Long, val dialogId: Long, val messageId: Int)
++
++    fun getGifOrigins(account: Int): List<GifOriginRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<GifOriginRow>()
++        db.rawQuery("SELECT doc_id, dialog_id, message_id FROM tele_gif_origin WHERE account = ?", arrayOf(account.toString())).use { c ->
++            while (c.moveToNext()) result.add(GifOriginRow(c.getLong(0), c.getLong(1), c.getInt(2)))
++        }
++        return result
++    }
++
++    // the newest [keep] origins stay, and every origin of a kept GIF
++    fun putGifOrigin(account: Int, docId: Long, dialogId: Long, messageId: Int, keep: Int) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("doc_id", docId)
++            put("dialog_id", dialogId)
++            put("message_id", messageId)
++            put("seen_at", System.currentTimeMillis())
++        }
++        db.insertWithOnConflict("tele_gif_origin", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++        val acc = account.toString()
++        db.execSQL(
++            "DELETE FROM tele_gif_origin WHERE account = ? AND doc_id NOT IN (SELECT doc_id FROM tele_gif_origin WHERE account = ? ORDER BY seen_at DESC LIMIT ?) AND doc_id NOT IN (SELECT doc_id FROM tele_past_limit WHERE account = ?)",
++            arrayOf<Any>(acc, acc, keep, acc)
++        )
 +    }
 +
      private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 9) {
          override fun onCreate(db: SQLiteDatabase) {
              db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
-@@ -492,6 +530,7 @@ object TeleDatabaseHelper {
+@@ -492,6 +560,9 @@ object TeleDatabaseHelper {
              createRecoveredPostsTable(db)
              createBookmarkTables(db)
              db.execSQL("CREATE TABLE IF NOT EXISTS tele_read_log (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, till INTEGER NOT NULL, date INTEGER NOT NULL, PRIMARY KEY (account, dialog_id, till))")
 +            db.execSQL("CREATE TABLE IF NOT EXISTS tele_past_limit (account INTEGER NOT NULL, kind INTEGER NOT NULL, doc_id INTEGER NOT NULL, position INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, kind, doc_id))")
++            // the message a saved GIF was seen in: its file reference is refreshed from there once the GIF is kept past the limit
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_gif_origin (account INTEGER NOT NULL, doc_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY (account, doc_id))")
          }
  
          // the retention stamp of the edit versions and the media file names of the kept messages
 diff --git a/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt b/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
 new file mode 100644
-index 000000000..e6822c7a0
+index 000000000..b2b5eac2d
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,396 @@
 +package tele.helpers
 +
 +import org.telegram.messenger.AndroidUtilities
@@ -253,6 +347,10 @@ index 000000000..e6822c7a0
 +import org.telegram.tgnet.TLRPC
 +import org.telegram.ui.Components.Bulletin
 +import org.telegram.ui.Components.StickerSetBulletinLayout
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.MessageObject
++import org.telegram.tgnet.TLObject
 +import tele.TeleConfig
 +import tele.db.TeleDatabaseHelper
 +
@@ -267,6 +365,8 @@ index 000000000..e6822c7a0
 +    private const val KINDS = 2
 +    private const val TYPE_FAVE = 2 // MediaDataController.TYPE_FAVE
 +
++    private class Origin(val dialogId: Long, val messageId: Int)
++
 +    private class State {
 +        // the newest first
 +        val lists = Array(KINDS) { ArrayList<TLRPC.Document>() }
@@ -275,6 +375,8 @@ index 000000000..e6822c7a0
 +        val dirty = BooleanArray(KINDS)
 +        var loaded = false
 +        var loading = false
++        // the message each saved GIF was seen in, by document id
++        val origins = HashMap<Long, Origin>()
 +    }
 +
 +    private val states = arrayOfNulls<State>(UserConfig.MAX_ACCOUNT_COUNT)
@@ -302,14 +404,17 @@ index 000000000..e6822c7a0
 +        s.loading = true
 +        Utilities.globalQueue.postRunnable {
 +            val rows = runCatching { TeleDatabaseHelper.getPastLimit(account) }.onFailure { FileLog.e(it) }.getOrDefault(emptyList())
++            val origins = runCatching { TeleDatabaseHelper.getGifOrigins(account) }.onFailure { FileLog.e(it) }.getOrDefault(emptyList())
 +            val decoded = rows.mapNotNull { row -> decode(row.data)?.let { row.kind to it } }
-+            AndroidUtilities.runOnUIThread { finishLoad(account, s, decoded) }
++            AndroidUtilities.runOnUIThread { finishLoad(account, s, decoded, origins) }
 +        }
 +    }
 +
 +    @Synchronized
-+    private fun finishLoad(account: Int, s: State, rows: List<Pair<Int, TLRPC.Document>>) {
++    private fun finishLoad(account: Int, s: State, rows: List<Pair<Int, TLRPC.Document>>, origins: List<TeleDatabaseHelper.GifOriginRow>) {
 +        if (states[account] !== s) return
++        // the origins noted during the load are newer
++        for (row in origins) s.origins.putIfAbsent(row.docId, Origin(row.dialogId, row.messageId))
 +        for ((kind, document) in rows) {
 +            if (kind !in 0 until KINDS || document.id in s.forgotten[kind]) continue
 +            val list = s.lists[kind]
@@ -530,6 +635,101 @@ index 000000000..e6822c7a0
 +            runCatching { TeleDatabaseHelper.removePastLimit(account) }.onFailure { FileLog.e(it) }
 +        }
 +    }
++
++    private const val MAX_ORIGINS = 1000
++
++    /**
++     * Stands in for the parent object of a file reference request of a kept item: a kept item is no
++     * longer in the server lists, so the stock lookup there can't find a fresh reference. The request
++     * goes to where the item still lives, its message or its sticker set.
++     */
++    class Refresh internal constructor(private val account: Int, private val kind: Int, private val docId: Long, @JvmField val request: TLObject) {
++        // the stored item gets the fresh reference, so the next use needs no request
++        fun apply(response: TLObject?) = refreshed(account, kind, docId, response)
++
++        override fun toString(): String = "kept_$docId"
++    }
++
++    @JvmStatic
++    fun noteOrigin(account: Int, document: TLRPC.Document?, message: MessageObject?) {
++        if (document == null || message == null || message.scheduled || message.isQuickReply() || message.eventId != 0L) return
++        note(account, document.id, message.dialogId, message.id)
++    }
++
++    @JvmStatic
++    fun noteOrigin(account: Int, document: TLRPC.Document?, message: TLRPC.Message?) {
++        if (document == null || message == null) return
++        note(account, document.id, message.dialog_id, message.id)
++    }
++
++    private fun note(account: Int, docId: Long, dialogId: Long, messageId: Int) {
++        if (!enabled() || docId == 0L || dialogId == 0L || messageId <= 0 || DialogObject.isEncryptedDialog(dialogId)) return
++        synchronized(this) {
++            val old = state(account).origins.put(docId, Origin(dialogId, messageId))
++            if (old != null && old.dialogId == dialogId && old.messageId == messageId) return
++        }
++        Utilities.globalQueue.postRunnable {
++            runCatching { TeleDatabaseHelper.putGifOrigin(account, docId, dialogId, messageId, MAX_ORIGINS) }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    /** The parent object to ask the server about [location] with: [parent] itself unless it is a kept item that has a place to be refreshed from. */
++    @JvmStatic
++    fun refreshParent(account: Int, parent: Any?, location: TLRPC.InputFileLocation?): Any? {
++        if (!enabled() || location !is TLRPC.TL_inputDocumentFileLocation) return parent
++        val kind = when {
++            parent is String && parent.startsWith("gif") -> GIFS
++            parent == "fav" -> FAVED
++            else -> return parent
++        }
++        val request = requestFor(account, kind, location.id) ?: return parent
++        return Refresh(account, kind, location.id, request)
++    }
++
++    @Synchronized
++    private fun requestFor(account: Int, kind: Int, id: Long): TLObject? {
++        val s = states[account] ?: return null
++        val document = s.lists[kind].firstOrNull { it.id == id } ?: return null
++        if (kind == FAVED) {
++            val set = document.attributes.filterIsInstance<TLRPC.TL_documentAttributeSticker>().firstOrNull()?.stickerset
++            if (set == null || set is TLRPC.TL_inputStickerSetEmpty) return null
++            return TLRPC.TL_messages_getStickerSet().also { it.stickerset = set }
++        }
++        val origin = s.origins[id] ?: return null
++        val controller = MessagesController.getInstance(account)
++        if (!DialogObject.isChatDialog(origin.dialogId)) {
++            return TLRPC.TL_messages_getMessages().also { it.id.add(origin.messageId) }
++        }
++        // a chat that isn't known can't tell whether it is a channel
++        val chat = controller.getChat(-origin.dialogId) ?: return null
++        if (!ChatObject.isChannel(chat)) {
++            return TLRPC.TL_messages_getMessages().also { it.id.add(origin.messageId) }
++        }
++        val channel = MessagesController.getInputChannel(chat) ?: return null
++        return TLRPC.TL_channels_getMessages().also {
++            it.channel = channel
++            it.id.add(origin.messageId)
++        }
++    }
++
++    private fun refreshed(account: Int, kind: Int, id: Long, response: TLObject?) {
++        val reference = findFresh(response, id)?.file_reference?.takeIf { it.isNotEmpty() } ?: return
++        synchronized(this) {
++            val s = states[account] ?: return
++            val document = s.lists[kind].firstOrNull { it.id == id } ?: return
++            document.file_reference = reference
++            persist(account, s, kind)
++        }
++    }
++
++    private fun findFresh(response: TLObject?, id: Long): TLRPC.Document? = when (response) {
++        is TLRPC.TL_messages_stickerSet -> response.documents.firstOrNull { it.id == id }
++        is TLRPC.messages_Messages -> response.messages.firstNotNullOfOrNull { message ->
++            val media = message.media ?: return@firstNotNullOfOrNull null
++            (listOfNotNull(media.document) + (media.alt_documents ?: emptyList())).firstOrNull { it.id == id }
++        }
++        else -> null
++    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
 index cbb4851ca..e6ef50a0a 100644
@@ -546,10 +746,10 @@ index cbb4851ca..e6ef50a0a 100644
              section(GUID_SERVER, "tele server", "server", TeleSettingsActivity.MODE_SERVER),
              section(GUID_SERVER + 1, "Server url", "server", TeleSettingsActivity.MODE_SERVER),
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index 4f8e146ef..4375c78ab 100644
+index db80db1c0..3c6d8ba47 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-@@ -671,6 +671,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -677,6 +677,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
              "Hide phone numbers in profiles" to "Do not show the phone number row in a profile.",
              "Message bookmarks" to "Adds Bookmark to the message menu and a button to walk the bookmarks of a chat. They stay on this device.",
              "Return to where you were reading" to "After you send a message while scrolled up, a button jumps back to the message you left. Nothing is marked as read.",
@@ -557,7 +757,7 @@ index 4f8e146ef..4375c78ab 100644
          )
  
          private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
-@@ -780,6 +781,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -786,6 +787,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
                  Row(TYPE_HEADER, "Chat features"),
                  toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
                  Row(TYPE_SHADOW),

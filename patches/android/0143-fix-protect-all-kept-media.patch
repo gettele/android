@@ -1,0 +1,373 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 00:55:46 +0300
+Subject: [PATCH 143/143] fix: protect all kept media
+
+---
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  39 +++++-
+ .../main/java/tele/helpers/DeletedMessages.kt |   5 +-
+ .../java/tele/helpers/DeletedRetention.kt     | 127 +++++++++++++++---
+ .../main/java/tele/helpers/MessageHistory.kt  |   2 +-
+ 4 files changed, 148 insertions(+), 25 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 9014abd70..43e69b1d7 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -42,7 +42,7 @@ object TeleDatabaseHelper {
+ 
+ 
+     /** [via] 1 is a message archived with its deleted chat, 2 with its deleted topic: such rows never replace a message that was kept on its own. */
+-    fun putDeletedMessage(account: Int, dialogId: Long, messageId: Int, date: Int, deletedAt: Int, data: ByteArray, via: Int = 0) {
++    fun putDeletedMessage(account: Int, dialogId: Long, messageId: Int, date: Int, deletedAt: Int, data: ByteArray, via: Int = 0, mediaNames: String? = null) {
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -52,6 +52,7 @@ object TeleDatabaseHelper {
+             put("deleted_at", deletedAt)
+             put("data", data)
+             put("by_chat", via)
++            if (mediaNames != null) put("media_names", mediaNames)
+         }
+         db.insertWithOnConflict("tele_deleted_messages", null, values, if (via != 0) SQLiteDatabase.CONFLICT_IGNORE else SQLiteDatabase.CONFLICT_REPLACE)
+     }
+@@ -188,7 +189,7 @@ object TeleDatabaseHelper {
+     }
+ 
+ 
+-    fun putMessageVersion(account: Int, dialogId: Long, messageId: Int, editDate: Int, original: Boolean, versionKey: String, data: ByteArray) {
++    fun putMessageVersion(account: Int, dialogId: Long, messageId: Int, editDate: Int, original: Boolean, versionKey: String, data: ByteArray, mediaNames: String? = null) {
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -199,6 +200,7 @@ object TeleDatabaseHelper {
+             put("version_key", versionKey)
+             put("data", data)
+             put("archived_at", (System.currentTimeMillis() / 1000L).toInt())
++            if (mediaNames != null) put("media_names", mediaNames)
+         }
+         db.insertWithOnConflict("tele_message_edits", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+     }
+@@ -214,10 +216,12 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
+-    /** Deletes one batch of the edit versions archived before the cutoff, returns how many went. */
++    /** Deletes one batch of versions of the messages that were last edited before the cutoff, returns how many went. */
+     fun deleteExpiredEdits(cutoff: Int, limit: Int): Int {
+         val db = helper?.writableDatabase ?: return 0
+-        return db.delete("tele_message_edits", "rowid IN (SELECT rowid FROM tele_message_edits WHERE archived_at < ? LIMIT ?)", arrayOf(cutoff.toString(), limit.toString()))
++        val last = "(SELECT MAX(x.archived_at) FROM tele_message_edits x WHERE x.account = e.account AND x.dialog_id = e.dialog_id AND x.message_id = e.message_id)"
++        val args = arrayOf(cutoff.toString(), cutoff.toString(), limit.toString())
++        return db.delete("tele_message_edits", "rowid IN (SELECT e.rowid FROM tele_message_edits e WHERE e.archived_at < ? AND $last < ? LIMIT ?)", args)
+     }
+ 
+     class MediaPending(val account: Int, val dialogId: Long, val messageId: Int, val data: ByteArray)
+@@ -240,12 +244,31 @@ object TeleDatabaseHelper {
+     fun getAllMediaNames(): List<String> {
+         val db = helper?.readableDatabase ?: return emptyList()
+         val result = ArrayList<String>()
+-        db.rawQuery("SELECT media_names FROM tele_deleted_messages WHERE media_names IS NOT NULL AND media_names != ''", null).use {
+-            while (it.moveToNext()) result.add(it.getString(0))
++        for (table in arrayOf("tele_deleted_messages", "tele_message_edits")) {
++            db.rawQuery("SELECT media_names FROM $table WHERE media_names IS NOT NULL AND media_names != ''", null).use {
++                while (it.moveToNext()) result.add(it.getString(0))
++            }
+         }
+         return result
+     }
+ 
++    class VersionPending(val rowId: Long, val data: ByteArray)
++
++    /** Edit versions whose media file names are not computed yet. */
++    fun getVersionMediaPending(limit: Int): List<VersionPending> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<VersionPending>()
++        db.rawQuery("SELECT rowid, data FROM tele_message_edits WHERE media_names IS NULL LIMIT ?", arrayOf(limit.toString())).use {
++            while (it.moveToNext()) result.add(VersionPending(it.getLong(0), it.getBlob(1)))
++        }
++        return result
++    }
++
++    fun setVersionMediaNames(rowId: Long, names: String) {
++        val db = helper?.writableDatabase ?: return
++        db.execSQL("UPDATE tele_message_edits SET media_names = ? WHERE rowid = ?", arrayOf<Any>(names, rowId))
++    }
++
+     fun getMessageVersions(account: Int, dialogId: Long, messageId: Int): List<ArchivedVersion> {
+         val db = helper?.readableDatabase ?: return emptyList()
+         val result = ArrayList<ArchivedVersion>()
+@@ -616,7 +639,7 @@ object TeleDatabaseHelper {
+         )
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 10) {
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 11) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -655,6 +678,8 @@ object TeleDatabaseHelper {
+                 db.execSQL("UPDATE tele_message_edits SET archived_at = ?", arrayOf<Any>((System.currentTimeMillis() / 1000L).toInt()))
+             }
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_message_edits_archived ON tele_message_edits(archived_at)")
++            // NULL means not computed yet
++            if ("media_names" !in edits) db.execSQL("ALTER TABLE tele_message_edits ADD COLUMN media_names TEXT")
+             val deleted = HashSet<String>()
+             db.rawQuery("PRAGMA table_info(tele_deleted_messages)", null).use { while (it.moveToNext()) deleted.add(it.getString(1)) }
+             // NULL means not computed yet
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index fa2ab5062..1a09457fe 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -49,7 +49,7 @@ object DeletedMessages {
+         val stream = SerializedData(message.getObjectSize())
+         try {
+             message.serializeToStream(stream)
+-            TeleDatabaseHelper.putDeletedMessage(account, message.dialog_id, message.id, message.date, (System.currentTimeMillis() / 1000L).toInt(), stream.toByteArray())
++            TeleDatabaseHelper.putDeletedMessage(account, message.dialog_id, message.id, message.date, (System.currentTimeMillis() / 1000L).toInt(), stream.toByteArray(), mediaNames = KeptMedia.protect(message))
+         } finally {
+             stream.cleanup()
+         }
+@@ -63,7 +63,7 @@ object DeletedMessages {
+         val stream = SerializedData(message.getObjectSize())
+         try {
+             message.serializeToStream(stream)
+-            TeleDatabaseHelper.putDeletedMessage(account, message.dialog_id, message.id, message.date, (System.currentTimeMillis() / 1000L).toInt(), stream.toByteArray(), via)
++            TeleDatabaseHelper.putDeletedMessage(account, message.dialog_id, message.id, message.date, (System.currentTimeMillis() / 1000L).toInt(), stream.toByteArray(), via, KeptMedia.protect(message))
+         } finally {
+             stream.cleanup()
+         }
+@@ -213,6 +213,7 @@ object DeletedMessages {
+         TeleDatabaseHelper.deleteDeletedMessages(account, dialogId)
+         RecoveredPosts.forgetAll(account, dialogId)
+         DeletedChats.forgetAll(account, dialogId)
++        KeptMedia.maintain()
+     }
+ 
+     // the messages being purged: their local copies are deleted for good, not archived again
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
+index 64b1799c3..85949d823 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
+@@ -1,6 +1,7 @@
+ package tele.helpers
+ 
+ import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
+ import org.telegram.messenger.FileLoader
+ import org.telegram.messenger.MessageObject
+ import org.telegram.messenger.UserConfig
+@@ -10,6 +11,8 @@ import org.telegram.tgnet.TLRPC
+ import tele.TeleConfig
+ import tele.db.TeleDatabaseHelper
+ import java.io.File
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.Executors
+ import java.util.concurrent.atomic.AtomicBoolean
+ 
+ /** Drops the kept deleted messages and the edit versions that outlived the chosen period. */
+@@ -35,6 +38,7 @@ object DeletedRetention {
+         Utilities.globalQueue.postRunnable(object : Runnable {
+             override fun run() {
+                 sweep()
++                KeptMedia.maintain()
+                 Utilities.globalQueue.postRunnable(this, TICK)
+             }
+         }, 30_000)
+@@ -66,6 +70,7 @@ object DeletedRetention {
+         if (expired.isEmpty() && edits < BATCH) {
+             // the deleted chats whose last kept message expired go too
+             DeletedChats.prune()
++            KeptMedia.maintain()
+             running.set(false)
+             return
+         }
+@@ -82,27 +87,62 @@ object DeletedRetention {
+     }
+ }
+ 
+-/** The files the cache cleaners must leave: the media of the kept deleted messages, from tele.db. */
++/**
++ * The files the cache cleaners must leave: the media of the kept deleted messages and of the edit versions, from tele.db.
++ * Files in the cache directory, which the system may clear on its own, are also copied to the app files and put back.
++ */
+ object KeptMedia {
+     private const val TTL = 5_000L
+     private const val BATCH = 100
++    private const val COPY_LIMIT = 200L * 1024 * 1024
++    private const val PART = ".part"
++    private const val RECENT = 10 * 60 * 1000L
+     private val lock = Any()
+     private var names: Set<String> = emptySet()
++    // the files of the rows archived lately: the reload may run before their transaction commits
++    private val recent = ConcurrentHashMap<String, Long>()
+     private var loadedAt = 0L
++    private val io = Executors.newSingleThreadExecutor { Thread(it, "tele-kept-media").apply { isDaemon = true } }
+ 
+     /** For the cleaners: runs on their background threads. */
+     @JvmStatic
+     fun isProtected(file: File?): Boolean {
+         if (file == null) return false
+-        val name = file.name
++        return covers(snapshot(), file.name)
++    }
++
++    private fun covers(set: Set<String>, name: String): Boolean {
+         val base = if (name.startsWith("q_")) name.substring(2) else name
+-        val set = snapshot()
+-        return set.contains(name) || set.contains(base)
++        return set.contains(name) || set.contains(base) || recent.containsKey(name) || recent.containsKey(base)
+     }
+ 
+-    private fun snapshot(): Set<String> = synchronized(lock) {
++    /**
++     * Protects the files of a message about to be archived and returns their names for the row.
++     * No lock is taken: the archive runs inside database transactions, and the reload writes to the database.
++     */
++    @JvmStatic
++    fun protect(message: TLRPC.Message): String {
++        val joined = namesOf(message)
++        if (joined.isEmpty()) return joined
++        val list = joined.split('\n')
+         val now = System.currentTimeMillis()
+-        if (now - loadedAt > TTL) {
++        for (name in list) recent[name] = now
++        io.execute { runCatching { copy(list) } }
++        return joined
++    }
++
++    /** Puts back the copies the system cleared and drops the ones whose rows are gone. */
++    @JvmStatic
++    fun maintain() {
++        io.execute {
++            runCatching { collect() }
++            runCatching { restore() }
++        }
++    }
++
++    private fun snapshot(force: Boolean = false): Set<String> = synchronized(lock) {
++        val now = System.currentTimeMillis()
++        if (force || now - loadedAt > TTL) {
+             names = try {
+                 fill()
+                 val all = HashSet<String>()
+@@ -112,6 +152,7 @@ object KeptMedia {
+                 names
+             }
+             loadedAt = System.currentTimeMillis()
++            recent.values.removeAll { now - it > RECENT }
+         }
+         names
+     }
+@@ -120,11 +161,14 @@ object KeptMedia {
+     private fun fill() {
+         while (true) {
+             val pending = TeleDatabaseHelper.getMediaPending(BATCH)
+-            if (pending.isEmpty()) return
+             for (row in pending) {
+                 TeleDatabaseHelper.setMediaNames(row.account, row.dialogId, row.messageId, namesOf(row.data))
+             }
+-            if (pending.size < BATCH) return
++            val versions = TeleDatabaseHelper.getVersionMediaPending(BATCH)
++            for (row in versions) {
++                TeleDatabaseHelper.setVersionMediaNames(row.rowId, namesOf(row.data))
++            }
++            if (pending.size < BATCH && versions.size < BATCH) return
+         }
+     }
+ 
+@@ -132,13 +176,7 @@ object KeptMedia {
+         val stream = SerializedData(data)
+         try {
+             val message = TLRPC.Message.TLdeserialize(stream, stream.readInt32(false), false) ?: return ""
+-            val result = LinkedHashSet<String>()
+-            MessageObject.getPhoto(message)?.sizes?.forEach { add(result, FileLoader.getAttachFileName(it)) }
+-            MessageObject.getDocument(message)?.let { document ->
+-                add(result, FileLoader.getAttachFileName(document))
+-                document.thumbs?.forEach { add(result, FileLoader.getAttachFileName(it)) }
+-            }
+-            return result.joinToString("\n")
++            return namesOf(message)
+         } catch (e: Exception) {
+             return ""
+         } finally {
+@@ -146,7 +184,66 @@ object KeptMedia {
+         }
+     }
+ 
++    private fun namesOf(message: TLRPC.Message): String {
++        val result = LinkedHashSet<String>()
++        MessageObject.getPhoto(message)?.sizes?.forEach { add(result, FileLoader.getAttachFileName(it)) }
++        MessageObject.getDocument(message)?.let { document ->
++            add(result, FileLoader.getAttachFileName(document))
++            document.thumbs?.forEach { add(result, FileLoader.getAttachFileName(it)) }
++        }
++        return result.joinToString("\n")
++    }
++
+     private fun add(result: MutableSet<String>, name: String?) {
+         if (!name.isNullOrEmpty()) result.add(name)
+     }
++
++    private fun cacheDir(): File? = FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE)
++
++    private fun keptDir() = File(ApplicationLoader.getFilesDirFixed(), "tele_kept")
++
++    private fun usable(name: String) = name.isNotEmpty() && '/' !in name && !name.endsWith(PART)
++
++    private fun copyFile(from: File, to: File) {
++        val part = File(to.parentFile, to.name + PART)
++        part.parentFile?.mkdirs()
++        from.copyTo(part, true)
++        if (!part.renameTo(to)) part.delete()
++    }
++
++    // only the cache directory is cleared by the system, the media directories are app files
++    private fun copy(list: List<String>) {
++        val cache = cacheDir() ?: return
++        val dir = keptDir()
++        var total = dir.listFiles()?.sumOf { it.length() } ?: 0L
++        for (name in list) {
++            if (!usable(name)) continue
++            for (variant in arrayOf(name, "q_$name")) {
++                val from = File(cache, variant)
++                val to = File(dir, variant)
++                if (!from.isFile || to.exists()) continue
++                val size = from.length()
++                if (size > COPY_LIMIT || total + size > COPY_LIMIT) continue
++                copyFile(from, to)
++                total += size
++            }
++        }
++    }
++
++    private fun restore() {
++        val cache = cacheDir() ?: return
++        for (file in keptDir().listFiles() ?: return) {
++            if (!usable(file.name)) continue
++            val to = File(cache, file.name)
++            if (!to.exists()) copyFile(file, to)
++        }
++    }
++
++    private fun collect() {
++        val files = keptDir().listFiles() ?: return
++        val keep = snapshot(true)
++        for (file in files) {
++            if (!usable(file.name) || !covers(keep, file.name)) file.delete()
++        }
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt b/TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt
+index 87d254c57..e850eb840 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageHistory.kt
+@@ -18,7 +18,7 @@ object MessageHistory {
+             message.serializeToStream(stream)
+             val data = stream.toByteArray()
+             val key = MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
+-            TeleDatabaseHelper.putMessageVersion(account, message.dialog_id, message.id, message.edit_date.takeIf { it > 0 } ?: message.date, original, key, data)
++            TeleDatabaseHelper.putMessageVersion(account, message.dialog_id, message.id, message.edit_date.takeIf { it > 0 } ?: message.date, original, key, data, KeptMedia.protect(message))
+         } finally {
+             stream.cleanup()
+         }

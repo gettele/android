@@ -1,23 +1,23 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Fri, 23 Oct 2026 23:12:13 +0300
-Subject: [PATCH 139/141] feat: return to where you were
+Subject: [PATCH 139/143] feat: return to where you were
 
 ---
- .../java/org/telegram/ui/ChatActivity.java    | 11 +++
- ...ChatActivitySideControlsButtonsLayout.java |  9 +-
- .../src/main/java/tele/TeleConfig.kt          |  2 +
- .../main/java/tele/db/TeleDatabaseHelper.kt   | 30 +++++++
- .../main/java/tele/helpers/ChatBookmarks.kt   | 86 +++++++++++++++++--
- .../src/main/java/tele/helpers/ReturnPoint.kt | 61 +++++++++++++
- .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
- .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
- .../src/main/res/values/strings_tele.xml      |  1 +
- 9 files changed, 195 insertions(+), 8 deletions(-)
+ .../java/org/telegram/ui/ChatActivity.java    |  11 ++
+ ...ChatActivitySideControlsButtonsLayout.java |   9 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  30 +++++
+ .../main/java/tele/helpers/ChatBookmarks.kt   | 105 ++++++++++++++++--
+ .../src/main/java/tele/helpers/ReturnPoint.kt |  69 ++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ .../src/main/res/values/strings_tele.xml      |   1 +
+ 9 files changed, 215 insertions(+), 15 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 05db6d8fe..f32454b81 100644
+index fcc33a2f5..baa208789 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -1808,6 +1808,11 @@ public class ChatActivity extends BaseFragment implements
@@ -32,7 +32,7 @@ index 05db6d8fe..f32454b81 100644
      public void teleRebind() {
          if (chatAdapter == null) {
              return;
-@@ -7036,6 +7041,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -7040,6 +7045,9 @@ public class ChatActivity extends BaseFragment implements
                  final ChatActivity chatToUpdate = parentChatActivity != null ? parentChatActivity : ChatActivity.this;
  
                  chatListView.invalidate();
@@ -42,7 +42,7 @@ index 05db6d8fe..f32454b81 100644
                  if (contentView != null) {
                      contentView.updateBlurContent();
                  }
-@@ -26146,6 +26154,9 @@ public class ChatActivity extends BaseFragment implements
+@@ -26152,6 +26160,9 @@ public class ChatActivity extends BaseFragment implements
      }
      private void processNewMessages(ArrayList<MessageObject> arr, final boolean animatedFromBottom) {
          FileLog.d("processNewMessages " + arr.size() + " messages");
@@ -95,7 +95,7 @@ index 4c535c7da..92ef66891 100644
              }
              if (buttonId == BUTTON_PAGE_DOWN) {
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-index 13864d80c..c8efd88ec 100644
+index 94860b23c..dcf843cd6 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 @@ -240,6 +240,8 @@ object TeleConfig {
@@ -156,7 +156,7 @@ index 0052270cb..b1eaabed7 100644
  
          private fun createDraftsTable(db: SQLiteDatabase) {
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt b/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
-index 997be0c14..5247f0711 100644
+index 81d606774..d698723f1 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
 @@ -1,11 +1,13 @@
@@ -201,7 +201,37 @@ index 997be0c14..5247f0711 100644
          if (!marks()) {
              sync()
              update(false)
-@@ -56,14 +66,64 @@ class ChatBookmarks(private val chat: ChatActivity) {
+@@ -50,17 +60,22 @@ class ChatBookmarks(private val chat: ChatActivity) {
+         update(true)
+     }
+ 
+-    /** Messages that left the chat for good take their bookmarks with them. */
++    /** Messages that left the chat for good take their bookmarks and the return point with them. */
+     fun deleted(ids: Collection<Int>) {
+-        if (!marks()) return
++        if (!chat.teleBookmarkChat()) return
+         var dirty = false
+-        for (id in ids) {
+-            if (Bookmarks.find(chat.currentAccount, chat.dialogId, id) != null) {
+-                Bookmarks.remove(chat.currentAccount, chat.dialogId, id)
+-                dirty = true
++        if (marks()) {
++            for (id in ids) {
++                if (Bookmarks.find(chat.currentAccount, chat.dialogId, id) != null) {
++                    Bookmarks.remove(chat.currentAccount, chat.dialogId, id)
++                    dirty = true
++                }
+             }
+         }
+-        if (dirty) changed()
++        if (ReturnPoint.enabled()) {
++            for (id in ids) ReturnPoint.clearMessage(chat.currentAccount, chat.dialogId, id)
++        }
++        if (dirty) changed() else update(true)
+     }
+ 
+     fun update(animated: Boolean) {
+@@ -69,14 +84,64 @@ class ChatBookmarks(private val chat: ChatActivity) {
          side.showButton(ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS, list.isNotEmpty(), animated)
          side.setButtonCount(ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS, list.size, animated)
          chat.teleBookmarksMenu(list.isNotEmpty())
@@ -268,7 +298,7 @@ index 997be0c14..5247f0711 100644
      /** Walks the bookmarks of the chat from the newest to the oldest, starting near what is on the screen. */
      private fun jumpToNext() {
          val list = Bookmarks.list(chat.currentAccount, chat.dialogId, chat.topicId)
-@@ -80,6 +140,9 @@ class ChatBookmarks(private val chat: ChatActivity) {
+@@ -93,6 +158,9 @@ class ChatBookmarks(private val chat: ChatActivity) {
          chat.scrollToMessageId(target.messageId, 0, true, 0, true, 0)
      }
  
@@ -278,7 +308,7 @@ index 997be0c14..5247f0711 100644
      /** The ids of the messages on the screen, null when the list shows none. */
      private fun visibleRange(): IntRange? {
          val list = chat.chatListView ?: return null
-@@ -88,11 +151,24 @@ class ChatBookmarks(private val chat: ChatActivity) {
+@@ -101,11 +169,24 @@ class ChatBookmarks(private val chat: ChatActivity) {
          for (i in 0 until list.childCount) {
              val view = list.getChildAt(i)
              if (view.bottom <= 0 || view.top >= list.height) continue
@@ -307,10 +337,10 @@ index 997be0c14..5247f0711 100644
  }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt b/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
 new file mode 100644
-index 000000000..6cefa815a
+index 000000000..9df7589e1
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,69 @@
 +package tele.helpers
 +
 +import org.telegram.messenger.AndroidUtilities
@@ -371,6 +401,14 @@ index 000000000..6cefa815a
 +        if (points.remove(Key(account, dialogId, topicId)) == null) return
 +        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.removeReturnPoint(account, dialogId, topicId) }
 +    }
++
++    /** The message is gone for good: every point of the chat that stood on it goes. */
++    @JvmStatic
++    fun clearMessage(account: Int, dialogId: Long, messageId: Int) {
++        for ((key, value) in points) {
++            if (key.account == account && key.dialogId == dialogId && value == messageId) clear(account, dialogId, key.topicId)
++        }
++    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
 index 997b4bfbd..ac13aef0d 100644
@@ -385,10 +423,10 @@ index 997b4bfbd..ac13aef0d 100644
              section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
              section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index 5c44536fa..664024584 100644
+index fcb32cfdd..447843c39 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-@@ -669,6 +669,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -675,6 +675,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
              "Streamer mode" to "Block screen capture in every window and hide the notification previews.",
              "Hide phone numbers in profiles" to "Do not show the phone number row in a profile.",
              "Message bookmarks" to "Adds Bookmark to the message menu and a button to walk the bookmarks of a chat. They stay on this device.",
@@ -396,7 +434,7 @@ index 5c44536fa..664024584 100644
          )
  
          private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
-@@ -818,6 +819,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -824,6 +825,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
                  Row(TYPE_SHADOW),
                  Row(TYPE_HEADER, "Bookmarks"),
                  toggle("Message bookmarks", TeleConfig.BOOKMARKS),
