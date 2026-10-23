@@ -10,7 +10,7 @@
 6. Цель — отображать локально HTML карточки в Telegram `.tgw` attachment и дать пользователю локальную playground-песочницу.
 7. Решение мейнтейнера: портировать подсистему 0314–0316, использовать litehtml через NDK, не WebView в пузыре.
 8. 0315 исполняет сценарий карточки в QuickJS; базовый QuickJS runtime принадлежит desktop 0302 и пачке Android 28.
-9. 0316 опирается на 0315 и использует локальный чат как носитель, аналог Android 0087.
+9. 0316 опирается на 0315 и использует локальный чат как носитель, аналог Android 0077.
 10. Desktop Qt/C++ implementation — описание поведения и формата, не исходник для механического Android копирования.
 11. Android UI и Android Canvas остаются нативными; C++ renderer работает через JNI и получает только ограниченный drawing surface.
 12. Не включать WebView, remote HTML, произвольные сетевые картинки, tele-server APIs, wallet/script APIs либо Qt UI в эту пачку.
@@ -38,15 +38,15 @@
 31. Desktop source устанавливает ограничения и на SVG external references; Android обязан повторить сетевой запрет своей backend реализацией.
 32. Desktop `0316` добавляет HTML media/cards, playground peer/chat, sample cards, settings toggle, help/menus и changelog chat integration.
 33. Desktop playground имеет reset/read affordances; это локальный псевдо-чат, не Telegram remote peer.
-34. PATCHLIST описывает batch 29 effort `M×1, L×2`, deps 0302, 0314 и Android 0087.
+34. PATCHLIST описывает batch 29 effort `M×1, L×2`, deps 0302, 0314 и Android 0077.
 35. `decisions.md` прямо выбирает litehtml NDK rendering для `.tgw`.
-36. `portability.md` уточняет Canvas JNI backend, QuickJS scripts и зависимость playground от Android 0087.
+36. `portability.md` уточняет Canvas JNI backend, QuickJS scripts и зависимость playground от Android 0077.
 37. Android checkout branch `tele` использует `TMessagesProj/jni/CMakeLists.txt`; Android.mk по указанному пути отсутствует.
 38. Android native CMake уже задаёт C++17 и ABI-specific build, visibility hidden, LTO и target-based compilation.
 39. Android project builds ABI splits; `development.md` фиксирует NDK `27.2.12479018`, CMake `3.22.1` и SDK 36.
 40. Нынешний Android `ChatMessageCell.java`, `TeleConfig.kt`, `TeleSearch.kt` и settings infrastructure существуют в branch tele.
-41. Android 0087 уже хранит локальные changelog сообщения в Tele DB и рисует их `ChatMessageCell` в `TeleChatActivity`.
-42. Android 0087 показывает, что fork-local chat pattern возможен; это не подтверждает, что вся desktop playground UX уже имеет Android аналог.
+41. Android 0077 уже хранит локальные changelog сообщения в Tele DB и рисует их `ChatMessageCell` в `TeleChatActivity`.
+42. Android 0077 показывает, что fork-local chat pattern возможен; это не подтверждает, что вся desktop playground UX уже имеет Android аналог.
 43. [INFERENCE] Полный точный формат `.tgw` (manifest, mime, attachment fields, HTML/script extraction order) определяется desktop источником, но PATCHLIST и короткий `desk-5` excerpt не фиксируют его спецификацию.
 44. Перед кодом открыть соответствующие полные функции/поля в desktop 0315/0316 и составить byte-level format contract; не угадывать формат из extension.
 45. [INFERENCE] Android branch current `Document` file_name availability needs re-check through exact current `MessageObject.getDocument()` and mime metadata before implementation.
@@ -64,7 +64,7 @@
 54. При отсутствии готового 0302 runtime остановиться на dependency: не подменять QuickJS WebView, fake executor или no-op script.
 55. 0315 содержит format reader, policy checks, JS bridge, litehtml document container, Canvas JNI adapter, size/measure/render cache и gated ChatMessageCell hook.
 56. Рекомендуемый commit 3: desktop 0316, `feat: add html playground chat`.
-57. Он зависит от 0315 и Android 0087 `TeleChat`/локальных сообщений, не от network chat implementation.
+57. Он зависит от 0315 и Android 0077 `TeleChat`/локальных сообщений, не от network chat implementation.
 58. Каждый commit должен собираться отдельно поверх предыдущего commit в очереди.
 59. Если конкретные CMake integration changes требуют правки native build root, включить их в 0314, не растягивать JNI setup в несвязанные commits.
 60. Если 0302 export/runtime interfaces пока не стабилизированы, согласовать интерфейс с пачкой 28 перед 0315; не добавлять speculative public JS API.
@@ -324,7 +324,7 @@
 ## Playground UX and local data
 
 289. 0316 adds a local playground chat whose messages demonstrate/test HTML cards; it is not a real remote Telegram conversation.
-290. Follow Android 0087 `TeleChatActivity`/`TeleChangelog` pattern where it fits, not a synthetic server message or fake peer on network.
+290. Follow Android 0077 `TeleChatActivity`/`TeleChangelog` pattern where it fits, not a synthetic server message or fake peer on network.
 291. Use a distinct local peer/chat identity from changelog peer and any Telegram dialog IDs.
 292. [INFERENCE] Stable synthetic peer ID and account storage strategy are not established in provided docs; inspect 0087 and choose collision-proof local-only identity before coding.
 293. Keep playground messages and sample cards in fork-owned storage/resources, never stock dialog/message tables or server synchronization.
@@ -439,7 +439,7 @@
 384. Extend this minimum gate with explicit OFF-is-stock, no-network, malformed input, resource limits, recycling, theme and accessibility checks above.
 385. 0314 build row depends on pinned litehtml/gumbo sources and native compilation for all packaged ABIs.
 386. 0315 feature row depends on 0302 QuickJS runtime, format contract, secure allowlist, native Canvas/Bitmap renderer and ChatMessageCell lifecycle integration.
-387. 0316 feature row depends on 0315 and Android 0087 local-chat pattern plus approved local identity/storage.
+387. 0316 feature row depends on 0315 and Android 0077 local-chat pattern plus approved local identity/storage.
 388. Open question: what is exact `.tgw` byte format and how are HTML, CSS, JS, assets and metadata encoded?
 389. Open question: which desktop-defined HTML tags/CSS properties, script APIs, events and `light-dark()` behaviors are contractual?
 390. Open question: are scripts active on every `.tgw`, require consent/grants, or only use a restricted card API?

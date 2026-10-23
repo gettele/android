@@ -135,7 +135,7 @@
 122. Коммит I: `feat: add server notices`.
 123. Коммит I покрывает feed parser, filters, photo cache и server gate.
 124. Коммит I — effort M.
-125. Коммит I зависит от C и готовых Android 0073/0074.
+125. Коммит I зависит от C и готовых Android 0065/0066.
 126. Рекомендуемый порядок: A, B, C, D, E, F, G, H, I.
 127. Ручной native build нужен после B.
 128. Полный batch build нужен после I.

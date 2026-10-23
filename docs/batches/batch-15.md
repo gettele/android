@@ -89,7 +89,7 @@
 ## Плановые commits
 
 75. `feat: keep local dialog pins` — 0123, L.
-76. Зависит от текущих TeleConfig, TeleHooks, tele_kv и Android 0047 message-menu infrastructure.
+76. Зависит от текущих TeleConfig, TeleHooks, tele_kv и Android 0042 message-menu infrastructure.
 77. Этот commit содержит формат v2, merge, local drag и все scopes.
 78. `feat: keep local dialog folders` — 0124, L.
 79. Зависит от 0123 только в смысле общего local-list storage; прямой pin API не нужен.

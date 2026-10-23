@@ -166,7 +166,7 @@
 
 151. Desktop 0208 changes user/chat display names, chat list title, top bar and bubble sender names.
 152. Android target is users plus chats, per maintainer decision.
-153. Android dependency is Android 0029 LocalNames.
+153. Android dependency is Android 0028 LocalNames.
 154. Add `INVISIBLE_NAMES` and child fallback controls before touching UI cells.
 155. Add a short `TeleInvisibleName` display helper in the new file.
 156. Hook `UserObject` at the narrowest getter already used by Android.
@@ -315,7 +315,7 @@
 ## 10. 0173 — подпись имени в цитате удалённого
 
 286. Desktop 0173 chooses bold, link or mention for the quoted author of a deleted message.
-287. Android dependency is existing deleted-reply behavior from Android 0071.
+287. Android dependency is existing deleted-reply behavior from Android 0063.
 288. Candidate implementation anchor is `tele/helpers/DeletedReply.kt`, especially `composeQuote`.
 289. Add only the style/entity choice; do not rewrite deleted-message storage.
 290. Master `DELETED_REPLY_AUTHOR` default-off preserves current quote output.
@@ -332,7 +332,7 @@
 301. Recycled rows are irrelevant to the persisted quote, but preview of the selected style must bind correctly.
 302. Test deleted user with username, without username, deleted author and chat author.
 303. Test each style with short and truncated quote text.
-304. OFF test: exact Android 0071 output and no additional entity.
+304. OFF test: exact Android 0063 output and no additional entity.
 305. [ВОПРОС] Decide whether author style should be a separate master or a child of existing `DELETED_REPLY=quote`; default plan uses separate OFF master for safe rollout.
 
 ## 11. 0237 — история всех версий в APK
@@ -398,7 +398,7 @@
 
 ## 12. 0241 — what's new с живыми тумблерами
 
-361. 0241 depends on 0237, Android 0088 and the 0169 settings structure.
+361. 0241 depends on 0237, Android 0078 and the 0169 settings structure.
 362. Existing Android anchors are `TeleSettingsActivity(MODE_NEW)` and `TeleNewSettings`.
 363. Replace the flat «new setting ids» presentation only after the history model exists.
 364. Group rows by release/version from the local history asset.
@@ -429,7 +429,7 @@
 ## 13. 0244 — живые previews в настройках
 
 388. 0244 is the only L row and is last in the batch.
-389. Dependencies are 0208, 0209, ghost settings, Android 0025 peer IDs and 0169 settings structure.
+389. Dependencies are 0208, 0209, ghost settings, Android 0024 peer IDs and 0169 settings structure.
 390. Do not reuse real `ChatMessageCell`, `ProfileActivity` or `PhotoViewer` inside settings.
 391. Add a new `TYPE_PREVIEW` row/view to `TeleSettingsActivity` and its adapter.
 392. Preview view draws simple Android-native Canvas/TextView mock surfaces.
@@ -556,7 +556,7 @@
 501. 0265 OFF: upload date never appears.
 502. 0265 ON: equal date, four-minute, five-minute boundary and later date.
 503. 0265 ON: locale/timezone and media types remain readable.
-504. 0173 OFF: deleted reply exactly follows Android 0071.
+504. 0173 OFF: deleted reply exactly follows Android 0063.
 505. 0173 ON: bold, link and mention styles with/without username and truncation.
 506. 0237 airplane mode: open every bundled version, search, select and scroll entries.
 507. 0237 malformed/missing fixture: explanatory state, no crash and no network fallback.
@@ -599,15 +599,15 @@
 
 ## 19. Зависимости и открытые решения
 
-541. 0208 requires Android 0029 LocalNames and current account-aware name paths.
+541. 0208 requires Android 0028 LocalNames and current account-aware name paths.
 542. 0209 requires the shared 0208 codepoint table and display helper.
-543. 0189 requires Android 0025 PeerId and a verified dialog-photo pagination API.
-544. 0196 requires 0189/PeerId media formatting and Android 0025 SHOW_DC.
+543. 0189 requires Android 0024 PeerId and a verified dialog-photo pagination API.
+544. 0196 requires 0189/PeerId media formatting and Android 0024 SHOW_DC.
 545. 0265 may share 0196 viewer subtitle assembly but remains a separate S commit.
-546. 0173 requires Android 0071 DeletedReply and existing menu/send entities.
-547. 0237 requires Android 0087/0088 current changelog/new-settings infrastructure.
+546. 0173 requires Android 0063 DeletedReply and existing menu/send entities.
+547. 0237 requires Android 0077/0078 current changelog/new-settings infrastructure.
 548. 0241 requires 0237, 0088 and 0169 settings structure.
-549. 0244 requires 0208, 0209, ghost settings, Android 0025 and 0169.
+549. 0244 requires 0208, 0209, ghost settings, Android 0024 and 0169.
 550. [ВОПРОС] Confirm whether first-photo history is allowed to page up to 500 photos on mobile data.
 551. [ВОПРОС] Confirm the Android field that represents a document's upload date.
 552. [ВОПРОС] Confirm deleted-author style default and whether a separate master is wanted.

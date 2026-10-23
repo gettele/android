@@ -82,7 +82,7 @@ Follow-up не должен дублировать formatter.
 
 Использовать тот же `SHOW_SECONDS`.
 
-### Android 0051/0052 — link rewrites
+### Android 0046/0047 — link rewrites
 
 `LinkRewrites` уже читает JSON из `tele_kv`.
 
@@ -94,7 +94,7 @@ Follow-up обязан мигрировать данные при чтении.
 
 Нельзя терять enabled, random и pattern fields.
 
-### Android 0064 — punctual scheduled
+### Android 0056 — punctual scheduled
 
 `PunctualScheduled` сканирует `scheduled_messages_v2`.
 
@@ -106,7 +106,7 @@ Callback сейчас игнорирует error.
 
 Retry state должен быть account-scoped.
 
-### Android 0086 — updater
+### Android 0076 — updater
 
 `TeleUpdater` использует `tele-update-android.json`.
 
@@ -120,7 +120,7 @@ APK сейчас пишется в `.part`.
 
 Follow-up меняет только resume и network retry.
 
-### Android 0025 — peer id
+### Android 0024 — peer id
 
 `ProfileActivity` показывает `PeerId.rowText`.
 

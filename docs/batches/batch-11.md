@@ -156,7 +156,7 @@
 132. Существующий global ghost layer уже подавляет online, typing, read и contents-read; не дублировать его.
 133. Добавить `PrivacyRules.isGhosted(account, dialogId)` в самый нижний общий gate.
 134. Для ghosted chat подавлять `account.updateStatus`, typing updates, read receipts и contents receipts.
-135. Android 0023 network contents-read gate должен учитывать peer, а не только global switch.
+135. Android 0021 network contents-read gate должен учитывать peer, а не только global switch.
 136. `MessagesController` и `ConnectionsManager` call sites должны получать account явно.
 137. Не отправлять исключения на сервер и не менять Telegram privacy settings.
 138. Picker тот же, что в 0016, но отдельный storage key.

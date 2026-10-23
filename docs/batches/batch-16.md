@@ -56,7 +56,7 @@
 46. `feat: show folder icons only` — desktop 0300, effort L.
 47. Зависимости 0300: `FilterTabsView`, `DialogsActivity`, существующие folder icons и accessibility semantics.
 48. `feat: hide birthday decorations` — desktop 0279, effort S.
-49. Зависимость 0279: Android 0125 gift-button surface и birthday controller callbacks.
+49. Зависимость 0279: Android 0106 gift-button surface и birthday controller callbacks.
 50. `feat: blur profile photo background` — desktop 0299, effort M.
 51. Зависимость 0299: точная текущая `ProfileActivity.TopView` и account-scoped avatar receiver.
 52. `feat: color profile from photo` — desktop 0304, effort L.
@@ -64,7 +64,7 @@
 54. `feat: hide bubble tails` — desktop 0267, effort M.
 55. Зависимость 0267: `ChatMessageCell`, `Theme.MessageDrawable`, media/background grouping.
 56. `feat: add forwarded and reply badges` — desktop 0276, effort M.
-57. Зависимость 0276: Android 0077/0083 and existing `TeleNameBadges`.
+57. Зависимость 0276: Android 0069/0073 and existing `TeleNameBadges`.
 58. `feat: lowercase interface text` — desktop 0022/0035, effort M.
 59. Зависимость lowercase: a tested LocaleController hook and format-string policy.
 60. `feat: format dialogs title` — desktop 0010/0041, effort M.
@@ -311,7 +311,7 @@
 
 ## 0276 — бейджи в forwarded и reply headers
 
-274. Existing Android `BUBBLE_BADGES`, `TeleNameBadges.withVerified` and Android 0077/0083 are prerequisites.
+274. Existing Android `BUBBLE_BADGES`, `TeleNameBadges.withVerified` and Android 0069/0073 are prerequisites.
 275. Forward anchor: `ChatMessageCell.getForwardedName()` and `forwardedNameLayout[0|1]`.
 276. Reply anchor: `replyNameLayout` and its forwarded-name branch.
 277. Wrap only the displayed sender name, not the quote text or destination chat title.
@@ -323,7 +323,7 @@
 283. Layout updates and cell invalidation return to main thread after checking account and bound message.
 284. Recycled cells must clear old badge spans/drawables before bind.
 285. Do not show a badge for a different account after account switch.
-286. OFF means no additional badge work and exactly the current Android 0083 behavior.
+286. OFF means no additional badge work and exactly the current Android 0073 behavior.
 287. Test ordinary forward, anonymous forward, channel forward, reply to forward, reply to user and missing source peer.
 288. Test long names, RTL, large font, narrow width and media caption reply.
 289. Test badge cache refresh while a cell is visible.

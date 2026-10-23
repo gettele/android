@@ -87,7 +87,7 @@ all work happens in the telegram tree, as commits on `tele`.
 2. **build and run.** exercise the change by hand with the option on and off. off has to behave exactly like stock.
 3. **commit.**
    - a new feature is one new commit at the end of the queue: `feat: <what it does>`.
-   - a fix to a patch that isn't released yet goes into that patch's commit: `git commit --fixup <commit>`, then `git rebase -i --autosquash <UPSTREAM>`.
+   - a fix or follow-up to an existing patch goes into that patch's commit, released or not: `git commit --fixup <commit>`, then `git rebase -i --autosquash <UPSTREAM>`. keep it a separate `fix:` commit only when the autosquash conflicts with patches in between or the change spans several patches. the final tree must not change: `git diff <old tip> <new tip>` is empty.
    - one line, lowercase, imperative, no attribution.
 4. **export** into this repository:
 

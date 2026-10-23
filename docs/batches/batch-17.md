@@ -43,12 +43,12 @@
 36. Решение по 0259: альбомы остаются одним блоком.
 37. Решение по 0269: chunking по 100 сообщений.
 38. Решение по 0215: secret chats не ретраятся.
-39. Решение по 0226: зависит от уже имеющегося Android 0066.
-40. Android 0066 предоставляет `SendOrder.kt`.
-41. Android 0065 предоставляет quick replies.
-42. Android 0096 предоставляет docked media.
-43. Android 0064 предоставляет базовый `PunctualScheduled`.
-44. Android 0066 уже имеет очередь текста за media upload.
+39. Решение по 0226: зависит от уже имеющегося Android 0058.
+40. Android 0058 предоставляет `SendOrder.kt`.
+41. Android 0057 предоставляет quick replies.
+42. Android 0086 предоставляет docked media.
+43. Android 0056 предоставляет базовый `PunctualScheduled`.
+44. Android 0058 уже имеет очередь текста за media upload.
 45. Эти факты взяты из PATCHLIST и desk notes.
 46. Проверять их надо на `git show tele:<path>` перед кодированием.
 47. [INFERENCE] Номера строк в исходниках могут измениться при rebase.
@@ -314,7 +314,7 @@
 286. Не применять к Stars.
 287. Не применять к scheduled messages.
 288. Не применять в secret chats, если controller не поддерживает их.
-289. Зависимость — Android 0065.
+289. Зависимость — Android 0057.
 290. Получить quick-reply content перед отправкой.
 291. Content может быть text/photo/document.
 292. Каждый item формируется свежим `SendMessageParams`.
@@ -400,7 +400,7 @@
 
 ## 12. 0226: отпустить сообщение очереди
 
-366. Основа — `SendOrder.kt` из Android 0066.
+366. Основа — `SendOrder.kt` из Android 0058.
 367. Hook меню — `MessageMenu.kt` и `ChatActivity.fillMessageMenu`.
 368. Hook bubble — `ChatMessageCell` bind/action path.
 369. Held message должен быть видимым.

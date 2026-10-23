@@ -501,8 +501,8 @@
 
 447. База пачки 23 должна предоставить `TeleHooks.requirePassword`.
 448. База пачки 23 должна обеспечить локальный пароль и reset policy.
-449. Android 0059 `ViewAsTl` даёт полезные serialization/UI patterns.
-450. Android 0037/0085 дают existing crash report path.
+449. Android 0051 `ViewAsTl` даёт полезные serialization/UI patterns.
+450. Android 0033/0075 дают existing crash report path.
 451. Сначала принять schema source и layer policy.
 452. Затем реализовать parser tests без Android UI.
 453. Затем реализовать request bridge и redaction.

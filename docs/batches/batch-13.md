@@ -296,7 +296,7 @@
 
 269. Плановый commit: `feat: customize all tele menus`.
 270. Усилие: L.
-271. Зависит от Android 0047 hide message menu, Android 0057 reorder message menu и Android 0058 drag handles.
+271. Зависит от Android 0042 hide message menu, Android 0049 reorder message menu и Android 0050 drag handles.
 272. Также зависит от 0169 page `menus`.
 273. Desktop registry имеет ровно семь видов меню: Message, Chat, ChatRow, FolderTab, Profile, Send, Field.
 274. Android enum должен иметь семь стабильных values, не зависимых от Java option constants.
@@ -418,7 +418,7 @@
 
 379. Плановый commit: `feat: manage aliases from menus`.
 380. Усилие: S.
-381. Зависит от Android 0030 и Android 0035 (`Aliases.kt` и existing names UI).
+381. Зависит от Android 0029 и Android 0032 (`Aliases.kt` и existing names UI).
 382. `Aliases` уже валидирует alias length 32 и `[letter][letter/digit/_]`.
 383. `Aliases` уже хранит JSON per account в `tele_kv` key `username_aliases:<account>`.
 384. В menu registry добавить keys `copy_alias`, `delete_alias` только в Profile/Chat contexts.
@@ -450,7 +450,7 @@
 
 405. Плановый commit: `feat: copy downloaded file paths`.
 406. Усилие: S.
-407. Зависит от 0171, Android 0047 and Android 0057.
+407. Зависит от 0171, Android 0042 and Android 0049.
 408. Add registry key `copy_file_path` to Message menu, gate `COPY_FILE_PATH`.
 409. Add `BoolItem("copy_file_path", false)` and Menus row, default off.
 410. Проверять только downloaded local file; не показывать для cloud-only media.
@@ -493,7 +493,7 @@
 ## 0149 — view as TL inside application
 
 440. Плановый commit: `feat: view TL in app`.
-441. Усилие: S after Android 0059.
+441. Усилие: S after Android 0051.
 442. Existing `tele.helpers.ViewAsTl` is verified and gated by `TeleConfig.VIEW_AS_TL`.
 443. Existing helper fetches fresh message/peer with `ConnectionsManager.sendRequest`.
 444. Existing callbacks hop to UI with `AndroidUtilities.runOnUIThread`.
@@ -572,14 +572,14 @@
 
 509. Commit 1: `feat: regroup tele settings`; 0169, M, base for search and new settings.
 510. Commit 2: `feat: collapse tele setting suboptions`; 0170, S, depends on 0169.
-511. Commit 3: `feat: customize all tele menus`; 0171, L, depends on Android 0047/0057/0058 and 0169.
+511. Commit 3: `feat: customize all tele menus`; 0171, L, depends on Android 0042/0049/0050 and 0169.
 512. Commit 4: `feat: gate tele menu items`; 0167, S, depends on registry/runtime 0171.
-513. Commit 5: `feat: manage aliases from menus`; 0179, S, depends on Android 0030/0035 and registry.
+513. Commit 5: `feat: manage aliases from menus`; 0179, S, depends on Android 0029/0032 and registry.
 514. Commit 6: `feat: select service messages`; 0200, M, independent runtime but ship after common menu/editor.
 515. Commit 7: `feat: copy downloaded file paths`; 0255, S, depends on 0171 and message menu.
 516. Commit 8: `feat: copy sticker set owner ids`; 0266, S, depends on confirmed owner formula and menu registry.
 517. Commit 9: `feat: copy service message text`; 0295, S, depends on 0171 and service selection audit.
-518. Commit 10: `feat: view TL in app`; 0149, S, depends on Android 0059 and existing ViewAsTl.
+518. Commit 10: `feat: view TL in app`; 0149, S, depends on Android 0051 and existing ViewAsTl.
 519. Queue order is intentionally 0169 → 0170 → 0171 before all menu consumers.
 520. Do not combine 0171 with a consumer feature; fixes to an unreleased commit may be fixup.
 521. Each commit gets its own exported `patches/android/` file.

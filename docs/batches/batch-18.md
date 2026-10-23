@@ -549,8 +549,8 @@
 
 ## 13. 0146: shot в docked media
 
-506. Android 0093 создаёт shot result в `TeleShotActivity`.
-507. Android 0096 предоставляет `DockedMedia` и `DockedStore`.
+506. Android 0083 создаёт shot result в `TeleShotActivity`.
+507. Android 0086 предоставляет `DockedMedia` и `DockedStore`.
 508. 0146 должен передать shot в существующий docked store.
 509. `TeleShotActivity.send()` — главный кандидат hook.
 510. `DockedMedia` должен проверять `DOCKED_MEDIA` низкоуровнево.
@@ -567,7 +567,7 @@
 521. Recycler strip rebind должен восстановить item state.
 522. Search ID 1252 относится к sending.
 523. `[INFERENCE]` Если `TeleShotActivity` anchor назван иначе, искать метод `send` по классу.
-524. Проверить Android 0096 exported queue, не только рабочее дерево.
+524. Проверить Android 0086 exported queue, не только рабочее дерево.
 525. OFF не вызывает `DockedMedia` helper.
 526. On проверяет shot → strip → send end-to-end.
 
@@ -639,7 +639,7 @@
 584. Решение maintainer: 0210 — plain Android path, rich part n/a.
 585. Решение maintainer: 0211 снимает transcription quote запрет.
 586. Решение maintainer: 0176 — chip над полем, tap inserts.
-587. Решение maintainer: 0148 зависит от Android 0091/0092.
+587. Решение maintainer: 0148 зависит от Android 0081/0082.
 588. Решение maintainer: 0242 default reverse option only, late batch.
 589. Вопрос 1: нужен ли отдельный `quote_voice_transcription` switch?
 590. Рекомендация: нет, наследовать `multi_quote` и сохранить одну настройку.
@@ -659,7 +659,7 @@
 604. Вопрос 8: copy HTML MIME на всех Android API?
 605. Проверить `AndroidUtilities.addToClipboard` существующий overload.
 606. Вопрос 9: shot docked поддерживает scheduled media?
-607. Ответить по Android 0096 фактическим hook, не предполагать.
+607. Ответить по Android 0086 фактическим hook, не предполагать.
 608. Вопрос 10: нужна ли отдельная настройка 0146?
 609. Если docked master уже существует, можно сделать gated extension без нового item.
 610. Все unresolved items должны остаться `[INFERENCE]` в commit plan.

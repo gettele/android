@@ -70,7 +70,7 @@
    2. `feat: send silent videos as gifs` — 0242, S. Новый off-by-default switch, settings/search/export и общий video preparation hook.
    3. `feat: dock captioned stickers` — 0236, M. Выполнять только после Android 0175 и подтверждения/стабилизации 0096 API; расширяет `DockedMedia` и picker callbacks, не переписывает queue.
 38. [INFERENCE] Если мейнтейнер требует строгого порядка строк PATCHLIST, поменять 0230 на третью позицию, но 0236 всё равно нельзя начинать до 0175/0096. Каждый commit должен собираться поверх предыдущего и экспортироваться отдельно.
-39. Рекомендуемые subjects — план, не готовый commit: перед commit сверить с фактическим diff и лимитом 5 слов. Не делать fixup опубликованных patch-файлов; не менять PATCHLIST status до реальной стадии `wip/queued/built/done`.
+39. Рекомендуемые subjects — план, не готовый commit: перед commit сверить с фактическим diff и лимитом 5 слов. Фикс уже экспортированного patch-файла вливать в его commit через fixup (см. `docs/development.md`); не менять PATCHLIST status до реальной стадии `wip/queued/built/done`.
 
 ## Планируемые строки `features.md`
 
