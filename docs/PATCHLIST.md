@@ -265,7 +265,7 @@
 | 0171 (доработка) | полировка редактора меню | built | `0152-fix-polish-the-tele-menu-editor.patch`; подавление ложного tap/long-press после drag, переходы по подменю и сериализация вложенных пунктов |
 | 0167 | пункты меню по включённой фиче | built | `0144-feat-gate-tele-menu-items.patch`; пункты меню сообщений (message id, TL, emoji id, shot, mark viewed) не показываются, пока их фича выключена, в редакторе они серые |
 | 0179 | copy/delete алиаса из меню | built | `0148-feat-manage-aliases-from-menus.patch`; пункты «Copy alias» и «Delete alias» в меню сообщений, когда в сообщении есть известный алиас, удаление с подтверждением |
-| 0200 | выделять сервисные сообщения | built | `0150-feat-select-service-messages.patch`; default off; выбор доступен только для сервисных сообщений, которые можно удалить; скрывает copy/reply/forward/save actions |
+| 0200 | выделять сервисные сообщения | built | `0150-feat-select-service-messages.patch`; default on; выбор доступен только для сервисных сообщений, которые можно удалить; скрывает copy/reply/forward/save actions |
 | 0200 (доработка) | выбор сервисных сообщений во всех списках | built | `0154-fix-select-service-messages-across-accounts.patch`; проверка сервисных сообщений проходит по всем account-scoped selection maps, а не только по первому |
 | 0200 (доработка) | выбор сервисных сообщений включён по умолчанию | built | `0158-fix-enable-service-message-selection.patch`; `select_service_messages` теперь имеет default `true` |
 | 0255 | копировать путь файла | built | `0147-feat-copy-downloaded-file-paths.patch`; пункт меню сообщений только для скачанных файлов, путь берётся через FileLoader, по умолчанию выключен |
