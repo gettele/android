@@ -274,7 +274,7 @@
 |---|---|---|---|
 | 0151 | какие удалённые хранить | built | `0133-feat-choose-deleted-messages-to-keep`; `DeletedMessages.shouldArchive`; S; зависит от android 0060; боты и избранное |
 | 0219 | откат неудавшегося удаления | built | `0135-fix-restore-failed-deletions`; `MessagesController.deleteMessages`, `DeletedMessages.kt`; M; зависит от android 0060; различать FLOOD/сеть и жёсткие ошибки |
-| 0182 | хранение удалённых после рестарта | built | `0134-feat-deleted-messages-retention`; `DeletedMessages`, `MessageHistory`; S; зависит от android 0060, android 0061, 0151; реш.: 0182 срок 1/7/30/навсегда; остаток: срок + защита kept-медиа |
+| 0182 | хранение удалённых после рестарта | built | `0134-feat-deleted-messages-retention` + `0143-fix-protect-all-kept-media`; `DeletedMessages`, `MessageHistory`; S; зависит от android 0060, android 0061, 0151; реш.: 0182 срок 1/7/30/навсегда; остаток: срок + защита kept-медиа |
 | 0283 | сохранять удалённые чаты и топики | built | `0142-feat-keep-deleted-chats-and-topics`; `MessagesController`, `TopicsController`, `DialogCell`; L; зависит от 0019, 0151, 0256, android 0060, 0182; реш.: 0283 как desktop; все пути удаления |
 | 0321 | восстановить пост канала из форварда | built | `0136-feat-recover-posts-from-forwards`; `DeletedMessages.kt`, `ChatMessageCell`; M; зависит от 0019, android 0060; маркер в fork-таблице |
 | 0301 | удалить все мои сообщения из чата | built | `0137-feat-remove-all-my-messages`; `RemoveMine.kt`, `ChatActivity`, `DialogsActivity`, `TopicsFragment`; M; зависит от 0019, android 0060; FLOOD_WAIT, пропуск kept deleted |
