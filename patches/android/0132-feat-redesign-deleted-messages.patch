@@ -1,0 +1,709 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 20:42:40 +0300
+Subject: [PATCH 132/132] feat: redesign deleted messages
+
+---
+ .../main/java/tele/helpers/DeletedMessages.kt |  32 +-
+ .../settings/TeleDeletedMessagesActivity.kt   | 503 ++++++++++++------
+ .../src/main/res/values/strings_tele.xml      |   4 +
+ 3 files changed, 375 insertions(+), 164 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index 56d0ddef9..867cf3886 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -23,6 +23,7 @@ object DeletedMessages {
+     @JvmStatic
+     fun keepInChat(account: Int, message: TLRPC.Message, userInitiated: Boolean): Boolean {
+         if (message.id <= 0) return false
++        if (isPurging(account, message.dialog_id, message.id)) return false
+         if (!shouldArchive(account, message.out, userInitiated, message.dialog_id)) return false
+         if (message.action != null && message.action !is TLRPC.TL_messageActionEmpty) return false
+         val media = message.media
+@@ -33,6 +34,7 @@ object DeletedMessages {
+     @JvmStatic
+     fun archiveMessage(account: Int, message: TLRPC.Message, userInitiated: Boolean = false) {
+         if (message.id <= 0 || !shouldArchive(account, message.out, userInitiated, message.dialog_id)) return
++        if (isPurging(account, message.dialog_id, message.id)) return
+         val stream = SerializedData(message.getObjectSize())
+         try {
+             message.serializeToStream(stream)
+@@ -108,8 +110,11 @@ object DeletedMessages {
+         return if (keptAny) result else null
+     }
+ 
++    /** A kept message with the time it was deleted. */
++    class Entry(@JvmField val message: TLRPC.Message, @JvmField val deletedAt: Int)
++
+     @JvmStatic
+-    fun getAll(account: Int, dialogId: Long? = null): List<TLRPC.Message> {
++    fun entries(account: Int, dialogId: Long? = null): List<Entry> {
+         return TeleDatabaseHelper.getDeletedMessages(account, dialogId).mapNotNull { row ->
+             runCatching {
+                 val stream = SerializedData(row.data)
+@@ -118,7 +123,7 @@ object DeletedMessages {
+                     message.readAttachPath(stream, UserConfig.getInstance(account).clientUserId)
+                     message.dialog_id = row.dialogId
+                     message.id = row.messageId
+-                    message
++                    Entry(message, row.deletedAt)
+                 } finally {
+                     stream.cleanup()
+                 }
+@@ -126,6 +131,9 @@ object DeletedMessages {
+         }
+     }
+ 
++    @JvmStatic
++    fun getAll(account: Int, dialogId: Long? = null): List<TLRPC.Message> = entries(account, dialogId).map { it.message }
++
+     @JvmStatic
+     fun getMessage(account: Int, dialogId: Long, messageId: Int): TLRPC.Message? {
+         val row = TeleDatabaseHelper.getDeletedMessage(account, dialogId, messageId) ?: return null
+@@ -149,6 +157,26 @@ object DeletedMessages {
+         TeleDatabaseHelper.deleteDeletedMessages(account, dialogId)
+     }
+ 
++    // the messages being purged: their local copies are deleted for good, not archived again
++    private val purging = ConcurrentHashMap.newKeySet<String>()
++
++    private fun purgeKey(account: Int, dialogId: Long, messageId: Int) = "$account:$dialogId:$messageId"
++
++    private fun isPurging(account: Int, dialogId: Long, messageId: Int) = purging.contains(purgeKey(account, dialogId, messageId))
++
++    /** Forgets kept messages: the archive rows and the copies left in the chat. */
++    @JvmStatic
++    fun purge(account: Int, dialogId: Long, ids: List<Int>) {
++        if (ids.isEmpty()) return
++        val keys = ids.map { purgeKey(account, dialogId, it) }
++        purging.addAll(keys)
++        keptInChat[account]?.get(dialogId)?.removeAll(ids.toSet())
++        for (id in ids) TeleDatabaseHelper.removeDeletedMessage(account, dialogId, id)
++        org.telegram.messenger.MessagesController.getInstance(account).deleteMessagesFromUser(ArrayList(ids), null, null, dialogId, 0, false, 0)
++        // the storage and the open chat see the deletion later, the mark has to outlive both
++        AndroidUtilities.runOnUIThread({ purging.removeAll(keys.toSet()) }, 60_000)
++    }
++
+     @JvmStatic
+     fun fadeMarker(): Boolean = TeleConfig.DELETED_MARKER.value == "fade"
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+index a081c49ad..a8a7611dc 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+@@ -1,241 +1,421 @@
+ package tele.ui.settings
+ 
+ import android.content.Context
+-import android.graphics.Canvas
+-import android.graphics.Typeface
++import android.os.Bundle
++import android.text.TextUtils
++import android.util.TypedValue
+ import android.view.Gravity
+ import android.view.View
+ import android.view.ViewGroup
+ import android.widget.FrameLayout
+-import android.widget.LinearLayout
+ import android.widget.TextView
+ import androidx.recyclerview.widget.LinearLayoutManager
+ import androidx.recyclerview.widget.RecyclerView
+ import org.telegram.messenger.AndroidUtilities
+-import org.telegram.messenger.ChatMessageSharedResources
+-import org.telegram.messenger.ContactsController
++import org.telegram.messenger.ChatObject
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MessageObject
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.messenger.Utilities
+ import org.telegram.tgnet.TLRPC
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Cells.ChatMessageCell
+-import org.telegram.ui.Components.AvatarDrawable
+-import org.telegram.ui.Components.BackupImageView
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
+ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.RecyclerListView
+-import tele.db.TeleDatabaseHelper
++import org.telegram.ui.Components.SizeNotifierFrameLayout
+ import tele.helpers.DeletedMessages
++import tele.helpers.ShotEntry
++import tele.helpers.ShotOptions
++import tele.ui.ShotColumn
++import tele.ui.ShotFlags
++import java.util.Calendar
++import kotlin.math.abs
+ 
++/**
++ * The kept deleted messages: the chats like the chat list, a chat as its bubbles in the order they were sent,
++ * runs of one sender together like in the chat.
++ */
+ class TeleDeletedMessagesActivity : BaseFragment() {
+     private val account get() = UserConfig.selectedAccount
+     private val dialogId get() = arguments?.getLong(ARG_DIALOG_ID) ?: 0L
+-    private var dialogs: List<TeleDatabaseHelper.ArchivedDialog> = emptyList()
+-    private var messages: List<TLRPC.Message> = emptyList()
+-    private var adapter: Adapter? = null
+-    private var sharedResources: ChatMessageSharedResources? = null
+-
+     private val isDialogMode get() = dialogId != 0L
+ 
+-    private fun reload() {
+-        if (isDialogMode) {
+-            messages = DeletedMessages.getAll(account, dialogId)
+-        } else {
+-            dialogs = DeletedMessages.getDialogs(account)
+-        }
+-        adapter?.notifyDataSetChanged()
++    private class Chat(val dialogId: Long, val count: Int, val lastDeletedAt: Int, val preview: CharSequence)
++
++    private sealed class Row {
++        class Label(val text: String) : Row()
++        class Run(val entries: List<ShotEntry>, val deleted: Map<Int, Int>) : Row()
+     }
+ 
++    private var chats: List<Chat> = emptyList()
++    private var rows: List<Row> = emptyList()
++    private var adapter: RecyclerView.Adapter<*>? = null
++    private var listView: RecyclerListView? = null
++    private var generation = 0
++
+     override fun createView(context: Context): View {
+         actionBar.setBackButtonImage(R.drawable.ic_ab_back)
+         actionBar.setAllowOverlayTitle(true)
+-        actionBar.setTitle(if (isDialogMode) peerTitle(dialogId) else LocaleController.getString(R.string.TeleDeletedMessages))
+         actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
+             override fun onItemClick(id: Int) {
+-                if (id == -1) finishFragment()
+-                else if (id == MENU_CLEAR) confirmClear()
++                if (id == -1) finishFragment() else if (id == MENU_CLEAR) confirmClear()
+             }
+         })
+         actionBar.createMenu().addItem(MENU_CLEAR, R.drawable.msg_delete)
+-
+-        reload()
+-        val container = FrameLayout(context)
+-        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+-        fragmentView = container
+-        val list = ChatList(context)
+-        val layoutManager = LinearLayoutManager(context)
++        val list = RecyclerListView(context)
++        list.isVerticalScrollBarEnabled = false
++        listView = list
+         if (isDialogMode) {
+-            layoutManager.stackFromEnd = true
+-        }
+-        list.setLayoutManager(layoutManager)
+-        list.setVerticalScrollBarEnabled(false)
+-        adapter = Adapter(context)
+-        list.adapter = adapter
+-        list.setOnItemClickListener { _, position ->
+-            if (!isDialogMode) {
+-                dialogs.getOrNull(position)?.let { presentFragment(ofDialog(it.dialogId)) }
++            actionBar.setTitle(TeleDraftsActivity.chatTitle(account, dialogId, 0))
++            val root = SizeNotifierFrameLayout(context)
++            root.setBackgroundImage(Theme.getCachedWallpaperNonBlocking(), Theme.isWallpaperMotion())
++            actionBar.setAddToContainer(false)
++            actionBar.setCastShadows(false)
++            fragmentView = root
++            list.layoutManager = LinearLayoutManager(context).apply { stackFromEnd = true }
++            val runs = RunAdapter(context)
++            adapter = runs
++            list.adapter = runs
++            list.setOnItemClickListener(object : RecyclerListView.OnItemClickListenerExtended {
++                override fun onItemClick(view: View, position: Int, x: Float, y: Float) {
++                    val run = rows.getOrNull(position) as? Row.Run ?: return
++                    val message = messageAt(view, y) ?: return
++                    showActions(message, run.deleted[message.id] ?: 0)
++                }
++            })
++            root.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++            list.setPadding(0, AndroidUtilities.statusBarHeight + ActionBar.getCurrentActionBarHeight(), 0, AndroidUtilities.dp(8f))
++            list.clipToPadding = false
++            root.addView(actionBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
++        } else {
++            actionBar.setTitle(LocaleController.getString(R.string.TeleDeletedMessages))
++            val container = FrameLayout(context)
++            container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++            fragmentView = container
++            list.layoutManager = LinearLayoutManager(context)
++            val overview = ChatAdapter(context)
++            adapter = overview
++            list.adapter = overview
++            list.setOnItemClickListener { _, position ->
++                chats.getOrNull(position)?.let { presentFragment(ofDialog(it.dialogId)) }
++            }
++            list.setOnItemLongClickListener { _, position ->
++                chats.getOrNull(position)?.let { confirmClearChat(it.dialogId) }
++                true
+             }
++            container.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+         }
+-        container.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+-        return container
++        return fragmentView
++    }
++
++    override fun onResume() {
++        super.onResume()
++        reload()
+     }
+ 
+-    private inner class ChatList(context: Context) : RecyclerListView(context) {
+-        override fun dispatchDraw(canvas: Canvas) {
+-            for (i in 0 until childCount) {
+-                val child = getChildAt(i)
+-                if (child is ChatMessageCell) {
+-                    child.setParentViewSize(measuredWidth, measuredHeight)
++    /** Off the main thread: a big archive deserializes and lays out a lot of messages. */
++    private fun reload() {
++        val current = ++generation
++        val account = account
++        val dialogId = dialogId
++        Utilities.globalQueue.postRunnable {
++            if (dialogId != 0L) {
++                val result = buildRows(account, dialogId)
++                AndroidUtilities.runOnUIThread {
++                    if (current != generation) return@runOnUIThread
++                    rows = result
++                    val count = result.sumOf { (it as? Row.Run)?.deleted?.size ?: 0 }
++                    actionBar?.setSubtitle(if (count == 1) "1 deleted message" else "$count deleted messages")
++                    adapter?.notifyDataSetChanged()
++                    listView?.scrollToPosition(maxOf(0, result.size - 1))
++                }
++            } else {
++                val result = DeletedMessages.getDialogs(account).map { dialog ->
++                    val latest = DeletedMessages.entries(account, dialog.dialogId).firstOrNull()?.message
++                    Chat(dialog.dialogId, dialog.count, dialog.lastDeletedAt, latest?.let { preview(account, it) } ?: "")
++                }
++                AndroidUtilities.runOnUIThread {
++                    if (current != generation) return@runOnUIThread
++                    chats = result
++                    adapter?.notifyDataSetChanged()
+                 }
+             }
+-            super.dispatchDraw(canvas)
+         }
+     }
+ 
+-    override fun onResume() {
+-        super.onResume()
+-        reload()
++    // the last line of a chat row: "Name: text" in groups, like the chat list
++    private fun preview(account: Int, message: TLRPC.Message): CharSequence {
++        val obj = MessageObject(account, message, false, false)
++        val text = (obj.caption?.takeIf { it.isNotEmpty() } ?: obj.messageText ?: "").toString().replace('\n', ' ')
++        // a channel speaks for itself, only groups name the sender
++        val chat = if (message.dialog_id < 0) MessagesController.getInstance(account).getChat(-message.dialog_id) else null
++        if (message.dialog_id > 0 || ChatObject.isChannelAndNotMegaGroup(chat)) return text
++        val sender = senderName(account, message)
++        return if (sender.isEmpty()) text else "$sender: $text"
+     }
+ 
+-    private fun confirmClear() {
+-        if (isDialogMode) {
+-            if (messages.isEmpty()) return
+-            val ids = ArrayList<Int>(messages.size)
+-            for (message in messages) ids.add(message.id)
+-            clearDialog(dialogId, ids)
+-            return
++    private fun senderName(account: Int, message: TLRPC.Message): String {
++        if (message.out) return LocaleController.getString(R.string.FromYou)
++        val controller = MessagesController.getInstance(account)
++        val from = message.from_id ?: return ""
++        return when {
++            from.user_id != 0L -> controller.getUser(from.user_id)?.let { UserObject.getFirstName(it) } ?: ""
++            from.channel_id != 0L -> controller.getChat(from.channel_id)?.title ?: ""
++            from.chat_id != 0L -> controller.getChat(from.chat_id)?.title ?: ""
++            else -> ""
+         }
+-        if (dialogs.isEmpty()) return
+-        for (dialog in dialogs) {
+-            val ids = ArrayList<Int>()
+-            for (message in DeletedMessages.getAll(account, dialog.dialogId)) ids.add(message.id)
+-            clearDialog(dialog.dialogId, ids)
++    }
++
++    private fun senderKey(message: TLRPC.Message): Long {
++        val from = message.from_id ?: return if (message.out) 1L else 0L
++        return when {
++            from.user_id != 0L -> from.user_id
++            from.channel_id != 0L -> -from.channel_id
++            else -> -from.chat_id
+         }
+     }
+ 
+-    private fun clearDialog(targetDialogId: Long, ids: ArrayList<Int>) {
+-        DeletedMessages.deleteAll(account, targetDialogId)
+-        if (ids.isNotEmpty()) {
+-            MessagesController.getInstance(account).deleteMessagesFromUser(ids, null, null, targetDialogId, 0, false, 0)
++    private fun dayOf(date: Int): Int {
++        val calendar = Calendar.getInstance()
++        calendar.timeInMillis = date * 1000L
++        return calendar.get(Calendar.YEAR) * 1000 + calendar.get(Calendar.DAY_OF_YEAR)
++    }
++
++    /** The chat in the order it was written: a date label per day, one column per run of a sender. */
++    private fun buildRows(account: Int, dialogId: Long): List<Row> {
++        val entries = DeletedMessages.entries(account, dialogId).sortedWith(compareBy({ it.message.date }, { it.message.id }))
++        val result = ArrayList<Row>()
++        var day = -1
++        var run = ArrayList<DeletedMessages.Entry>()
++        fun flush() {
++            if (run.isEmpty()) return
++            result.add(Row.Run(entriesOf(account, run), run.associate { it.message.id to it.deletedAt }))
++            run = ArrayList()
+         }
+-        reload()
++        for (entry in entries) {
++            val message = entry.message
++            val messageDay = dayOf(message.date)
++            if (messageDay != day) {
++                flush()
++                day = messageDay
++                result.add(Row.Label(LocaleController.formatDateChat(message.date.toLong())))
++            }
++            val last = run.lastOrNull()?.message
++            val sameAlbum = last != null && last.grouped_id != 0L && last.grouped_id == message.grouped_id
++            val sameRun = last != null && senderKey(last) == senderKey(message) && abs(message.date - last.date) <= RUN_SECONDS && run.size < RUN_LIMIT
++            if (!sameAlbum && !sameRun) flush()
++            run.add(entry)
++        }
++        flush()
++        if (result.isEmpty()) result.add(Row.Label(LocaleController.getString(R.string.TeleDeletedHistoryEmpty)))
++        return result
+     }
+ 
+-    private fun peerTitle(id: Long): String {
+-        val controller = MessagesController.getInstance(account)
+-        if (id > 0) {
+-            val user = controller.getUser(id)
+-            if (user != null) return ContactsController.formatName(user.first_name, user.last_name)
+-        } else if (id < 0) {
+-            val chat = controller.getChat(-id)
+-            if (chat != null) return chat.title
++    // an album of the run is laid out as one, like in the chat
++    private fun entriesOf(account: Int, run: List<DeletedMessages.Entry>): List<ShotEntry> {
++        val objects = run.map { MessageObject(account, it.message, true, true) }
++        val groups = HashMap<Long, MessageObject.GroupedMessages>()
++        for (obj in objects) {
++            val id = obj.messageOwner.grouped_id
++            if (id == 0L) continue
++            groups.getOrPut(id) { MessageObject.GroupedMessages().also { it.groupId = id } }.messages.add(obj)
++        }
++        groups.values.forEach { if (it.messages.size > 1) it.calculate() }
++        return objects.map { obj ->
++            val group = groups[obj.messageOwner.grouped_id]?.takeIf { it.messages.size > 1 }
++            ShotEntry(obj, group)
+         }
+-        return "ID $id"
+     }
+ 
+-    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
+-        override fun getItemCount(): Int = if (isDialogMode) maxOf(messages.size * 2, 1) else maxOf(dialogs.size, 1)
+-        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = !isDialogMode
++    private fun messageAt(view: View, y: Float): TLRPC.Message? {
++        val column = (view as? ViewGroup)?.getChildAt(0) as? ViewGroup ?: return null
++        for (i in 0 until column.childCount) {
++            val cell = column.getChildAt(i) as? ChatMessageCell ?: continue
++            if (y >= cell.top && y < cell.bottom) return cell.messageObject?.messageOwner
++        }
++        return null
++    }
+ 
+-        override fun getItemViewType(position: Int): Int {
+-            return if (isDialogMode) {
+-                if (messages.isEmpty()) TYPE_EMPTY else if (position % 2 == 0) TYPE_LABEL else TYPE_MESSAGE
++    private fun showActions(message: TLRPC.Message, deletedAt: Int) {
++        val activity = parentActivity ?: return
++        val labels = ArrayList<String>()
++        val actions = ArrayList<() -> Unit>()
++        val obj = MessageObject(account, message, false, false)
++        val text = (obj.caption?.takeIf { it.isNotEmpty() } ?: if (obj.isMediaEmpty) obj.messageText else null)?.toString()
++        if (!text.isNullOrEmpty()) {
++            labels.add(LocaleController.getString(R.string.Copy))
++            actions.add {
++                AndroidUtilities.addToClipboard(text)
++                BulletinFactory.of(this).createCopyBulletin(LocaleController.getString(R.string.TextCopied)).show()
++            }
++        }
++        labels.add(LocaleController.getString(R.string.TeleDeletedShowInChat))
++        actions.add { openInChat(message) }
++        labels.add(LocaleController.getString(R.string.Delete))
++        actions.add {
++            // an album goes away whole, like it was deleted
++            val ids = if (message.grouped_id != 0L) {
++                rows.flatMap { (it as? Row.Run)?.entries.orEmpty() }.map { it.message.messageOwner }.filter { it.grouped_id == message.grouped_id }.map { it.id }
+             } else {
+-                if (dialogs.isEmpty()) TYPE_EMPTY else TYPE_DIALOG
++                listOf(message.id)
++            }
++            DeletedMessages.purge(account, dialogId, ids)
++            reload()
++        }
++        val title = if (deletedAt > 0) LocaleController.formatString(R.string.TeleDeletedAt, LocaleController.formatDateChat(deletedAt.toLong()) + ", " + LocaleController.getInstance().formatterDay.format(deletedAt * 1000L)) else null
++        val dialog = AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(title)
++            .setItems(labels.toTypedArray()) { _, which -> actions[which]() }
++            .create()
++        showDialog(dialog)
++        dialog.setItemColor(labels.size - 1, Theme.getColor(Theme.key_text_RedBold), Theme.getColor(Theme.key_text_RedRegular))
++    }
++
++    private fun openInChat(message: TLRPC.Message) {
++        val args = Bundle()
++        if (dialogId < 0) args.putLong("chat_id", -dialogId) else args.putLong("user_id", dialogId)
++        args.putInt("message_id", message.id)
++        presentFragment(ChatActivity(args))
++    }
++
++    private fun confirmClearChat(target: Long) {
++        val activity = parentActivity ?: return
++        AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(TeleDraftsActivity.chatTitle(account, target, 0))
++            .setMessage(LocaleController.getString(R.string.TeleDeletedClearChat))
++            .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
++                DeletedMessages.purge(account, target, DeletedMessages.entries(account, target).map { it.message.id })
++                reload()
+             }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun confirmClear() {
++        if (isDialogMode) {
++            confirmClearChat(dialogId)
++            return
+         }
++        val activity = parentActivity ?: return
++        if (chats.isEmpty()) return
++        AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(LocaleController.getString(R.string.TeleDeletedMessages))
++            .setMessage(LocaleController.getString(R.string.TeleDeletedClearAll))
++            .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
++                for (chat in chats) DeletedMessages.purge(account, chat.dialogId, DeletedMessages.entries(account, chat.dialogId).map { it.message.id })
++                reload()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun flags(): ShotFlags {
++        val chat = if (dialogId < 0) MessagesController.getInstance(account).getChat(-dialogId) else null
++        val megagroup = chat != null && ChatObject.isChannel(chat) && chat.megagroup
++        val user = if (dialogId > 0) MessagesController.getInstance(account).getUser(dialogId) else null
++        return ShotFlags(
++            isChat = chat != null && (megagroup || !ChatObject.isChannel(chat)),
++            isBot = user?.bot == true,
++            isBotForum = false,
++            isMegagroup = megagroup,
++            isForum = ChatObject.isForum(chat),
++            isMonoForum = ChatObject.isMonoForum(chat),
++            isSavedChat = false,
++            isRepliesChat = false,
++            hasDiscussion = chat != null && ChatObject.isChannel(chat) && chat.has_link && !megagroup,
++            senderIsChat = chat != null,
++            senderIsSelfOrReplies = user != null && UserObject.isUserSelf(user)
++        )
++    }
++
++    private inner class RunAdapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        private val flags by lazy { flags() }
++
++        override fun getItemCount(): Int = rows.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = holder.itemViewType == TYPE_RUN
++
++        override fun getItemViewType(position: Int): Int = if (rows[position] is Row.Run) TYPE_RUN else TYPE_LABEL
+ 
+         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+-            val view: View = when (viewType) {
+-                TYPE_EMPTY -> TextView(context).apply {
+-                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
+-                    textSize = 14f
+-                    setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(12f), AndroidUtilities.dp(16f), AndroidUtilities.dp(4f))
+-                }
+-                TYPE_LABEL -> TextView(context).apply {
+-                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
+-                    textSize = 13f
+-                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+-                    setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(12f), AndroidUtilities.dp(16f), AndroidUtilities.dp(4f))
+-                }
+-                TYPE_MESSAGE -> ChatMessageCell(context, account, false, sharedResources ?: ChatMessageSharedResources(context).also { sharedResources = it }, resourceProvider)
+-                else -> LinearLayout(context).apply {
+-                    orientation = LinearLayout.HORIZONTAL
+-                    gravity = Gravity.CENTER_VERTICAL
+-                    setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
+-                    val avatar = BackupImageView(context).apply { tag = AVATAR_TAG }
+-                    addView(avatar, LinearLayout.LayoutParams(AndroidUtilities.dp(48f), AndroidUtilities.dp(48f)).apply {
+-                        leftMargin = AndroidUtilities.dp(12f)
+-                        topMargin = AndroidUtilities.dp(8f)
+-                        bottomMargin = AndroidUtilities.dp(8f)
+-                    })
+-                    val textColumn = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+-                    addView(textColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+-                        leftMargin = AndroidUtilities.dp(12f)
+-                        rightMargin = AndroidUtilities.dp(16f)
+-                    })
+-                    textColumn.addView(TextView(context).apply {
+-                        tag = TITLE_TAG
+-                        setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+-                        textSize = 16f
+-                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+-                    textColumn.addView(TextView(context).apply {
+-                        tag = SUBTITLE_TAG
+-                        setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
+-                        textSize = 13f
+-                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++            val view: View = if (viewType == TYPE_LABEL) {
++                FrameLayout(context).apply {
++                    val label = TextView(context)
++                    label.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++                    label.typeface = AndroidUtilities.bold()
++                    label.setTextColor(Theme.getColor(Theme.key_chat_serviceText, resourceProvider))
++                    label.gravity = Gravity.CENTER
++                    label.maxLines = 2
++                    label.ellipsize = TextUtils.TruncateAt.END
++                    label.setPadding(AndroidUtilities.dp(10f), AndroidUtilities.dp(4f), AndroidUtilities.dp(10f), AndroidUtilities.dp(4f))
++                    label.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(13f), Theme.getColor(Theme.key_chat_serviceBackground, resourceProvider))
++                    addView(label, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER, 24f, 10f, 24f, 6f))
+                 }
++            } else {
++                FrameLayout(context)
+             }
+             view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+             return RecyclerListView.Holder(view)
+         }
+ 
+         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+-            when (getItemViewType(position)) {
+-                TYPE_EMPTY -> (holder.itemView as TextView).text = LocaleController.getString(R.string.TeleDeletedHistoryEmpty)
+-                TYPE_DIALOG -> {
+-                    val dialog = dialogs[position]
+-                    val avatar = holder.itemView.findViewWithTag<BackupImageView>(AVATAR_TAG)
+-                    val controller = MessagesController.getInstance(account)
+-                    val user = controller.getUser(dialog.dialogId)
+-                    val chat = controller.getChat(-dialog.dialogId)
+-                    if (user != null) {
+-                        val avatarDrawable = AvatarDrawable(user)
+-                        avatar.setForUserOrChat(user, avatarDrawable)
+-                    } else if (chat != null) {
+-                        val avatarDrawable = AvatarDrawable(chat)
+-                        avatar.setForUserOrChat(chat, avatarDrawable)
+-                    }
+-                    holder.itemView.findViewWithTag<TextView>(TITLE_TAG).text = peerTitle(dialog.dialogId)
+-                    val count = dialog.count
+-                    val preview = if (count == 1) "1 deleted message" else "$count deleted messages"
+-                    holder.itemView.findViewWithTag<TextView>(SUBTITLE_TAG).text = "$preview · ${LocaleController.formatDateChat(dialog.lastDeletedAt.toLong())}"
+-                }
+-                TYPE_LABEL -> {
+-                    val message = messages[position / 2]
+-                    (holder.itemView as TextView).text = "${senderTitle(message)} · ${LocaleController.formatDateChat(message.date.toLong())}"
+-                }
+-                else -> {
+-                    val message = messages[position / 2]
+-                    val messageObject = MessageObject(account, message, true, false)
+-                    (holder.itemView as ChatMessageCell).setMessageObject(messageObject, null, false, false, true, true)
++            when (val row = rows[position]) {
++                is Row.Label -> ((holder.itemView as FrameLayout).getChildAt(0) as TextView).text = row.text
++                is Row.Run -> {
++                    val frame = holder.itemView as FrameLayout
++                    frame.removeAllViews()
++                    val column = ShotColumn(context, account, resourceProvider, flags)
++                    column.bind(row.entries, ShotOptions(hidden = 0))
++                    frame.addView(column, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
+                 }
+             }
+         }
+     }
+ 
+-    private fun senderTitle(message: TLRPC.Message): String {
+-        val senderId = message.from_id?.user_id ?: 0L
+-        if (senderId != 0L) {
+-            val user = MessagesController.getInstance(account).getUser(senderId)
+-            if (user != null) return ContactsController.formatName(user.first_name, user.last_name)
++    private inner class ChatAdapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        override fun getItemCount(): Int = maxOf(chats.size, 1)
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = chats.isNotEmpty()
++
++        override fun getItemViewType(position: Int): Int = if (chats.isEmpty()) TYPE_EMPTY else TYPE_CHAT
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = if (viewType == TYPE_EMPTY) {
++                TextView(context).apply {
++                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++                    setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++                    gravity = Gravity.CENTER
++                    setPadding(AndroidUtilities.dp(32f), AndroidUtilities.dp(48f), AndroidUtilities.dp(32f), AndroidUtilities.dp(16f))
++                }
++            } else {
++                TeleChatRow(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            if (getItemViewType(position) == TYPE_EMPTY) {
++                (holder.itemView as TextView).text = LocaleController.getString(R.string.TeleDeletedHistoryEmpty)
++                return
++            }
++            val chat = chats[position]
++            val row = holder.itemView as TeleChatRow
++            row.setPeer(account, chat.dialogId)
++            row.name.text = TeleDraftsActivity.chatTitle(account, chat.dialogId, 0)
++            row.time.text = LocaleController.stringForMessageListDate(chat.lastDeletedAt.toLong())
++            row.preview.text = chat.preview
++            row.secondary.text = chat.count.toString()
++            row.secondary.visibility = View.VISIBLE
++            row.counter.visibility = View.GONE
+         }
+-        return peerTitle(message.peer_id?.user_id ?: 0L)
+     }
+ 
+     companion object {
+@@ -243,16 +423,15 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+         private const val ARG_DIALOG_ID = "dialog_id"
+         private const val MENU_CLEAR = 1
+         private const val TYPE_EMPTY = 0
+-        private const val TYPE_DIALOG = 1
++        private const val TYPE_CHAT = 1
+         private const val TYPE_LABEL = 2
+-        private const val TYPE_MESSAGE = 3
+-        private const val AVATAR_TAG = 4
+-        private const val TITLE_TAG = 5
+-        private const val SUBTITLE_TAG = 6
++        private const val TYPE_RUN = 3
++        private const val RUN_SECONDS = 5 * 60
++        private const val RUN_LIMIT = 30
+ 
+         @JvmStatic
+         fun ofDialog(dialogId: Long): TeleDeletedMessagesActivity = TeleDeletedMessagesActivity().apply {
+-            arguments = android.os.Bundle().apply { putLong(ARG_DIALOG_ID, dialogId) }
++            arguments = Bundle().apply { putLong(ARG_DIALOG_ID, dialogId) }
+         }
+     }
+ }
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 8ac45907d..f06d841ae 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -22,6 +22,10 @@
+     <string name="TeleDeletedMarker">deleted</string>
+     <string name="TeleDeletedMessage">Deleted message</string>
+     <string name="TeleDeletedCantForward">The message was deleted and can\'t be forwarded.</string>
++    <string name="TeleDeletedShowInChat">Show in chat</string>
++    <string name="TeleDeletedAt">Deleted %1$s</string>
++    <string name="TeleDeletedClearChat">Forget the deleted messages of this chat? They also leave the chat itself.</string>
++    <string name="TeleDeletedClearAll">Forget all the deleted messages? They also leave the chats themselves.</string>
+ 
+     <string name="TeleEditHistory">Edit history</string>
+     <string name="TeleNoEditHistory">No edit history</string>

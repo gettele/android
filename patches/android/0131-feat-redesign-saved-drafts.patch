@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Fri, 23 Oct 2026 17:21:05 +0300
-Subject: [PATCH] feat: redesign saved drafts
+Subject: [PATCH 131/132] feat: redesign saved drafts
 
 ---
  .../messenger/MediaDataController.java        |   3 +
@@ -17,17 +17,19 @@ Subject: [PATCH] feat: redesign saved drafts
  .../src/main/java/tele/helpers/SavedDrafts.kt | 221 +++++-
  .../src/main/java/tele/ui/TeleDockedStrip.kt  |   2 +
  .../src/main/java/tele/ui/TeleDraftEditBar.kt | 108 +++
- .../tele/ui/settings/TeleDraftsActivity.kt    | 257 ++++---
+ .../main/java/tele/ui/settings/TeleChatRow.kt |  95 +++
+ .../tele/ui/settings/TeleDraftsActivity.kt    | 189 ++---
  .../ui/settings/TeleDraftsChatActivity.kt     | 668 ++++++++++++++++++
  .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
  .../src/main/res/values/strings_tele.xml      |  47 +-
- 17 files changed, 2181 insertions(+), 137 deletions(-)
+ 18 files changed, 2205 insertions(+), 140 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DraftEditing.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DraftMessages.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DraftReplaced.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DraftSender.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleDraftEditBar.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsChatActivity.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
@@ -1802,8 +1804,109 @@ index 000000000..a4c651b70
 +        }
 +    }
 +}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt
+new file mode 100644
+index 000000000..a9a881c83
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt
+@@ -0,0 +1,95 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.Canvas
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.UserObject
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.AvatarDrawable
++import org.telegram.ui.Components.BackupImageView
++import org.telegram.ui.Components.LayoutHelper
++
++/** A row of the chat list for the tele archives: userpic, name and time on top, a preview and counters below. */
++class TeleChatRow(context: Context) : FrameLayout(context) {
++    val avatar = BackupImageView(context)
++    val name = TextView(context)
++    val time = TextView(context)
++    val preview = TextView(context)
++    /** The muted counter, left of the main one. */
++    val secondary = TextView(context)
++    val counter = TextView(context)
++
++    init {
++        setWillNotDraw(false)
++        avatar.setRoundRadius(AndroidUtilities.dp(28f))
++        addView(avatar, LayoutHelper.createFrame(56, 56f, Gravity.LEFT or Gravity.CENTER_VERTICAL, 10f, 0f, 0f, 0f))
++
++        val top = LinearLayout(context)
++        top.orientation = LinearLayout.HORIZONTAL
++        name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        name.typeface = AndroidUtilities.bold()
++        name.setTextColor(Theme.getColor(Theme.key_chats_name))
++        name.isSingleLine = true
++        name.ellipsize = TextUtils.TruncateAt.END
++        top.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
++        time.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        time.setTextColor(Theme.getColor(Theme.key_chats_date))
++        top.addView(time, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = AndroidUtilities.dp(8f) })
++        addView(top, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 78f, 12f, 14f, 0f))
++
++        val bottom = LinearLayout(context)
++        bottom.orientation = LinearLayout.HORIZONTAL
++        bottom.gravity = Gravity.CENTER_VERTICAL
++        preview.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        preview.setTextColor(Theme.getColor(Theme.key_chats_message))
++        preview.isSingleLine = true
++        preview.ellipsize = TextUtils.TruncateAt.END
++        bottom.addView(preview, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
++        for (badge in listOf(secondary, counter)) {
++            badge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            badge.typeface = AndroidUtilities.bold()
++            badge.gravity = Gravity.CENTER
++            badge.minWidth = AndroidUtilities.dp(23f)
++            badge.setPadding(AndroidUtilities.dp(7f), 0, AndroidUtilities.dp(7f), 0)
++            bottom.addView(badge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, AndroidUtilities.dp(23f)).apply { leftMargin = AndroidUtilities.dp(6f) })
++        }
++        counter.setTextColor(Theme.getColor(Theme.key_chats_unreadCounterText))
++        counter.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(11.5f), Theme.getColor(Theme.key_chats_unreadCounter))
++        secondary.setTextColor(Theme.getColor(Theme.key_chats_unreadCounterText))
++        secondary.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(11.5f), Theme.getColor(Theme.key_chats_unreadCounterMuted))
++        addView(bottom, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 78f, 38f, 14f, 0f))
++    }
++
++    /** The userpic of a chat, the bookmark for Saved Messages. */
++    fun setPeer(account: Int, dialogId: Long) {
++        val controller = MessagesController.getInstance(account)
++        val user = if (dialogId > 0) controller.getUser(dialogId) else null
++        val chat = if (dialogId < 0) controller.getChat(-dialogId) else null
++        when {
++            user != null && UserObject.isUserSelf(user) -> avatar.setImageDrawable(AvatarDrawable().apply { setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED) })
++            user != null -> avatar.setForUserOrChat(user, AvatarDrawable(user))
++            chat != null -> avatar.setForUserOrChat(chat, AvatarDrawable(chat))
++            else -> avatar.setImageDrawable(AvatarDrawable())
++        }
++    }
++
++    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++        super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(AndroidUtilities.dp(72f), MeasureSpec.EXACTLY))
++    }
++
++    // the divider of the chat list starts under the text, not the userpic
++    override fun onDraw(canvas: Canvas) {
++        val left = if (LocaleController.isRTL) 0f else AndroidUtilities.dp(78f).toFloat()
++        val right = if (LocaleController.isRTL) (width - AndroidUtilities.dp(78f)).toFloat() else width.toFloat()
++        canvas.drawLine(left, height - 1f, right, height - 1f, Theme.dividerPaint)
++    }
++}
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
-index 6d2e5d674..3abf48788 100644
+index 6d2e5d674..4663f6452 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
 @@ -1,7 +1,11 @@
@@ -1855,7 +1958,7 @@ index 6d2e5d674..3abf48788 100644
          adapter?.notifyDataSetChanged()
      }
  
-@@ -46,104 +55,119 @@ class TeleDraftsActivity : BaseFragment() {
+@@ -46,104 +55,57 @@ class TeleDraftsActivity : BaseFragment() {
          })
          reload()
          val container = FrameLayout(context)
@@ -1933,69 +2036,10 @@ index 6d2e5d674..3abf48788 100644
 -        } else if (id < 0) {
 -            val chat = controller.getChat(-id)
 -            if (chat != null) return chat.title
-+    /** A row of the chat list: userpic, name and time on top, the latest draft and the counters below. */
-+    private class ChatRow(context: Context) : FrameLayout(context) {
-+        val avatar = BackupImageView(context)
-+        val name = TextView(context)
-+        val time = TextView(context)
-+        val preview = TextView(context)
-+        val saved = TextView(context)
-+        val discarded = TextView(context)
-+
-+        init {
-+            setWillNotDraw(false)
-+            avatar.setRoundRadius(AndroidUtilities.dp(28f))
-+            addView(avatar, LayoutHelper.createFrame(56, 56f, Gravity.LEFT or Gravity.CENTER_VERTICAL, 10f, 0f, 0f, 0f))
-+
-+            val top = LinearLayout(context)
-+            top.orientation = LinearLayout.HORIZONTAL
-+            name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
-+            name.typeface = AndroidUtilities.bold()
-+            name.setTextColor(Theme.getColor(Theme.key_chats_name))
-+            name.isSingleLine = true
-+            name.ellipsize = TextUtils.TruncateAt.END
-+            top.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-+            time.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
-+            time.setTextColor(Theme.getColor(Theme.key_chats_date))
-+            top.addView(time, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = AndroidUtilities.dp(8f) })
-+            addView(top, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 78f, 12f, 14f, 0f))
-+
-+            val bottom = LinearLayout(context)
-+            bottom.orientation = LinearLayout.HORIZONTAL
-+            bottom.gravity = Gravity.CENTER_VERTICAL
-+            preview.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
-+            preview.setTextColor(Theme.getColor(Theme.key_chats_message))
-+            preview.isSingleLine = true
-+            preview.ellipsize = TextUtils.TruncateAt.END
-+            bottom.addView(preview, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-+            for (badge in listOf(discarded, saved)) {
-+                badge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
-+                badge.typeface = AndroidUtilities.bold()
-+                badge.gravity = Gravity.CENTER
-+                badge.minWidth = AndroidUtilities.dp(23f)
-+                badge.setPadding(AndroidUtilities.dp(7f), 0, AndroidUtilities.dp(7f), 0)
-+                bottom.addView(badge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, AndroidUtilities.dp(23f)).apply { leftMargin = AndroidUtilities.dp(6f) })
-+            }
-+            saved.setTextColor(Theme.getColor(Theme.key_chats_unreadCounterText))
-+            saved.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(11.5f), Theme.getColor(Theme.key_chats_unreadCounter))
-+            discarded.setTextColor(Theme.getColor(Theme.key_chats_unreadCounterText))
-+            discarded.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(11.5f), Theme.getColor(Theme.key_chats_unreadCounterMuted))
-+            addView(bottom, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 78f, 38f, 14f, 0f))
-+        }
-+
-+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(AndroidUtilities.dp(72f), MeasureSpec.EXACTLY))
-+        }
-+
-+        // the divider of the chat list starts under the text, not the userpic
-+        override fun onDraw(canvas: Canvas) {
-+            val left = if (LocaleController.isRTL) 0f else AndroidUtilities.dp(78f).toFloat()
-+            val right = if (LocaleController.isRTL) (width - AndroidUtilities.dp(78f)).toFloat() else width.toFloat()
-+            canvas.drawLine(left, height - 1f, right, height - 1f, Theme.dividerPaint)
-         }
+-        }
 -        return "ID $id"
-     }
- 
+-    }
+-
      private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
 -        override fun getItemCount(): Int = maxOf(drafts.size, 1)
 -        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = drafts.isNotEmpty()
@@ -2037,11 +2081,11 @@ index 6d2e5d674..3abf48788 100644
 +                    setPadding(AndroidUtilities.dp(32f), AndroidUtilities.dp(48f), AndroidUtilities.dp(32f), AndroidUtilities.dp(16f))
                  }
 +            } else {
-+                ChatRow(context)
++                TeleChatRow(context)
              }
              view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
              return RecyclerListView.Holder(view)
-@@ -154,25 +178,90 @@ class TeleDraftsActivity : BaseFragment() {
+@@ -154,25 +116,78 @@ class TeleDraftsActivity : BaseFragment() {
                  (holder.itemView as TextView).text = LocaleController.getString(R.string.TeleNoSavedDrafts)
                  return
              }
@@ -2057,20 +2101,8 @@ index 6d2e5d674..3abf48788 100644
 -            subtitleText += " · ${LocaleController.formatDateChat(draft.created.toLong())}"
 -            subtitle.text = subtitleText
 +            val chat = chats[position]
-+            val row = holder.itemView as ChatRow
-+            val controller = MessagesController.getInstance(account)
-+            val user = if (chat.dialogId > 0) controller.getUser(chat.dialogId) else null
-+            val peer = if (chat.dialogId < 0) controller.getChat(-chat.dialogId) else null
-+            when {
-+                user != null && UserObject.isUserSelf(user) -> {
-+                    val drawable = AvatarDrawable()
-+                    drawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED)
-+                    row.avatar.setImageDrawable(drawable)
-+                }
-+                user != null -> row.avatar.setForUserOrChat(user, AvatarDrawable(user))
-+                peer != null -> row.avatar.setForUserOrChat(peer, AvatarDrawable(peer))
-+                else -> row.avatar.setImageDrawable(AvatarDrawable())
-+            }
++            val row = holder.itemView as TeleChatRow
++            row.setPeer(account, chat.dialogId)
 +            row.name.text = chatTitle(account, chat.dialogId, chat.topicId)
 +            row.time.text = LocaleController.stringForMessageListDate(chat.lastEdited.toLong())
 +            val latest = chat.latest
@@ -2080,10 +2112,10 @@ index 6d2e5d674..3abf48788 100644
 +                latest.text.isNotBlank() -> latest.text.replace('\n', ' ')
 +                else -> LocaleController.formatString(R.string.TeleDraftFiles, latest.files.size)
 +            }
-+            row.saved.text = chat.saved.size.toString()
-+            row.saved.visibility = if (chat.saved.isEmpty()) View.GONE else View.VISIBLE
-+            row.discarded.text = chat.discarded.size.toString()
-+            row.discarded.visibility = if (chat.discarded.isEmpty()) View.GONE else View.VISIBLE
++            row.counter.text = chat.saved.size.toString()
++            row.counter.visibility = if (chat.saved.isEmpty()) View.GONE else View.VISIBLE
++            row.secondary.text = chat.discarded.size.toString()
++            row.secondary.visibility = if (chat.discarded.isEmpty()) View.GONE else View.VISIBLE
 +            // a chat with only discarded drafts reads like a muted one
 +            row.preview.alpha = if (chat.saved.isEmpty()) 0.6f else 1f
          }
