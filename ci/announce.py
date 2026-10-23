@@ -21,7 +21,8 @@ def escape(text):
 def message(changelog, repo):
     tag = changelog['tag']
     version, number = tag.removeprefix('v').rsplit('-tele.', 1)
-    lines = [f'## tele for android {escape(number)} · {escape(version)}']
+    lines = [escape(changelog['header']), ''] if changelog.get('header') else []
+    lines.append(f'## tele for android {escape(number)} · {escape(version)}')
     for category in changelog['categories']:
         lines += ['', f'**{escape(category)}**', '']
         for item in changelog['items']:
@@ -35,6 +36,10 @@ def message(changelog, repo):
         '<tg-button-row>'
         f'<tg-button type="url" url="https://github.com/{repo}/releases/tag/{tag}">download</tg-button>'
         '</tg-button-row>',
+    ]
+    if changelog.get('footer'):
+        lines += ['', escape(changelog['footer'])]
+    lines += [
         '',
         '<footer>#android</footer>',
     ]

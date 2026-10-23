@@ -6,8 +6,9 @@ the source is written by hand for the next release:
   {"categories": ["interface", "chats"],
    "items": [{"text": "what changed, one sentence", "where": "settings → tele → chats", "category": "chats"}]}
 
-`categories` is the order of the groups (every item's category has to be listed), `where` may be empty. without
---json and --notes this only validates. the limits are the app's: TeleChangelog drops what is above them."""
+`categories` is the order of the groups (every item's category has to be listed), `where` may be empty. the optional
+`header` and `footer` are lines put around the release notes and the channel post of this release only; the app skips
+them. without --json and --notes this only validates. the limits are the app's: TeleChangelog drops what is above them."""
 
 import argparse
 import json
@@ -41,8 +42,8 @@ def load(path):
             source = json.load(file)
         except json.JSONDecodeError as error:
             fail(f'{path} is not json: {error}')
-    if not isinstance(source, dict) or set(source) - {'categories', 'items'}:
-        fail('the top level has to be an object with only categories and items')
+    if not isinstance(source, dict) or set(source) - {'categories', 'items', 'header', 'footer'}:
+        fail('the top level has to be an object with only categories, items, header and footer')
     raw_items = source.get('items')
     if not isinstance(raw_items, list) or not raw_items:
         fail('items has to be a non-empty list')
@@ -72,23 +73,27 @@ def load(path):
     categories = [name for name in categories if name in used]
     if len(categories) > MAX_CATEGORIES:
         fail(f'more than {MAX_CATEGORIES} categories')
-    return categories, items
+    # the lines around the notes and the announcement of one release; the app doesn't show them
+    frame = {key: text_of(source.get(key, ''), key, MAX_TITLE, False) for key in ('header', 'footer')}
+    return categories, items, frame
 
 
-def build(categories, items, tag, repo):
+def build(categories, items, frame, tag, repo):
     number = tag.rsplit('-tele.', 1)[-1]
-    return {
+    changelog = {
         'tag': tag,
         'title': f'tele {number}',
         'categories': categories,
         'items': items,
         'url': f'https://github.com/{repo}/releases/tag/{tag}',
     }
+    changelog.update({key: value for key, value in frame.items() if value})
+    return changelog
 
 
 def notes(changelog, repo):
     tag = changelog['tag']
-    lines = []
+    lines = [changelog['header'], ''] if changelog.get('header') else []
     for category in changelog['categories']:
         lines += [f'## {category}', '']
         for item in changelog['items']:
@@ -103,6 +108,8 @@ def notes(changelog, repo):
         f'[{name}](https://github.com/{repo}/releases/download/{tag}/{name}): install it over your tele. '
         'a running tele finds this release within 3 hours, or right away with settings → tele → check for updates.',
     ]
+    if changelog.get('footer'):
+        lines += ['', changelog['footer']]
     return '\n'.join(lines) + '\n'
 
 
@@ -116,8 +123,8 @@ def main():
     parser.add_argument('--notes', default='', help='write the release notes (markdown) here')
     args = parser.parse_args()
 
-    categories, items = load(args.source)
-    changelog = build(categories, items, args.tag, args.repo)
+    categories, items, frame = load(args.source)
+    changelog = build(categories, items, frame, args.tag, args.repo)
     rendered = json.dumps(changelog, ensure_ascii=False, indent=2) + '\n'
     if len(rendered.encode()) > MAX_SIZE:
         fail(f'the result is larger than {MAX_SIZE // 1024} KiB')
