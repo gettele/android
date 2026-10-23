@@ -257,6 +257,7 @@
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0169 | перегруппировка страниц настроек | built | `0142-feat-regroup-tele-settings.patch`; страницы interface/chats/messages/sending/notifications/menus/privacy/profiles and ids/bots/debug/server/backup/updates, старые `ids` и `data` открывают свои новые страницы, поиск 1140–1152 плюс ключевые слова десктопа, экспорт и импорт настроек в буфер обмена |
+| 0169 (доработка) | пункт tele отдельной плашкой | built | `0163-feat-move-tele-settings-into-own-block.patch`; строка «tele» в главных настройках перенесена из основного блока в свою секцию между Language и Telegram Premium |
 | 0170 | сворачиваемые под-тумблеры | built | `0143-feat-collapse-tele-setting-suboptions.patch`; стоковая `TextCheckCell2` с анимированным счётчиком/стрелкой, зарезервированной колонкой до тумблера и ограничением длинного заголовка; анимация включения родителя сохраняется, дети сразу тускнеют при выключении |
 | 0170 (доработка) | полировка сворачиваемых настроек | built | `0153-fix-polish-collapsible-tele-settings.patch`; stock `TextCheckCell2`, безопасная переработка recycled rows и dim зависимых value-пунктов |
 | 0170 (доработка) | переключатель родительской группы | built | `0156-fix-toggle-expandable-tele-groups.patch`; тап по switch меняет родителя и применяет существующие правила группы, тап по остальной строке сворачивает/разворачивает |
