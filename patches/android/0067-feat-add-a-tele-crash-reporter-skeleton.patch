@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 16 Oct 2026 11:38:51 +0300
+Subject: [PATCH 067/128] feat: add a tele crash reporter skeleton
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |  2 +
+ .../src/main/java/tele/helpers/TeleCrash.kt   | 97 +++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  5 +
+ 4 files changed, 106 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 2576e5d88..32ed11101 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -81,6 +81,8 @@ object TeleConfig {
+     @JvmField
+     val TELE_SERVER_URL = StringItem("tele_server_url", "https://tele.starkow.dev")
+     @JvmField
++    val SEND_CRASH_REPORTS = BoolItem("send_crash_reports", true)
++    @JvmField
+     val KEEP_DISAPPEARING_MEDIA = BoolItem("keep_disappearing_media", false)
+     @JvmField
+     val KEEP_DELETED_MESSAGES = BoolItem("keep_deleted_messages", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 09dfb9b69..24c6bb107 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -21,6 +21,7 @@ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Components.EditTextBoldCursor
+ import tele.db.TeleDatabaseHelper
++import tele.helpers.TeleCrash
+ import tele.helpers.LocalNames
+ import tele.helpers.Aliases
+ import tele.helpers.TeleServer
+@@ -30,6 +31,7 @@ object TeleHooks {
+     fun init(context: Context) {
+         TeleConfig.init(context)
+         TeleDatabaseHelper.init(context)
++        TeleCrash.install(context)
+         TeleServer.start(context)
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+new file mode 100644
+index 000000000..fa5a184ea
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+@@ -0,0 +1,97 @@
++package tele.helpers
++
++import android.content.Context
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.BuildVars
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.UserConfig
++import tele.TeleConfig
++import java.io.File
++import java.io.PrintWriter
++import java.io.StringWriter
++
++object TeleCrash {
++    private const val CRASH_FILE = "tele_crash_report.txt"
++
++    @JvmStatic
++    fun crashFile(context: Context = ApplicationLoader.applicationContext): File =
++        File(context.filesDir, CRASH_FILE)
++
++    @JvmStatic
++    fun hasPending(context: Context = ApplicationLoader.applicationContext): Boolean =
++        crashFile(context).exists() && crashFile(context).length() > 0
++
++    @JvmStatic
++    fun install(context: Context = ApplicationLoader.applicationContext) {
++        val previous = Thread.getDefaultUncaughtExceptionHandler()
++        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
++            try {
++                writeReport(context, thread, throwable)
++            } catch (e: Exception) {
++                FileLog.e(e)
++            }
++            previous?.uncaughtException(thread, throwable)
++        }
++    }
++
++    private fun writeReport(context: Context, thread: Thread, throwable: Throwable) {
++        if (!TeleConfig.SEND_CRASH_REPORTS.value) return
++        val sw = StringWriter()
++        throwable.printStackTrace(PrintWriter(sw))
++        val report = buildString {
++            appendLine("platform: Android")
++            appendLine("version: ${BuildVars.BUILD_VERSION_STRING}")
++            appendLine("thread: ${thread.name}")
++            appendLine("report:")
++            appendLine(sw.toString())
++        }
++        crashFile(context).writeText(report)
++    }
++
++    @JvmStatic
++    fun clearPending(context: Context = ApplicationLoader.applicationContext) {
++        val f = crashFile(context)
++        if (f.exists()) f.delete()
++    }
++
++    @JvmStatic
++    fun sendPendingAsync(context: Context = ApplicationLoader.applicationContext, url: String = TeleConfig.TELE_SERVER_URL.value) {
++        val base = url.trim().trimEnd('/')
++        if (base.isEmpty() || !hasPending(context)) return
++        val report = runCatching { crashFile(context).readText() }.getOrNull() ?: return
++        Thread {
++            var connection: java.net.HttpURLConnection? = null
++            try {
++                val boundary = "----TeleCrashBoundary" + System.currentTimeMillis()
++                connection = java.net.URL(base + "/v1/crash.php?act=report").openConnection() as java.net.HttpURLConnection
++                connection.requestMethod = "POST"
++                connection.doOutput = true
++                connection.connectTimeout = 10_000
++                connection.readTimeout = 30_000
++                connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
++                connection.outputStream.use { os ->
++                    val w = java.io.OutputStreamWriter(os, Charsets.UTF_8)
++                    w.write("--$boundary\r\n")
++                    w.write("Content-Disposition: form-data; name=\"platform\"\r\n\r\n")
++                    w.write("Android\r\n")
++                    w.write("--$boundary\r\n")
++                    w.write("Content-Disposition: form-data; name=\"version\"\r\n\r\n")
++                    w.write("7112\r\n")
++                    w.write("--$boundary\r\n")
++                    w.write("Content-Disposition: form-data; name=\"report\"; filename=\"report.txt\"\r\n")
++                    w.write("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
++                    w.write(report)
++                    w.write("\r\n")
++                    w.write("--$boundary--\r\n")
++                    w.flush()
++                }
++                FileLog.d("TeleCrash: server response ${connection.responseCode}")
++                if (connection.responseCode in 200..299) clearPending(context)
++            } catch (e: Exception) {
++                FileLog.e(e)
++            } finally {
++                connection?.disconnect()
++            }
++        }.start()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 33692be0b..0626e12e0 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -154,6 +154,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     "server_clear" -> {
+                         (parentActivity ?: return@setOnItemClickListener).let { tele.helpers.TeleServer.clearCachedData(it); adapter?.refresh() }
+                     }
++                    "server_send_crash" -> {
++                        (parentActivity ?: return@setOnItemClickListener).let { tele.helpers.TeleCrash.sendPendingAsync(it); adapter?.refresh() }
++                    }
+                     else -> presentFragment(TeleSettingsActivity(row.mode ?: MODE_ROOT))
+                 }
+             }
+@@ -311,6 +314,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_VALUE, "server url", value = if (TeleConfig.TELE_SERVER_URL.value.isBlank()) "empty (disabled)" else TeleConfig.TELE_SERVER_URL.value, item = TeleConfig.TELE_SERVER_URL),
+                 Row(TYPE_LINK, title = "refresh now", mode = "server_refresh"),
+                 Row(TYPE_LINK, title = "clear cached data", mode = "server_clear"),
++                toggle("send crash reports", TeleConfig.SEND_CRASH_REPORTS),
++                Row(TYPE_LINK, title = "send pending crash report", mode = "server_send_crash"),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_MENU -> listOf(

@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 05:30:09 +0300
+Subject: [PATCH 032/128] feat: manage local names and aliases from tele
+ settings
+
+Two screens under a 'your data' header list every stored local name and
+alias as peer name plus current value. Tapping a row opens the existing
+edit dialog, which already offers Delete; entries are read again on
+resume so the list follows the change.
+
+Confidence: high
+Scope-risk: narrow
+---
+ .../tele/ui/settings/TeleNamesActivity.kt     | 155 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  11 +-
+ 2 files changed, 164 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleNamesActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleNamesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleNamesActivity.kt
+new file mode 100644
+index 000000000..c7a75ff7e
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleNamesActivity.kt
+@@ -0,0 +1,155 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.ContactsController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.TextInfoPrivacyCell
++import org.telegram.ui.Cells.TextSettingsCell
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.ProfileActivity
++import tele.TeleHooks
++import tele.helpers.Aliases
++import tele.helpers.LocalNames
++
++class TeleNamesActivity(private val mode: String) : BaseFragment() {
++
++    private class Entry(val dialogId: Long, val title: String, val value: String)
++
++    private val account get() = UserConfig.selectedAccount
++    private val isAliasMode get() = mode == MODE_ALIAS
++
++    private var entries: List<Entry> = emptyList()
++    private var adapter: Adapter? = null
++
++    private fun peerTitle(dialogId: Long): String {
++        val controller = MessagesController.getInstance(account)
++        if (dialogId > 0) {
++            val user = controller.getUser(dialogId)
++            if (user != null) {
++                return ContactsController.formatName(user.first_name, user.last_name)
++            }
++        } else {
++            val chat = controller.getChat(-dialogId)
++            if (chat != null) {
++                return chat.title
++            }
++        }
++        return "id $dialogId"
++    }
++
++    private fun reload() {
++        entries = if (isAliasMode) {
++            Aliases.all(account).map { Entry(it.second, peerTitle(it.second), "@" + it.first) }
++        } else {
++            LocalNames.all().map { Entry(it.first, peerTitle(it.first), it.second) }
++        }
++        adapter?.notifyDataSetChanged()
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(if (isAliasMode) "aliases" else "local names")
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) {
++                    finishFragment()
++                }
++            }
++        })
++
++        reload()
++
++        val frameLayout = FrameLayout(context)
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = frameLayout
++
++        val listView = RecyclerListView(context)
++        listView.setLayoutManager(LinearLayoutManager(context))
++        listView.setVerticalScrollBarEnabled(false)
++        adapter = Adapter(context)
++        listView.setAdapter(adapter)
++        listView.setOnItemClickListener { _, position ->
++            val entry = entries.getOrNull(position - 1) ?: return@setOnItemClickListener
++            if (isAliasMode) {
++                TeleHooks.showUsernameAliasDialog(this, entry.dialogId)
++            } else {
++                TeleHooks.showLocalNameDialog(this, entry.dialogId)
++            }
++        }
++        listView.setOnItemLongClickListener { _, position ->
++            val entry = entries.getOrNull(position - 1)
++            if (entry != null) {
++                presentFragment(ProfileActivity.of(entry.dialogId))
++                true
++            } else {
++                false
++            }
++        }
++        frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        return fragmentView
++    }
++
++    override fun onResume() {
++        super.onResume()
++        reload()
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++
++        override fun getItemCount(): Int = entries.size + 2
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean =
++            holder.adapterPosition in 1..entries.size
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_HEADER -> HeaderCell(context)
++                TYPE_SHADOW -> TextInfoPrivacyCell(context)
++                else -> TextSettingsCell(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            when (val cell = holder.itemView) {
++                is HeaderCell -> cell.setText(if (isAliasMode) "aliases" else "local names")
++                is TextInfoPrivacyCell -> cell.setText(
++                    if (entries.isEmpty()) "nothing saved on this device yet"
++                    else "tap a row to rename it or delete it, long press to open the profile"
++                )
++                else -> {
++                    val entry = entries[position - 1]
++                    (cell as TextSettingsCell).setTextAndValue(entry.title, entry.value, false)
++                }
++            }
++        }
++
++        override fun getItemViewType(position: Int): Int = when (position) {
++            0 -> TYPE_HEADER
++            entries.size + 1 -> TYPE_SHADOW
++            else -> TYPE_ENTRY
++        }
++    }
++
++    companion object {
++        const val MODE_LOCAL = "local"
++        const val MODE_ALIAS = "alias"
++        private const val TYPE_HEADER = 0
++        private const val TYPE_ENTRY = 1
++        private const val TYPE_SHADOW = 2
++    }
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index b890fe050..d2eddc18b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -56,6 +56,8 @@ class TeleSettingsActivity : BaseFragment() {
+                 cell.setChecked(newValue)
+                 TeleConfig.set(row.item, newValue)
+                 TeleHooks.onConfigChanged(row.item)
++            } else if (row.type == TYPE_LINK && row.value != null) {
++                presentFragment(TeleNamesActivity(row.value))
+             }
+         }
+         frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+@@ -102,14 +104,18 @@ class TeleSettingsActivity : BaseFragment() {
+             Row(TYPE_TOGGLE, "show ids on regular gifts", item = TeleConfig.SHOW_REGULAR_GIFT_IDS),
+             Row(TYPE_TOGGLE, "copy custom emoji id", item = TeleConfig.COPY_EMOJI_ID),
+             Row(TYPE_TOGGLE, "local names for people", item = TeleConfig.LOCAL_NAMES),
+-            Row(TYPE_TOGGLE, "username aliases", item = TeleConfig.USERNAME_ALIASES)
++            Row(TYPE_TOGGLE, "username aliases", item = TeleConfig.USERNAME_ALIASES),
++            Row(TYPE_SHADOW),
++            Row(TYPE_HEADER, "your data"),
++            Row(TYPE_LINK, "manage local names", value = TeleNamesActivity.MODE_LOCAL),
++            Row(TYPE_LINK, "manage aliases", value = TeleNamesActivity.MODE_ALIAS)
+         )
+ 
+         override fun getItemCount(): Int = rows.size
+ 
+         override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean {
+             val row = rows.getOrNull(holder.adapterPosition) ?: return false
+-            return row.type == TYPE_VALUE || row.type == TYPE_TOGGLE
++            return row.type == TYPE_VALUE || row.type == TYPE_TOGGLE || row.type == TYPE_LINK
+         }
+ 
+         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+@@ -141,5 +147,6 @@ class TeleSettingsActivity : BaseFragment() {
+         private const val TYPE_VALUE = 1
+         private const val TYPE_TOGGLE = 2
+         private const val TYPE_SHADOW = 3
++        private const val TYPE_LINK = 4
+     }
+ }

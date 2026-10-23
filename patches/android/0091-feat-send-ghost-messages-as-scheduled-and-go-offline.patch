@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 20 Oct 2026 07:12:20 +0300
+Subject: [PATCH 091/128] feat: send ghost messages as scheduled and go offline
+ after
+
+---
+ .../messenger/SendMessagesHelper.java         | 10 ++++++
+ .../src/main/java/tele/TeleConfig.kt          |  2 ++
+ .../main/java/tele/helpers/PrivacyRules.kt    | 32 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  4 ++-
+ 5 files changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 8d916e33a..d281e6953 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -4505,6 +4505,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         int scheduleDate = sendMessageParams.scheduleDate;
+         int scheduleRepeatPeriod = sendMessageParams.scheduleRepeatPeriod;
+         int ttl = sendMessageParams.ttl;
++        if (scheduleDate == 0 && ttl == 0 && sendMessageParams.replyToStoryItem == null && sendMessageParams.sendingStory == null &&
++                peer != UserConfig.getInstance(currentAccount).getClientUserId() &&
++                tele.helpers.PrivacyRules.ghostSchedule(currentAccount, peer)) {
++            scheduleDate = (int) (System.currentTimeMillis() / 1000) + 12;
++            tele.helpers.PrivacyRules.markGhostSend(currentAccount);
++        }
+         Object parentObject = sendMessageParams.parentObject;
+         MessageObject.SendAnimationData sendAnimationData = sendMessageParams.sendAnimationData;
+         boolean updateStickersOrder = sendMessageParams.updateStickersOrder;
+@@ -8187,6 +8193,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         }
+ 
+         newMsgObj.reqId = getConnectionsManager().sendRequest(req, (response, error) -> {
++            if (error == null && scheduled && tele.helpers.PrivacyRules.ghostSendPending(currentAccount) && tele.TeleConfig.GHOST_ONLINE.getValue()) {
++                // the server may have marked the sender online, so the status is cleared again
++                tele.helpers.PrivacyRules.goOffline(currentAccount);
++            }
+             if (error != null && (req instanceof TLRPC.TL_messages_sendMedia || req instanceof TL_ephemeral.TL_sendMessage || req instanceof TLRPC.TL_messages_editMessage || req instanceof TLRPC.TL_messages_addPollAnswer) && FileRefController.isFileRefError(error.text)) {
+                 if (FileRefController.isFileRefErrorCover(error.text)) {
+                     if (removeCoverFromRequest(req)) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 9fadf2aec..208acfe4d 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -77,6 +77,8 @@ object TeleConfig {
+     @JvmField
+     val GHOST_PER_CHAT = BoolItem("ghost_per_chat", false)
+     @JvmField
++    val GHOST_SCHEDULE = BoolItem("ghost_schedule", false)
++    @JvmField
+     val HIDDEN_WORDS = BoolItem("hidden_words", false)
+     @JvmField
+     val NEVER_BLOCK_SCREENSHOTS = BoolItem("never_block_screenshots", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+index ad007d8d0..22cc0ea21 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+@@ -144,6 +144,38 @@ object PrivacyRules {
+     @JvmStatic
+     fun ghostContentsRead(account: Int, dialogId: Long): Boolean = ghostClass(account, dialogId, TeleConfig.GHOST_CONTENTS_READ.value)
+ 
++    /** Ghost mode is on for this chat: either by the per chat list or by one of the global switches. */
++    @JvmStatic
++    fun ghostActive(account: Int, dialogId: Long): Boolean = ghosted(account, dialogId) ||
++        TeleConfig.GHOST_ONLINE.value || TeleConfig.GHOST_TYPING.value || TeleConfig.GHOST_READ.value || TeleConfig.GHOST_CONTENTS_READ.value
++
++    /** The message is sent as scheduled, so the server delivers it without marking the sender online. */
++    @JvmStatic
++    fun ghostSchedule(account: Int, dialogId: Long): Boolean = TeleConfig.GHOST_SCHEDULE.value && ghostActive(account, dialogId)
++
++    private val ghostSends = HashMap<Int, Long>()
++
++    @JvmStatic
++    fun markGhostSend(account: Int) {
++        synchronized(lock) {
++            ghostSends[account] = System.currentTimeMillis()
++        }
++    }
++
++    @JvmStatic
++    fun ghostSendPending(account: Int): Boolean = synchronized(lock) {
++        val at = ghostSends[account] ?: return false
++        System.currentTimeMillis() - at < 60_000L
++    }
++
++    /** The server may have marked the sender online, so the status is cleared right after the send. */
++    @JvmStatic
++    fun goOffline(account: Int) {
++        val request = org.telegram.tgnet.tl.TL_account.updateStatus()
++        request.offline = true
++        org.telegram.tgnet.ConnectionsManager.getInstance(account).sendRequest(request, null)
++    }
++
+     // hidden words
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index b802c0976..d44198282 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -71,6 +71,7 @@ object TeleSearch {
+             section(1111, "ghost mode exceptions", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             screen(1112, "always ghost in") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_ALWAYS) },
+             screen(1113, "never ghost in") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_NEVER) },
++            section(1114, "send messages as scheduled", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+ 
+             section(GUID_IDS, "tele ids", "ids", TeleSettingsActivity.MODE_IDS),
+             section(GUID_IDS + 1, "show peer id in profile", "ids", TeleSettingsActivity.MODE_IDS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index cac1727f0..146d21c3a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -318,7 +318,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "update automatically" to "Check GitHub for new tele releases automatically.",
+             "show what's new after updates" to "Post release notes to the local tele chat after an update.",
+             "ignore users" to "Hide or fade the messages of the people you pick. Nothing is sent to the server.",
+-            "ghost mode exceptions" to "Ghost a chat even when the global ghost switches are off, or keep it visible when they are on."
++            "ghost mode exceptions" to "Ghost a chat even when the global ghost switches are off, or keep it visible when they are on.",
++            "send messages as scheduled" to "Send messages of ghosted chats as scheduled, so the server delivers them without marking you online."
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -439,6 +440,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     rows.add(link("always ghost in", "peers_ghost_always"))
+                     rows.add(link("never ghost in", "peers_ghost_never"))
+                 }
++                rows.add(toggle("send messages as scheduled", TeleConfig.GHOST_SCHEDULE))
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "links"))
+                 rows.add(toggle("clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))

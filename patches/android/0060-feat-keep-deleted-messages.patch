@@ -1,0 +1,1059 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 10 Oct 2026 17:14:34 +0300
+Subject: [PATCH 060/128] feat: keep deleted messages
+
+---
+ .../messenger/MessagesController.java         |  14 +-
+ .../telegram/messenger/MessagesStorage.java   |  87 +++++-
+ .../telegram/ui/Cells/ChatMessageCell.java    |  21 +-
+ .../java/org/telegram/ui/ChatActivity.java    |  14 +
+ .../telegram/ui/Components/AlertsCreator.java |   8 +-
+ .../Components/DeleteMessagesBottomSheet.java |   4 +-
+ .../java/org/telegram/ui/PhotoViewer.java     |   4 +-
+ .../telegram/ui/web/BookmarksFragment.java    |   2 +-
+ .../src/main/java/tele/TeleConfig.kt          |  10 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  78 +++++-
+ .../main/java/tele/helpers/DeletedMessages.kt | 156 +++++++++++
+ .../settings/TeleDeletedMessagesActivity.kt   | 258 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   9 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  25 ++
+ .../src/main/res/values/strings_tele.xml      |  10 +
+ 15 files changed, 669 insertions(+), 31 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index dc91fba35..871940ed4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -9305,11 +9305,19 @@ public class MessagesController extends BaseController implements NotificationCe
+         deleteMessages(messages, randoms, encryptedChat, dialogId, forAll, mode, cacheOnly, 0, null, topicId);
+     }
+ 
++    public void deleteMessagesFromUser(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, int topicId, boolean forAll, int mode) {
++        deleteMessages(messages, randoms, encryptedChat, dialogId, forAll, mode, false, 0, null, topicId, false, 0, true);
++    }
++
+     public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, boolean forAll, int mode, boolean cacheOnly, long taskId, TLObject taskRequest, int topicId) {
+         deleteMessages(messages, randoms, encryptedChat, dialogId, forAll, mode, cacheOnly, taskId, taskRequest, topicId, false, 0);
+     }
+ 
+     public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, boolean forAll, int mode, boolean cacheOnly, long taskId, TLObject taskRequest, int topicId, boolean movedToScheduled, int movedToScheduledMessageId) {
++        deleteMessages(messages, randoms, encryptedChat, dialogId, forAll, mode, cacheOnly, taskId, taskRequest, topicId, movedToScheduled, movedToScheduledMessageId, false);
++    }
++
++    public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, boolean forAll, int mode, boolean cacheOnly, long taskId, TLObject taskRequest, int topicId, boolean movedToScheduled, int movedToScheduledMessageId, boolean userInitiated) {
+         final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
+         final boolean quickReplies = mode == ChatActivity.MODE_QUICK_REPLIES;
+         final boolean welcomeMessages = mode == ChatActivity.MODE_WELCOME_MESSAGES;
+@@ -9355,10 +9363,10 @@ public class MessagesController extends BaseController implements NotificationCe
+                 } else {
+                     markDialogMessageAsDeleted(dialogId, messages);
+                 }
+-                getMessagesStorage().markMessagesAsDeleted(dialogId, messages, true, forAll, 0, topicId);
++                getMessagesStorage().markMessagesAsDeleted(dialogId, messages, true, forAll, 0, topicId, userInitiated);
+                 getMessagesStorage().updateDialogsWithDeletedMessages(dialogId, channelId, messages, null);
+             }
+-            getNotificationCenter().postNotificationName(NotificationCenter.messagesDeleted, messages, channelId, scheduled, false, movedToScheduled, movedToScheduledMessageId);
++            getNotificationCenter().postNotificationName(NotificationCenter.messagesDeleted, messages, channelId, scheduled, false, movedToScheduled, movedToScheduledMessageId, null, userInitiated);
+         } else {
+             if (taskRequest instanceof TLRPC.TL_channels_deleteMessages) {
+                 channelId = ((TLRPC.TL_channels_deleteMessages) taskRequest).channel.channel_id;
+@@ -9530,8 +9538,8 @@ public class MessagesController extends BaseController implements NotificationCe
+         }
+ 
+         markDialogMessageAsDeleted(dialogId, messages);
++        getMessagesStorage().markMessagesAsDeleted(dialogId, messages, true, true, ephemeralMessage.isWelcomeMessage() ? ChatActivity.MODE_WELCOME_MESSAGES : 0, topicId, true);
+         getMessagesStorage().deleteEphemeralMessages(dialogId, ephemeralMessage.getEphemeralId());
+-        getMessagesStorage().markMessagesAsDeleted(dialogId, messages, true, true, ephemeralMessage.isWelcomeMessage() ? ChatActivity.MODE_WELCOME_MESSAGES : 0, topicId);
+         getMessagesStorage().updateDialogsWithDeletedMessages(dialogId, channelId, messages, null);
+         getNotificationCenter().postNotificationName(NotificationCenter.messagesDeleted, messages, channelId, false, false, false, 0);
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index 98e066ea4..d960d9cb8 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -14515,6 +14515,10 @@ public class MessagesStorage extends BaseController {
+     }
+ 
+     private ArrayList<Long> markMessagesAsDeletedInternal(long dialogId, ArrayList<Integer> messages, boolean deleteFiles, int mode, int threadMessageId) {
++        return markMessagesAsDeletedInternal(dialogId, messages, deleteFiles, mode, threadMessageId, false);
++    }
++
++    private ArrayList<Long> markMessagesAsDeletedInternal(long dialogId, ArrayList<Integer> messages, boolean deleteFiles, int mode, int threadMessageId, boolean userInitiated) {
+         SQLiteCursor cursor = null;
+         SQLitePreparedStatement state = null;
+         try {
+@@ -14591,6 +14595,7 @@ public class MessagesStorage extends BaseController {
+                 LongSparseArray<ArrayList<Integer>> savedMessagesByDialogs = new LongSparseArray<>();
+                 HashMap<TopicKey, int[]> topicsMessagesToUpdate = new HashMap<>();
+                 LongSparseArray<ArrayList<Integer>> messagesByDialogs = new LongSparseArray<>();
++                LongSparseArray<ArrayList<Integer>> teleKeptMids = new LongSparseArray<>();
+                 String ids = TextUtils.join(",", messages);
+                 ArrayList<File> filesToDelete = new ArrayList<>();
+                 ArrayList<String> namesToDelete = new ArrayList<>();
+@@ -14631,18 +14636,33 @@ public class MessagesStorage extends BaseController {
+                                 }
+                             }
+                         }
+-                        if (!DialogObject.isEncryptedDialog(did) && !deleteFiles && did != currentUser) {
++                        if (!DialogObject.isEncryptedDialog(did) && !deleteFiles && did != currentUser && !tele.TeleConfig.KEEP_DELETED_MESSAGES.getValue() && !(userInitiated && tele.TeleConfig.KEEP_SELF_DELETED_MESSAGES.getValue() && cursor.intValue(3) != 0)) {
+                             continue;
+                         }
+                         NativeByteBuffer data = cursor.byteBufferValue(1);
+                         if (data != null) {
+                             TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                             message.readAttachPath(data, currentUser);
++                            message.id = mid;
++                            message.dialog_id = did;
++                            boolean teleWasKept = tele.helpers.DeletedMessages.isKeptDb(currentAccount, did, mid);
++                            tele.helpers.DeletedMessages.archiveMessage(currentAccount, message, userInitiated);
++                            if (teleWasKept) {
++                                tele.helpers.DeletedMessages.removeKeptDb(currentAccount, did, mid);
++                            } else if (tele.helpers.DeletedMessages.keepInChat(currentAccount, message, userInitiated)) {
++                                ArrayList<Integer> teleKept = teleKeptMids.get(did);
++                                if (teleKept == null) {
++                                    teleKept = new ArrayList<>();
++                                    teleKeptMids.put(did, teleKept);
++                                }
++                                teleKept.add(mid);
++                            }
++                            data.reuse();
+                             if (deletedMessages != null) {
+                                 deletedMessages.add(message);
+                             }
+-                            data.reuse();
+-                            if (DialogObject.isEncryptedDialog(did) || deleteFiles) {
++                            boolean teleArchived = tele.helpers.DeletedMessages.shouldArchive(currentAccount, message.out, userInitiated, message.dialog_id);
++                            if ((DialogObject.isEncryptedDialog(did) || deleteFiles) && !teleArchived) {
+                                 addFilesToDelete(message, filesToDelete, idsToDelete, namesToDelete, false);
+                             }
+ 
+@@ -14886,11 +14906,26 @@ public class MessagesStorage extends BaseController {
+                         cursor.dispose();
+                         cursor = null;
+                     }
+-                    database.executeFast(String.format(Locale.US, "DELETE FROM messages_v2 WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
+-                    database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
+-                    database.executeFast(String.format(Locale.US, "DELETE FROM polls_v2 WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
+-                    database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
+-                    database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard_topics WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
++                    String teleDeleteIds = ids;
++                    ArrayList<Integer> teleKept = teleKeptMids.get(did, null);
++                    if (teleKept != null && !teleKept.isEmpty()) {
++                        StringBuilder teleBuilder = new StringBuilder();
++                        for (int m = 0, M = messages.size(); m < M; m++) {
++                            Integer messageId = messages.get(m);
++                            if (!teleKept.contains(messageId)) {
++                                if (teleBuilder.length() > 0) {
++                                    teleBuilder.append(',');
++                                }
++                                teleBuilder.append(messageId);
++                            }
++                        }
++                        teleDeleteIds = teleBuilder.length() > 0 ? teleBuilder.toString() : "0";
++                    }
++                    database.executeFast(String.format(Locale.US, "DELETE FROM messages_v2 WHERE mid IN(%s) AND uid = %d", teleDeleteIds, did)).stepThis().dispose();
++                    database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE mid IN(%s) AND uid = %d", teleDeleteIds, did)).stepThis().dispose();
++                    database.executeFast(String.format(Locale.US, "DELETE FROM polls_v2 WHERE mid IN(%s) AND uid = %d", teleDeleteIds, did)).stepThis().dispose();
++                    database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard WHERE mid IN(%s) AND uid = %d", teleDeleteIds, did)).stepThis().dispose();
++                    database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard_topics WHERE mid IN(%s) AND uid = %d", teleDeleteIds, did)).stepThis().dispose();
+                     if (unknownMessages.isEmpty()) {
+                         cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, type FROM media_v4 WHERE mid IN(%s) AND uid = %d", ids, did));
+                         SparseArray<LongSparseArray<Integer>> mediaCounts = null;
+@@ -15312,6 +15347,18 @@ public class MessagesStorage extends BaseController {
+         executeInStorageQueue(() -> updateDialogsWithDeletedMessagesInternal(dialogId, channelId, messages, additionalDialogsToUpdate));
+     }
+ 
++    public ArrayList<Long> markMessagesAsDeleted(long dialogId, ArrayList<Integer> messages, boolean useQueue, boolean deleteFiles, int mode, int topicId, boolean userInitiated) {
++        if (messages.isEmpty()) {
++            return null;
++        }
++        if (useQueue) {
++            storageQueue.postRunnable(() -> markMessagesAsDeletedInternal(dialogId, messages, deleteFiles, mode, topicId, userInitiated));
++        } else {
++            return markMessagesAsDeletedInternal(dialogId, messages, deleteFiles, mode, topicId, userInitiated);
++        }
++        return null;
++    }
++
+     public ArrayList<Long> markMessagesAsDeleted(long dialogId, ArrayList<Integer> messages, boolean useQueue, boolean deleteFiles, int mode, int topicId) {
+         if (messages.isEmpty()) {
+             return null;
+@@ -15334,9 +15381,10 @@ public class MessagesStorage extends BaseController {
+             ArrayList<File> filesToDelete = new ArrayList<>();
+             ArrayList<String> namesToDelete = new ArrayList<>();
+             ArrayList<Pair<Long, Integer>> idsToDelete = new ArrayList<>();
++            ArrayList<Integer> teleKeptChannelMids = new ArrayList<>();
+             long currentUser = getUserConfig().getClientUserId();
+ 
+-            cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, data, read_state, out, mention FROM messages_v2 WHERE uid = %d AND mid <= %d", -channelId, mid));
++            cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, data, read_state, out, mention, mid, date FROM messages_v2 WHERE uid = %d AND mid <= %d", -channelId, mid));
+ 
+             try {
+                 while (cursor.next()) {
+@@ -15357,15 +15405,27 @@ public class MessagesStorage extends BaseController {
+                             }
+                         }
+                     }
+-                    if (!DialogObject.isEncryptedDialog(did) && !deleteFiles) {
++                    if (!DialogObject.isEncryptedDialog(did) && !deleteFiles && !tele.TeleConfig.KEEP_DELETED_MESSAGES.getValue()) {
+                         continue;
+                     }
+                     NativeByteBuffer data = cursor.byteBufferValue(1);
+                     if (data != null) {
+                         TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                         message.readAttachPath(data, getUserConfig().clientUserId);
++                        message.id = cursor.intValue(5);
++                        message.dialog_id = did;
++                        message.date = cursor.intValue(6);
++                        boolean archived = tele.helpers.DeletedMessages.shouldArchive(currentAccount, message.out, false, message.dialog_id);
++                        if (archived) {
++                            tele.helpers.DeletedMessages.archiveMessage(currentAccount, message, false);
++                            if (tele.helpers.DeletedMessages.keepInChat(currentAccount, message, false)) {
++                                teleKeptChannelMids.add(message.id);
++                            }
++                        }
+                         data.reuse();
+-                        addFilesToDelete(message, filesToDelete, idsToDelete, namesToDelete, false);
++                        if (!archived) {
++                            addFilesToDelete(message, filesToDelete, idsToDelete, namesToDelete, false);
++                        }
+                     }
+                 }
+             } catch (Exception e) {
+@@ -15429,8 +15489,9 @@ public class MessagesStorage extends BaseController {
+                 cursor = null;
+             }
+ 
+-            database.executeFast(String.format(Locale.US, "DELETE FROM messages_v2 WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
+-            database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
++            String teleNotIn = teleKeptChannelMids.isEmpty() ? "" : " AND mid NOT IN(" + TextUtils.join(",", teleKeptChannelMids) + ")";
++            database.executeFast(String.format(Locale.US, "DELETE FROM messages_v2 WHERE uid = %d AND mid <= %d" + teleNotIn, -channelId, mid)).stepThis().dispose();
++            database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE uid = %d AND mid <= %d" + teleNotIn, -channelId, mid)).stepThis().dispose();
+             database.executeFast(String.format(Locale.US, "DELETE FROM media_v4 WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
+             database.executeFast(String.format(Locale.US, "UPDATE media_counts_v2 SET old = 1 WHERE uid = %d", -channelId)).stepThis().dispose();
+             database.executeFast(String.format(Locale.US, "UPDATE media_counts_topics SET old = 1 WHERE uid = %d", -channelId)).stepThis().dispose();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index dc2e01de5..0cde4eea3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -6792,6 +6792,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     public MultiLayoutTypingAnimator botDraftTypingAnimator;
+ 
+     private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
++        teleKeptDeleted = messageObject != null && tele.helpers.DeletedMessages.isKept(messageObject);
+         if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
+             currentMessageObject = null;
+         }
+@@ -13384,6 +13385,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             groupedMessagesToSet = null;
+         }
+     }
++    private boolean teleKeptDeleted;
++
+ 
+     private int getAdditionalWidthForPosition(MessageObject.GroupedMessagePosition position) {
+         int w = 0;
+@@ -18551,9 +18554,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                 currentTimeString = TextUtils.concat(formatString(R.string.MessageScheduledRepeatSeconds, period), ", ", currentTimeString);
+             }
+         }
++        if (teleKeptDeleted && tele.helpers.DeletedMessages.textMarker() && !currentMessageObject.notime) {
++            currentTimeString = TextUtils.concat(tele.helpers.DeletedMessages.markerText(), "  ", currentTimeString);
++        }
+         timeTextWidth = timeWidth = (int) Math.ceil(Theme.chat_timePaint.measureText(currentTimeString, 0, currentTimeString == null ? 0 : currentTimeString.length()));
+-        if (currentMessageObject.scheduled && currentMessageObject.messageOwner.date == 0x7FFFFFFE || currentMessageObject.notime) {
+-            timeWidth -= dp(8);
++        if (teleKeptDeleted && tele.helpers.DeletedMessages.iconMarker() && !currentMessageObject.notime) {
++            timeWidth += tele.helpers.DeletedMessages.markerWidth();
+         }
+ 
+         final boolean isInWelcomeMessages = delegate != null && delegate.getChatMode() == ChatActivity.MODE_WELCOME_MESSAGES;
+@@ -20184,6 +20190,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         if (sponosoredAlpha != 255) {
+             restoreToSponosoredAlpha = canvas.saveLayerAlpha(0, 0, getMeasuredWidth(), getMeasuredHeight(), sponosoredAlpha);
+         }
++        int restoreToTeleKept = -1;
++        if (teleKeptDeleted && tele.helpers.DeletedMessages.fadeMarker()) {
++            restoreToTeleKept = canvas.saveLayerAlpha(0, 0, getMeasuredWidth(), getMeasuredHeight(), (int) (255 * 0.5f));
++        }
+ 
+         setupTextColors();
+ 
+@@ -20384,6 +20394,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         }
+         updateSelectionTextPosition();
+ 
++        if (restoreToTeleKept != -1) {
++            canvas.restoreToCount(restoreToTeleKept);
++        }
+         if (restoreToSponosoredAlpha != -1) {
+             canvas.restoreToCount(restoreToSponosoredAlpha);
+         }
+@@ -23933,6 +23946,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                 drawTimeInternal(canvas, currentAlpha, fromParent, timeX, timeLayout, timeWidth, drawSelectionBackground);
+             }
+         }
++        if (teleKeptDeleted && tele.helpers.DeletedMessages.iconMarker() && !currentMessageObject.notime) {
++            tele.helpers.DeletedMessages.drawTrashMarker(canvas, this.timeX + this.timeWidth + transitionParams.deltaRight, getTimeY() + Theme.chat_timePaint.getTextSize() / 2f, Theme.chat_timePaint.getColor(), alpha);
++        }
++
+ 
+         if (transitionParams.animateBackgroundBoundsInner && !(currentMessageObject != null && currentMessageObject.preview)) {
+             drawOverlays(canvas);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 544d991a9..5a3e4db0a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -22532,6 +22532,20 @@ public class ChatActivity extends BaseFragment implements
+             ArrayList<Integer> sentMessages = null;
+             if (args.length > 6) sentMessages = (ArrayList<Integer>) args[6];
+             boolean movedToScheduled = args.length > 4 && (boolean) args[4] || sentMessages != null && !sentMessages.isEmpty();
++            if (chatMode == MODE_DEFAULT && !movedToScheduled) {
++                ArrayList<Integer> teleKeptIds = tele.helpers.DeletedMessages.filterInChat(currentAccount, dialog_id, markAsDeletedMessages, args.length > 7 && (Boolean) args[7], mid -> {
++                    MessageObject object = messagesDict[0].get(mid);
++                    return object != null ? object : messagesDict[1].get(mid);
++                });
++                if (teleKeptIds != null) {
++                    markAsDeletedMessages = teleKeptIds;
++                    if (chatAdapter != null) {
++                        chatAdapter.notifyDataSetChanged(false);
++                    }
++                    // nothing is removed when every deleted message is kept, so the stock refresh in processDeletedMessages never runs
++                    updateVisibleRows();
++                }
++            }
+             final ArrayList<MessageObject> messages = new ArrayList<>();
+             MessageObject conversionMessage = null;
+             boolean conversion = false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/AlertsCreator.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/AlertsCreator.java
+index 6f97243f0..bd08b4c32 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/AlertsCreator.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/AlertsCreator.java
+@@ -7834,7 +7834,7 @@ public class AlertsCreator {
+                             if (mergeDialogId != 0 && selectedMessage.messageOwner.peer_id != null && selectedMessage.messageOwner.peer_id.chat_id == -mergeDialogId) {
+                                 thisDialogId = mergeDialogId;
+                             }
+-                            MessagesController.getInstance(currentAccount).deleteMessages(ids, random_ids, encryptedChat, thisDialogId, topicId, true, mode);
++                            MessagesController.getInstance(currentAccount).deleteMessagesFromUser(ids, random_ids, encryptedChat, thisDialogId, topicId, true, mode);
+                         } else {
+                             for (int a = 1; a >= 0; a--) {
+                                 ids = new ArrayList<>();
+@@ -7851,7 +7851,7 @@ public class AlertsCreator {
+                                         }
+                                     }
+                                 }
+-                                MessagesController.getInstance(currentAccount).deleteMessages(ids, random_ids, encryptedChat, (a == 1 && mergeDialogId != 0) ? mergeDialogId : thisDialogId, topicId, true, mode);
++                                MessagesController.getInstance(currentAccount).deleteMessagesFromUser(ids, random_ids, encryptedChat, (a == 1 && mergeDialogId != 0) ? mergeDialogId : thisDialogId, topicId, true, mode);
+                                 selectedMessages[a].clear();
+                             }
+                         }
+@@ -8163,7 +8163,7 @@ public class AlertsCreator {
+                     thisDialogId = mergeDialogId;
+                 }
+                 if (!ids.isEmpty()) {
+-                    MessagesController.getInstance(currentAccount).deleteMessages(ids, random_ids, encryptedChat, thisDialogId, topicId, deleteForAll[0], mode);
++                    MessagesController.getInstance(currentAccount).deleteMessagesFromUser(ids, random_ids, encryptedChat, thisDialogId, topicId, deleteForAll[0], mode);
+                 }
+                 for (MessageObject msg: ephemeralMessages) {
+                     MessagesController.getInstance(currentAccount).deleteEphemeralMessage(thisDialogId, topicId, msg);
+@@ -8184,7 +8184,7 @@ public class AlertsCreator {
+                             }
+                         }
+                     }
+-                    MessagesController.getInstance(currentAccount).deleteMessages(ids, random_ids, encryptedChat, (a == 1 && mergeDialogId != 0) ? mergeDialogId : thisDialogId, topicId, deleteForAll[0], mode);
++                    MessagesController.getInstance(currentAccount).deleteMessagesFromUser(ids, random_ids, encryptedChat, (a == 1 && mergeDialogId != 0) ? mergeDialogId : thisDialogId, topicId, deleteForAll[0], mode);
+                     selectedMessages[a].clear();
+                 }
+             }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java
+index 885ff5a22..bc46fb5ee 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java
+@@ -1118,10 +1118,10 @@ public class DeleteMessagesBottomSheet extends BottomSheetWithRecyclerListView {
+             }
+         } else {
+             if (!supergroupMessageIds.isEmpty()) {
+-                MessagesController.getInstance(currentAccount).deleteMessages(supergroupMessageIds, null, null, -inChat.id, topicId, false, mode);
++                MessagesController.getInstance(currentAccount).deleteMessagesFromUser(supergroupMessageIds, null, null, -inChat.id, topicId, false, mode);
+             }
+             if (!groupMessageIds.isEmpty()) {
+-                MessagesController.getInstance(currentAccount).deleteMessages(groupMessageIds, null, null, mergeDialogId, topicId, true, mode);
++                MessagesController.getInstance(currentAccount).deleteMessagesFromUser(groupMessageIds, null, null, mergeDialogId, topicId, true, mode);
+             }
+         }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+index a602a3bbf..7c09190b2 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+@@ -5443,7 +5443,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                                     encryptedChat = MessagesController.getInstance(currentAccount).getEncryptedChat(DialogObject.getEncryptedChatId(obj.getDialogId()));
+                                 }
+ 
+-                                MessagesController.getInstance(currentAccount).deleteMessages(arr, random_ids, encryptedChat, obj.getDialogId(), obj.getQuickReplyId(), deleteForAll[0], obj.getChatMode());
++                                MessagesController.getInstance(currentAccount).deleteMessagesFromUser(arr, random_ids, encryptedChat, obj.getDialogId(), obj.getQuickReplyId(), deleteForAll[0], obj.getChatMode());
+                             }
+                         } else if (!avatarsArr.isEmpty()) {
+                             if (currentIndex < 0 || currentIndex >= avatarsArr.size()) {
+@@ -5453,7 +5453,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                             if (message != null) {
+                                 ArrayList<Integer> arr = new ArrayList<>();
+                                 arr.add(message.id);
+-                                MessagesController.getInstance(currentAccount).deleteMessages(arr, null, null, MessageObject.getDialogId(message), message.quick_reply_shortcut_id, true, 0);
++                                MessagesController.getInstance(currentAccount).deleteMessagesFromUser(arr, null, null, MessageObject.getDialogId(message), message.quick_reply_shortcut_id, true, 0);
+                                 NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.reloadDialogPhotos);
+                             }
+                             if (isCurrentAvatarSet()) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/web/BookmarksFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/web/BookmarksFragment.java
+index e0f3bd73d..07aa3da8e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/web/BookmarksFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/web/BookmarksFragment.java
+@@ -121,7 +121,7 @@ public class BookmarksFragment extends UniversalFragment {
+             .setMessage(getString(ids.size() == 1 ? "AreYouSureUnsaveSingleMessage" : "AreYouSureUnsaveFewMessages"))
+             .setPositiveButton(getString(R.string.Delete), (di, w) -> {
+                 final long selfId = UserConfig.getInstance(currentAccount).getClientUserId();
+-                MessagesController.getInstance(currentAccount).deleteMessages(new ArrayList<>(ids), null, null, selfId, 0, true, 0);
++                MessagesController.getInstance(currentAccount).deleteMessagesFromUser(new ArrayList<>(ids), null, null, selfId, 0, true, 0);
+                 list.delete(new ArrayList<>(ids));
+                 if (searchList != null) {
+                     searchList.delete(new ArrayList<>(ids));
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 409b6f24b..1e4974c23 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -81,6 +81,16 @@ object TeleConfig {
+     @JvmField
+     val KEEP_DISAPPEARING_MEDIA = BoolItem("keep_disappearing_media", false)
+     @JvmField
++    val KEEP_DELETED_MESSAGES = BoolItem("keep_deleted_messages", false)
++    @JvmField
++    val KEEP_SELF_DELETED_MESSAGES = BoolItem("keep_self_deleted_messages", false)
++    @JvmField
++1:     val DELETED_MARKER = StringItem("deleted_marker", "fade")
++
++    @JvmField
++2:     <string name="TeleDeletedMarker">deleted</string>
++3:                 Row(TYPE_VALUE, "mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
++4:     data class ArchivedDialog(val dialogId: Long, val count: Int, val lastDeletedAt: Int)
+     val SHOW_PEER_ID = BoolItem("show_peer_id", false)
+     @JvmField
+     val PEER_IDS_WITHOUT_SPACES = BoolItem("peer_ids_without_spaces", false)
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 443833648..22f359475 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -36,12 +36,88 @@ object TeleDatabaseHelper {
+         return default
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 1) {
++    data class ArchivedMessage(val account: Int, val dialogId: Long, val messageId: Int, val date: Int, val deletedAt: Int, val data: ByteArray)
++1:     val DELETED_MARKER = StringItem("deleted_marker", "fade")
++
++    @JvmField
++2:     <string name="TeleDeletedMarker">deleted</string>
++3:                 Row(TYPE_VALUE, "mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
++4:     data class ArchivedDialog(val dialogId: Long, val count: Int, val lastDeletedAt: Int)
++
++    fun putDeletedMessage(account: Int, dialogId: Long, messageId: Int, date: Int, deletedAt: Int, data: ByteArray) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("dialog_id", dialogId)
++            put("message_id", messageId)
++            put("date", date)
++            put("deleted_at", deletedAt)
++            put("data", data)
++        }
++        db.insertWithOnConflict("tele_deleted_messages", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++    }
++
++    fun getDeletedMessages(account: Int, dialogId: Long? = null): List<ArchivedMessage> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<ArchivedMessage>()
++        val cursor = if (dialogId == null) {
++            db.rawQuery("SELECT account, dialog_id, message_id, date, deleted_at, data FROM tele_deleted_messages WHERE account = ? ORDER BY deleted_at DESC, message_id DESC", arrayOf(account.toString()))
++        } else {
++            db.rawQuery("SELECT account, dialog_id, message_id, date, deleted_at, data FROM tele_deleted_messages WHERE account = ? AND dialog_id = ? ORDER BY deleted_at DESC, message_id DESC", arrayOf(account.toString(), dialogId.toString()))
++        }
++        cursor.use {
++            while (it.moveToNext()) result.add(ArchivedMessage(it.getInt(0), it.getLong(1), it.getInt(2), it.getInt(3), it.getInt(4), it.getBlob(5)))
++        }
++        return result
++    }
++
++    fun deleteDeletedMessages(account: Int, dialogId: Long? = null) {
++        val db = helper?.writableDatabase ?: return
++        if (dialogId == null) db.delete("tele_deleted_messages", "account = ?", arrayOf(account.toString()))
++        else db.delete("tele_deleted_messages", "account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString()))
++    }
++    fun hasDeletedMessage(account: Int, dialogId: Long, messageId: Int): Boolean {
++        val db = helper?.readableDatabase ?: return false
++        db.rawQuery("SELECT 1 FROM tele_deleted_messages WHERE account = ? AND dialog_id = ? AND message_id = ? LIMIT 1", arrayOf(account.toString(), dialogId.toString(), messageId.toString())).use { return it.moveToFirst() }
++    }
++
++    fun removeDeletedMessage(account: Int, dialogId: Long, messageId: Int) {
++        val db = helper?.writableDatabase ?: return
++        db.delete("tele_deleted_messages", "account = ? AND dialog_id = ? AND message_id = ?", arrayOf(account.toString(), dialogId.toString(), messageId.toString()))
++    }
++
++    fun getKeptIds(account: Int, dialogId: Long): List<Int> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<Int>()
++        db.rawQuery("SELECT message_id FROM tele_deleted_messages WHERE account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString())).use {
++            while (it.moveToNext()) result.add(it.getInt(0))
++        }
++        return result
++    }
++
++    fun getDeletedDialogs(account: Int): List<ArchivedDialog> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<ArchivedDialog>()
++        db.rawQuery("SELECT dialog_id, COUNT(*), MAX(deleted_at) FROM tele_deleted_messages WHERE account = ? GROUP BY dialog_id ORDER BY MAX(deleted_at) DESC", arrayOf(account.toString())).use {
++            while (it.moveToNext()) result.add(ArchivedDialog(it.getLong(0), it.getInt(1), it.getInt(2)))
++        }
++        return result
++    }
++
++
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 2) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
++            createArchiveTables(db)
+         }
+ 
+         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
++            createArchiveTables(db)
++        }
++
++        private fun createArchiveTables(db: SQLiteDatabase) {
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_deleted_messages (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, deleted_at INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, message_id))")
++            db.execSQL("CREATE INDEX IF NOT EXISTS tele_deleted_messages_date ON tele_deleted_messages(account, deleted_at DESC)")
+         }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+new file mode 100644
+index 000000000..4e541f11c
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -0,0 +1,156 @@
++package tele.helpers
++
++import android.graphics.Canvas
++import android.graphics.PorterDuff
++import android.graphics.drawable.Drawable
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.SerializedData
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.ConcurrentHashMap
++
++object DeletedMessages {
++    @JvmStatic
++    fun shouldArchive(account: Int, outgoing: Boolean, userInitiated: Boolean = false, dialogId: Long = 0L): Boolean =
++        !org.telegram.messenger.DialogObject.isEncryptedDialog(dialogId) && (TeleConfig.KEEP_DELETED_MESSAGES.value || outgoing && userInitiated && TeleConfig.KEEP_SELF_DELETED_MESSAGES.value)
++
++    @JvmStatic
++    fun keepInChat(account: Int, message: TLRPC.Message, userInitiated: Boolean): Boolean {
++        if (message.id <= 0) return false
++        if (!shouldArchive(account, message.out, userInitiated, message.dialog_id)) return false
++        if (message.action != null && message.action !is TLRPC.TL_messageActionEmpty) return false
++        val media = message.media
++        if (media != null && media.ttl_seconds != 0) return false
++        return true
++    }
++
++    @JvmStatic
++    fun archiveMessage(account: Int, message: TLRPC.Message, userInitiated: Boolean = false) {
++        if (message.id <= 0 || !shouldArchive(account, message.out, userInitiated, message.dialog_id)) return
++        val stream = SerializedData(message.getObjectSize())
++        try {
++            message.serializeToStream(stream)
++            TeleDatabaseHelper.putDeletedMessage(account, message.dialog_id, message.id, message.date, (System.currentTimeMillis() / 1000L).toInt(), stream.toByteArray())
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    @JvmStatic
++    fun isKeptDb(account: Int, dialogId: Long, messageId: Int): Boolean {
++        return TeleDatabaseHelper.hasDeletedMessage(account, dialogId, messageId)
++    }
++
++    @JvmStatic
++    fun removeKeptDb(account: Int, dialogId: Long, messageId: Int) {
++        TeleDatabaseHelper.removeDeletedMessage(account, dialogId, messageId)
++    }
++
++    private val keptInChat = ConcurrentHashMap<Int, ConcurrentHashMap<Long, MutableSet<Int>>>()
++    private val loadedDialogs = ConcurrentHashMap.newKeySet<Long>()
++
++    private fun dialogKey(account: Int, dialogId: Long): Long = (account.toLong() shl 48) or (dialogId and 0xFFFFFFFFFFFFL)
++
++    @JvmStatic
++    fun ensureLoaded(account: Int, dialogId: Long) {
++        val key = dialogKey(account, dialogId)
++        if (!loadedDialogs.add(key)) return
++        val ids = TeleDatabaseHelper.getKeptIds(account, dialogId)
++        keptInChat.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap.newKeySet() }.addAll(ids)
++    }
++
++    @JvmStatic
++    fun isKept(account: Int, dialogId: Long, messageId: Int): Boolean {
++        ensureLoaded(account, dialogId)
++        return keptInChat[account]?.get(dialogId)?.contains(messageId) == true
++    }
++
++    @JvmStatic
++    fun isKept(messageObject: MessageObject): Boolean {
++        return messageObject.messageOwner != null && isKept(messageObject.currentAccount, messageObject.getDialogId(), messageObject.getId())
++    }
++
++    @JvmStatic
++    fun filterInChat(account: Int, dialogId: Long, ids: ArrayList<Int>, userInitiated: Boolean, lookup: (Int) -> MessageObject?): ArrayList<Int>? {
++        if (ids.isEmpty()) return null
++        ensureLoaded(account, dialogId)
++        val set = keptInChat.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap.newKeySet() }
++        var keptAny = false
++        val result = ArrayList<Int>(ids.size)
++        for (id in ids) {
++            val obj = lookup(id)
++            if (obj != null && obj.messageOwner != null) {
++                if (set.contains(id)) {
++                    set.remove(id)
++                } else if (keepInChat(account, obj.messageOwner, userInitiated)) {
++                    set.add(id)
++                    keptAny = true
++                    continue
++                }
++            }
++            result.add(id)
++        }
++        return if (keptAny) result else null
++    }
++
++    @JvmStatic
++    fun getAll(account: Int, dialogId: Long? = null): List<TLRPC.Message> {
++        return TeleDatabaseHelper.getDeletedMessages(account, dialogId).mapNotNull { row ->
++            runCatching {
++                val stream = SerializedData(row.data)
++                try {
++                    val message = TLRPC.Message.TLdeserialize(stream, stream.readInt32(false), false) ?: return@runCatching null
++                    message.readAttachPath(stream, UserConfig.getInstance(account).clientUserId)
++                    message.dialog_id = row.dialogId
++                    message.id = row.messageId
++                    message
++                } finally {
++                    stream.cleanup()
++                }
++            }.getOrNull()
++        }
++    }
++
++    fun getDialogs(account: Int): List<TeleDatabaseHelper.ArchivedDialog> = TeleDatabaseHelper.getDeletedDialogs(account)
++
++    fun deleteAll(account: Int, dialogId: Long? = null) {
++        TeleDatabaseHelper.deleteDeletedMessages(account, dialogId)
++    }
++
++    @JvmStatic
++    fun fadeMarker(): Boolean = TeleConfig.DELETED_MARKER.value == "fade"
++    @JvmStatic
++    fun textMarker(): Boolean = TeleConfig.DELETED_MARKER.value == "text"
++    @JvmStatic
++    fun iconMarker(): Boolean = TeleConfig.DELETED_MARKER.value == "icon"
++
++    @JvmStatic
++    fun markerText(): CharSequence = LocaleController.getString(R.string.TeleDeletedMarker)
++    @JvmStatic
++    fun markerWidth(): Int = AndroidUtilities.dp(18f)
++
++    private var trashDrawable: Drawable? = null
++    private var trashColor = 0
++
++    @JvmStatic
++    fun drawTrashMarker(canvas: Canvas, rightX: Float, centerY: Float, color: Int, alpha: Float) {
++        if (trashDrawable == null) {
++            trashDrawable = ApplicationLoader.applicationContext.getDrawable(R.drawable.msg_delete)?.mutate()
++            if (trashDrawable == null) return
++        }
++        if (trashColor != color) {
++            trashColor = color
++            trashDrawable!!.colorFilter = android.graphics.PorterDuffColorFilter(color, PorterDuff.Mode.SRC_ATOP)
++        }
++        trashDrawable!!.alpha = (alpha * 255).toInt()
++        val size = AndroidUtilities.dp(14f)
++        trashDrawable!!.setBounds((rightX - size).toInt(), (centerY - size / 2f).toInt(), rightX.toInt(), (centerY + size / 2f).toInt())
++        trashDrawable!!.draw(canvas)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+new file mode 100644
+index 000000000..f6ee8b720
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+@@ -0,0 +1,258 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.Typeface
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ChatMessageSharedResources
++import org.telegram.messenger.ContactsController
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.ChatMessageCell
++import org.telegram.ui.Components.AvatarDrawable
++import org.telegram.ui.Components.BackupImageView
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.db.TeleDatabaseHelper
++import tele.helpers.DeletedMessages
++
++class TeleDeletedMessagesActivity : BaseFragment() {
++    private val account get() = UserConfig.selectedAccount
++    private val dialogId get() = arguments?.getLong(ARG_DIALOG_ID) ?: 0L
++    private var dialogs: List<TeleDatabaseHelper.ArchivedDialog> = emptyList()
++    private var messages: List<TLRPC.Message> = emptyList()
++    private var adapter: Adapter? = null
++    private var sharedResources: ChatMessageSharedResources? = null
++
++    private val isDialogMode get() = dialogId != 0L
++
++    private fun reload() {
++        if (isDialogMode) {
++            messages = DeletedMessages.getAll(account, dialogId)
++        } else {
++            dialogs = DeletedMessages.getDialogs(account)
++        }
++        adapter?.notifyDataSetChanged()
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(if (isDialogMode) peerTitle(dialogId) else LocaleController.getString(R.string.TeleDeletedMessages))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment()
++                else if (id == MENU_CLEAR) confirmClear()
++            }
++        })
++        actionBar.createMenu().addItem(MENU_CLEAR, R.drawable.msg_delete)
++
++        reload()
++        val container = FrameLayout(context)
++        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = container
++        val list = ChatList(context)
++        val layoutManager = LinearLayoutManager(context)
++        if (isDialogMode) {
++            layoutManager.stackFromEnd = true
++        }
++        list.setLayoutManager(layoutManager)
++        list.setVerticalScrollBarEnabled(false)
++        adapter = Adapter(context)
++        list.adapter = adapter
++        list.setOnItemClickListener { _, position ->
++            if (!isDialogMode) {
++                dialogs.getOrNull(position)?.let { presentFragment(ofDialog(it.dialogId)) }
++            }
++        }
++        container.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        return container
++    }
++
++    private inner class ChatList(context: Context) : RecyclerListView(context) {
++        override fun dispatchDraw(canvas: Canvas) {
++            for (i in 0 until childCount) {
++                val child = getChildAt(i)
++                if (child is ChatMessageCell) {
++                    child.setParentViewSize(measuredWidth, measuredHeight)
++                }
++            }
++            super.dispatchDraw(canvas)
++        }
++    }
++
++    override fun onResume() {
++        super.onResume()
++        reload()
++    }
++
++    private fun confirmClear() {
++        if (isDialogMode) {
++            if (messages.isEmpty()) return
++            val ids = ArrayList<Int>(messages.size)
++            for (message in messages) ids.add(message.id)
++            clearDialog(dialogId, ids)
++            return
++        }
++        if (dialogs.isEmpty()) return
++        for (dialog in dialogs) {
++            val ids = ArrayList<Int>()
++            for (message in DeletedMessages.getAll(account, dialog.dialogId)) ids.add(message.id)
++            clearDialog(dialog.dialogId, ids)
++        }
++    }
++
++    private fun clearDialog(targetDialogId: Long, ids: ArrayList<Int>) {
++        DeletedMessages.deleteAll(account, targetDialogId)
++        if (ids.isNotEmpty()) {
++            MessagesController.getInstance(account).deleteMessagesFromUser(ids, null, null, targetDialogId, 0, false, 0)
++        }
++        reload()
++    }
++
++    private fun peerTitle(id: Long): String {
++        val controller = MessagesController.getInstance(account)
++        if (id > 0) {
++            val user = controller.getUser(id)
++            if (user != null) return ContactsController.formatName(user.first_name, user.last_name)
++        } else if (id < 0) {
++            val chat = controller.getChat(-id)
++            if (chat != null) return chat.title
++        }
++        return "id $id"
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        override fun getItemCount(): Int = if (isDialogMode) maxOf(messages.size * 2, 1) else maxOf(dialogs.size, 1)
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = !isDialogMode
++
++        override fun getItemViewType(position: Int): Int {
++            return if (isDialogMode) {
++                if (messages.isEmpty()) TYPE_EMPTY else if (position % 2 == 0) TYPE_LABEL else TYPE_MESSAGE
++            } else {
++                if (dialogs.isEmpty()) TYPE_EMPTY else TYPE_DIALOG
++            }
++        }
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_EMPTY -> TextView(context).apply {
++                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++                    textSize = 14f
++                    setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(12f), AndroidUtilities.dp(16f), AndroidUtilities.dp(4f))
++                }
++                TYPE_LABEL -> TextView(context).apply {
++                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
++                    textSize = 13f
++                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
++                    setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(12f), AndroidUtilities.dp(16f), AndroidUtilities.dp(4f))
++                }
++                TYPE_MESSAGE -> ChatMessageCell(context, account, false, sharedResources ?: ChatMessageSharedResources(context).also { sharedResources = it }, resourceProvider)
++                else -> LinearLayout(context).apply {
++                    orientation = LinearLayout.HORIZONTAL
++                    gravity = Gravity.CENTER_VERTICAL
++                    setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++                    val avatar = BackupImageView(context).apply { tag = AVATAR_TAG }
++                    addView(avatar, LinearLayout.LayoutParams(AndroidUtilities.dp(48f), AndroidUtilities.dp(48f)).apply {
++                        leftMargin = AndroidUtilities.dp(12f)
++                        topMargin = AndroidUtilities.dp(8f)
++                        bottomMargin = AndroidUtilities.dp(8f)
++                    })
++                    val textColumn = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
++                    addView(textColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
++                        leftMargin = AndroidUtilities.dp(12f)
++                        rightMargin = AndroidUtilities.dp(16f)
++                    })
++                    textColumn.addView(TextView(context).apply {
++                        tag = TITLE_TAG
++                        setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++                        textSize = 16f
++                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++                    textColumn.addView(TextView(context).apply {
++                        tag = SUBTITLE_TAG
++                        setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++                        textSize = 13f
++                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++                }
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            when (getItemViewType(position)) {
++                TYPE_EMPTY -> (holder.itemView as TextView).text = LocaleController.getString(R.string.TeleDeletedHistoryEmpty)
++                TYPE_DIALOG -> {
++                    val dialog = dialogs[position]
++                    val avatar = holder.itemView.findViewWithTag<BackupImageView>(AVATAR_TAG)
++                    val controller = MessagesController.getInstance(account)
++                    val user = controller.getUser(dialog.dialogId)
++                    val chat = controller.getChat(-dialog.dialogId)
++                    if (user != null) {
++                        val avatarDrawable = AvatarDrawable(user)
++                        avatar.setForUserOrChat(user, avatarDrawable)
++                    } else if (chat != null) {
++                        val avatarDrawable = AvatarDrawable(chat)
++                        avatar.setForUserOrChat(chat, avatarDrawable)
++                    }
++                    holder.itemView.findViewWithTag<TextView>(TITLE_TAG).text = peerTitle(dialog.dialogId)
++                    val count = dialog.count
++                    val preview = if (count == 1) "1 deleted message" else "$count deleted messages"
++                    holder.itemView.findViewWithTag<TextView>(SUBTITLE_TAG).text = "$preview · ${LocaleController.formatDateChat(dialog.lastDeletedAt.toLong())}"
++                }
++                TYPE_LABEL -> {
++                    val message = messages[position / 2]
++                    (holder.itemView as TextView).text = "${senderTitle(message)} · ${LocaleController.formatDateChat(message.date.toLong())}"
++                }
++                else -> {
++                    val message = messages[position / 2]
++                    val messageObject = MessageObject(account, message, true, false)
++                    (holder.itemView as ChatMessageCell).setMessageObject(messageObject, null, false, false, true, true)
++                }
++            }
++        }
++    }
++
++    private fun senderTitle(message: TLRPC.Message): String {
++        val senderId = message.from_id?.user_id ?: 0L
++        if (senderId != 0L) {
++            val user = MessagesController.getInstance(account).getUser(senderId)
++            if (user != null) return ContactsController.formatName(user.first_name, user.last_name)
++        }
++        return peerTitle(message.peer_id?.user_id ?: 0L)
++    }
++
++    companion object {
++        const val MODE_ARCHIVE = "deleted_archive"
++        private const val ARG_DIALOG_ID = "dialog_id"
++        private const val MENU_CLEAR = 1
++        private const val TYPE_EMPTY = 0
++        private const val TYPE_DIALOG = 1
++        private const val TYPE_LABEL = 2
++        private const val TYPE_MESSAGE = 3
++        private const val AVATAR_TAG = 4
++        private const val TITLE_TAG = 5
++        private const val SUBTITLE_TAG = 6
++
++        @JvmStatic
++        fun ofDialog(dialogId: Long): TeleDeletedMessagesActivity = TeleDeletedMessagesActivity().apply {
++            arguments = android.os.Bundle().apply { putLong(ARG_DIALOG_ID, dialogId) }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index afe7a6900..b45909672 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -80,9 +80,12 @@ object TeleSearch {
+             section(GUID_DATA, "tele your data", "your data", TeleSettingsActivity.MODE_DATA),
+             section(GUID_DATA + 1, "local names for people", "your data", TeleSettingsActivity.MODE_DATA),
+             section(GUID_DATA + 2, "username aliases", "your data", TeleSettingsActivity.MODE_DATA),
+-            screen(GUID_DATA + 3, "manage local names") { TeleNamesActivity(TeleNamesActivity.MODE_LOCAL) },
+-            screen(GUID_DATA + 4, "manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
+-
++            section(GUID_DATA + 3, "keep deleted messages", "your data", TeleSettingsActivity.MODE_DATA),
++            section(GUID_DATA + 4, "keep messages you delete yourself", "your data", TeleSettingsActivity.MODE_DATA),
++            screen(GUID_DATA + 5, "deleted messages") { TeleDeletedMessagesActivity() },
++            screen(GUID_DATA + 8, "manage local names") { TeleNamesActivity(TeleNamesActivity.MODE_LOCAL) },
++            screen(GUID_DATA + 9, "manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
++            section(GUID_DATA + 10, "mark deleted messages with", "your data", TeleSettingsActivity.MODE_DATA),
+             section(GUID_SENDING, "tele sending", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 1, "send photos in HD by default", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 2, "send scheduled messages on time", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 1f10f63a0..83ce5e3f9 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -49,6 +49,19 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         showDialog(builder.create())
+     }
+ 
++    private fun chooseDeletedMarker() {
++        val activity = parentActivity ?: return
++        val values = arrayOf("fade", "text", "icon")
++        val labels = arrayOf("fading", "a deleted label", "a trash icon")
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle("mark deleted messages with")
++        builder.setItems(labels) { _, which ->
++            TeleConfig.set(TeleConfig.DELETED_MARKER, values[which])
++            adapter?.refresh()
++        }
++        showDialog(builder.create())
++    }
++
+     private fun sectionTitle(): String = when (mode) {
+         MODE_INTERFACE -> "tele · interface"
+         MODE_PRIVACY -> "tele · privacy"
+@@ -89,11 +102,14 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleHooks.onConfigChanged(row.item)
+             } else if (row.type == TYPE_VALUE && row.item == TeleConfig.LINK_PREVIEW_MODE) {
+                 chooseLinkPreviewMode()
++            } else if (row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_MARKER) {
++                chooseDeletedMarker()
+             } else if (row.type == TYPE_LINK || row.type == TYPE_LINK_ICON) {
+                 when (row.mode) {
+                     TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+                     TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
+                     MODE_MENU -> presentFragment(TeleMenuActivity())
++                    TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
+                     MODE_RULES -> presentFragment(TeleRulesActivity())
+                     else -> presentFragment(TeleSettingsActivity(row.mode ?: MODE_ROOT))
+                 }
+@@ -254,8 +270,17 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             MODE_DATA -> listOf(
+                 Row(TYPE_HEADER, "your data"),
+                 toggle("local names for people", TeleConfig.LOCAL_NAMES),
++                toggle("keep deleted messages", TeleConfig.KEEP_DELETED_MESSAGES),
++                toggle("keep messages you delete yourself", TeleConfig.KEEP_SELF_DELETED_MESSAGES),
++1:     val DELETED_MARKER = StringItem("deleted_marker", "fade")
++
++    @JvmField
++2:     <string name="TeleDeletedMarker">deleted</string>
++3:                 Row(TYPE_VALUE, "mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
++4:     data class ArchivedDialog(val dialogId: Long, val count: Int, val lastDeletedAt: Int)
+                 toggle("username aliases", TeleConfig.USERNAME_ALIASES),
+                 Row(TYPE_SHADOW),
++                link("deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),
+                 Row(TYPE_HEADER, "manage"),
+                 link("local names", TeleNamesActivity.MODE_LOCAL),
+                 link("aliases", TeleNamesActivity.MODE_ALIAS),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 0f0d95562..36f56da7b 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -14,4 +14,14 @@
+     <string name="TeleAddLinkPreview">Add a link preview</string>
+     <string name="TeleLinkPreviewTitle">Add a link preview</string>
+     <string name="TeleLinkPreviewHint">https://</string>
++    <string name="TeleDeletedMessages">Deleted messages</string>
++    <string name="TeleClearDeletedHistory">Clear deleted history</string>
++    <string name="TeleDeleteArchivedMessages">Delete all archived messages?</string>
++    <string name="TeleDeletedHistoryEmpty">Deleted history is empty</string>
++1:     val DELETED_MARKER = StringItem("deleted_marker", "fade")
++
++    @JvmField
++2:     <string name="TeleDeletedMarker">deleted</string>
++3:                 Row(TYPE_VALUE, "mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
++4:     data class ArchivedDialog(val dialogId: Long, val count: Int, val lastDeletedAt: Int)
+ </resources>

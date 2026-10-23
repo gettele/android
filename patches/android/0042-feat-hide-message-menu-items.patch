@@ -1,0 +1,318 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 17:43:18 +0300
+Subject: [PATCH 042/128] feat: hide message menu items
+
+Every option of the message context menu is registered with a stable
+code, the parallel item/icon/option lists are filtered once at the end
+of fillMessageMenu (covers all three call sites), and an editor screen
+under tele > interface lists every item with a toggle. Stored codes
+survive locale changes; unknown codes are ignored.
+
+Ordering (0055) stays open: it needs a drag-and-drop editor and a
+per-item position map, this pass only covers visibility.
+
+Constraint: option codes are stable ints, not localized strings
+Rejected: keying by menu title | titles break on app language change
+Confidence: high
+Scope-risk: narrow
+Not-tested: interaction with the hidden-sensitive-content filter that also mutates the lists
+---
+ .../java/org/telegram/ui/ChatActivity.java    |   1 +
+ .../src/main/java/tele/helpers/MessageMenu.kt | 110 ++++++++++++++++++
+ .../java/tele/ui/settings/TeleMenuActivity.kt |  99 ++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  10 ++
+ 5 files changed, 221 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 6702307f7..49f72933d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -46680,6 +46680,7 @@ public class ChatActivity extends BaseFragment implements
+             options.add(OPTION_WELCOME_REVERT);
+             icons.add(R.drawable.outline_revert_24);
+         }
++        tele.helpers.MessageMenu.filter(items, icons, options);
+     }
+ 
+     private boolean showWelcomeMessageRevertOption(MessageObject messageObject) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+new file mode 100644
+index 000000000..ae6b4d9bd
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -0,0 +1,110 @@
++package tele.helpers
++
++import org.json.JSONArray
++import org.telegram.ui.ChatActivity
++import tele.db.TeleDatabaseHelper
++
++object MessageMenu {
++
++    class Item(val code: Int, val name: String)
++
++    @JvmStatic
++    val ALL: List<Item> = listOf(
++        Item(ChatActivity.OPTION_REPLY, "Reply"),
++        Item(ChatActivity.OPTION_COPY, "Copy"),
++        Item(ChatActivity.OPTION_FORWARD, "Forward"),
++        Item(ChatActivity.OPTION_EDIT, "Edit"),
++        Item(ChatActivity.OPTION_PIN, "Pin"),
++        Item(ChatActivity.OPTION_UNPIN, "Unpin"),
++        Item(ChatActivity.OPTION_DELETE, "Delete"),
++        Item(ChatActivity.OPTION_RETRY, "Retry"),
++        Item(ChatActivity.OPTION_CANCEL_SENDING, "Cancel sending"),
++        Item(ChatActivity.OPTION_SEND_NOW, "Send now"),
++        Item(ChatActivity.OPTION_EDIT_SCHEDULE_TIME, "Edit schedule time"),
++        Item(ChatActivity.OPTION_COPY_LINK, "Copy link"),
++        Item(ChatActivity.OPTION_TRANSLATE, "Translate"),
++        Item(ChatActivity.OPTION_VIEW_REPLIES_OR_THREAD, "View replies/thread"),
++        Item(ChatActivity.OPTION_VIEW_IN_TOPIC, "View in topic"),
++        Item(ChatActivity.OPTION_VIEW_STATISTICS, "View statistics"),
++        Item(ChatActivity.OPTION_SAVE_TO_GALLERY, "Save to gallery"),
++        Item(ChatActivity.OPTION_SAVE_TO_GALLERY2, "Save to gallery (media)"),
++        Item(ChatActivity.OPTION_SAVE_TO_DOWNLOADS_OR_MUSIC, "Save to downloads/music"),
++        Item(ChatActivity.OPTION_SHARE, "Share"),
++        Item(ChatActivity.OPTION_ADD_TO_GIFS, "Save to GIFs"),
++        Item(ChatActivity.OPTION_ADD_TO_STICKERS_OR_MASKS, "Add to stickers/masks"),
++        Item(ChatActivity.OPTION_ADD_STICKER_TO_FAVORITES, "Add to favorites"),
++        Item(ChatActivity.OPTION_DELETE_STICKER_FROM_FAVORITES, "Remove from favorites"),
++        Item(ChatActivity.OPTION_APPLY_LOCALIZATION_OR_THEME, "Apply file"),
++        Item(ChatActivity.OPTION_ADD_CONTACT, "Add contact"),
++        Item(ChatActivity.OPTION_COPY_PHONE_NUMBER, "Copy phone number"),
++        Item(ChatActivity.OPTION_CALL, "Call"),
++        Item(ChatActivity.OPTION_CALL_AGAIN, "Call again"),
++        Item(ChatActivity.OPTION_RATE_CALL, "Rate call"),
++        Item(ChatActivity.OPTION_REPORT_CHAT, "Report"),
++        Item(ChatActivity.OPTION_REPORT_AD, "Report ad"),
++        Item(ChatActivity.OPTION_HIDE_SPONSORED_MESSAGE, "Hide ad"),
++        Item(ChatActivity.OPTION_ABOUT_REVENUE_SHARING_ADS, "About revenue sharing"),
++        Item(ChatActivity.OPTION_REMOVE_ADS, "Remove ads"),
++        Item(ChatActivity.OPTION_GIFT, "Send a gift"),
++        Item(ChatActivity.OPTION_UNVOTE, "Unvote"),
++        Item(ChatActivity.OPTION_STOP_POLL_OR_QUIZ, "Stop poll"),
++        Item(ChatActivity.OPTION_EDIT_TODO, "Edit checklist"),
++        Item(ChatActivity.OPTION_ADD_TO_TODO, "Add tasks"),
++        Item(ChatActivity.OPTION_FACT_CHECK, "Edit fact check"),
++        Item(ChatActivity.OPTION_WELCOME_REVERT, "Revert welcome"),
++        Item(ChatActivity.tele_option_copy_msg_id, "copy message id"),
++        Item(ChatActivity.tele_option_copy_emoji_id, "copy emoji id"),
++        Item(ChatActivity.tele_option_mark_viewed, "mark as viewed")
++    )
++
++    private const val KEY = "message_menu_hidden"
++
++    private fun load(): MutableSet<Int>? {
++        val raw = TeleDatabaseHelper.get(KEY) ?: return null
++        val out = mutableSetOf<Int>()
++        runCatching {
++            val array = JSONArray(raw)
++            for (i in 0 until array.length()) {
++                out.add(array.getInt(i))
++            }
++        }
++        return out
++    }
++
++    private fun save(hidden: MutableSet<Int>) {
++        if (hidden.isEmpty()) {
++            TeleDatabaseHelper.put(KEY, null)
++        } else {
++            val array = JSONArray()
++            hidden.forEach { array.put(it) }
++            TeleDatabaseHelper.put(KEY, array.toString())
++        }
++    }
++
++    @JvmStatic
++    fun isHidden(code: Int): Boolean = load()?.contains(code) ?: false
++
++    @JvmStatic
++    fun setHidden(code: Int, hidden: Boolean) {
++        val set = load() ?: mutableSetOf()
++        if (hidden) {
++            set.add(code)
++        } else {
++            set.remove(code)
++        }
++        save(set)
++    }
++
++    @JvmStatic
++    fun filter(items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
++        val hidden = load() ?: return
++        if (hidden.isEmpty()) return
++        for (i in options.indices.reversed()) {
++            if (options[i] in hidden) {
++                items.removeAt(i)
++                icons.removeAt(i)
++                options.removeAt(i)
++            }
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
+new file mode 100644
+index 000000000..d612df0b1
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
+@@ -0,0 +1,99 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.TextCheckCell
++import org.telegram.ui.Cells.TextInfoPrivacyCell
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.helpers.MessageMenu
++
++class TeleMenuActivity : BaseFragment() {
++
++    private var adapter: Adapter? = null
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle("message menu")
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) {
++                    finishFragment()
++                }
++            }
++        })
++
++        val frameLayout = FrameLayout(context)
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = frameLayout
++
++        val listView = RecyclerListView(context)
++        listView.setLayoutManager(LinearLayoutManager(context))
++        listView.setVerticalScrollBarEnabled(false)
++        adapter = Adapter(context)
++        listView.setAdapter(adapter)
++        listView.setOnItemClickListener { view, position ->
++            val item = MessageMenu.ALL.getOrNull(position - 1) ?: return@setOnItemClickListener
++            val cell = view as TextCheckCell
++            val newValue = !cell.isChecked
++            cell.setChecked(newValue)
++            MessageMenu.setHidden(item.code, !newValue)
++        }
++        frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        return fragmentView
++    }
++
++    private class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++
++        override fun getItemCount(): Int = MessageMenu.ALL.size + 2
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean =
++            holder.adapterPosition in 1..MessageMenu.ALL.size
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_HEADER -> HeaderCell(context)
++                TYPE_SHADOW -> TextInfoPrivacyCell(context)
++                else -> TextCheckCell(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            when (val cell = holder.itemView) {
++                is HeaderCell -> cell.setText("items")
++                is TextInfoPrivacyCell -> cell.setText(
++                    if (MessageMenu.ALL.none { MessageMenu.isHidden(it.code) }) "everything is shown"
++                    else "hidden items stay off until you turn them back on"
++                )
++                else -> {
++                    val item = MessageMenu.ALL[position - 1]
++                    (cell as TextCheckCell).setTextAndCheck(item.name, !MessageMenu.isHidden(item.code), position < MessageMenu.ALL.size)
++                }
++            }
++        }
++
++        override fun getItemViewType(position: Int): Int = when (position) {
++            0 -> TYPE_HEADER
++            MessageMenu.ALL.size + 1 -> TYPE_SHADOW
++            else -> TYPE_TOGGLE
++        }
++    }
++
++    companion object {
++        private const val TYPE_HEADER = 0
++        private const val TYPE_TOGGLE = 1
++        private const val TYPE_SHADOW = 2
++    }
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 8f194b54e..cad48df32 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -41,6 +41,7 @@ object TeleSearch {
+             section(GUID_INTERFACE + 8, "hide mention and reaction badges", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(GUID_INTERFACE + 9, "turn off animated userpics", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(GUID_INTERFACE + 10, "show bot button payloads on long press", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            ProfileActivity.SearchAdapter.SearchResult(GUID_INTERFACE + 11, "message menu", icon) { fragment.presentFragment(TeleMenuActivity()) },
+ 
+             section(GUID_PRIVACY, "tele privacy", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 1, "hide stories", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 77d08fc41..a8e5ce465 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -76,6 +76,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 when (row.mode) {
+                     TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+                     TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
++                    MODE_MENU -> presentFragment(TeleMenuActivity())
+                     else -> presentFragment(TeleSettingsActivity(row.mode ?: MODE_ROOT))
+                 }
+             }
+@@ -130,6 +131,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         const val MODE_PRIVACY = "privacy"
+         const val MODE_IDS = "ids"
+         const val MODE_DATA = "data"
++        const val MODE_MENU = "menu"
+ 
+         private const val TYPE_HEADER = 0
+         private const val TYPE_VALUE = 1
+@@ -158,6 +160,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("hide mention and reaction badges", TeleConfig.HIDE_MENTION_REACTIONS),
+                 toggle("turn off animated userpics", TeleConfig.STATIC_AVATARS),
+                 toggle("show bot button payloads on long press", TeleConfig.BOT_BUTTON_PAYLOADS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "editor"),
++                sectionLink("message menu", MODE_MENU, R.drawable.msg2_permissions),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_PRIVACY -> listOf(
+@@ -188,6 +193,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("copy custom emoji id", TeleConfig.COPY_EMOJI_ID),
+                 Row(TYPE_SHADOW)
+             )
++            MODE_MENU -> listOf(
++                Row(TYPE_HEADER, "message menu"),
++                Row(TYPE_LINK, title = "editor", mode = MODE_MENU),
++                Row(TYPE_SHADOW)
++            )
+             MODE_DATA -> listOf(
+                 Row(TYPE_HEADER, "your data"),
+                 toggle("local names for people", TeleConfig.LOCAL_NAMES),

@@ -1,0 +1,308 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 03:08:34 +0300
+Subject: [PATCH 078/128] feat: show new settings after an update
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/helpers/TeleChangelog.kt   |   4 +-
+ .../main/java/tele/helpers/TeleNewSettings.kt | 116 ++++++++++++++++++
+ .../java/tele/ui/settings/TeleChatActivity.kt |   6 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  64 ++++++++--
+ 5 files changed, 181 insertions(+), 11 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 0f44cd779..0cf823c8b 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -93,6 +93,8 @@ object TeleConfig {
+     @JvmField
+     val CHANGELOG_ACCOUNTS = StringItem("changelog_accounts", "")
+     @JvmField
++    val KNOWN_SETTINGS = StringItem("known_settings", "")
++    @JvmField
+     val KEEP_DISAPPEARING_MEDIA = BoolItem("keep_disappearing_media", false)
+     @JvmField
+     val KEEP_DELETED_MESSAGES = BoolItem("keep_deleted_messages", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt b/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
+index 0dc8a1201..d2e574713 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
+@@ -80,8 +80,9 @@ object TeleChangelog {
+     // app start: accounts last shown an older build get this build's notes; accounts added later don't get old ones
+     @JvmStatic
+     fun start() {
+-        if (TeleBuild.BUILD <= 0) return
+         AndroidUtilities.runOnUIThread {
++            TeleNewSettings.fresh()
++            if (TeleBuild.BUILD <= 0) return@runOnUIThread
+             val map = accounts()
+             val firstRun = map.isEmpty()
+             val pending = ArrayList<Int>()
+@@ -300,6 +301,7 @@ object TeleChangelog {
+     private fun buttons(notes: Notes): TLRPC.TL_replyInlineMarkup {
+         val row = TL_keyboard.TL_keyboardInlineButtonRow()
+         row.buttons.add(urlButton("full changelog", notes.url))
++        if (TeleNewSettings.fresh().isNotEmpty()) row.buttons.add(urlButton("new settings", tele.ui.settings.TeleChatActivity.NEW_SETTINGS_LINK))
+         return TLRPC.TL_replyInlineMarkup().apply { rows.add(row) }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt
+new file mode 100644
+index 000000000..014e8a93b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt
+@@ -0,0 +1,116 @@
++package tele.helpers
++
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.text.SpannableString
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.style.DynamicDrawableSpan
++import android.text.style.ImageSpan
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.CombinedDrawable
++import tele.TeleBuild
++import tele.TeleConfig
++import tele.ui.settings.TeleSettingsActivity
++
++// settings this device hasn't seen before (tele 0112): collected once per launch against the stored known list
++object TeleNewSettings {
++    private var started = false
++    private val fresh = ArrayList<String>()
++    private var seen = false
++
++    // the settings of the tele 1 release: what came after it is new for the users who update from it
++    private val TELE1_SETTINGS = setOf(
++        "tele/interface", "tele/privacy", "tele/ids", "tele/sending", "tele/data", "tele/server",
++        "show_seconds", "hide_all_chats_folder", "hide_call_buttons", "confirm_calls",
++        "open_links_directly", "name_instead_of_phone", "reveal_spoilers", "hide_mention_reactions",
++        "static_avatars", "bot_button_payloads", "bubble_badges", "purchase_price", "view_as_tl",
++        "shot", "editor_eyedropper",
++        "hide_stories", "invisible_stories", "ghost_online", "ghost_typing", "ghost_read",
++        "ghost_contents_read", "never_block_screenshots", "allow_screenshots_disappearing",
++        "keep_disappearing_media", "local_drafts", "inline_no_via", "hide_sponsored",
++        "hide_proxy_sponsor", "clean_opened_links", "clean_sent_links", "rewrite_pasted_links",
++        "no_link_previews", "link_preview_mode",
++        "show_peer_id", "peer_ids_without_spaces", "bot_api_peer_ids", "show_dc", "merge_id_dc",
++        "message_id_menu", "show_gift_ids", "show_regular_gift_ids", "seetg_button", "copy_emoji_id",
++        "hd_photos", "docked_media", "punctual_scheduled", "queue_behind_media", "send_older_replies",
++        "double_enter_send", "quick_replies_in_groups", "copy_protected", "calcmula", "calcmula_preview",
++        "server_usernames", "send_crash_reports", "tele_server_url",
++        "local_names", "keep_deleted_messages", "keep_self_deleted_messages", "edit_history",
++        "username_aliases", "deleted_marker", "deleted_reply",
++        "auto_update", "show_changelog"
++    )
++
++    // UI thread
++    @JvmStatic
++    fun fresh(): List<String> {
++        if (!started) {
++            started = true
++            compute()
++        }
++        return fresh
++    }
++
++    private fun compute() {
++        val current = TeleSettingsActivity.settingIds()
++        val stored = runCatching { JSONObject(TeleConfig.KNOWN_SETTINGS.value) }.getOrNull()
++        val known = stored?.optJSONArray("known")
++        if (known != null) {
++            val knownIds = HashSet<String>()
++            for (i in 0 until known.length()) knownIds.add(known.optString(i))
++            val previous = HashSet<String>()
++            if (!stored.optBoolean("seen")) {
++                val list = stored.optJSONArray("new") ?: JSONArray()
++                for (i in 0 until list.length()) previous.add(list.optString(i))
++            }
++            current.filterTo(fresh) { it !in knownIds || it in previous }
++        } else if (updatedFromOlderTele()) {
++            // no list yet, but the app came from an older tele: the settings of the tele 1 release are the baseline
++            current.filterTo(fresh) { it !in TELE1_SETTINGS }
++        }
++        write(current, false)
++    }
++
++    // the changelog was posted before, so the app was updated from an older tele
++    private fun updatedFromOlderTele(): Boolean = TeleConfig.CHANGELOG_ACCOUNTS.value.isNotEmpty()
++
++    private fun write(current: List<String>, seen: Boolean) {
++        TeleConfig.set(TeleConfig.KNOWN_SETTINGS, JSONObject()
++            .put("known", JSONArray(current))
++            .put("new", JSONArray(fresh))
++            .put("seen", seen)
++            .toString())
++    }
++
++    @JvmStatic
++    fun isSeen(): Boolean = seen
++
++    @JvmStatic
++    fun markSeen() {
++        if (seen || fresh().isEmpty()) return
++        seen = true
++        write(TeleSettingsActivity.settingIds(), true)
++    }
++
++    @JvmStatic
++    fun title(): String = if (TeleBuild.BUILD > 0) "new in tele ${TeleBuild.BUILD}" else "new in tele"
++
++    // the stock "NEW" pill of folder settings
++    @JvmStatic
++    fun withBadge(text: CharSequence): CharSequence {
++        val res = ApplicationLoader.applicationContext.resources
++        val bg = res.getDrawable(R.drawable.msg_other_new_filled).mutate()
++        val label = res.getDrawable(R.drawable.msg_other_new_filled_text).mutate()
++        bg.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_featuredStickers_unread), PorterDuff.Mode.MULTIPLY)
++        label.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_featuredStickers_buttonText), PorterDuff.Mode.MULTIPLY)
++        val drawable = CombinedDrawable(bg, label)
++        drawable.setBounds(0, 0, drawable.intrinsicWidth, drawable.intrinsicHeight)
++        val badge = SpannableString("NEW")
++        badge.setSpan(ImageSpan(drawable, DynamicDrawableSpan.ALIGN_BOTTOM), 0, badge.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        return SpannableStringBuilder(text).append("  ").append(badge)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
+index 856116af4..e77a8614c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
+@@ -112,7 +112,11 @@ class TeleChatActivity : BaseFragment(), NotificationCenter.NotificationCenterDe
+ 
+     private fun openUrl(url: String?) {
+         if (url.isNullOrEmpty()) return
+-        Browser.openUrl(parentActivity, url)
++        if (url == NEW_SETTINGS_LINK) {
++            presentFragment(TeleSettingsActivity(TeleSettingsActivity.MODE_NEW))
++        } else {
++            Browser.openUrl(parentActivity, url)
++        }
+     }
+ 
+     private val cellDelegate = object : ChatMessageCell.ChatMessageCellDelegate {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index b0a23f689..01fab7700 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -32,7 +32,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         val value: String? = null,
+         val item: Item<*>? = null,
+         val mode: String? = null,
+-        val icon: Int = 0
++        val icon: Int = 0,
++        val badge: Boolean = false
+     )
+ 
+     private var adapter: ListAdapter? = null
+@@ -117,6 +118,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         MODE_DATA -> "tele · your data"
+         MODE_SENDING -> "tele · sending"
+         MODE_SERVER -> "tele · server"
++        MODE_NEW -> tele.helpers.TeleNewSettings.title()
+         else -> "tele"
+     }
+ 
+@@ -187,6 +189,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+     override fun onResume() {
+         super.onResume()
+         tele.helpers.TeleUpdater.addListener(updaterListener)
++        if (mode == MODE_NEW) tele.helpers.TeleNewSettings.markSeen()
+         adapter?.refresh()
+     }
+ 
+@@ -231,7 +234,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 is TextInfoPrivacyCell -> cell.setText(row.title ?: "")
+                 is TextCell -> {
+                     val next = rows.getOrNull(position + 1)
+-                    cell.setTextAndIcon(row.title, row.icon, next != null && next.type != TYPE_SHADOW)
++                    cell.setTextAndIcon(if (row.badge) tele.helpers.TeleNewSettings.withBadge(row.title.orEmpty()) else row.title, row.icon, next != null && next.type != TYPE_SHADOW)
+                 }
+                 else -> (cell as TextSettingsCell).setTextAndValue(row.title, row.value, false)
+             }
+@@ -252,6 +255,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         const val MODE_SERVER = "server"
+         const val MODE_UPDATE_ACTION = "update_action"
+         const val MODE_WHATS_NEW = "whats_new"
++        const val MODE_NEW = "new"
+ 
+         private const val TYPE_HEADER = 0
+         private const val TYPE_VALUE = 1
+@@ -273,6 +277,50 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         private fun sectionLink(title: String, mode: String, icon: Int) =
+             Row(TYPE_LINK_ICON, title = title, mode = mode, icon = icon)
+ 
++        private val SECTIONS = listOf(
++            Triple(MODE_INTERFACE, "interface", R.drawable.msg2_discussion),
++            Triple(MODE_PRIVACY, "privacy", R.drawable.msg2_secret),
++            Triple(MODE_IDS, "ids", R.drawable.msg2_data),
++            Triple(MODE_SENDING, "sending", R.drawable.msg2_gif),
++            Triple(MODE_DATA, "your data", R.drawable.msg2_link2),
++            Triple(MODE_SERVER, "server", R.drawable.msg2_data)
++        )
++
++        // what tele 0112 compares between builds: every visible setting plus the section pages
++        @JvmStatic
++        fun settingIds(): List<String> {
++            val ids = ArrayList<String>()
++            SECTIONS.forEach { ids.add("tele/${it.first}") }
++            for (mode in SECTIONS.map { it.first } + MODE_ROOT) {
++                for (row in buildRows(mode)) {
++                    val key = row.item?.key ?: continue
++                    if (key !in ids) ids.add(key)
++                }
++            }
++            return ids
++        }
++
++        private fun newRows(): List<Row> {
++            val fresh = tele.helpers.TeleNewSettings.fresh().toHashSet()
++            if (fresh.isEmpty()) return listOf(Row(TYPE_SHADOW, title = "nothing new in this tele build."))
++            val rows = ArrayList<Row>()
++            val pages = SECTIONS.filter { "tele/${it.first}" in fresh }
++            if (pages.isNotEmpty()) {
++                rows.add(Row(TYPE_HEADER, "new pages"))
++                pages.forEach { rows.add(sectionLink(it.second, it.first, it.third)) }
++                rows.add(Row(TYPE_SHADOW))
++            }
++            for ((mode, title) in SECTIONS.map { it.first to it.second } + (MODE_ROOT to "tele")) {
++                val picked = buildRows(mode).filter { (it.type == TYPE_TOGGLE || it.type == TYPE_VALUE) && it.item?.key in fresh }
++                if (picked.isEmpty()) continue
++                rows.add(Row(TYPE_HEADER, title))
++                rows.addAll(picked)
++                rows.add(link("open $title", mode))
++                rows.add(Row(TYPE_SHADOW))
++            }
++            return rows
++        }
++
+         private fun buildRows(mode: String): List<Row> = when (mode) {
+             MODE_INTERFACE -> listOf(
+                 Row(TYPE_HEADER, "interface"),
+@@ -374,15 +422,13 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 link("aliases", TeleNamesActivity.MODE_ALIAS),
+                 Row(TYPE_SHADOW)
+             )
++            MODE_NEW -> newRows()
+             else -> listOf(
+                 Row(TYPE_HEADER, "tele"),
+-                Row(TYPE_VALUE, "tele", BuildVars.BUILD_VERSION_STRING),
+-                sectionLink("interface", MODE_INTERFACE, R.drawable.msg2_discussion),
+-                sectionLink("privacy", MODE_PRIVACY, R.drawable.msg2_secret),
+-                sectionLink("ids", MODE_IDS, R.drawable.msg2_data),
+-                sectionLink("sending", MODE_SENDING, R.drawable.msg2_gif),
+-                sectionLink("your data", MODE_DATA, R.drawable.msg2_link2),
+-                sectionLink("server", MODE_SERVER, R.drawable.msg2_data),
++                Row(TYPE_VALUE, "tele", BuildVars.BUILD_VERSION_STRING)
++            ) + (if (tele.helpers.TeleNewSettings.fresh().isEmpty()) emptyList() else listOf(
++                Row(TYPE_LINK_ICON, title = tele.helpers.TeleNewSettings.title(), mode = MODE_NEW, icon = R.drawable.msg_fave, badge = !tele.helpers.TeleNewSettings.isSeen())
++            )) + SECTIONS.map { sectionLink(it.second, it.first, it.third) } + listOf(
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "updates"),
+                 toggle("update automatically", TeleConfig.AUTO_UPDATE),

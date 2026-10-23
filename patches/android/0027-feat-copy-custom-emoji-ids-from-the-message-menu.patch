@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 3 Oct 2026 21:43:39 +0300
+Subject: [PATCH 027/128] feat: copy custom emoji ids from the message menu
+
+---
+ .../telegram/ui/Cells/ChatMessageCell.java    | 22 +++++++++++++++++
+ .../java/org/telegram/ui/ChatActivity.java    | 18 ++++++++++++++
+ .../ui/Components/EmojiPacksAlert.java        | 24 +++++++++++++++++++
+ .../src/main/java/tele/TeleConfig.kt          |  2 ++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  3 ++-
+ .../src/main/res/values/strings_tele.xml      |  1 +
+ 6 files changed, 69 insertions(+), 1 deletion(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index 6b45401b4..dc2e01de5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -1135,6 +1135,28 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         return lastTouchY;
+     }
+ 
++    public long tele_emojiIdAt(float x, float y) {
++        final long fromStack = tele_emojiIdIn(animatedEmojiStack, x, y);
++        if (fromStack != 0) {
++            return fromStack;
++        }
++        return tele_emojiIdIn(animatedEmojiDescriptionStack, x, y);
++    }
++
++    private long tele_emojiIdIn(AnimatedEmojiSpan.EmojiGroupedSpans spans, float x, float y) {
++        if (spans == null) {
++            return 0;
++        }
++        for (int i = 0; i < spans.holders.size(); i++) {
++            AnimatedEmojiSpan.AnimatedEmojiHolder holder = spans.holders.get(i);
++            final Rect bounds = holder.drawableBounds;
++            if (holder.span != null && bounds != null && bounds.contains((int) x, (int) y)) {
++                return holder.span.getDocumentId();
++            }
++        }
++        return 0;
++    }
++
+     private boolean drawMediaCheckBox;
+     private boolean drawSelectionBackground;
+     private CheckBoxBase mediaCheckBox;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 7b139db08..bfada4178 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1244,6 +1244,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int OPTION_VIEW_IN_TOPIC = 32;
+     public final static int tele_option_mark_viewed = 217;
+     public final static int tele_option_copy_msg_id = 118;
++    public final static int tele_option_copy_emoji_id = 119;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -30842,6 +30843,7 @@ public class ChatActivity extends BaseFragment implements
+             factCheckHint.hide(false);
+         }
+         FileLog.d("open menu msg_id=" + message.getId() + (message.getDocument() != null ? " doc_id=" + message.getDocument().id : ""));
++        tele_pressedEmojiId = v instanceof ChatMessageCell ? ((ChatMessageCell) v).tele_emojiIdAt(x, y) : 0;
+         final int type = getMessageType(message);
+         if (single) {
+             boolean isGiveawayResultsMessage = false;
+@@ -33507,6 +33509,11 @@ public class ChatActivity extends BaseFragment implements
+                 BulletinFactory.of(this).createCopyBulletin(getString(R.string.TeleMessageIdCopied)).show();
+                 break;
+             }
++            case tele_option_copy_emoji_id: {
++                AndroidUtilities.addToClipboard(String.valueOf(tele_menuEmojiId));
++                BulletinFactory.of(this).createCopyBulletin(getString(R.string.TeleEmojiIdCopied)).show();
++                break;
++            }
+             case OPTION_COPY: {
+                 final TL_iv.RichMessage copyRichMessage = selectedObject.messageOwner != null ? selectedObject.messageOwner.rich_message : null;
+                 if (selectedObject.isDice()) {
+@@ -45892,6 +45899,9 @@ public class ChatActivity extends BaseFragment implements
+         return -1;
+     }
+ 
++    private long tele_pressedEmojiId;
++    private long tele_menuEmojiId;
++
+     public void fillMessageMenu(
+         MessageObject primaryMessage,
+ 
+@@ -45905,6 +45915,14 @@ public class ChatActivity extends BaseFragment implements
+         final boolean isEphemeral = message.isEphemeral();
+         final boolean isEphemeralFromBot = isEphemeral && !message.isOut();
+ 
++        final long pressedEmojiId = tele_pressedEmojiId;
++        tele_pressedEmojiId = 0;
++        tele_menuEmojiId = pressedEmojiId;
++        if (tele.TeleConfig.COPY_EMOJI_ID.getValue() && pressedEmojiId != 0) {
++            items.add(0, "copy emoji ID");
++            options.add(0, tele_option_copy_emoji_id);
++            icons.add(0, R.drawable.msg_copy);
++        }
+         if (tele.TeleConfig.MESSAGE_ID_MENU.getValue() && message.getId() > 0) {
+             items.add(0, "ID: " + message.getId());
+             options.add(0, tele_option_copy_msg_id);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiPacksAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiPacksAlert.java
+index 774ffaa95..46b1b57a1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiPacksAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiPacksAlert.java
+@@ -598,6 +598,7 @@ public class EmojiPacksAlert extends BottomSheet implements NotificationCenter.N
+         private final AnimatedFloat previewImageVisibleT = new AnimatedFloat(this, 0, 320, CubicBezierInterpolator.EASE_OUT_QUINT);
+ 
+         public void setPreviewEmoji(TLRPC.Document document) {
++            EmojiPacksAlert.this.previewEmojiDocument = document;
+             previewImageReceiver = new ImageReceiver(this);
+             if (attached) previewImageReceiver.onAttachedToWindow();
+             previewImageVisible = true;
+@@ -1461,6 +1462,19 @@ public class EmojiPacksAlert extends BottomSheet implements NotificationCenter.N
+         }
+     }
+ 
++    private TLRPC.Document previewEmojiDocument;
++
++    private void addPreviewEmojiIdItem(EmojiPackHeader header) {
++        if (header == null || header.optionsButton == null || previewEmojiDocument == null || !tele.TeleConfig.COPY_EMOJI_ID.getValue()) {
++            return;
++        }
++        if (header.previewEmojiIdItemAdded) {
++            return;
++        }
++        header.previewEmojiIdItemAdded = true;
++        header.optionsButton.addSubItem(3, R.drawable.msg_copy, "copy emoji ID");
++    }
++
+     private void onSubItemClick(int id) {
+         if (customEmojiPacks == null || customEmojiPacks.stickerSets == null || customEmojiPacks.stickerSets.isEmpty()) {
+             return;
+@@ -1507,6 +1521,13 @@ public class EmojiPacksAlert extends BottomSheet implements NotificationCenter.N
+             } else {
+                 alert.show();
+             }
++        } else if (id == 3) {
++            if (previewEmojiDocument == null) {
++                return;
++            }
++            AndroidUtilities.addToClipboard(String.valueOf(previewEmojiDocument.id));
++            dismiss();
++            BulletinFactory.of((FrameLayout) containerView, resourcesProvider).createCopyBulletin(LocaleController.getString(R.string.TeleEmojiIdCopied)).show();
+         } else if (id == 2) {
+             try {
+                 AndroidUtilities.addToClipboard(stickersUrl);
+@@ -1592,6 +1613,8 @@ public class EmojiPacksAlert extends BottomSheet implements NotificationCenter.N
+ 
+     private class EmojiPackHeader extends FrameLayout {
+ 
++        private boolean previewEmojiIdItemAdded;
++
+         public LinkSpanDrawable.LinksTextView titleView;
+         public TextView subtitleView;
+         public TextView addButtonView;
+@@ -1729,6 +1752,7 @@ public class EmojiPacksAlert extends BottomSheet implements NotificationCenter.N
+                 addView(optionsButton, LayoutHelper.createFrame(40, 40, Gravity.TOP | Gravity.RIGHT, 0, 5, 5 - backgroundPaddingLeft / AndroidUtilities.density, 0));
+                 optionsButton.addSubItem(1, R.drawable.msg_share, LocaleController.getString(R.string.StickersShare));
+                 optionsButton.addSubItem(2, R.drawable.msg_link, LocaleController.getString(R.string.CopyLink));
++                addPreviewEmojiIdItem(this);
+                 optionsButton.setOnClickListener(v -> optionsButton.toggleSubMenu());
+                 optionsButton.setDelegate(EmojiPacksAlert.this::onSubItemClick);
+                 optionsButton.setContentDescription(LocaleController.getString(R.string.AccDescrMoreOptions));
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index c88fec42e..f42301d30 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -96,6 +96,8 @@ object TeleConfig {
+     val SHOW_GIFT_IDS = BoolItem("show_gift_ids", false)
+     @JvmField
+     val SHOW_REGULAR_GIFT_IDS = BoolItem("show_regular_gift_ids", false)
++    @JvmField
++    val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 2dbdeb1a8..1f2d388a5 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -99,7 +99,8 @@ class TeleSettingsActivity : BaseFragment() {
+             Row(TYPE_TOGGLE, "id and dc in one row", item = TeleConfig.MERGE_ID_DC),
+             Row(TYPE_TOGGLE, "show message id in the message menu", item = TeleConfig.MESSAGE_ID_MENU),
+             Row(TYPE_TOGGLE, "show gift id", item = TeleConfig.SHOW_GIFT_IDS),
+-            Row(TYPE_TOGGLE, "show ids on regular gifts", item = TeleConfig.SHOW_REGULAR_GIFT_IDS)
++            Row(TYPE_TOGGLE, "show ids on regular gifts", item = TeleConfig.SHOW_REGULAR_GIFT_IDS),
++            Row(TYPE_TOGGLE, "copy custom emoji id", item = TeleConfig.COPY_EMOJI_ID)
+         )
+ 
+         override fun getItemCount(): Int = rows.size
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index d376c916a..32fff44c3 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -3,6 +3,7 @@
+     <string name="TeleProfileId">ID</string>
+     <string name="TeleProfileDc">DC</string>
+     <string name="TeleGiftId">Gift ID</string>
++    <string name="TeleEmojiIdCopied">Emoji ID copied to clipboard</string>
+     <string name="TeleIdCopied">ID copied to clipboard</string>
+     <string name="TeleDcCopied">DC copied to clipboard</string>
+     <string name="TeleMessageIdCopied">Message ID copied to clipboard</string>

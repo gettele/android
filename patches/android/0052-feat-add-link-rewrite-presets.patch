@@ -1,0 +1,278 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 6 Oct 2026 09:13:26 +0300
+Subject: [PATCH 052/128] feat: add link rewrite presets
+
+Add compatible enabled and first/random domain rules with tele presets.
+
+Constraint: Preserve existing Android rewrite storage and paste behavior
+
+Rejected: Port automatic preview modes in this patch | Android paste provenance and manual preview lifecycle need separate hooks
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: Manual preset selection and pasted-link rewrite on device
+---
+ .../main/java/tele/helpers/LinkRewrites.kt    | 83 ++++++++++++++++---
+ .../src/main/java/tele/helpers/Tracking.kt    |  2 +-
+ .../tele/ui/settings/TeleRulesActivity.kt     | 41 +++++++--
+ 3 files changed, 107 insertions(+), 19 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
+index a5c8a918e..dd57cd8bc 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
+@@ -9,6 +9,8 @@ object LinkRewrites {
+ 
+     const val TYPE_DOMAIN = "domain"
+     const val TYPE_PATTERN = "pattern"
++    const val PICK_FIRST = "first"
++    const val PICK_RANDOM = "random"
+ 
+     class Rule(
+         val type: String,
+@@ -16,22 +18,24 @@ object LinkRewrites {
+         val to: List<String> = emptyList(),
+         val find: String = "",
+         val replace: String = "",
+-        val random: Boolean = false
++        val random: Boolean = false,
++        val enabled: Boolean = true
+     ) {
+         fun toJson(): JSONObject = JSONObject().apply {
+             put("type", type)
++            put("enabled", enabled)
+             if (type == TYPE_DOMAIN) {
+-                put("from", JSONArray(from))
+-                put("to", JSONArray(to))
+-                if (random) put("random", true)
++                put("from", JSONArray(from.map(::normalizeDomain)))
++                put("to", JSONArray(to.map(::normalizeDomain)))
++                put("pick", if (random) PICK_RANDOM else PICK_FIRST)
+             } else {
+                 put("find", find)
+                 put("replace", replace)
+             }
+         }
+ 
+-        fun summary(): String = if (type == TYPE_DOMAIN) {
+-            from.joinToString(", ") + " → " + to.joinToString(", ")
++            fun summary(): String = if (type == TYPE_DOMAIN) {
++            from.joinToString(", ") + " → " + to.joinToString(", ") + if (random) " (random)" else ""
+         } else {
+             find + " → " + replace
+         }
+@@ -39,6 +43,25 @@ object LinkRewrites {
+ 
+     private const val KEY = "link_rewrite_rules"
+ 
++    // targets that shut down, with the service that replaced them
++    private val GONE_TARGETS = mapOf("vxtiktok.com" to "tnktok.com")
++
++    // the saved rules keep the old target until the user edits them
++    @JvmStatic
++    fun migrateTargets(targets: List<String>): List<String> {
++        val out = ArrayList<String>()
++        var migrated = 0
++        for (target in targets) {
++            val live = GONE_TARGETS[target] ?: target
++            if (live != target) migrated++
++            if (!out.contains(live)) out.add(live)
++        }
++        if (migrated > 0) {
++            android.util.Log.d("TeleLinkRewrite", "rule=$TYPE_DOMAIN migrated=$migrated")
++        }
++        return out
++    }
++
+     private val URL_REGEX = Regex("https?://[^\\s<>\"']+")
+ 
+     @JvmStatic
+@@ -58,13 +81,20 @@ object LinkRewrites {
+                 val obj = array.getJSONObject(i)
+                 val type = obj.optString("type", TYPE_DOMAIN)
+                 if (type == TYPE_PATTERN) {
+-                    out.add(Rule(TYPE_PATTERN, find = obj.optString("find"), replace = obj.optString("replace")))
++                    out.add(Rule(
++                        TYPE_PATTERN,
++                        find = obj.optString("find", obj.optString("match")),
++                        replace = obj.optString("replace"),
++                        enabled = obj.optBoolean("enabled", obj.optBoolean("on", true))
++                    ))
+                 } else {
++                    val random = obj.optString("pick").equals(PICK_RANDOM, true) || obj.optBoolean("random", false)
+                     out.add(Rule(
+                         TYPE_DOMAIN,
+-                        from = toStringList(obj.optJSONArray("from")),
+-                        to = toStringList(obj.optJSONArray("to")),
+-                        random = obj.optBoolean("random", false)
++                        from = toStringList(obj.optJSONArray("from")).map(::normalizeDomain).filter(String::isNotEmpty),
++                        to = migrateTargets(toStringList(obj.optJSONArray("to")).map(::normalizeDomain).filter(String::isNotEmpty)),
++                        random = random,
++                        enabled = obj.optBoolean("enabled", obj.optBoolean("on", true))
+                     ))
+                 }
+             }
+@@ -72,6 +102,28 @@ object LinkRewrites {
+         return out
+     }
+ 
++    @JvmStatic
++    fun normalizeDomain(value: String): String {
++        var result = value.trim().lowercase()
++        result = result.removePrefix("https://").removePrefix("http://")
++        result = result.substringBefore('/').substringBefore('?').substringBefore('#')
++        result = result.substringAfterLast('@').substringBefore(':')
++        if (result.startsWith("*.")) result = result.substring(2)
++        if (result.startsWith("www.")) result = result.substring(4)
++        result = result.trimEnd('.')
++        return if (Regex("^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z0-9-]{2,}$").matches(result)) result else ""
++    }
++
++    @JvmStatic
++    fun presets(): List<Rule> = listOf(
++        Rule(TYPE_DOMAIN, listOf("x.com", "twitter.com"), listOf("fixupx.com", "fxtwitter.com", "vxtwitter.com", "fixvx.com", "samekosabax.com"), random = true),
++        Rule(TYPE_DOMAIN, listOf("instagram.com"), listOf("ddinstagram.com", "kkinstagram.com")),
++        Rule(TYPE_DOMAIN, listOf("tiktok.com"), listOf("tnktok.com")),
++        Rule(TYPE_DOMAIN, listOf("reddit.com"), listOf("rxddit.com", "vxreddit.com")),
++        Rule(TYPE_DOMAIN, listOf("bsky.app"), listOf("fxbsky.app", "bskx.app")),
++        Rule(TYPE_DOMAIN, listOf("pixiv.net"), listOf("phixiv.net"))
++    )
++
+     private fun toStringList(array: JSONArray?): List<String> {
+         if (array == null) return emptyList()
+         val out = ArrayList<String>()
+@@ -122,15 +174,22 @@ object LinkRewrites {
+ 
+     private fun applyRules(url: String, rules: List<Rule>): String? {
+         for (rule in rules) {
++            if (!rule.enabled) continue
+             if (rule.type == TYPE_DOMAIN) {
+-                applyDomains(url, rule)?.let { return it }
++                applyDomains(url, rule)?.let {
++                    android.util.Log.d("TeleLinkRewrite", "rule=${rule.type}")
++                    return it
++                }
+             } else if (rule.find.isNotEmpty()) {
+                 val rewritten = runCatching {
+                     val regex = Regex(rule.find, RegexOption.IGNORE_CASE)
+                     val match = regex.find(url) ?: return@runCatching null
+                     url.replaceRange(match.range, expand(rule.replace, match))
+                 }.getOrNull()
+-                if (rewritten != null) return rewritten
++                if (rewritten != null) {
++                    android.util.Log.d("TeleLinkRewrite", "rule=${rule.type}")
++                    return rewritten
++                }
+             }
+         }
+         return null
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Tracking.kt b/TMessagesProj/src/main/java/tele/helpers/Tracking.kt
+index f2c05e72b..a3fff6544 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/Tracking.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/Tracking.kt
+@@ -37,7 +37,7 @@ object Tracking {
+         ),
+         Provider(regex("(?:^|\\.)spotify\\.com$"), params("context", "nd", "dl_branch")),
+         Provider(
+-            regex("(?:^|\\.)(?:twitter\\.com|x\\.com|fxtwitter\\.com|vxtwitter\\.com|fixupx\\.com|fixvx\\.com)$"),
++            regex("(?:^|\\.)(?:twitter\\.com|x\\.com|fxtwitter\\.com|vxtwitter\\.com|fixupx\\.com|fixvx\\.com|samekosabax\\.com)$"),
+             params("s", "t", "src", "ref_src", "ref_url", "cn")
+         ),
+         Provider(regex("(?:^|\\.)instagram\\.com$"), params("igshid", "igsh")),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleRulesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleRulesActivity.kt
+index 128f37ba9..02744a32c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleRulesActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleRulesActivity.kt
+@@ -79,6 +79,7 @@ class TeleRulesActivity : BaseFragment() {
+             when {
+                 position == items.size + 1 -> showRuleDialog(null, LinkRewrites.TYPE_DOMAIN)
+                 position == items.size + 2 -> showRuleDialog(null, LinkRewrites.TYPE_PATTERN)
++                position == items.size + 3 -> showPresetDialog()
+                 position in 1..items.size -> showRuleDialog(items[position - 1], items[position - 1].type)
+             }
+         }
+@@ -114,6 +115,15 @@ class TeleRulesActivity : BaseFragment() {
+             }
+         )
+ 
++        val enabled = CheckBox(activity).apply {
++            text = "enabled"
++            isChecked = existing?.enabled ?: true
++        }
++        val random = CheckBox(activity).apply {
++            text = "pick a random target"
++            isChecked = existing?.random ?: false
++            visibility = if (domainMode) View.VISIBLE else View.GONE
++        }
+         val container = LinearLayout(activity)
+         container.orientation = LinearLayout.VERTICAL
+         val pad = AndroidUtilities.dp(20f)
+@@ -123,6 +133,8 @@ class TeleRulesActivity : BaseFragment() {
+         container.addView(toField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also {
+             it.topMargin = AndroidUtilities.dp(10f)
+         })
++        container.addView(random, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        container.addView(enabled, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+ 
+         val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
+         builder.setTitle(if (domainMode) "domain rule" else "pattern rule")
+@@ -140,14 +152,14 @@ class TeleRulesActivity : BaseFragment() {
+         }
+         builder.setPositiveButton(LocaleController.getString(R.string.Save)) { _, _ ->
+             val rule = if (domainMode) {
+-                val from = fromField.text.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() }
+-                val to = toField.text.toString().split(",").map { it.trim() }.filter { it.isNotEmpty() }
++                val from = fromField.text.toString().split(",").map(LinkRewrites::normalizeDomain).filter { it.isNotEmpty() }
++                val to = toField.text.toString().split(",").map(LinkRewrites::normalizeDomain).filter { it.isNotEmpty() }
+                 if (from.isEmpty() || to.isEmpty()) return@setPositiveButton
+-                LinkRewrites.Rule(LinkRewrites.TYPE_DOMAIN, from = from, to = to, random = to.size > 1)
++                LinkRewrites.Rule(LinkRewrites.TYPE_DOMAIN, from = from, to = to, random = random.isChecked, enabled = enabled.isChecked)
+             } else {
+                 val find = fromField.text.toString().trim()
+                 if (find.isEmpty()) return@setPositiveButton
+-                LinkRewrites.Rule(LinkRewrites.TYPE_PATTERN, find = find, replace = toField.text.toString())
++                LinkRewrites.Rule(LinkRewrites.TYPE_PATTERN, find = find, replace = toField.text.toString(), enabled = enabled.isChecked)
+             }
+             if (existing != null) {
+                 val index = indexOf(existing)
+@@ -162,9 +174,24 @@ class TeleRulesActivity : BaseFragment() {
+         showDialog(builder.create())
+     }
+ 
++    private fun showPresetDialog() {
++        val activity = parentActivity ?: return
++        val presets = LinkRewrites.presets()
++        val names = arrayOf("X / Twitter", "Instagram", "TikTok", "Reddit", "Bluesky", "Pixiv")
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle("add preset")
++        builder.setItems(names) { _, which ->
++            items.add(presets[which])
++            LinkRewrites.saveRules(items)
++            adapter?.notifyDataSetChanged()
++        }
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        showDialog(builder.create())
++    }
++
+     private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
+ 
+-        private fun itemCount(): Int = items.size + 3
++        private fun itemCount(): Int = items.size + 5
+ 
+         override fun getItemCount(): Int = itemCount()
+ 
+@@ -189,8 +216,10 @@ class TeleRulesActivity : BaseFragment() {
+                         (cell as TextSettingsCell).setTextAndValue(items[position - 1].summary(), "edit", true)
+                     } else if (position == items.size + 1) {
+                         (cell as TextSettingsCell).setTextAndValue("add domain rule", null, true)
++                    } else if (position == items.size + 2) {
++                        (cell as TextSettingsCell).setTextAndValue("add pattern rule", null, true)
+                     } else {
+-                        (cell as TextSettingsCell).setTextAndValue("add pattern rule", null, false)
++                        (cell as TextSettingsCell).setTextAndValue("add preset", null, false)
+                     }
+                 }
+             }

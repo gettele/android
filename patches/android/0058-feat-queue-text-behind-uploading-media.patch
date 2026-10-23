@@ -1,0 +1,400 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 7 Oct 2026 18:41:13 +0300
+Subject: [PATCH 058/128] feat: queue text behind uploading media
+
+Hold text sends behind earlier uploading media, allow older replies through, and release held sends on double enter.
+
+Constraint: Scheduled messages and explicit retries bypass the hold
+
+Rejected: Queue persisted across process death | in-memory delayed upload state is not durable
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: Manual multi-device upload and double-enter behavior
+---
+ .../messenger/SendMessagesHelper.java         |  82 +++++++-
+ .../ui/Components/ChatActivityEnterView.java  |   3 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   5 +
+ .../src/main/java/tele/helpers/SendOrder.kt   | 197 ++++++++++++++++++
+ 4 files changed, 284 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index e7a3787b3..d83f20da1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -152,6 +152,55 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+     private final HashMap<String, ImportingStickers> importingStickersFiles = new HashMap<>();
+     private final HashMap<String, ImportingStickers> importingStickersMap = new HashMap<>();
+ 
++    public boolean teleIsSendingMessage(int mid) {
++        TLRPC.Message message = sendingMessages.get(mid);
++        return message != null && message.send_state == MessageObject.MESSAGE_SEND_STATE_SENDING;
++    }
++
++    public boolean teleHasUploadingMedia(long dialogId, int msgId, int replyMsgId) {
++        boolean olderReplies = tele.TeleConfig.SEND_OLDER_REPLIES.getValue();
++        synchronized (delayedMessages) {
++            for (ArrayList<DelayedMessage> arr : delayedMessages.values()) {
++                for (int a = 0, N = arr.size(); a < N; a++) {
++                    DelayedMessage dm = arr.get(a);
++                    if (dm.peer != dialogId) {
++                        continue;
++                    }
++                    int earliestPendingId = Integer.MIN_VALUE;
++                    if (dm.obj != null) {
++                        earliestPendingId = Math.max(earliestPendingId, dm.obj.getId());
++                    }
++                    if (dm.messageObjects != null) {
++                        for (int b = 0, M = dm.messageObjects.size(); b < M; b++) {
++                            earliestPendingId = Math.max(earliestPendingId, dm.messageObjects.get(b).getId());
++                        }
++                    }
++                    if (earliestPendingId == Integer.MIN_VALUE || earliestPendingId <= msgId) {
++                        continue;
++                    }
++                    if (olderReplies && replyMsgId != 0 && earliestPendingId < replyMsgId) {
++                        continue;
++                    }
++                    return true;
++                }
++            }
++        }
++        for (int i = 0; i < sendingMessages.size(); i++) {
++            TLRPC.Message message = sendingMessages.valueAt(i);
++            if (message == null || message.send_state != MessageObject.MESSAGE_SEND_STATE_SENDING
++                || MessageObject.getDialogId(message) != dialogId || message.id <= msgId
++                || message.media == null
++                || !(message.media instanceof TLRPC.TL_messageMediaPhoto || message.media instanceof TLRPC.TL_messageMediaDocument)) {
++                continue;
++            }
++            if (olderReplies && replyMsgId != 0 && message.id < replyMsgId) {
++                continue;
++            }
++            return true;
++        }
++        return false;
++    }
++
+     public static boolean checkUpdateStickersOrder(CharSequence text) {
+         if (text instanceof Spannable) {
+             AnimatedEmojiSpan[] spans = ((Spannable)text).getSpans(0, text.length(), AnimatedEmojiSpan.class);
+@@ -964,6 +1013,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+     public SendMessagesHelper(int instance) {
+         super(instance);
+ 
++        tele.helpers.SendOrder.init(instance);
+         AndroidUtilities.runOnUIThread(() -> {
+             getNotificationCenter().addObserver(SendMessagesHelper.this, NotificationCenter.fileUploaded);
+             getNotificationCenter().addObserver(SendMessagesHelper.this, NotificationCenter.fileUploadProgressChanged);
+@@ -1575,6 +1625,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         ArrayList<Integer> messageIds = new ArrayList<>();
+         boolean enc = false;
+         boolean scheduled = false;
++        HashSet<Long> canceledDialogIds = new HashSet<>();
+         long dialogId = 0;
+         int topicId = 0;
+         for (int c = 0; c < objects.size(); c++) {
+@@ -1583,6 +1634,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 scheduled = true;
+             }
+             dialogId = object.getDialogId();
++            canceledDialogIds.add(dialogId);
+             messageIds.add(object.getId());
+             if (object.isQuickReply()) {
+                 topicId = object.getQuickReplyId();
+@@ -1702,6 +1754,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             }
+             getMessagesController().deleteMessages(messageIds, null, null, dialogId, topicId, false, mode);
+         }
++        for (long canceledDialogId : canceledDialogIds) {
++            tele.helpers.SendOrder.markCancelled(currentAccount, canceledDialogId, messageIds);
++            AndroidUtilities.runOnUIThread(() -> tele.helpers.SendOrder.flush(currentAccount, canceledDialogId));
++        }
+     }
+ 
+     public boolean retrySendMessage(MessageObject messageObject, boolean unsent, long payStars) {
+@@ -5487,10 +5543,24 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         if (retryMessageObject == null) {
+                             StarsController.getInstance(currentAccount).beforeSendingMessage(newMsgObj);
+                         }
+-                        performSendMessageRequest(reqSend, newMsgObj, null, null, parentObject, params, scheduleDate != 0);
+-                        if (retryMessageObject == null) {
+-                            getMediaDataController().cleanDraft(peer, replyToTopMsg != null ? replyToTopMsg.getId() : 0, false);
++                        final TLObject teleReq = reqSend;
++                        final MessageObject teleMsgObj = newMsgObj;
++                        final Object teleParent = parentObject;
++                        final HashMap<String, String> teleParams = params;
++                        final boolean teleScheduled = scheduleDate != 0;
++                        final boolean teleRetry = retryMessageObject == null;
++                        final long telePeer = peer;
++                        final MessageObject teleReplyTop = replyToTopMsg;
++                        Runnable teleSend = () -> {
++                            performSendMessageRequest(teleReq, teleMsgObj, null, null, teleParent, teleParams, teleScheduled);
++                            if (teleRetry) {
++                                getMediaDataController().cleanDraft(telePeer, teleReplyTop != null ? teleReplyTop.getId() : 0, false);
++                            }
++                        };
++                        if (tele.helpers.SendOrder.hold(currentAccount, peer, newMsgObj.getId(), newMsg.reply_to != null ? newMsg.reply_to.reply_to_msg_id : 0, scheduleDate != 0, teleSend)) {
++                            return;
+                         }
++                        teleSend.run();
+                     }
+                 } else {
+                     TLRPC.TL_decryptedMessage reqSend;
+@@ -7989,6 +8059,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         removeFromSendingMessages(newMsgObj.id, scheduled);
+                     }
+                 }
++                if (!scheduled && !msgObjs.isEmpty()) {
++                    tele.helpers.SendOrder.flush(currentAccount, msgObjs.get(0).getDialogId());
++                }
+             });
+         }, null, ConnectionsManager.RequestFlagCanCompress | ConnectionsManager.RequestFlagInvokeAfter);
+     }
+@@ -8527,6 +8600,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         processSentMessage(newMsgObj.id);
+                         removeFromSendingMessages(newMsgObj.id, scheduled);
+                     }
++                    if (!scheduled && msgObj != null) {
++                        tele.helpers.SendOrder.flush(currentAccount, msgObj.getDialogId());
++                    }
+                 });
+             }
+         }, () -> {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 30823de53..d455167bc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -7478,6 +7478,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 return;
+             }
+             CharSequence message = messageEditText == null ? "" : messageEditText.getTextToUse();
++            if (message.length() == 0 && parentFragment != null && !isInScheduleMode() && tele.helpers.SendOrder.sendHeldOnDoubleEnter(currentAccount, dialog_id, true)) {
++                return;
++            }
+             if (parentFragment != null) {
+                 TLRPC.Chat chat = parentFragment.getCurrentChat();
+                 if (chat != null && chat.slowmode_enabled && !ChatObject.hasAdminRights(chat)) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index b939945e5..9834228bc 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -77,6 +77,11 @@ object TeleHooks {
+                 AccountInstance.getInstance(account).getNotificationCenter().postNotificationName(NotificationCenter.storiesUpdated)
+             }
+         }
++        if (item === TeleConfig.QUEUE_BEHIND_MEDIA) {
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                tele.helpers.SendOrder.flush(account)
++            }
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+new file mode 100644
+index 000000000..e4b0f82c6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+@@ -0,0 +1,197 @@
++package tele.helpers
++
++import android.os.Handler
++import android.os.Looper
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.SendMessagesHelper
++
++object SendOrder : NotificationCenter.NotificationCenterDelegate {
++
++    private const val DOUBLE_ENTER_MS = 500L
++    private const val RECHECK_MS = 2000L
++
++    private class Held(
++        val account: Int,
++        val dialogId: Long,
++        val msgId: Int,
++        val replyMsgId: Int,
++        val at: Long,
++        val send: Runnable
++    ) {
++        @Volatile
++        var cancelled = false
++    }
++
++    private val held = HashMap<Int, HashMap<Long, ArrayList<Held>>>()
++    private val handler = Handler(Looper.getMainLooper())
++    private var recheckScheduled = false
++    private var lastEnter = 0L
++    private var initialized = false
++
++    @Volatile
++    private var releasing = false
++
++    @JvmStatic
++    fun hold(
++        account: Int,
++        dialogId: Long,
++        msgId: Int,
++        replyMsgId: Int,
++        scheduled: Boolean,
++        send: Runnable
++    ): Boolean {
++        if (scheduled || releasing) {
++            return false
++        }
++        if (!tele.TeleConfig.QUEUE_BEHIND_MEDIA.value) {
++            return false
++        }
++        if (!SendMessagesHelper.getInstance(account).teleHasUploadingMedia(dialogId, msgId, replyMsgId)) {
++            return false
++        }
++        synchronized(held) {
++            held.getOrPut(account) { HashMap() }.getOrPut(dialogId) { ArrayList() }.add(
++                Held(account, dialogId, msgId, replyMsgId, System.currentTimeMillis(), send)
++            )
++        }
++        scheduleRecheck()
++        return true
++    }
++
++    @JvmStatic
++    fun sendHeldOnDoubleEnter(account: Int, dialogId: Long, fieldEmpty: Boolean): Boolean {
++        val now = System.currentTimeMillis()
++        val since = lastEnter
++        lastEnter = now
++        if (!fieldEmpty
++            || !tele.TeleConfig.DOUBLE_ENTER_SEND.value
++            || !tele.TeleConfig.QUEUE_BEHIND_MEDIA.value
++            || now - since > DOUBLE_ENTER_MS
++        ) {
++            return false
++        }
++        val taken = ArrayList<Held>()
++        synchronized(held) {
++            val dialogs = held[account] ?: return false
++            val list = dialogs[dialogId] ?: return false
++            val it = list.iterator()
++            while (it.hasNext()) {
++                val entry = it.next()
++                if (entry.at >= since) {
++                    taken.add(entry)
++                    it.remove()
++                }
++            }
++        }
++        dispatch(taken)
++        return true
++    }
++
++    @JvmStatic
++    fun flush(account: Int, dialogId: Long) {
++        val taken = ArrayList<Held>()
++        synchronized(held) {
++            val dialogs = held[account] ?: return
++            val list = dialogs[dialogId] ?: return
++            val it = list.iterator()
++            while (it.hasNext()) {
++                val entry = it.next()
++                if (entry.cancelled) {
++                    it.remove()
++                    continue
++                }
++                if (!SendMessagesHelper.getInstance(account).teleHasUploadingMedia(dialogId, entry.msgId, entry.replyMsgId)) {
++                    taken.add(entry)
++                    it.remove()
++                }
++            }
++            if (list.isEmpty()) dialogs.remove(dialogId)
++            if (dialogs.isEmpty()) held.remove(account)
++        }
++        dispatch(taken)
++        scheduleRecheckIfNeeded()
++    }
++
++    @JvmStatic
++    fun markCancelled(account: Int, dialogId: Long, msgIds: List<Int>) {
++        if (msgIds.isEmpty()) return
++        synchronized(held) {
++            val dialogs = held[account] ?: return
++            val list = dialogs[dialogId] ?: return
++            for (entry in list) {
++                if (entry.msgId in msgIds) {
++                    entry.cancelled = true
++                }
++            }
++        }
++    }
++
++    private fun dispatch(taken: List<Held>) {
++        if (taken.isEmpty()) return
++        releasing = true
++        try {
++            for (entry in taken) {
++                runCatching { entry.send.run() }.onFailure { FileLog.e(it) }
++            }
++        } finally {
++            releasing = false
++        }
++    }
++
++    @JvmStatic
++    fun flush(account: Int) {
++        val dialogIds: List<Long>
++        synchronized(held) {
++            val dialogs = held[account] ?: return
++            dialogIds = ArrayList(dialogs.keys)
++        }
++        for (dialogId in dialogIds) {
++            flush(account, dialogId)
++        }
++    }
++
++    @JvmStatic
++    fun flushAll() {
++        val dialogs: List<Pair<Int, Long>>
++        synchronized(held) {
++            dialogs = held.flatMap { (account, map) -> map.keys.map { account to it } }
++        }
++        for ((account, dialogId) in dialogs) {
++            flush(account, dialogId)
++        }
++    }
++
++    private fun scheduleRecheckIfNeeded() {
++        val hasHeld = synchronized(held) { held.isNotEmpty() }
++        if (hasHeld) {
++            scheduleRecheck()
++        }
++    }
++
++    private fun scheduleRecheck() {
++        if (recheckScheduled) {
++            return
++        }
++        recheckScheduled = true
++        handler.postDelayed({
++            recheckScheduled = false
++            val dialogs: List<Pair<Int, Long>>
++            synchronized(held) {
++                dialogs = held.flatMap { (account, map) -> map.keys.map { account to it } }
++            }
++            for ((account, dialogId) in dialogs) {
++                runCatching { flush(account, dialogId) }.onFailure { FileLog.e(it) }
++            }
++            scheduleRecheckIfNeeded()
++        }, RECHECK_MS)
++    }
++
++    @JvmStatic
++    fun init(account: Int) {
++        initialized = true
++    }
++
++    override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++    }
++}

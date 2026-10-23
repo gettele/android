@@ -1,0 +1,360 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 19:28:14 +0300
+Subject: [PATCH 045/128] feat: clean tracking parameters from links
+
+Full rule table from the tele desktop patch: a global rule (utm,
+fbclid, gclid, spm and friends) plus per-provider rules for youtube,
+spotify, twitter/x, instagram, threads, tiktok, facebook, reddit,
+amazon (including /ref= path segments), aliexpress, vk, yandex,
+google, linkedin, ebay, medium, github, steam, netflix, twitch, imdb,
+bing, msn, apple, pinterest, hh.ru and ozon. Telegram hosts are never
+touched.
+
+Two toggles under privacy: opened links are cleaned in openClickableLink
+(every message link goes through it), sent links are rewritten in
+getEntities with entity offsets kept in sync. Defaults to off.
+
+Constraint: only url/text-url entities are rewritten, code/pre spans are left alone
+Rejected: cleaning on paste | needs the paste hook and a rules editor (0078/0079)
+Confidence: medium
+Scope-risk: moderate
+Not-tested: needs a device pass with real tracked links
+---
+ .../messenger/MediaDataController.java        |   3 +
+ .../java/org/telegram/ui/ChatActivity.java    |   3 +-
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ .../src/main/java/tele/helpers/Tracking.kt    | 245 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   3 -
+ 6 files changed, 256 insertions(+), 4 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/Tracking.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+index 343bfaa50..f0821c354 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+@@ -7689,6 +7689,9 @@ public class MediaDataController extends BaseController {
+             }
+             entities.addAll(teleMentions);
+         }
++        if (entities != null) {
++            entities = tele.helpers.Tracking.cleanSent(currentAccount, message, entities);
++        }
+         return entities;
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 49f72933d..6a20fa1a0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -36316,7 +36316,8 @@ public class ChatActivity extends BaseFragment implements
+         messageCell.setChecked(true, groupedMessages == null, animated);
+     }
+ 
+-    private void openClickableLink(CharacterStyle url, String str, boolean longPress, final ChatMessageCell cell, final MessageObject messageObject, boolean forceNoIV) {
++    private void openClickableLink(CharacterStyle url, String str0, boolean longPress, final ChatMessageCell cell, final MessageObject messageObject, boolean forceNoIV) {
++        final String str = str0 != null && tele.TeleConfig.CLEAN_OPENED_LINKS.getValue() ? tele.helpers.Tracking.clean(str0) : str0;
+         if (longPress) {
+             if (str.startsWith("@")) {
+                 if (cell != null) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 850cbc2e7..0e24b7180 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -110,6 +110,10 @@ object TeleConfig {
+     val HIDE_SPONSORED = BoolItem("hide_sponsored", false)
+     @JvmField
+     val HIDE_PROXY_SPONSOR = BoolItem("hide_proxy_sponsor", false)
++    @JvmField
++    val CLEAN_OPENED_LINKS = BoolItem("clean_opened_links", false)
++    @JvmField
++    val CLEAN_SENT_LINKS = BoolItem("clean_sent_links", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Tracking.kt b/TMessagesProj/src/main/java/tele/helpers/Tracking.kt
+new file mode 100644
+index 000000000..f2c05e72b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/Tracking.kt
+@@ -0,0 +1,245 @@
++package tele.helpers
++
++import android.net.Uri
++import tele.TeleConfig
++
++object Tracking {
++
++    // provider: host regex (case-insensitive, full match), tracked params,
++    // optional path patterns whose whole segment is dropped (e.g. amazon /ref=...)
++    private class Provider(val host: Regex, val params: List<Regex>, val paths: List<Regex> = emptyList())
++
++    private val GLOBAL = listOf(
++        "utm(?:_[a-z_]*)?", "mtm_[a-z_]*",
++        "pk_(?:campaign|kwd|keyword|source|medium|content|cid)",
++        "ga_[a-z_]+", "_ga", "_gl", "gclid", "gclsrc",
++        "gbraid", "wbraid", "dclid", "gad_source",
++        "gad_campaignid", "fbclid", "fb_action_(?:ids|types)",
++        "fb_(?:source|ref)", "action_(?:object|type|ref)_map",
++        "msclkid", "twclid", "ttclid", "li_fat_id", "epik",
++        "yclid", "ysclid", "_openstat", "mc_(?:cid|eid|tc)",
++        "ml_subscriber(?:_hash)?", "mkt_tok", "igshid", "igsh",
++        "_hsenc", "_hsmi", "__hsfp", "__hssc", "__hstc",
++        "hsctatracking", "srsltid", "s_kwcid", "s_cid",
++        "oly_(?:anon|enc)_id", "rb_clickid", "vero_(?:conv|id)",
++        "wickedid", "_kx", "wt_?z?mc", "wtrid",
++        "hmb_(?:campaign|medium|source)",
++        "itm_(?:campaign|medium|source)", "otm_[a-z_]*", "cmpid",
++        "os_ehash", "__twitter_impression", "tracking_source",
++        "echobox", "spm", "_branch_match_id", "_branch_referrer",
++        "si"
++    ).map { Regex(it, RegexOption.IGNORE_CASE) }
++
++    private val PROVIDERS = listOf(
++        Provider(
++            regex("(?:^|\\.)(?:youtube\\.com|youtu\\.be|youtube-nocookie\\.com)$"),
++            params("feature", "pp", "kw")
++        ),
++        Provider(regex("(?:^|\\.)spotify\\.com$"), params("context", "nd", "dl_branch")),
++        Provider(
++            regex("(?:^|\\.)(?:twitter\\.com|x\\.com|fxtwitter\\.com|vxtwitter\\.com|fixupx\\.com|fixvx\\.com)$"),
++            params("s", "t", "src", "ref_src", "ref_url", "cn")
++        ),
++        Provider(regex("(?:^|\\.)instagram\\.com$"), params("igshid", "igsh")),
++        Provider(regex("(?:^|\\.)(?:threads\\.net|threads\\.com)$"), params("xmt", "slof")),
++        Provider(
++            regex("(?:^|\\.)tiktok\\.com$"),
++            params(
++                "_r", "_t", "_d", "is_from_webapp", "is_copy_url", "sender_device",
++                "sender_web_id", "web_id", "u_code", "preview_pb", "timestamp",
++                "user_id", "share_app_name", "share_app_id", "share_iid",
++                "share_link_id", "share_item_id", "social_share_type", "source",
++                "checksum", "tt_from"
++            )
++        ),
++        Provider(
++            regex("(?:^|\\.)(?:facebook\\.com|fb\\.com|fb\\.watch)$"),
++            params(
++                "mibextid", "rdid", "__tn__", "__cft__\\[\\d+\\]", "__xts__\\[\\d+\\]",
++                "hc_[a-z_\\[\\]0-9]*", "eid", "ref", "fref", "refid", "refsrc",
++                "ref_[a-z_]*", "comment_tracking", "notif_id", "notif_t", "sfnsn",
++                "paipv", "eav", "dti", "_rdr", "rdr", "rdc", "wtsid", "acontext"
++            )
++        ),
++        Provider(
++            regex("(?:^|\\.)reddit\\.com$"),
++            params("share_id", "ref", "ref_source", "ref_campaign", "correlation_id", "rdt", "\\\$deep_link", "\\\$3p", "\\\$original_url")
++        ),
++        Provider(
++            regex("(?:^|\\.)amazon(?:\\.[a-z]{2,3}){1,2}$"),
++            params(
++                "p[fd]_rd_[a-z]*", "qid", "srs?", "__mk_[a-z]{1,3}_[a-z]{1,3}", "spia",
++                "ms3_c", "ie", "refrid", "colii?d", "adid", "qualifier", "_encoding",
++                "ref_?", "sprefix", "crid", "cv_ct_[a-z]+", "linkcode", "linkid",
++                "tag", "creativeasin", "ascsubtag", "aaxitk", "hsa_cr_id",
++                "sb-ci-[a-z]+", "dchild", "camp", "creative", "content-id", "dib",
++                "dib_tag", "social_share", "starsleft", "skiptwisterog"
++            ),
++            paths(listOf("/ref=[^/]*"))
++        ),
++        Provider(
++            regex("(?:^|\\.)aliexpress(?:\\.[a-z]{2,3}){1,2}$"),
++            params(
++                "aff_[a-z_]*", "af", "afsmartredirect", "algo_expid", "algo_pvid",
++                "btsid", "businesstype", "cv", "dp", "gps-id", "gatewayadapt",
++                "mall_affr", "pdp_ext_f", "pdp_npi", "pdp_pi", "pvid", "scm[_a-z-]*",
++                "sk", "social_params", "sourcetype", "spreadtype", "srcsns",
++                "terminal_id", "tt", "ws_ab_test", "utparam-url"
++            )
++        ),
++        Provider(regex("(?:^|\\.)(?:vk\\.com|vk\\.ru|vkvideo\\.ru)$"), params("from", "ref", "ref_domain")),
++        Provider(regex("(?:^|\\.)(?:yandex(?:\\.[a-z]{2,3}){1,2}|ya\\.ru)$"), params("from", "clid", "redircnt")),
++        Provider(
++            regex("^(?:www\\.)?google(?:\\.[a-z]{2,3}){1,2}$"),
++            params(
++                "ved", "ei", "sa", "usg", "oq", "aqs", "gs_[a-z]*", "sclient",
++                "sxsrf", "sourceid", "uact", "bih", "biw", "dpr", "rlz", "iflsig",
++                "sca_esv", "sca_upv", "fbs", "ictx", "cshid", "gws_rd", "source", "ie"
++            )
++        ),
++        Provider(regex("^(?:docs|drive)\\.google\\.com$"), params("usp")),
++        Provider(
++            regex("(?:^|\\.)linkedin\\.com$"),
++            params("trk", "trkinfo", "trackingid", "refid", "lipi", "licu", "midtoken", "midsig", "trkemail", "rcm")
++        ),
++        Provider(
++            regex("(?:^|\\.)ebay(?:\\.[a-z]{2,3}){1,2}$"),
++            params(
++                "_trkparms", "_trksid", "_from", "hash", "mkcid", "mkrid", "mkevt",
++                "campid", "toolid", "customid", "amdata", "ssspo", "sssrc", "ssuid",
++                "widget_ver", "itmmeta"
++            )
++        ),
++        Provider(regex("(?:^|\\.)medium\\.com$"), params("source")),
++        Provider(regex("(?:^|\\.)github\\.com$"), params("email_token", "email_source")),
++        Provider(regex("(?:^|\\.)(?:steampowered\\.com|steamcommunity\\.com)$"), params("snr")),
++        Provider(regex("(?:^|\\.)netflix\\.com$"), params("trackid", "tctx")),
++        Provider(regex("(?:^|\\.)twitch\\.tv$"), params("tt_medium", "tt_content")),
++        Provider(regex("(?:^|\\.)imdb\\.com$"), params("ref_", "pf_rd_[a-z]*")),
++        Provider(
++            regex("(?:^|\\.)bing\\.com$"),
++            params("cvid", "form", "sk", "sp", "sc", "qs", "qp", "pq", "ghsh", "ghacc", "ghpl")
++        ),
++        Provider(regex("(?:^|\\.)msn\\.com$"), params("ocid", "cvid")),
++        Provider(regex("(?:^|\\.)apple\\.com$"), params("ign-itsc[a-z]+", "itscg", "itsct")),
++        Provider(regex("(?:^|\\.)pinterest(?:\\.[a-z]{2,3}){1,2}$"), params("invite_code", "sender", "sfo")),
++        Provider(
++            regex("(?:^|\\.)hh\\.ru$"),
++            params("hhtmfrom", "hhtmfromlabel", "hhtmsource", "vss", "swnt", "grpos", "ptl", "stl", "exp", "plim")
++        ),
++        Provider(regex("(?:^|\\.)ozon\\.ru$"), params("partner", "from"))
++    )
++
++    private val TELEGRAM_HOST = regex("(?:^|\\.)(?:t\\.me|telegram\\.me|telegram\\.dog)$")
++
++    private fun regex(value: String) = Regex(value, RegexOption.IGNORE_CASE)
++    private fun params(vararg names: String) = names.map { Regex("^(?:$it)$", RegexOption.IGNORE_CASE) }
++    private fun paths(list: List<String>) = list.map { Regex(it, RegexOption.IGNORE_CASE) }
++
++    private class Parsed(val prefix: String, val host: String, val path: String, val query: String, val hash: String)
++
++    private fun split(url: String): Parsed? {
++        val schemeEnd = url.indexOf("://")
++        if (schemeEnd <= 0) return null
++        val afterScheme = url.substring(schemeEnd + 3)
++        val hashAt = afterScheme.indexOf('#')
++        val (main, hash) = if (hashAt >= 0) afterScheme.substring(0, hashAt) to afterScheme.substring(hashAt) else afterScheme to ""
++        val slashAt = main.indexOf('/')
++        val (authority, path) = if (slashAt >= 0) main.substring(0, slashAt) to main.substring(slashAt) else main to ""
++        val queryAt = path.indexOf('?')
++        val (pathPart, query) = if (queryAt >= 0) path.substring(0, queryAt) to path.substring(queryAt + 1) else path to ""
++        // strip userinfo and port from the authority for matching
++        val host = authority.substringAfterLast('@').substringBefore(':')
++        return Parsed(url.substring(0, schemeEnd + 3), host, pathPart, query, hash)
++    }
++
++    private fun tracked(name: String, provider: Provider?): Boolean {
++        val decoded = runCatching { Uri.decode(name) }.getOrDefault(name)
++        if (GLOBAL.any { it.matches(decoded) || it.matches(name) }) return true
++        if (provider != null && (provider.params.any { it.matches(decoded) || it.matches(name) })) return true
++        return false
++    }
++
++    @JvmStatic
++    fun clean(url: String): String {
++        val parsed = split(url) ?: return url
++        if (TELEGRAM_HOST.matches(parsed.host)) return url
++        val provider = PROVIDERS.firstOrNull { it.host.matches(parsed.host) }
++        if (parsed.query.isEmpty() && (provider == null || provider.paths.isEmpty())) return url
++
++        var path = parsed.path
++        var removed = false
++        if (provider != null && provider.paths.isNotEmpty()) {
++            for (pattern in provider.paths) {
++                val match = pattern.find(path)
++                if (match != null) {
++                    path = path.replaceRange(match.range, "")
++                    removed = true
++                }
++            }
++        }
++
++        var query = parsed.query
++        if (query.isNotEmpty()) {
++            val kept = query.split('&').filter { it.isNotEmpty() && !tracked(it.substringBefore('='), provider) }
++            removed = removed || kept.size != query.split('&').count { it.isNotEmpty() }
++            query = kept.joinToString("&")
++        }
++        if (!removed) return url
++
++        return buildString {
++            append(parsed.prefix).append(parsed.host).append(path)
++            if (query.isNotEmpty()) append('?').append(query)
++            append(parsed.hash)
++        }
++    }
++
++    // rewrites tracked urls inside an outgoing message, keeping entities in sync
++    @JvmStatic
++    fun cleanSent(account: Int, message: Array<CharSequence?>, entities: ArrayList<org.telegram.tgnet.TLRPC.MessageEntity>): ArrayList<org.telegram.tgnet.TLRPC.MessageEntity> {
++        if (!TeleConfig.CLEAN_SENT_LINKS.value) return entities
++        val text = message[0] ?: return entities
++        val value = text.toString()
++        val ranges = ArrayList<Pair<Int, Int>>()
++        for (entity in entities) {
++            val isUrl = entity is org.telegram.tgnet.TLRPC.TL_messageEntityUrl ||
++                    entity is org.telegram.tgnet.TLRPC.TL_messageEntityTextUrl
++            if (isUrl && entity.offset >= 0 && entity.offset + entity.length <= value.length) {
++                ranges.add(entity.offset to entity.offset + entity.length)
++            }
++        }
++        if (ranges.isEmpty()) return entities
++
++        var result = value
++        var shift = 0
++        val shifts = ArrayList<Triple<Int, Int, Int>>() // start(before), end(before), delta
++        for ((start, end) in ranges.sortedBy { it.first }) {
++            val s = start + shift
++            val e = end + shift
++            if (s < 0 || e > result.length) continue
++            val cleaned = clean(result.substring(s, e))
++            if (cleaned != result.substring(s, e)) {
++                shifts.add(Triple(start, end, cleaned.length - (end - start)))
++                result = result.substring(0, s) + cleaned + result.substring(e)
++                shift += cleaned.length - (e - s)
++            }
++        }
++        if (shifts.isEmpty()) return entities
++
++        for (entity in entities) {
++            var from = entity.offset
++            var length = entity.length
++            for ((start, end, delta) in shifts.sortedByDescending { it.first }) {
++                if (from >= end) {
++                    from += delta
++                } else if (from + length >= end) {
++                    length += delta
++                }
++            }
++            entity.offset = from
++            entity.length = length
++        }
++        message[0] = result
++        return entities
++    }
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 13a266095..95aef1f98 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -42,6 +42,8 @@ object TeleSearch {
+             section(GUID_INTERFACE + 9, "turn off animated userpics", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(GUID_INTERFACE + 10, "show bot button payloads on long press", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             ProfileActivity.SearchAdapter.SearchResult(GUID_INTERFACE + 11, "message menu", icon) { fragment.presentFragment(TeleMenuActivity()) },
++            section(GUID_PRIVACY + 12, "clean tracking parameters from opened links", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(GUID_PRIVACY + 13, "clean tracking parameters from sent links", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+ 
+             section(GUID_PRIVACY, "tele privacy", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 1, "hide stories", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index fa4473347..268c188b6 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -178,15 +178,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("don't burn disappearing media on view", TeleConfig.KEEP_DISAPPEARING_MEDIA),
+                 toggle("keep drafts on this device", TeleConfig.LOCAL_DRAFTS),
+                 toggle("inline results without via", TeleConfig.INLINE_NO_VIA),
+-<<<<<<< HEAD
+-=======
+                 toggle("hide sponsored messages", TeleConfig.HIDE_SPONSORED),
+                 toggle("hide the proxy sponsor channel", TeleConfig.HIDE_PROXY_SPONSOR),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "links"),
+                 toggle("clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS),
+                 toggle("clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS),
+->>>>>>> 9c1fbae19 (fixup! feat: hide sponsored messages and the proxy sponsor channel)
+                 Row(TYPE_SHADOW)
+             )
+             MODE_IDS -> listOf(

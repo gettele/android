@@ -1,0 +1,185 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 21 Oct 2026 23:19:06 +0300
+Subject: [PATCH 110/128] fix: resume an interrupted update download
+
+---
+ .../src/main/java/tele/helpers/TeleUpdater.kt | 119 +++++++++++++++---
+ 1 file changed, 102 insertions(+), 17 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+index 9eb8ebff1..de1ce96cb 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+@@ -30,6 +30,7 @@ object TeleUpdater {
+     private const val DOWNLOAD_PREFIX = "$RELEASES/download/"
+     private const val FIRST_CHECK_DELAY = 15_000L
+     private const val CHECK_INTERVAL = 3 * 60 * 60_000L
++    private val NETWORK_RETRY_MS = longArrayOf(60_000L, 5 * 60_000L, 15 * 60_000L, 60 * 60_000L)
+     private const val TIMEOUT = 60_000
+     private const val MAX_FEED_SIZE = 64 * 1024L
+     private const val MAX_APK_SIZE = 512 * 1024 * 1024L
+@@ -46,6 +47,7 @@ object TeleUpdater {
+     // queue thread only
+     private var busy = false
+     private var readyFile: File? = null
++    private var networkFailures = 0
+ 
+     private fun updatesDir(): File = File(ApplicationLoader.applicationContext.filesDir, "cache/tele_update")
+ 
+@@ -142,11 +144,13 @@ object TeleUpdater {
+                 }
+             }
+         } catch (e: HttpStatusException) {
+-            fail(if (e.code == 404) "No releases published yet" else "Unexpected http status ${e.code}")
++            fail(if (e.code == 404) "No releases published yet" else "Unexpected http status ${e.code}", e.code != 404)
+         } catch (e: TooLargeException) {
+             fail("Response is too large")
++        } catch (e: WrongOffsetException) {
++            fail("The server resumed the download at a wrong offset", true)
+         } catch (e: Exception) {
+-            fail("Network error: ${e.message ?: e.javaClass.simpleName}")
++            fail("Network error: ${e.message ?: e.javaClass.simpleName}", true)
+         }
+     }
+ 
+@@ -168,27 +172,98 @@ object TeleUpdater {
+         publish(Status(State.DOWNLOADING, release.tag))
+         target.parentFile?.mkdirs()
+         val temp = File(target.parentFile, target.name + ".part")
++        // the part of an interrupted download stays, the next check resumes it
++        var offset = if (temp.exists()) temp.length() else 0L
++        if (offset >= MAX_APK_SIZE) {
++            temp.delete()
++            offset = 0L
++        }
++        val code = ranged(release.url, MAX_APK_SIZE, temp, offset) { ready, total ->
++            publish(Status(State.DOWNLOADING, release.tag, ready, total))
++        }
++        android.util.Log.d("TeleUpdater", "state=${State.DOWNLOADING} tag=${release.tag} offset=$offset http=${code / 100}xx")
++        if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL && code != 416) {
++            fail("Unexpected http status $code", true)
++            return
++        }
++        if (sha256(temp) != release.sha256) {
++            temp.delete()
++            fail("Downloaded apk doesn't match the feed")
++            return
++        }
++        if (!temp.renameTo(target)) {
++            fail("Can't write ${target.name}")
++            return
++        }
++        readyFile = target
++        finish(Status(State.READY, release.tag))
++    }
++
++    // writes into the file, appending when the server honors the range header
++    private fun ranged(url: String, limit: Long, file: File, offset: Long, progress: (Long, Long) -> Unit): Int {
++        var connection: HttpURLConnection? = null
+         try {
+-            temp.outputStream().use { out ->
+-                get(release.url, MAX_APK_SIZE, out) { ready, total -> publish(Status(State.DOWNLOADING, release.tag, ready, total)) }
++            connection = URL(url).openConnection() as HttpURLConnection
++            connection.connectTimeout = TIMEOUT
++            connection.readTimeout = TIMEOUT
++            connection.instanceFollowRedirects = true
++            connection.setRequestProperty("User-Agent", userAgent())
++            if (offset > 0) {
++                connection.setRequestProperty("Range", "bytes=$offset-")
+             }
+-            if (sha256(temp) != release.sha256) {
+-                fail("Downloaded apk doesn't match the feed")
+-                return
++            val code = connection.responseCode
++            if (code == 416) {
++                // the server says the range is out of bounds: only a part that exists can be complete
++                if (offset <= 0) throw HttpStatusException(code)
++                return code
++            }
++            if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL) {
++                throw HttpStatusException(code)
++            }
++            var start = 0L
++            if (code == HttpURLConnection.HTTP_PARTIAL) {
++                val from = contentRangeStart(connection.getHeaderField("Content-Range"))
++                if (offset <= 0 || from != offset) {
++                    file.delete()
++                    throw WrongOffsetException()
++                }
++                start = offset
+             }
+-            if (!temp.renameTo(target)) {
+-                fail("Can't write ${target.name}")
+-                return
++            val total = connection.contentLength.toLong()
++            if (total > 0 && start + total > limit) throw TooLargeException()
++            java.io.FileOutputStream(file, start > 0).use { out ->
++                var size = start
++                connection.inputStream.use { input ->
++                    val buffer = ByteArray(64 * 1024)
++                    while (true) {
++                        val read = input.read(buffer)
++                        if (read < 0) break
++                        size += read
++                        if (size > limit) throw TooLargeException()
++                        out.write(buffer, 0, read)
++                        progress(size, if (total > 0) start + total else 0L)
++                    }
++                }
+             }
++            return code
+         } finally {
+-            temp.delete()
++            connection?.disconnect()
+         }
+-        readyFile = target
+-        finish(Status(State.READY, release.tag))
+     }
+ 
++    // "bytes 100-200/300" -> 100
++    private fun contentRangeStart(header: String?): Long {
++        if (header == null) return -1
++        val parts = header.trim().split(' ')
++        if (parts.size < 2) return -1
++        return parts[1].split('-').firstOrNull()?.trim()?.toLongOrNull() ?: -1
++    }
++
++    private fun userAgent(): String = "tele/${BuildVars.BUILD_VERSION_STRING}-tele.${TeleBuild.BUILD}"
++
+     private class HttpStatusException(val code: Int) : Exception()
+     private class TooLargeException : Exception()
++    private class WrongOffsetException : Exception()
+ 
+     private fun get(url: String, limit: Long, out: java.io.OutputStream, progress: ((Long, Long) -> Unit)?) {
+         var connection: HttpURLConnection? = null
+@@ -239,15 +314,25 @@ object TeleUpdater {
+         digest.digest().joinToString("") { "%02x".format(it) }
+     }.getOrDefault("")
+ 
+-    private fun fail(error: String) {
++    private fun fail(error: String, network: Boolean = false) {
+         FileLog.e("TeleUpdater: $error")
+-        finish(Status(State.FAILED, error = error))
++        if (!network) {
++            networkFailures = 0
++            finish(Status(State.FAILED, error = error))
++            return
++        }
++        val index = networkFailures.coerceAtMost(NETWORK_RETRY_MS.size - 1)
++        networkFailures++
++        finish(Status(State.FAILED, error = error), NETWORK_RETRY_MS[index])
+     }
+ 
+-    private fun finish(value: Status) {
++    private fun finish(value: Status, delay: Long = CHECK_INTERVAL) {
+         busy = false
++        if (value.state != State.FAILED) {
++            networkFailures = 0
++        }
+         publish(value)
+-        schedule(CHECK_INTERVAL)
++        schedule(delay)
+     }
+ 
+     @JvmStatic

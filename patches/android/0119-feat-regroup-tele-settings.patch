@@ -1,0 +1,794 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Thu, 22 Oct 2026 06:33:38 +0300
+Subject: [PATCH 119/128] feat: regroup tele settings
+
+---
+ .../org/telegram/ui/SettingsActivity.java     |   3 +-
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ .../src/main/java/tele/helpers/TeleBackup.kt  |  86 +++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  | 147 +++++---
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 328 +++++++++++++-----
+ 5 files changed, 418 insertions(+), 150 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index addd4816b..31aebab8b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -704,12 +704,13 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+         items.add(SettingCell.Factory.of(3, IconBackgroundColors.GREEN.top, IconBackgroundColors.GREEN.bottom, R.drawable.settings_privacy, getString(R.string.SettingsPrivacySecurity), getString(R.string.SettingsPrivacySecurityInfo)));
+         items.add(SettingCell.Factory.of(5, IconBackgroundColors.RED.top, IconBackgroundColors.RED.bottom, R.drawable.settings_sounds, getString(R.string.SettingsNotifications), getString(R.string.SettingsNotificationsInfo)));
+         items.add(SettingCell.Factory.of(6, IconBackgroundColors.BLUE_DEEP.top, IconBackgroundColors.BLUE_DEEP.bottom, R.drawable.settings_data, getString(R.string.SettingsData), getString(R.string.SettingsDataInfo)));
+-        items.add(SettingCell.Factory.of(90, IconBackgroundColors.BLUE.top, IconBackgroundColors.BLUE.bottom, R.drawable.tele_settings_icon_padded, "tele", "Interface, Privacy, Debug"));
+         items.add(SettingCell.Factory.of(7, IconBackgroundColors.BLUE_ALT.top, IconBackgroundColors.BLUE_ALT.bottom, R.drawable.settings_folders, getString(R.string.SettingsFolders), getString(R.string.SettingsFoldersInfo)));
+         items.add(SettingCell.Factory.of(8, IconBackgroundColors.CYAN.top, IconBackgroundColors.CYAN.bottom, R.drawable.settings_devices, getString(R.string.SettingsDevices), getString(R.string.SettingsDevicesInfo)));
+         items.add(SettingCell.Factory.of(9, IconBackgroundColors.ORANGE_DEEP.top, IconBackgroundColors.ORANGE_DEEP.bottom, R.drawable.settings_power, getString(R.string.SettingsPowerSaving), getString(R.string.SettingsPowerSavingInfo)));
+         items.add(SettingCell.Factory.of(10, IconBackgroundColors.PURPLE.top, IconBackgroundColors.PURPLE.bottom, R.drawable.settings_language, getString(R.string.SettingsLanguage), LocaleController.getCurrentLanguageName()));
+ 
++        items.add(UItem.asShadow(null));
++        items.add(SettingCell.Factory.of(90, IconBackgroundColors.BLUE.top, IconBackgroundColors.BLUE.bottom, R.drawable.tele_settings_icon_padded, "tele", "Interface, Privacy, Debug"));
+         items.add(UItem.asShadow(null));
+         if (!walletAbove && getMessagesController().config.walletAvailable.get()) {
+             final GramWallet wallet = GramWallet.getInstance(currentAccount);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index b0e3b45fb..c0dc7b636 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -231,4 +231,8 @@ object TeleConfig {
+         (item as Item<Any?>).value = v
+         item.save(p)
+     }
++
++    // the public options of the settings export
++    @JvmStatic
++    fun exportedItems(): List<Item<*>> = configItems.toList()
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
+new file mode 100644
+index 000000000..5dfde65e1
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
+@@ -0,0 +1,86 @@
++package tele.helpers
++
++import tele.Item
++import tele.TeleHooks
++import tele.TeleConfig
++
++// the settings export and import of the backup page: a plain text list of the public options
++object TeleBackup {
++
++    private const val HEADER = "# tele settings"
++    private const val MAX_LINES = 512
++    private const val MAX_LENGTH = 64 * 1024
++
++    // the internal values and the server url stay on the device
++    private val SKIPPED = setOf("known_settings", "changelog_accounts", "shot_view", "tele_server_url")
++
++    private fun items(): List<Item<*>> = TeleConfig.exportedItems()
++
++    fun export(): String {
++        val lines = ArrayList<String>()
++        lines.add(HEADER)
++        for (item in items()) {
++            if (item.key in SKIPPED) continue
++            when (val value = item.value) {
++                is Boolean -> lines.add("${item.key}=true")
++                is Int -> lines.add("${item.key}=$value")
++                is Float -> lines.add("${item.key}=$value")
++                is String -> {
++                    if (value.isEmpty()) continue
++                    lines.add("${item.key}=${value.replace("\n", " ")}")
++                }
++                else -> continue
++            }
++        }
++        return lines.joinToString("\n")
++    }
++
++    // returns the number of the applied options, throws when the text is not an export
++    fun import(text: String): Int {
++        if (text.length > MAX_LENGTH) {
++            throw IllegalArgumentException("the settings are too long")
++        }
++        val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
++        if (lines.isEmpty() || lines.size > MAX_LINES) {
++            throw IllegalArgumentException("this is not a tele settings export")
++        }
++        val byKey = HashMap<String, Item<*>>()
++        for (item in items()) {
++            byKey[item.key] = item
++        }
++        var applied = 0
++        for (line in lines) {
++            val separator = line.indexOf('=')
++            if (separator <= 0) {
++                throw IllegalArgumentException("the settings are damaged")
++            }
++            val key = line.substring(0, separator)
++            val value = line.substring(separator + 1)
++            val item = byKey[key] ?: continue
++            if (item.key in SKIPPED) continue
++            when (item.value) {
++                is Boolean -> {
++                    if (value != "true" && value != "false") {
++                        throw IllegalArgumentException("the settings are damaged")
++                    }
++                    TeleConfig.set(item, value == "true")
++                }
++                is Int -> {
++                    val number = value.toIntOrNull()
++                        ?: throw IllegalArgumentException("the settings are damaged")
++                    TeleConfig.set(item, number)
++                }
++                is Float -> {
++                    val number = value.toFloatOrNull()
++                        ?: throw IllegalArgumentException("the settings are damaged")
++                    TeleConfig.set(item, number)
++                }
++                is String -> TeleConfig.set(item, value)
++                else -> continue
++            }
++            TeleHooks.onConfigChanged(item)
++            applied++
++        }
++        return applied
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 3ce156c24..df2ccd088 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -15,6 +15,10 @@ object TeleSearch {
+     private const val GUID_SERVER = 1002
+     private const val GUID_UPDATES = 1012
+ 
++    // the pages of the new structure
++    private const val GUID_PAGES = 1140
++    private const val GUID_KEYWORDS = 1160
++
+     @JvmStatic
+     fun appendAll(fragment: BaseFragment, stock: Array<ProfileActivity.SearchAdapter.SearchResult>): Array<ProfileActivity.SearchAdapter.SearchResult> =
+         stock + entries(fragment)
+@@ -30,28 +34,60 @@ object TeleSearch {
+         fun screen(guid: Int, title: String, factory: () -> BaseFragment) =
+             ProfileActivity.SearchAdapter.SearchResult(guid, title, icon) { fragment.presentFragment(factory()) }
+ 
+-        return arrayOf(
+-            screen(GUID_ROOT, "tele") { TeleSettingsActivity() },
++        val results = ArrayList<ProfileActivity.SearchAdapter.SearchResult>()
++        results.add(screen(GUID_ROOT, "tele") { TeleSettingsActivity() })
+ 
+-            section(GUID_INTERFACE, "tele interface", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 1, "Show seconds in message times", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 2, "Hide the all chats folder", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 3, "Hide call buttons", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 4, "Confirm calls before starting", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 5, "Open links without confirmation", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 6, "Show names instead of phone numbers", "interface", TeleSettingsActivity.MODE_INTERFACE, "Show names instead of phone numbers in chat headers"),
+-            section(GUID_INTERFACE + 7, "Reveal spoilers automatically", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 8, "Hide mention and reaction badges", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 9, "Turn off animated userpics", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 10, "Show bot button payloads on long press", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(GUID_INTERFACE + 11, "View messages as TL", "interface", TeleSettingsActivity.MODE_INTERFACE),
++        // the pages of the new structure, the desktop keywords search them too
++        val pages = listOf(
++            Triple("tele interface", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            Triple("tele chats", "chats", TeleSettingsActivity.MODE_CHATS),
++            Triple("tele messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            Triple("tele sending", "sending", TeleSettingsActivity.MODE_SENDING),
++            Triple("tele notifications", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            Triple("tele menus", "menus", TeleSettingsActivity.MODE_MENUS),
++            Triple("tele privacy", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            Triple("tele profiles and ids", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            Triple("tele bots", "bots", TeleSettingsActivity.MODE_BOTS),
++            Triple("tele debug", "debug", TeleSettingsActivity.MODE_DEBUG),
++            Triple("tele server", "server", TeleSettingsActivity.MODE_SERVER),
++            Triple("tele backup", "backup", TeleSettingsActivity.MODE_BACKUP),
++            Triple("tele updates", "updates", TeleSettingsActivity.MODE_UPDATES)
++        )
++        pages.forEachIndexed { index, page ->
++            results.add(section(GUID_PAGES + index, page.first, page.second, page.third))
++        }
++        val keywords = listOf(
++            "title" to 0, "lowercase" to 0, "scale" to 0, "chat list" to 0,
++            "badges" to 1, "userpics" to 1, "sponsored" to 1, "gestures" to 1,
++            "deleted" to 2, "edited" to 2, "bookmarks" to 2, "links" to 2,
++            "uploads" to 3, "drafts" to 3, "scheduled" to 3, "confirm" to 3,
++            "unread" to 4, "counters" to 4, "online" to 4, "mute" to 4,
++            "context" to 5, "right click" to 5, "message menu" to 5
++        )
++        keywords.forEachIndexed { index, keyword ->
++            val page = pages[keyword.second]
++            results.add(section(GUID_KEYWORDS + index, keyword.first, page.second, page.third))
++        }
++
++        results.addAll(arrayOf(
++            section(GUID_INTERFACE + 1, "Show seconds in message times", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(GUID_INTERFACE + 2, "Hide the all chats folder", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(GUID_INTERFACE + 3, "Hide call buttons", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(GUID_INTERFACE + 4, "Confirm calls before starting", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(GUID_INTERFACE + 5, "Open links without confirmation", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(GUID_INTERFACE + 6, "Show names instead of phone numbers", "chats", TeleSettingsActivity.MODE_CHATS, "Show names instead of phone numbers in chat headers"),
++            section(GUID_INTERFACE + 7, "Reveal spoilers automatically", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(GUID_INTERFACE + 8, "Hide mention and reaction badges", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(GUID_INTERFACE + 9, "Turn off animated userpics", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(GUID_INTERFACE + 10, "Show bot button payloads on long press", "bots", TeleSettingsActivity.MODE_BOTS),
++            section(GUID_INTERFACE + 11, "View messages as TL", "menus", TeleSettingsActivity.MODE_MENUS),
+             ProfileActivity.SearchAdapter.SearchResult(GUID_INTERFACE + 12, "Message menu", icon) { fragment.presentFragment(TeleMenuActivity()) },
+             section(GUID_PRIVACY + 12, "Clean tracking parameters from opened links", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 13, "Clean tracking parameters from sent links", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 16, "Rewrite pasted links by rules", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             ProfileActivity.SearchAdapter.SearchResult(GUID_PRIVACY + 17, "Link rewrite rules", icon) { fragment.presentFragment(TeleRulesActivity()) },
+-            section(GUID_PRIVACY + 18, "Disable link previews", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+-            section(GUID_PRIVACY + 19, "Automatic link previews", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(GUID_PRIVACY + 18, "Disable link previews", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(GUID_PRIVACY + 19, "Automatic link previews", "messages", TeleSettingsActivity.MODE_MESSAGES),
+ 
+             section(GUID_PRIVACY, "tele privacy", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 1, "Hide stories", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+@@ -62,11 +98,11 @@ object TeleSearch {
+             section(GUID_PRIVACY + 6, "Hide viewed receipts", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 7, "Never block screenshots", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(GUID_PRIVACY + 8, "Allow screenshots of disappearing media", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+-            section(GUID_PRIVACY + 9, "Don't burn disappearing media on view", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+-            section(GUID_PRIVACY + 10, "Keep drafts on this device", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+-            section(GUID_PRIVACY + 11, "Inline results without via", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+-            section(GUID_PRIVACY + 14, "Hide sponsored messages", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+-            section(GUID_PRIVACY + 15, "Hide the proxy sponsor channel", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(GUID_PRIVACY + 9, "Don't burn disappearing media on view", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(GUID_PRIVACY + 10, "Keep drafts on this device", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(GUID_PRIVACY + 11, "Inline results without via", "bots", TeleSettingsActivity.MODE_BOTS),
++            section(GUID_PRIVACY + 14, "Hide sponsored messages", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(GUID_PRIVACY + 15, "Hide the proxy sponsor channel", "chats", TeleSettingsActivity.MODE_CHATS),
+             screen(1110, "Ignored users") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_IGNORE) },
+             section(1111, "Ghost mode exceptions", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             screen(1112, "Always ghost in") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_ALWAYS) },
+@@ -82,36 +118,36 @@ object TeleSearch {
+             section(1122, "Hide the messages completely", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(1123, "Show the ignore button in the profile", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+ 
+-            section(GUID_IDS, "tele ids", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 1, "Show peer id in profile", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 2, "Ids without spaces", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 3, "Bot api style ids", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 4, "Show data center", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 5, "Id and dc in one row", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 6, "Show message id in the message menu", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 7, "Show gift id", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 8, "Show ids on regular gifts", "ids", TeleSettingsActivity.MODE_IDS),
+-            section(GUID_IDS + 9, "Copy custom emoji id", "ids", TeleSettingsActivity.MODE_IDS),
++            section(GUID_IDS, "tele ids", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 1, "Show peer id in profile", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 2, "Ids without spaces", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 3, "Bot api style ids", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 4, "Show data center", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 5, "Id and dc in one row", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 6, "Show message id in the message menu", "menus", TeleSettingsActivity.MODE_MENUS),
++            section(GUID_IDS + 7, "Show gift id", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 8, "Show ids on regular gifts", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_IDS + 9, "Copy custom emoji id", "menus", TeleSettingsActivity.MODE_MENUS),
+ 
+-            section(GUID_DATA, "tele your data", "Your data", TeleSettingsActivity.MODE_DATA),
+-            section(GUID_DATA + 1, "Local names for people", "Your data", TeleSettingsActivity.MODE_DATA),
+-            section(GUID_DATA + 2, "Username aliases", "Your data", TeleSettingsActivity.MODE_DATA),
+-            section(GUID_DATA + 3, "Keep deleted messages", "Your data", TeleSettingsActivity.MODE_DATA),
+-            section(GUID_DATA + 4, "Keep messages you delete yourself", "Your data", TeleSettingsActivity.MODE_DATA),
++            section(GUID_DATA, "tele your data", "backup", TeleSettingsActivity.MODE_BACKUP),
++            section(GUID_DATA + 1, "Local names for people", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_DATA + 2, "Username aliases", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(GUID_DATA + 3, "Keep deleted messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(GUID_DATA + 4, "Keep messages you delete yourself", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(GUID_DATA + 5, "Deleted messages") { TeleDeletedMessagesActivity() },
+             screen(GUID_DATA + 11, "Saved drafts") { TeleDraftsActivity() },
+-            section(GUID_DATA + 6, "Keep edit history", "Your data", TeleSettingsActivity.MODE_DATA),
++            section(GUID_DATA + 6, "Keep edit history", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(GUID_DATA + 8, "Manage local names") { TeleNamesActivity(TeleNamesActivity.MODE_LOCAL) },
+             screen(GUID_DATA + 9, "Manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
+-            section(GUID_DATA + 10, "Mark deleted messages with", "Your data", TeleSettingsActivity.MODE_DATA),
+-            section(GUID_DATA + 12, "Reply to deleted messages", "Your data", TeleSettingsActivity.MODE_DATA),
++            section(GUID_DATA + 10, "Mark deleted messages with", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(GUID_DATA + 12, "Reply to deleted messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(GUID_SENDING, "tele sending", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 1, "Send photos in HD by default", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 2, "Send scheduled messages on time", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 3, "Queue messages behind uploading media", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 4, "Send replies to older messages right away", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 5, "Send right away on double enter", "sending", TeleSettingsActivity.MODE_SENDING),
+-            section(GUID_SENDING + 6, "Offer quick replies in groups", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(GUID_SENDING + 6, "Offer quick replies in groups", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(GUID_SENDING + 7, "Forward protected messages as copies", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SERVER, "tele server", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 1, "Server url", "server", TeleSettingsActivity.MODE_SERVER),
+@@ -119,28 +155,31 @@ object TeleSearch {
+             section(GUID_SERVER + 3, "Clear cached server data", "server", TeleSettingsActivity.MODE_SERVER, "Clear cached data"),
+             section(GUID_SERVER + 4, "Usernames from the server", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 5, "Send crash reports", "server", TeleSettingsActivity.MODE_SERVER),
+-            section(GUID_SERVER + 6, "Badges next to names in messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(1107, "Collectible prices at the purchase date", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(1108, "Open collectible gifts in see.tg", "ids", TeleSettingsActivity.MODE_IDS),
++            section(GUID_SERVER + 6, "Badges next to names in messages", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1107, "Collectible prices at the purchase date", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1108, "Open collectible gifts in see.tg", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1101, "Preview calcmula results while typing", "sending", TeleSettingsActivity.MODE_SENDING),
+-            section(1102, "Save messages as a picture", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(1103, "shot", "interface", TeleSettingsActivity.MODE_INTERFACE, "Save messages as a picture"),
+-            section(1104, "Messages as an image", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(1105, "Screenshot of messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            section(1102, "Save messages as a picture", "menus", TeleSettingsActivity.MODE_MENUS),
++            section(1103, "shot", "menus", TeleSettingsActivity.MODE_MENUS, "Save messages as a picture"),
++            section(1104, "Messages as an image", "menus", TeleSettingsActivity.MODE_MENUS),
++            section(1105, "Screenshot of messages", "menus", TeleSettingsActivity.MODE_MENUS),
+             section(1106, "Pick brush colors from the image", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1109, "Attach media above the field (beta)", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1120, "Hide the gift button in the message field", "sending", TeleSettingsActivity.MODE_SENDING),
+-            section(1121, "Hide similar channels", "interface", TeleSettingsActivity.MODE_INTERFACE),
+-            section(1122, "Hide the collectible status hint", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            section(1121, "Hide similar channels", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1122, "Hide the collectible status hint", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1123, "Reduce motion", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1125, "No edited mark on bot messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1126, "Show the start parameter", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1124, "Hide phone numbers in profiles", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+-            section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_ROOT),
+-            section(GUID_UPDATES + 1, "Check for updates", "updates", TeleSettingsActivity.MODE_ROOT),
+-            section(GUID_UPDATES + 2, "Show what's new after updates", "updates", TeleSettingsActivity.MODE_ROOT),
++            section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
++            section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
++            section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
++            section(GUID_UPDATES + 1, "Check for updates", "updates", TeleSettingsActivity.MODE_UPDATES),
++            section(GUID_UPDATES + 2, "Show what's new after updates", "updates", TeleSettingsActivity.MODE_UPDATES),
+             ProfileActivity.SearchAdapter.SearchResult(GUID_UPDATES + 3, "What's new", icon) { tele.helpers.TeleChangelog.open(fragment) }
+-        )
++        ))
++        return results.toTypedArray()
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 8efd2eff9..3f879b650 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -115,19 +115,47 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         tele.helpers.TeleServer.refresh(::showServerResult)
+     }
+ 
++    private fun exportSettings() {
++        val text = tele.helpers.TeleBackup.export()
++        AndroidUtilities.addToClipboard(text)
++        BulletinFactory.of(this).createSimpleBulletin(R.raw.info, "The settings are copied to the clipboard.").show()
++    }
++
++    private fun importSettings() {
++        val context = screenContext ?: return
++        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return
++        val clip = clipboard.primaryClip ?: return
++        if (clip.itemCount == 0) return
++        val text = clip.getItemAt(0).coerceToText(context).toString()
++        val applied = runCatching { tele.helpers.TeleBackup.import(text) }
++        if (applied.isSuccess) {
++            BulletinFactory.of(this).createSimpleBulletin(R.raw.info, "Imported ${applied.getOrNull()} settings.").show()
++            refresh()
++        } else {
++            BulletinFactory.of(this).createSimpleBulletin(R.raw.error, "This is not a tele settings export.").show()
++        }
++    }
++
+     private fun showServerResult(text: String) {
+         if (fragmentView == null) return
+         BulletinFactory.of(this).createSimpleBulletin(R.raw.info, text).show()
+         refresh()
+     }
+ 
+-    private fun sectionTitle(): String = when (mode) {
++    private fun sectionTitle(): String = when (canonicalMode(mode)) {
+         MODE_INTERFACE -> "tele · Interface"
+-        MODE_PRIVACY -> "tele · Privacy"
+-        MODE_IDS -> "tele · IDs"
+-        MODE_DATA -> "tele · Your Data"
++        MODE_CHATS -> "tele · Chats"
++        MODE_MESSAGES -> "tele · Messages"
+         MODE_SENDING -> "tele · Sending"
++        MODE_NOTIFICATIONS -> "tele · Notifications"
++        MODE_MENUS -> "tele · Menus"
++        MODE_PRIVACY -> "tele · Privacy"
++        MODE_PROFILES_IDS -> "tele · Profiles and IDs"
++        MODE_BOTS -> "tele · Bots"
++        MODE_DEBUG -> "tele · Debug"
+         MODE_SERVER -> "tele · Server"
++        MODE_BACKUP -> "tele · Backup"
++        MODE_UPDATES -> "tele · Updates"
+         MODE_MENU -> "Message menu"
+         MODE_NEW -> displayTitle(tele.helpers.TeleNewSettings.title())
+         else -> "tele"
+@@ -220,6 +248,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
+                 TeleDraftsActivity.MODE_DRAFTS -> presentFragment(TeleDraftsActivity())
+                 MODE_RULES -> presentFragment(TeleRulesActivity())
++                "backup_export" -> exportSettings()
++                "backup_import" -> importSettings()
+                 "server_refresh" -> tele.helpers.TeleServer.refresh(::showServerResult)
+                 "server_clear" -> tele.helpers.TeleServer.clearCachedData(::showServerResult)
+                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
+@@ -283,17 +313,36 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+     companion object {
+         const val MODE_ROOT = "root"
+         const val MODE_INTERFACE = "interface"
++        const val MODE_CHATS = "chats"
++        const val MODE_MESSAGES = "messages"
++        const val MODE_SENDING = "sending"
++        const val MODE_NOTIFICATIONS = "notifications"
++        const val MODE_MENUS = "menus"
+         const val MODE_PRIVACY = "privacy"
++        const val MODE_PROFILES_IDS = "profiles-ids"
++        const val MODE_BOTS = "bots"
++        const val MODE_DEBUG = "debug"
++        const val MODE_SERVER = "server"
++        const val MODE_BACKUP = "backup"
++        const val MODE_UPDATES = "updates"
++        // the old pages are kept for the deeplinks and the old search entries
+         const val MODE_IDS = "ids"
+         const val MODE_DATA = "data"
+         const val MODE_MENU = "menu"
+         const val MODE_RULES = "rules"
+-        const val MODE_SENDING = "sending"
+-        const val MODE_SERVER = "server"
+         const val MODE_UPDATE_ACTION = "update_action"
+         const val MODE_WHATS_NEW = "whats_new"
+         const val MODE_NEW = "new"
+ 
++        // the old pages open their new home
++        private val ALIASES = mapOf(
++            MODE_IDS to MODE_PROFILES_IDS,
++            MODE_DATA to MODE_BACKUP
++        )
++
++        @JvmStatic
++        fun canonicalMode(mode: String): String = ALIASES[mode] ?: mode
++
+         private const val TYPE_HEADER = 0
+         private const val TYPE_VALUE = 1
+         private const val TYPE_TOGGLE = 2
+@@ -407,21 +456,28 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         private fun sectionLink(title: String, mode: String, icon: Int) =
+             Row(TYPE_LINK_ICON, title = title, mode = mode, icon = icon)
+ 
+-        private val SECTIONS = listOf(
+-            Section(MODE_INTERFACE, "interface", R.drawable.msg2_discussion),
+-            Section(MODE_PRIVACY, "privacy", R.drawable.msg2_secret),
+-            Section(MODE_IDS, "ids", R.drawable.msg2_data),
++        private val SECTION_SPECS = listOf(
++            Section(MODE_INTERFACE, "interface", R.drawable.msg2_animations),
++            Section(MODE_CHATS, "chats", R.drawable.msg2_discussion),
++            Section(MODE_MESSAGES, "messages", R.drawable.msg2_email),
+             Section(MODE_SENDING, "sending", R.drawable.msg2_gif),
+-            Section(MODE_DATA, "Your data", R.drawable.msg2_link2),
+-            Section(MODE_SERVER, "server", R.drawable.msg2_data)
++            Section(MODE_NOTIFICATIONS, "notifications", R.drawable.msg2_notifications),
++            Section(MODE_MENUS, "menus", R.drawable.msg2_permissions),
++            Section(MODE_PRIVACY, "privacy", R.drawable.msg2_secret),
++            Section(MODE_PROFILES_IDS, "profiles and ids", R.drawable.msg2_data),
++            Section(MODE_BOTS, "bots", R.drawable.msg2_ask_question),
++            Section(MODE_DEBUG, "debug", R.drawable.msg2_battery),
++            Section(MODE_SERVER, "server", R.drawable.msg2_devices),
++            Section(MODE_BACKUP, "backup", R.drawable.msg2_link2),
++            Section(MODE_UPDATES, "updates", R.drawable.msg2_help)
+         )
+ 
+         // what tele 0112 compares between builds: every visible setting plus the section pages
+         @JvmStatic
+         fun settingIds(): List<String> {
+             val ids = ArrayList<String>()
+-            SECTIONS.forEach { ids.add("tele/${it.mode}") }
+-            for (mode in SECTIONS.map { it.mode } + MODE_ROOT) {
++            SECTION_SPECS.forEach { ids.add("tele/${it.mode}") }
++            for (mode in SECTION_SPECS.map { it.mode } + MODE_ROOT) {
+                 for (row in buildRows(mode)) {
+                     val key = row.item?.key ?: continue
+                     if (key !in ids) ids.add(key)
+@@ -434,13 +490,13 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             val fresh = tele.helpers.TeleNewSettings.fresh().toHashSet()
+             if (fresh.isEmpty()) return listOf(Row(TYPE_SHADOW, title = "Nothing new in this tele build."))
+             val rows = ArrayList<Row>()
+-            val pages = SECTIONS.filter { "tele/${it.mode}" in fresh }
++            val pages = SECTION_SPECS.filter { "tele/${it.mode}" in fresh }
+             if (pages.isNotEmpty()) {
+                 rows.add(Row(TYPE_HEADER, "New pages"))
+                 pages.forEach { rows.add(sectionLink(it)) }
+                 rows.add(Row(TYPE_SHADOW))
+             }
+-            for ((mode, title) in SECTIONS.map { it.mode to it.title } + (MODE_ROOT to "tele")) {
++            for ((mode, title) in SECTION_SPECS.map { it.mode to it.title } + (MODE_ROOT to "tele")) {
+                 val picked = buildRows(mode).filter { (it.type == TYPE_TOGGLE || it.type == TYPE_VALUE) && it.item?.key in fresh }
+                 if (picked.isEmpty()) continue
+                 rows.add(Row(TYPE_HEADER, title))
+@@ -451,46 +507,185 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             return rows
+         }
+ 
+-        private fun buildRows(mode: String): List<Row> = when (mode) {
++        private fun buildRows(mode: String): List<Row> = when (canonicalMode(mode)) {
+             MODE_INTERFACE -> listOf(
+                 Row(TYPE_HEADER, "interface"),
+-                toggle("Show seconds in message times", TeleConfig.SHOW_SECONDS),
++                Row(TYPE_HEADER, "Animations"),
++                toggle("Reduce motion", TeleConfig.REDUCE_MOTION),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Editor"),
++                toggle("Pick brush colors from the image", TeleConfig.EDITOR_EYEDROPPER),
++                Row(TYPE_SHADOW)
++            )
++            MODE_CHATS -> listOf(
++                Row(TYPE_HEADER, "chats"),
++                Row(TYPE_HEADER, "Chat list"),
+                 toggle("Hide the all chats folder", TeleConfig.HIDE_ALL_CHATS_FOLDER),
+-                toggle("Hide call buttons", TeleConfig.HIDE_CALL_BUTTONS),
+-                toggle("Confirm calls before starting", TeleConfig.CONFIRM_CALLS),
+-                toggle("Open links without confirmation", TeleConfig.OPEN_LINKS_DIRECTLY),
++                toggle("Hide similar channels", TeleConfig.HIDE_SIMILAR_CHANNELS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Chats and profiles"),
+                 toggle("Show names instead of phone numbers in chat headers", TeleConfig.NAME_INSTEAD_OF_PHONE),
+-                toggle("Reveal spoilers automatically", TeleConfig.REVEAL_SPOILERS),
+-                toggle("Hide mention and reaction badges", TeleConfig.HIDE_MENTION_REACTIONS),
+                 toggle("Turn off animated userpics", TeleConfig.STATIC_AVATARS),
+-                toggle("Show bot button payloads on long press", TeleConfig.BOT_BUTTON_PAYLOADS),
+                 toggle("Badges next to names in messages", TeleConfig.BUBBLE_BADGES),
+-                toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Call buttons"),
++                toggle("Hide call buttons", TeleConfig.HIDE_CALL_BUTTONS),
++                toggle("Confirm calls before starting", TeleConfig.CONFIRM_CALLS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Chat controls"),
++                toggle("Hide mention and reaction badges", TeleConfig.HIDE_MENTION_REACTIONS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Chat features"),
++                toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Sponsored"),
++                toggle("Hide sponsored messages", TeleConfig.HIDE_SPONSORED),
++                toggle("Hide the proxy sponsor channel", TeleConfig.HIDE_PROXY_SPONSOR),
++                Row(TYPE_SHADOW)
++            )
++            MODE_MESSAGES -> listOf(
++                Row(TYPE_HEADER, "messages"),
++                Row(TYPE_HEADER, "Message times"),
++                toggle("Show seconds in message times", TeleConfig.SHOW_SECONDS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Spoilers"),
++                toggle("Reveal spoilers automatically", TeleConfig.REVEAL_SPOILERS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Drafts and privacy"),
++                toggle("Keep drafts on this device", TeleConfig.LOCAL_DRAFTS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Disappearing media"),
++                toggle("Don't burn disappearing media on view", TeleConfig.KEEP_DISAPPEARING_MEDIA),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Deleted messages"),
++                toggle("Keep deleted messages", TeleConfig.KEEP_DELETED_MESSAGES),
++                toggle("Keep messages you delete yourself", TeleConfig.KEEP_SELF_DELETED_MESSAGES),
++                Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
++                Row(TYPE_VALUE, "Reply to deleted messages", value = if (TeleConfig.DELETED_REPLY.value == "quote") "Quote them" else "Skip them", item = TeleConfig.DELETED_REPLY),
++                link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Edited history"),
++                toggle("Keep edit history", TeleConfig.EDIT_HISTORY),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Links"),
++                toggle("Disable link previews", TeleConfig.NO_LINK_PREVIEWS),
++                choice("Automatic link previews", TeleConfig.LINK_PREVIEW_MODE),
++                Row(TYPE_SHADOW)
++            )
++            MODE_SENDING -> listOf(
++                Row(TYPE_HEADER, "sending"),
++                Row(TYPE_HEADER, "Uploads"),
++                toggle("Send photos in HD by default", TeleConfig.HD_PHOTOS),
++                toggle("Attach media above the field (beta)", TeleConfig.DOCKED_MEDIA),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Scheduled"),
++                toggle("Send scheduled messages on time", TeleConfig.PUNCTUAL_SCHEDULED),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Sending order"),
++                toggle("Queue messages behind uploading media", TeleConfig.QUEUE_BEHIND_MEDIA),
++                toggle("Send replies to older messages right away", TeleConfig.SEND_OLDER_REPLIES),
++                toggle("Send right away on double enter", TeleConfig.DOUBLE_ENTER_SEND),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Message field"),
++                toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
++                toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
++                toggle("Hide the gift button in the message field", TeleConfig.HIDE_GIFT_BUTTON),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Forwarding"),
++                toggle("Forward protected messages as copies", TeleConfig.COPY_PROTECTED),
++                Row(TYPE_SHADOW)
++            )
++            MODE_NOTIFICATIONS -> listOf(
++                Row(TYPE_HEADER, "notifications"),
++                Row(TYPE_SHADOW, "The notification options of the desktop client are not in this build yet. The closest ones live in the privacy page.")
++            )
++            MODE_MENUS -> listOf(
++                Row(TYPE_HEADER, "menus"),
++                Row(TYPE_HEADER, "Message menu items"),
++                toggle("Show message id in the message menu", TeleConfig.MESSAGE_ID_MENU),
++                toggle("Copy custom emoji id", TeleConfig.COPY_EMOJI_ID),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Message tools"),
+                 toggle("View messages as TL", TeleConfig.VIEW_AS_TL),
+                 toggle("Save messages as a picture", TeleConfig.SHOT),
+-                toggle("Hide similar channels", TeleConfig.HIDE_SIMILAR_CHANNELS),
+-                toggle("Hide the collectible status hint", TeleConfig.HIDE_COLLECTIBLE_HINT),
+-                toggle("Reduce motion", TeleConfig.REDUCE_MOTION),
+-                toggle("No edited mark on bot messages", TeleConfig.HIDE_BOT_EDITED_LABEL),
+-                toggle("Show the start parameter", TeleConfig.SHOW_START_PARAMETER),
+                 Row(TYPE_SHADOW),
+-                Row(TYPE_HEADER, "editor"),
+-                toggle("Pick brush colors from the image", TeleConfig.EDITOR_EYEDROPPER),
++                Row(TYPE_HEADER, "Menu editor"),
+                 sectionLink("Message menu", MODE_MENU, R.drawable.msg2_permissions),
+                 Row(TYPE_SHADOW)
+             )
++            MODE_PROFILES_IDS -> listOf(
++                Row(TYPE_HEADER, "profiles and ids"),
++                Row(TYPE_HEADER, "Peer IDs"),
++                toggle("Show peer id in profile", TeleConfig.SHOW_PEER_ID),
++                toggle("Ids without spaces", TeleConfig.PEER_IDS_WITHOUT_SPACES),
++                toggle("Bot api style ids", TeleConfig.BOT_API_PEER_IDS),
++                toggle("Show data center", TeleConfig.SHOW_DC),
++                toggle("Id and dc in one row", TeleConfig.MERGE_ID_DC),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Gifts and IDs"),
++                toggle("Show gift id", TeleConfig.SHOW_GIFT_IDS),
++                toggle("Show ids on regular gifts", TeleConfig.SHOW_REGULAR_GIFT_IDS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Collectibles"),
++                toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),
++                toggle("Open collectible gifts in see.tg", TeleConfig.SEETG_BUTTON),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Local names"),
++                toggle("Local names for people", TeleConfig.LOCAL_NAMES),
++                link("Local names", TeleNamesActivity.MODE_LOCAL),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Aliases"),
++                toggle("Username aliases", TeleConfig.USERNAME_ALIASES),
++                link("Aliases", TeleNamesActivity.MODE_ALIAS),
++                Row(TYPE_SHADOW)
++            )
++            MODE_BOTS -> listOf(
++                Row(TYPE_HEADER, "bots"),
++                Row(TYPE_HEADER, "Bot buttons"),
++                toggle("Show bot button payloads on long press", TeleConfig.BOT_BUTTON_PAYLOADS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Inline results"),
++                toggle("Inline results without via", TeleConfig.INLINE_NO_VIA),
++                Row(TYPE_SHADOW)
++            )
++            MODE_DEBUG -> listOf(
++                Row(TYPE_HEADER, "debug"),
++                Row(TYPE_SHADOW, "The debug options of the desktop client are not in this build yet.")
++            )
++            MODE_BACKUP -> listOf(
++                Row(TYPE_HEADER, "backup"),
++                Row(TYPE_HEADER, "Settings"),
++                Row(TYPE_LINK, title = "Export settings", mode = "backup_export"),
++                Row(TYPE_LINK, title = "Import settings", mode = "backup_import"),
++                Row(TYPE_SHADOW)
++            )
++            MODE_UPDATES -> listOf(
++                Row(TYPE_HEADER, "updates"),
++                toggle("Update automatically", TeleConfig.AUTO_UPDATE),
++                toggle("Show what's new after updates", TeleConfig.SHOW_CHANGELOG),
++                Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION),
++                Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW),
++                Row(TYPE_SHADOW, title = tele.helpers.TeleUpdater.statusText())
++            )
+             MODE_PRIVACY -> {
+                 val rows = ArrayList<Row>()
+                 rows.add(Row(TYPE_HEADER, "privacy"))
++                rows.add(Row(TYPE_HEADER, "Stories"))
+                 rows.add(toggle("Hide stories", TeleConfig.HIDE_STORIES))
+                 rows.add(toggle("Watch stories invisibly", TeleConfig.INVISIBLE_STORIES))
++                rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "Screen capture"))
+                 rows.add(toggle("Never block screenshots", TeleConfig.NEVER_BLOCK_SCREENSHOTS))
+                 rows.add(toggle("Allow screenshots of disappearing media", TeleConfig.ALLOW_SCREENSHOTS_DISAPPEARING))
+-                rows.add(toggle("Don't burn disappearing media on view", TeleConfig.KEEP_DISAPPEARING_MEDIA))
+-                rows.add(toggle("Keep drafts on this device", TeleConfig.LOCAL_DRAFTS))
+-                rows.add(toggle("Inline results without via", TeleConfig.INLINE_NO_VIA))
+-                rows.add(toggle("Hide sponsored messages", TeleConfig.HIDE_SPONSORED))
+-                rows.add(toggle("Hide the proxy sponsor channel", TeleConfig.HIDE_PROXY_SPONSOR))
++                rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "Link safety"))
++                rows.add(toggle("Open links without confirmation", TeleConfig.OPEN_LINKS_DIRECTLY))
++                rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "Links"))
++                rows.add(toggle("Clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
++                rows.add(toggle("Clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS))
++                rows.add(toggle("Rewrite pasted links by rules", TeleConfig.REWRITE_PASTED_LINKS))
++                rows.add(sectionLink("Rewrite rules", MODE_RULES, R.drawable.msg2_link2))
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "ghost"))
+                 rows.add(Row(TYPE_CUSTOM, mode = "ghost_preview"))
+@@ -535,45 +730,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(toggle("Streamer mode", TeleConfig.STREAMER_MODE))
+                 rows.add(toggle("Hide phone numbers in profiles", TeleConfig.HIDE_PHONE_IN_PROFILES))
+                 rows.add(Row(TYPE_SHADOW))
+-                rows.add(Row(TYPE_HEADER, "links"))
+-                rows.add(toggle("Clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
+-                rows.add(toggle("Clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS))
+-                rows.add(toggle("Rewrite pasted links by rules", TeleConfig.REWRITE_PASTED_LINKS))
+-                rows.add(toggle("Disable link previews", TeleConfig.NO_LINK_PREVIEWS))
+-                rows.add(choice("Automatic link previews", TeleConfig.LINK_PREVIEW_MODE))
+-                rows.add(sectionLink("Rewrite rules", MODE_RULES, R.drawable.msg2_link2))
+-                rows.add(Row(TYPE_SHADOW))
+                 rows
+             }
+-            MODE_IDS -> listOf(
+-                Row(TYPE_HEADER, "ids"),
+-                toggle("Show peer id in profile", TeleConfig.SHOW_PEER_ID),
+-                toggle("Ids without spaces", TeleConfig.PEER_IDS_WITHOUT_SPACES),
+-                toggle("Bot api style ids", TeleConfig.BOT_API_PEER_IDS),
+-                toggle("Show data center", TeleConfig.SHOW_DC),
+-                toggle("Id and dc in one row", TeleConfig.MERGE_ID_DC),
+-                toggle("Show message id in the message menu", TeleConfig.MESSAGE_ID_MENU),
+-                toggle("Show gift id", TeleConfig.SHOW_GIFT_IDS),
+-                toggle("Show ids on regular gifts", TeleConfig.SHOW_REGULAR_GIFT_IDS),
+-                toggle("Open collectible gifts in see.tg", TeleConfig.SEETG_BUTTON),
+-                toggle("Copy custom emoji id", TeleConfig.COPY_EMOJI_ID),
+-                Row(TYPE_SHADOW)
+-            )
+-            MODE_SENDING -> listOf(
+-                Row(TYPE_HEADER, "sending"),
+-                toggle("Send photos in HD by default", TeleConfig.HD_PHOTOS),
+-                toggle("Attach media above the field (beta)", TeleConfig.DOCKED_MEDIA),
+-                toggle("Send scheduled messages on time", TeleConfig.PUNCTUAL_SCHEDULED),
+-                toggle("Queue messages behind uploading media", TeleConfig.QUEUE_BEHIND_MEDIA),
+-                toggle("Send replies to older messages right away", TeleConfig.SEND_OLDER_REPLIES),
+-                toggle("Send right away on double enter", TeleConfig.DOUBLE_ENTER_SEND),
+-                toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
+-                toggle("Forward protected messages as copies", TeleConfig.COPY_PROTECTED),
+-                toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+-                toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
+-                toggle("Hide the gift button in the message field", TeleConfig.HIDE_GIFT_BUTTON),
+-                Row(TYPE_SHADOW)
+-            )
+             MODE_SERVER -> listOf(
+                 Row(TYPE_HEADER, "server"),
+                 Row(TYPE_VALUE, "Server url", value = if (TeleConfig.TELE_SERVER_URL.value.isBlank()) "Empty (disabled)" else TeleConfig.TELE_SERVER_URL.value, item = TeleConfig.TELE_SERVER_URL),
+@@ -589,32 +747,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_LINK, title = "editor", mode = MODE_MENU),
+                 Row(TYPE_SHADOW)
+             )
+-            MODE_DATA -> listOf(
+-                Row(TYPE_HEADER, "Your data"),
+-                toggle("Local names for people", TeleConfig.LOCAL_NAMES),
+-                toggle("Keep deleted messages", TeleConfig.KEEP_DELETED_MESSAGES),
+-                toggle("Keep messages you delete yourself", TeleConfig.KEEP_SELF_DELETED_MESSAGES),
+-                Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
+-                Row(TYPE_VALUE, "Reply to deleted messages", value = if (TeleConfig.DELETED_REPLY.value == "quote") "Quote them" else "Skip them", item = TeleConfig.DELETED_REPLY),
+-                toggle("Keep edit history", TeleConfig.EDIT_HISTORY),
+-                toggle("Username aliases", TeleConfig.USERNAME_ALIASES),
+-                Row(TYPE_SHADOW),
+-                link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),
+-                link("Saved drafts", TeleDraftsActivity.MODE_DRAFTS),
+-                Row(TYPE_SHADOW),
+-                Row(TYPE_HEADER, "Manage"),
+-                link("Local names", TeleNamesActivity.MODE_LOCAL),
+-                link("Aliases", TeleNamesActivity.MODE_ALIAS),
+-                Row(TYPE_SHADOW)
+-            )
+             MODE_NEW -> newRows()
+             else -> listOf(Row(TYPE_HEADER, "tele")) + (if (tele.helpers.TeleNewSettings.fresh().isEmpty()) emptyList() else listOf(
+                 Row(TYPE_LINK_ICON, title = tele.helpers.TeleNewSettings.title(), mode = MODE_NEW, icon = R.drawable.msg_fave, badge = !tele.helpers.TeleNewSettings.isSeen())
+-            )) + SECTIONS.map { sectionLink(it) } + listOf(
++            )) + SECTION_SPECS.map { sectionLink(it) } + listOf(
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Updates"),
+-                toggle("Update automatically", TeleConfig.AUTO_UPDATE),
+-                toggle("Show what's new after updates", TeleConfig.SHOW_CHANGELOG),
+                 Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION),
+                 Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW),
+                 Row(TYPE_SHADOW, title = tele.helpers.TeleUpdater.statusText() + "\n\ntele for Android ${BuildVars.BUILD_VERSION_STRING} with tele patches, ${tele.TeleBuild.label()}.")

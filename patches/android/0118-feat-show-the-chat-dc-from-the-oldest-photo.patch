@@ -1,0 +1,382 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Thu, 22 Oct 2026 04:38:13 +0300
+Subject: [PATCH 118/128] feat: show the chat dc from the oldest photo
+
+---
+ .../java/org/telegram/ui/ProfileActivity.java |  40 ++++
+ .../src/main/java/tele/helpers/PeerDc.kt      | 217 ++++++++++++++++++
+ .../src/main/java/tele/helpers/PeerId.kt      |  38 ++-
+ .../src/main/res/values/strings_tele.xml      |   1 +
+ 4 files changed, 284 insertions(+), 12 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/PeerDc.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 2f0b5a0cb..fb9f6be91 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -625,6 +625,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private int bioRow;
+     private int tele_idRow;
+     private int tele_dcRow;
++    private tele.helpers.PeerDc.Handle teleDcHandle;
++    private tele.helpers.PeerDc.Info teleDcInfo;
+     private int tele_aliasRow;
+     private int phoneSuggestionSectionRow;
+     private int graceSuggestionRow;
+@@ -2377,6 +2379,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         }
+ 
+         getNotificationCenter().removeObserver(this, NotificationCenter.updateInterfaces);
++        if (teleDcHandle != null) {
++            teleDcHandle.cancel();
++            teleDcHandle = null;
++        }
+         getNotificationCenter().removeObserver(this, NotificationCenter.closeChats);
+         getNotificationCenter().removeObserver(this, NotificationCenter.closeProfileActivity);
+         getNotificationCenter().removeObserver(this, NotificationCenter.didReceiveNewMessages);
+@@ -9691,9 +9697,43 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             flagSecure.attach();
+         }
+         updateItemsUsername();
++        loadTelePeerDc();
+         needLayout(false);
+     }
+ 
++    // the data center of a chat comes from the oldest photo of its history
++    private void loadTelePeerDc() {
++        if (teleDcHandle != null) {
++            teleDcHandle.cancel();
++            teleDcHandle = null;
++        }
++        if (userId != 0 || chatId == 0 || !tele.TeleConfig.SHOW_DC.getValue()) {
++            return;
++        }
++        teleDcHandle = tele.helpers.PeerDc.request(currentAccount, userId, chatId, info -> {
++            if (userId != 0 || chatId == 0) {
++                // the profile changed while the history was loading
++                return;
++            }
++            AndroidUtilities.runOnUIThread(() -> {
++                if (listAdapter == null) {
++                    return;
++                }
++                if (teleDcInfo != null && teleDcInfo.getDc() == info.getDc() && teleDcInfo.getUncertain() == info.getUncertain()) {
++                    // the row already shows this value, no redraw needed
++                    return;
++                }
++                teleDcInfo = info;
++                if (tele_idRow >= 0) {
++                    listAdapter.notifyItemChanged(tele_idRow);
++                }
++                if (tele_dcRow >= 0) {
++                    listAdapter.notifyItemChanged(tele_dcRow);
++                }
++            });
++        });
++    }
++
+     @Override
+     public void onPause() {
+         super.onPause();
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PeerDc.kt b/TMessagesProj/src/main/java/tele/helpers/PeerDc.kt
+new file mode 100644
+index 000000000..545abf423
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/PeerDc.kt
+@@ -0,0 +1,217 @@
++package tele.helpers
++
++import android.util.Log
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.MessagesController
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++// the data center of a chat, like on the desktop: the oldest photo of the chat history wins,
++// and the row keeps the "uncertain" marker when the history is incomplete or the data centers differ
++object PeerDc {
++
++    private const val LIMIT = 500
++    private const val STEP = 80
++    private const val TAG = "PeerIdHistory"
++
++    class Info(val dc: Int, val uncertain: Boolean)
++
++    // the photo history of a chat, the oldest photo with a data center decides
++    private class History(val oldest: Int, val dcs: Set<Int>, val complete: Boolean, val hasHistory: Boolean)
++
++    fun interface Callback {
++        fun onPeerDc(info: Info)
++    }
++
++    class Handle internal constructor(private val key: String, private val callback: Callback?) {
++        fun cancel() {
++            if (callback == null) return
++            loads[key]?.callbacks?.remove(callback)
++        }
++    }
++
++    private class Load(val account: Int, val chatId: Long) {
++        val photos = ArrayList<TLRPC.Photo>()
++        val messageIds = ArrayList<Int>()
++        var messages = 0
++        var total = 0
++        var oldestMessageId = 0
++        var done = false
++        var started = false
++        var avatars = true
++        val callbacks = ArrayList<Callback>()
++    }
++
++    private val loads = HashMap<String, Load>()
++    private val history = HashMap<String, History>()
++
++    // the data center of the current avatar, the fallback while the history is unknown
++    @JvmStatic
++    fun current(account: Int, userId: Long, chatId: Long): Int = PeerId.currentDc(account, userId, chatId)
++
++    // the data center to show and to copy
++    @JvmStatic
++    fun info(account: Int, userId: Long, chatId: Long): Info {
++        val current = current(account, userId, chatId)
++        if (userId != 0L) {
++            return Info(current, false)
++        }
++        val known = history[key(account, userId, chatId)]
++        if (known == null || !known.hasHistory) {
++            // without a history the current avatar decides, like on the desktop
++            return Info(current, false)
++        }
++        if (known.oldest == 0) {
++            // the history has photos, but none of them tells a data center
++            return Info(current, true)
++        }
++        return Info(known.oldest, !known.complete || known.dcs.size > 1 || current != known.oldest)
++    }
++
++    // loads the photo history of a chat and reports the data center of the oldest photo
++    @JvmStatic
++    fun request(account: Int, userId: Long, chatId: Long, callback: Callback?): Handle {
++        val key = key(account, userId, chatId)
++        if (userId == 0L && chatId != 0L && TeleConfig.SHOW_DC.value && current(account, userId, chatId) != 0) {
++            val known = history[key]
++            if (known != null) {
++                if (callback != null) {
++                    val info = info(account, userId, chatId)
++                    AndroidUtilities.runOnUIThread { callback.onPeerDc(info) }
++                }
++            } else {
++                val load = loads[key] ?: Load(account, chatId).also { loads[key] = it }
++                if (callback != null) {
++                    load.callbacks.add(callback)
++                }
++                if (!load.done && !load.started) {
++                    load.started = true
++                    load(load)
++                }
++            }
++        }
++        return Handle(key, callback)
++    }
++
++    private fun load(load: Load) {
++        val controller = MessagesController.getInstance(load.account)
++        val peer = controller.getInputPeer(-load.chatId) ?: return
++        val req = TLRPC.TL_messages_search()
++        // the avatar history of the chat, the same set the desktop scans
++        if (load.avatars) {
++            req.filter = TLRPC.TL_inputMessagesFilterChatPhotos()
++        } else {
++            req.filter = TLRPC.TL_inputMessagesFilterPhotos()
++        }
++        // the search pages by the message id, the same way the media tab does it
++        req.offset_id = load.oldestMessageId
++        req.add_offset = 0
++        req.limit = minOf(STEP, LIMIT - load.messages)
++        req.q = ""
++        // an empty reaction list would filter the search away
++        req.saved_reaction = null
++        req.peer = peer
++        ConnectionsManager.getInstance(load.account).sendRequest(req) { response, error ->
++            if (error != null || response !is TLRPC.messages_Messages) {
++                AndroidUtilities.runOnUIThread { finish(load) }
++                return@sendRequest
++            }
++            val res = response
++            var oldest = load.oldestMessageId
++            for (message in res.messages) {
++                load.messages++
++                if (oldest == 0 || message.id < oldest) {
++                    oldest = message.id
++                }
++                val photo = if (load.avatars) {
++                    // the avatar change carries the photo in its action
++                    message.action?.photo
++                } else {
++                    val media = message.media
++                    if (media is TLRPC.TL_messageMediaPhoto) media.photo else null
++                } ?: continue
++                load.photos.add(photo)
++                load.messageIds.add(message.id)
++            }
++            load.total = res.count
++            val noProgress = oldest == load.oldestMessageId
++            load.oldestMessageId = oldest
++            AndroidUtilities.runOnUIThread {
++                if (load.done) {
++                    return@runOnUIThread
++                }
++                if (res.messages.isEmpty() || noProgress || load.messages >= minOf(load.total, LIMIT)) {
++                    if (load.avatars && load.photos.isEmpty()) {
++                        // this server does not serve the avatar history, the photo messages are the fallback
++                        load.avatars = false
++                        load.messages = 0
++                        load.total = 0
++                        load.oldestMessageId = 0
++                        load(load)
++                        return@runOnUIThread
++                    }
++                    finish(load)
++                } else {
++                    load(load)
++                }
++            }
++        }
++    }
++
++    private fun finish(load: Load) {
++        load.done = true
++        var oldest = 0
++        var oldestMessageId = 0
++        val dcs = HashSet<Int>()
++        for (index in load.photos.indices) {
++            val dc = photoDc(load.photos[index])
++            if (dc == 0) {
++                continue
++            }
++            dcs.add(dc)
++            // the oldest photo is the one of the lowest message id, the order of the pages does not matter
++            val messageId = load.messageIds.getOrNull(index) ?: continue
++            if (oldestMessageId == 0 || messageId < oldestMessageId) {
++                oldestMessageId = messageId
++                oldest = dc
++            }
++        }
++        val hasHistory = load.total > 0 || load.photos.isNotEmpty()
++        val complete = load.messages >= load.total && load.total <= LIMIT
++        val known = History(oldest, dcs, complete, hasHistory)
++        val key = key(load.account, 0, load.chatId)
++        if (history[key] == known) {
++            return
++        }
++        history[key] = known
++        val info = info(load.account, 0, load.chatId)
++        Log.d(TAG, "account=${load.account} state=result dc=${info.dc} uncertain=${info.uncertain} photos=${load.photos.size} source=${if (load.avatars) "avatars" else "media"}")
++        val callbacks = load.callbacks.toList()
++        AndroidUtilities.runOnUIThread {
++            callbacks.forEach { it.onPeerDc(info) }
++        }
++    }
++
++    // the data center of the photo itself, the sizes carry the same one
++    private fun photoDc(photo: TLRPC.Photo): Int {
++        if (photo.dc_id != 0) {
++            return photo.dc_id
++        }
++        for (type in arrayOf("x", "i", "m")) {
++            for (size in photo.sizes) {
++                if (size.type == type && size.location.dc_id != 0) {
++                    return size.location.dc_id
++                }
++            }
++        }
++        for (size in photo.sizes) {
++            if (size.location.dc_id != 0) {
++                return size.location.dc_id
++            }
++        }
++        return 0
++    }
++
++    private fun key(account: Int, userId: Long, chatId: Long): String = "$account:$userId:$chatId"
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PeerId.kt b/TMessagesProj/src/main/java/tele/helpers/PeerId.kt
+index 1df9e9fe0..6d169c4b3 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/PeerId.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/PeerId.kt
+@@ -20,8 +20,13 @@ object PeerId {
+         }
+     }
+ 
++    // the data center of a chat comes from its oldest photo, like on the desktop
+     @JvmStatic
+-    fun dc(account: Int, userId: Long, chatId: Long): Int {
++    fun dc(account: Int, userId: Long, chatId: Long): Int = PeerDc.info(account, userId, chatId).dc
++
++    // the data center of the current avatar
++    @JvmStatic
++    fun currentDc(account: Int, userId: Long, chatId: Long): Int {
+         val messagesController = org.telegram.messenger.MessagesController.getInstance(account)
+         if (userId != 0L) {
+             if (userId == UserConfig.getInstance(account).clientUserId) {
+@@ -36,15 +41,10 @@ object PeerId {
+ 
+     @JvmStatic
+     fun dcText(account: Int, userId: Long, chatId: Long): String {
+-        val dc = dc(account, userId, chatId)
+-        if (dc == 0) return ""
+-        val location = when (dc) {
+-            1, 3 -> "Miami"
+-            2, 4 -> "Amsterdam"
+-            5 -> "Singapore"
+-            else -> ""
+-        }
+-        return if (location.isEmpty()) dc.toString() else "$dc, ${location.lowercase()}"
++        val info = PeerDc.info(account, userId, chatId)
++        if (info.dc == 0) return ""
++        val text = dcValue(info.dc)
++        return if (info.uncertain) "$text (${uncertainText()})" else text
+     }
+ 
+     @JvmStatic
+@@ -53,10 +53,24 @@ object PeerId {
+         if (!TeleConfig.SHOW_DC.value || !TeleConfig.MERGE_ID_DC.value) {
+             return id
+         }
+-        val dc = dcText(account, userId, chatId)
+-        return if (dc.isEmpty()) id else "$id (DC$dc)"
++        val info = PeerDc.info(account, userId, chatId)
++        if (info.dc == 0) return id
++        val suffix = if (info.uncertain) ", ${uncertainText()}" else ""
++        return "$id (DC${dcValue(info.dc)}$suffix)"
+     }
+ 
++    private fun dcValue(dc: Int): String {
++        val location = when (dc) {
++            1, 3 -> "Miami"
++            2, 4 -> "Amsterdam"
++            5 -> "Singapore"
++            else -> ""
++        }
++        return if (location.isEmpty()) dc.toString() else "$dc, ${location.lowercase()}"
++    }
++
++    private fun uncertainText(): String = org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.TeleDcUncertain)
++
+     // the clipboard gets the plain digits, whatever the row shows
+     @JvmStatic
+     fun copyText(account: Int, userId: Long, chatId: Long): String =
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 27dd42054..5a58ff89a 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -2,6 +2,7 @@
+ <resources>
+     <string name="TeleProfileId">ID</string>
+     <string name="TeleProfileDc">DC</string>
++    <string name="TeleDcUncertain">uncertain</string>
+     <string name="TeleGiftId">Gift ID</string>
+     <string name="TeleEmojiIdCopied">Emoji ID copied to clipboard</string>
+     <string name="TeleIdCopied">ID copied to clipboard</string>

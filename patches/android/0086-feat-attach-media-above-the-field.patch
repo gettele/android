@@ -1,0 +1,1038 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 06:54:33 +0300
+Subject: [PATCH 086/128] feat: attach media above the field
+
+---
+ .../messenger/MediaDataController.java        |   2 +-
+ .../org/telegram/ui/Cells/DialogCell.java     |   6 +
+ .../java/org/telegram/ui/ChatActivity.java    |  13 +-
+ .../ui/Components/ChatActivityEnterView.java  |  36 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  29 +-
+ .../src/main/java/tele/helpers/DockedMedia.kt | 400 ++++++++++++++++++
+ .../src/main/java/tele/helpers/DockedStore.kt | 137 ++++++
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 177 ++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
+ 12 files changed, 802 insertions(+), 5 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+index a469200ef..f86e1bcae 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+@@ -7974,7 +7974,7 @@ public class MediaDataController extends BaseController {
+ 
+         saveDraft(dialogId, threadId, draftMessage, replyToMessage, false);
+ 
+-        if (!tele.TeleConfig.LOCAL_DRAFTS.getValue() && (threadId == 0 || ChatObject.isForum(chat) || ChatObject.isMonoForum(chat))) {
++        if (!tele.TeleConfig.LOCAL_DRAFTS.getValue() && !tele.helpers.DockedMedia.keepsDraftLocal(currentAccount, dialogId, threadId) && (threadId == 0 || ChatObject.isForum(chat) || ChatObject.isMonoForum(chat))) {
+             if (!DialogObject.isEncryptedDialog(dialogId)) {
+                 TLRPC.TL_messages_saveDraft req = new TLRPC.TL_messages_saveDraft();
+                 req.peer = getMessagesController().getInputPeer(dialogId);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+index 1a3f37c7d..5ee87a99b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+@@ -1555,6 +1555,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 draftVoice = false;
+                 draftMessage = null;
+             }
++            if (draftMessage == null && !draftVoice && (isTopic || isDialogCell)) {
++                draftMessage = tele.helpers.DockedMedia.listDraft(currentAccount, currentDialogId, isTopic ? getTopicId() : 0);
++            }
+ 
+             if ((draftVoice || draftMessage != null) && (!draftVoice && draftMessage != null && TextUtils.isEmpty(draftMessage.message) && draftMessage.rich_message == null && (draftMessage.reply_to == null || draftMessage.reply_to.reply_to_msg_id == 0) || draftMessage != null && lastDate > draftMessage.date && unreadCount != 0) ||
+                     ChatObject.isChannel(chat) && !chat.megagroup && !chat.creator && (chat.admin_rights == null || !chat.admin_rights.post_messages) ||
+@@ -6304,6 +6307,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 draftVoice = MediaDataController.getInstance(currentAccount).getDraftVoice(currentDialogId, 0) != null;
+                 draftMessage = !draftVoice ? MediaDataController.getInstance(currentAccount).getDraft(currentDialogId, 0) : null;
+             }
++            if (draftMessage == null && !draftVoice && (isTopic || isDialogCell)) {
++                draftMessage = tele.helpers.DockedMedia.listDraft(currentAccount, currentDialogId, isTopic ? getTopicId() : 0);
++            }
+             int draftHash = draftMessage == null ? 0 : draftMessage.message.hashCode() + (draftMessage.reply_to != null ? (draftMessage.reply_to.reply_to_msg_id << 16) : 0);
+             boolean hasCall = chat != null && chat.call_active && chat.call_not_empty;
+             boolean translated = MessagesController.getInstance(currentAccount).getTranslateController().isTranslatingDialog(currentDialogId);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 04a4dbf3f..7ace9b747 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -8063,6 +8063,7 @@ public class ChatActivity extends BaseFragment implements
+             @Override
+             public void hideTopView(boolean animated) {
+                 super.hideTopView(animated);
++                tele.helpers.DockedMedia.onPanel(chatActivityEnterTopView, ChatActivity.this.chatActivityEnterView, fieldPanelShown != 0);
+                 if (onHideFieldPanelRunnable != null) {
+                     AndroidUtilities.runOnUIThread(onHideFieldPanelRunnable);
+                     onHideFieldPanelRunnable = null;
+@@ -8263,6 +8264,7 @@ public class ChatActivity extends BaseFragment implements
+ 
+         replyLayout = new ChatReplyContainer(context, themeDelegate);
+         chatActivityEnterTopView.addReplyView(replyLayout, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.NO_GRAVITY, 0, 0, 52, 0));
++        tele.helpers.DockedMedia.attach(this, chatActivityEnterView, chatActivityEnterTopView);
+ 
+         boolean[] byButtonPress = new boolean[1];
+         replyLayout.setOnClickListener(v -> {
+@@ -8334,6 +8336,9 @@ public class ChatActivity extends BaseFragment implements
+         replyCloseImageView.setBackgroundDrawable(Theme.createSelectorDrawable(getThemedColor(Theme.key_listSelector), 1, AndroidUtilities.dp(19)));
+         chatActivityEnterTopView.addView(replyCloseImageView, LayoutHelper.createFrame(52, 46, Gravity.RIGHT | Gravity.TOP, 0, 0.5f, 0, 0));
+         replyCloseImageView.setOnClickListener(v -> {
++            if (tele.helpers.DockedMedia.onClose(chatActivityEnterTopView)) {
++                return;
++            }
+             messageSuggestionParams = null;
+             if (fieldPanelShown == 2) {
+                 replyingQuote = null;
+@@ -12797,6 +12802,9 @@ public class ChatActivity extends BaseFragment implements
+                         }
+                         final HashMap<Object, Object> selectedPhotos = chatAttachAlert.getPhotoLayout().getSelectedPhotos();
+                         final ArrayList<Object> selectedPhotosOrder = chatAttachAlert.getPhotoLayout().getSelectedPhotosOrder();
++                        if (editingMessageObject == null && !selectedPhotos.isEmpty() && tele.helpers.DockedMedia.dock(ChatActivity.this, chatActivityEnterView, selectedPhotos, selectedPhotosOrder, button == 4 || forceDocument, arg, invertMedia, notify, scheduleDate, payStars, isStickerMode)) {
++                            return;
++                        }
+                         if (!selectedPhotos.isEmpty()) {
+                             final int albumsCount = (int) Math.ceil(selectedPhotos.size() / 10f);
+                             for (int i = 0; i < albumsCount; ++i) {
+@@ -15015,6 +15023,7 @@ public class ChatActivity extends BaseFragment implements
+                 }
+             }
+         }
++        photoEntries.addAll(tele.helpers.DockedMedia.draftEntries(this));
+         TLRPC.TL_draftMessage draftMessage = tele.helpers.SavedDrafts.captureFromField(currentAccount, chatActivityEnterView, replyMessage, chatActivityEnterView.getWebPage(), !photoEntries.isEmpty());
+         if (draftMessage == null) {
+             return;
+@@ -15029,6 +15038,7 @@ public class ChatActivity extends BaseFragment implements
+                 updateTeleDraftButton(true);
+                 BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved)).show();
+                 chatActivityEnterView.setFieldText("");
++                tele.helpers.DockedMedia.clear(this);
+                 if (chatAttachAlert != null) {
+                     chatAttachAlert.getPhotoLayout().clearSelectedPhotos();
+                 }
+@@ -15075,7 +15085,7 @@ public class ChatActivity extends BaseFragment implements
+             return;
+         }
+         chatActivityEnterView.setFieldText(tele.helpers.SavedDrafts.toFieldText(draft), true, true);
+-        if (!draft.files.isEmpty()) {
++        if (!draft.files.isEmpty() && !tele.helpers.DockedMedia.restoreDraft(this, draft)) {
+             ArrayList<MediaController.PhotoEntry> entries = new ArrayList<>();
+             for (tele.helpers.SavedDrafts.StoredFile file : draft.files) {
+                 java.io.File storedFile = tele.helpers.SavedDrafts.storedFile(file.storedName);
+@@ -15943,6 +15953,7 @@ public class ChatActivity extends BaseFragment implements
+             replyObjectTextView.setLayoutParams(layoutParams2);
+             replyObjectTextView.setLayoutParams(layoutParams3);
+             chatActivityEnterView.showTopView(true, openKeyboard);
++            tele.helpers.DockedMedia.onPanel(chatActivityEnterTopView, chatActivityEnterView, true);
+         } else {
+             fieldPanelShown = 0;
+             if (replyingMessageObject == null && messagePreviewParams == null && foundWebPage == null && editingMessageObject == null && !chatActivityEnterView.isTopViewVisible() && topicsTabs == null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 92354f091..96cd20280 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -759,6 +759,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+     private String audioToSendPath;
+     private MessageObject audioToSendMessageObject;
+     private ArrayList<MediaController.PhotoEntry> telePendingDraftEntries;
++    private boolean tele_dockedMedia;
+     private VideoEditedInfo videoToSendMessageObject;
+ 
+     protected boolean topViewShowed;
+@@ -4786,7 +4787,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+ 
+         boolean hasSelectedPhotos = parentFragment != null && parentFragment.chatAttachAlert != null && !parentFragment.chatAttachAlert.getPhotoLayout().getSelectedPhotos().isEmpty();
+-        if (isStories || (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && (hasSelectedPhotos || parentFragment != null && parentFragment.messagePreviewParams != null && parentFragment.messagePreviewParams.forwardMessages != null && parentFragment.messagePreviewParams.forwardMessages.messages != null && !parentFragment.messagePreviewParams.forwardMessages.messages.isEmpty())) {
++        if (isStories || tele_dockedMedia || (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && (hasSelectedPhotos || parentFragment != null && parentFragment.messagePreviewParams != null && parentFragment.messagePreviewParams.forwardMessages != null && parentFragment.messagePreviewParams.forwardMessages.messages != null && !parentFragment.messagePreviewParams.forwardMessages.messages.isEmpty())) {
+ 
+             boolean self = parentFragment != null && UserObject.isUserSelf(parentFragment.getCurrentUser());
+ 
+@@ -7024,6 +7025,25 @@ public class ChatActivityEnterView extends FrameLayout implements
+         telePendingDraftEntries = entries != null && !entries.isEmpty() ? new ArrayList<>(entries) : null;
+     }
+ 
++    public void tele_setDockedMedia(boolean docked, boolean animated) {
++        if (tele_dockedMedia == docked) {
++            return;
++        }
++        tele_dockedMedia = docked;
++        checkSendButton(animated);
++    }
++
++    public void tele_showTopView(boolean show, boolean animated) {
++        if (topView == null) {
++            return;
++        }
++        needShowTopView = show;
++        topViewShowed = show;
++        if (allowShowTopView) {
++            animatorTopViewVisibility.setValue(show, animated);
++        }
++    }
++
+     public boolean isMessageWebPageSearchEnabled() {
+         if (tele.TeleConfig.NO_LINK_PREVIEWS.getValue()) {
+             return false;
+@@ -7530,6 +7550,18 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 return;
+             }
+             CharSequence message = messageEditText == null ? "" : messageEditText.getTextToUse();
++            final int tele_docked = parentFragment != null ? tele.helpers.DockedMedia.send(parentFragment, this, message, notify, scheduleDate, scheduleRepeatPeriod, payStars) : tele.helpers.DockedMedia.SEND_NONE;
++            if (tele_docked != tele.helpers.DockedMedia.SEND_NONE) {
++                if (tele_docked == tele.helpers.DockedMedia.SEND_DONE) {
++                    if (messageEditText != null) {
++                        messageEditText.setText("");
++                    }
++                    if (delegate != null) {
++                        delegate.onMessageSend(message, notify, scheduleDate, scheduleRepeatPeriod, payStars);
++                    }
++                }
++                return;
++            }
+             if (message.length() == 0 && parentFragment != null && !isInScheduleMode() && tele.helpers.SendOrder.sendHeldOnDoubleEnter(currentAccount, dialog_id, true)) {
+                 return;
+             }
+@@ -8273,7 +8305,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                     }
+                 }
+             }
+-        } else if (message.length() > 0 || forceShowSendButton || richDraftActive || audioToSend != null || videoToSendMessageObject != null || slowModeTimer == Integer.MAX_VALUE && !isSlowModeIgnored() || isLiveComment && getStarsPrice() > 0 || animatorIsBlockedByStreaming.getValue()) {
++        } else if (message.length() > 0 || forceShowSendButton || tele_dockedMedia || richDraftActive || audioToSend != null || videoToSendMessageObject != null || slowModeTimer == Integer.MAX_VALUE && !isSlowModeIgnored() || isLiveComment && getStarsPrice() > 0 || animatorIsBlockedByStreaming.getValue()) {
+             shownSendButton = true;
+             final String caption = messageEditText == null ? null : messageEditText.getCaption();
+             boolean showBotButton = caption != null && (getSendButtonInternal().getVisibility() == VISIBLE || expandStickersButton != null && expandStickersButton.getVisibility() == VISIBLE);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 7d19b9dc2..19a80c9e6 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -156,6 +156,8 @@ object TeleConfig {
+     @JvmField
+     val HD_PHOTOS = BoolItem("hd_photos", false)
+     @JvmField
++    val DOCKED_MEDIA = BoolItem("docked_media", false)
++    @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+     @JvmField
+     val QUEUE_BEHIND_MEDIA = BoolItem("queue_behind_media", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index b0779041a..f9c8b13df 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -91,6 +91,9 @@ object TeleHooks {
+                 tele.helpers.SendOrder.flush(account)
+             }
+         }
++        if (item === TeleConfig.DOCKED_MEDIA) {
++            tele.helpers.DockedMedia.onToggled()
++        }
+         if (item === TeleConfig.AUTO_UPDATE) {
+             tele.helpers.TeleUpdater.onAutoUpdateChanged()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 625c52f92..28820e85f 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -222,7 +222,33 @@ object TeleDatabaseHelper {
+         db.delete("tele_changelog", "account = ?", arrayOf(account.toString()))
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 6) {
++    class DockedRow(val dialogId: Long, val threadId: Long, val data: ByteArray)
++
++    fun putDocked(account: Int, dialogId: Long, threadId: Long, data: ByteArray?) {
++        val db = helper?.writableDatabase ?: return
++        if (data == null) {
++            db.delete("tele_docked", "account = ? AND dialog_id = ? AND thread_id = ?", arrayOf(account.toString(), dialogId.toString(), threadId.toString()))
++            return
++        }
++        val values = ContentValues().apply {
++            put("account", account)
++            put("dialog_id", dialogId)
++            put("thread_id", threadId)
++            put("data", data)
++        }
++        db.insertWithOnConflict("tele_docked", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++    }
++
++    fun getDocked(account: Int): List<DockedRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<DockedRow>()
++        db.rawQuery("SELECT dialog_id, thread_id, data FROM tele_docked WHERE account = ?", arrayOf(account.toString())).use { c ->
++            while (c.moveToNext()) result.add(DockedRow(c.getLong(0), c.getLong(1), c.getBlob(2)))
++        }
++        return result
++    }
++
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 7) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -238,6 +264,7 @@ object TeleDatabaseHelper {
+             createMessageEditTable(db)
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_message_edits_message ON tele_message_edits(account, dialog_id, message_id, edit_date)")
+             createDraftsTable(db)
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_docked (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, thread_id))")
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_changelog (account INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, message_id))")
+         }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+new file mode 100644
+index 000000000..10f13b53c
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -0,0 +1,400 @@
++package tele.helpers
++
++import android.text.TextUtils
++import org.telegram.messenger.AccountInstance
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.MediaController
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.VideoEditedInfo
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.ChatActivityEnterTopView
++import org.telegram.ui.Components.ChatActivityEnterView
++import tele.TeleConfig
++import tele.ui.TeleDockedStrip
++import java.io.File
++
++object DockedMedia {
++    const val SEND_NONE = 0
++    const val SEND_BLOCKED = 1
++    const val SEND_DONE = 2
++
++    data class Key(val account: Int, val dialogId: Long, val threadId: Long)
++
++    class Item {
++        var path: String? = null
++        var imagePath: String? = null
++        var thumbPath: String? = null
++        var coverPath: String? = null
++        var imageId = 0
++        var isVideo = false
++        var width = 0
++        var height = 0
++        var duration = 0
++        var size = 0L
++        var orientation = 0
++        var invert = 0
++        var ttl = 0
++        var spoiler = false
++        var highQuality = false
++        var canDeleteAfter = false
++        var asFile = false
++        var stars = 0L
++        var videoInfo: VideoEditedInfo? = null
++        var caption: String? = null
++        var entities: ArrayList<TLRPC.MessageEntity>? = null
++        var masks: ArrayList<TLRPC.InputDocument>? = null
++        var original: MediaController.PhotoEntry? = null
++        var coverPhoto: TLRPC.Photo? = null
++
++        fun sendPath(): String? = if (!isVideo && imagePath != null) imagePath else path
++    }
++
++    class Tray {
++        val items = ArrayList<Item>()
++        var group = true
++        var invert = false
++        var date = 0
++        var draft: TLRPC.TL_draftMessage? = null
++    }
++
++    private val trays = HashMap<Key, Tray>()
++    private val loaded = HashSet<Int>()
++    private val strips = ArrayList<TeleDockedStrip>()
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.DOCKED_MEDIA.value
++
++    internal fun register(strip: TeleDockedStrip) {
++        if (!strips.contains(strip)) strips.add(strip)
++    }
++
++    internal fun unregister(strip: TeleDockedStrip) {
++        strips.remove(strip)
++    }
++
++    private fun ensureLoaded(account: Int) {
++        if (!loaded.add(account)) return
++        for ((key, tray) in DockedStore.load(account)) {
++            if (!trays.containsKey(key)) trays[key] = tray
++        }
++    }
++
++    internal fun keyOf(fragment: ChatActivity) = Key(fragment.currentAccount, fragment.dialogId, fragment.threadId)
++
++    internal fun tray(key: Key): Tray? {
++        ensureLoaded(key.account)
++        return trays[key]
++    }
++
++    private fun changed(key: Key) {
++        val tray = trays[key]
++        if (tray != null) {
++            tray.draft = null
++            if (tray.items.isEmpty()) trays.remove(key)
++        }
++        DockedStore.save(key, trays[key])
++        for (strip in ArrayList(strips)) {
++            if (strip.key == key) strip.sync(true)
++        }
++        NotificationCenter.getInstance(key.account).postNotificationName(NotificationCenter.dialogsNeedReload)
++    }
++
++    internal fun remove(key: Key, item: Item) {
++        trays[key]?.items?.remove(item)
++        changed(key)
++    }
++
++    internal fun toggleSpoiler(key: Key, item: Item) {
++        item.spoiler = !item.spoiler
++        changed(key)
++    }
++
++    internal fun clearTray(key: Key) {
++        if (trays.remove(key) != null) changed(key)
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        for (strip in ArrayList(strips)) strip.sync(false)
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload)
++        }
++    }
++
++    @JvmStatic
++    fun attach(fragment: ChatActivity, enter: ChatActivityEnterView?, topView: ChatActivityEnterTopView?) {
++        if (enter == null || topView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return
++        val strip = TeleDockedStrip(fragment.parentActivity ?: topView.context, fragment, enter, topView, keyOf(fragment))
++        topView.addView(strip, org.telegram.ui.Components.LayoutHelper.createFrame(org.telegram.ui.Components.LayoutHelper.MATCH_PARENT, org.telegram.ui.Components.LayoutHelper.MATCH_PARENT.toFloat(), android.view.Gravity.NO_GRAVITY, 0f, 0f, 52f, 0f))
++        strip.sync(false)
++    }
++
++    @JvmStatic
++    fun onPanel(topView: ChatActivityEnterTopView?, enter: ChatActivityEnterView?, panelShown: Boolean) {
++        if (topView == null || enter == null) return
++        val strip = topView.findViewWithTag<TeleDockedStrip>(TeleDockedStrip.TAG) ?: return
++        strip.panelShown = panelShown
++        strip.sync(false)
++    }
++
++    @JvmStatic
++    fun onClose(topView: ChatActivityEnterTopView?): Boolean {
++        val strip = topView?.findViewWithTag<TeleDockedStrip>(TeleDockedStrip.TAG) ?: return false
++        if (strip.visibility != android.view.View.VISIBLE) return false
++        clearTray(strip.key)
++        return true
++    }
++
++    @JvmStatic
++    fun dock(
++        fragment: ChatActivity,
++        enter: ChatActivityEnterView?,
++        selected: Map<Any, Any>,
++        order: List<Any>,
++        asFile: Boolean,
++        group: Boolean,
++        invert: Boolean,
++        notify: Boolean,
++        scheduleDate: Int,
++        payStars: Long,
++        sticker: Boolean
++    ): Boolean {
++        if (!enabled() || enter == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        if (!notify || scheduleDate != 0 || payStars != 0L || sticker) return false
++        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return false
++        val entries = ArrayList<MediaController.PhotoEntry>()
++        for (id in order) {
++            val entry = selected[id] as? MediaController.PhotoEntry ?: return false
++            if (entry.isLivePhoto()) return false
++            entries.add(entry)
++        }
++        if (entries.size != selected.size || entries.isEmpty()) return false
++
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        if (tray.items.isEmpty()) {
++            tray.group = group
++            tray.invert = invert
++            tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        }
++        var caption: CharSequence? = null
++        for (entry in entries) {
++            if (caption == null && !TextUtils.isEmpty(entry.caption)) caption = entry.caption
++            tray.items.add(snapshot(entry, asFile))
++            entry.reset()
++        }
++        if (caption != null || tray.items.size == entries.size) {
++            enter.setFieldText(caption ?: "")
++        }
++        changed(key)
++        return true
++    }
++
++    private fun snapshot(entry: MediaController.PhotoEntry, asFile: Boolean): Item {
++        val item = Item()
++        item.path = entry.path
++        item.imagePath = entry.imagePath
++        item.thumbPath = entry.thumbPath
++        item.coverPath = entry.coverPath
++        item.coverPhoto = entry.coverPhoto
++        item.imageId = entry.imageId
++        item.isVideo = entry.isVideo
++        item.width = entry.width
++        item.height = entry.height
++        item.duration = entry.duration
++        item.size = entry.size
++        item.orientation = entry.orientation
++        item.invert = entry.invert
++        item.ttl = entry.ttl
++        item.spoiler = entry.hasSpoiler
++        item.highQuality = entry.isHighQuality()
++        item.canDeleteAfter = entry.canDeleteAfter
++        item.asFile = asFile
++        item.stars = entry.starsAmount
++        item.videoInfo = entry.editedInfo
++        item.caption = entry.caption?.toString()
++        item.entities = entry.entities
++        item.masks = entry.stickers
++        if (!entry.isVideo && entry.imagePath != null && item.highQuality) {
++            item.original = entry.clone()
++        }
++        return item
++    }
++
++    private fun toInfo(item: Item): SendMessagesHelper.SendingMediaInfo {
++        val info = SendMessagesHelper.SendingMediaInfo()
++        info.imagePath = item.imagePath
++        info.path = item.sendPath()
++        if (!item.isVideo && item.imagePath != null && item.highQuality) {
++            info.originalPhotoEntry = item.original
++        }
++        info.thumbPath = item.thumbPath
++        info.coverPath = item.coverPath
++        info.coverPhoto = item.coverPhoto
++        info.isVideo = item.isVideo
++        info.caption = item.caption
++        info.entities = item.entities
++        info.masks = item.masks
++        info.ttl = item.ttl
++        info.videoEditedInfo = item.videoInfo
++        info.canDeleteAfter = item.canDeleteAfter
++        info.updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(item.caption)
++        info.hasMediaSpoilers = item.spoiler
++        info.stars = item.stars
++        info.highQuality = item.highQuality
++        return info
++    }
++
++    @JvmStatic
++    fun send(
++        fragment: ChatActivity,
++        enter: ChatActivityEnterView,
++        message: CharSequence,
++        notify: Boolean,
++        scheduleDate: Int,
++        repeat: Int,
++        payStars: Long
++    ): Int {
++        if (!enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT || enter.isEditingMessage) return SEND_NONE
++        val key = keyOf(fragment)
++        val tray = tray(key)
++        if (tray == null || tray.items.isEmpty()) return SEND_NONE
++        if (ChatActivityEnterView.checkPremiumAnimatedEmoji(key.account, key.dialogId, fragment, null, message)) return SEND_BLOCKED
++        if (!fragment.checkSlowModeAlert()) return SEND_BLOCKED
++        val text = AndroidUtilities.getTrimmedString(message)
++        if (text.length > MessagesController.getInstance(key.account).captionMaxLengthLimit) {
++            BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, "caption is too long").show()
++            return SEND_BLOCKED
++        }
++        val before = tray.items.size
++        tray.items.removeAll { item ->
++            val path = item.sendPath()
++            path == null || !File(path).exists()
++        }
++        if (tray.items.size != before) {
++            BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, "some attached files are gone").show()
++            if (tray.items.isEmpty()) {
++                changed(key)
++                return SEND_BLOCKED
++            }
++        }
++
++        val infos = tray.items.map { toInfo(it) }
++        val first = infos[0]
++        first.caption = if (text.isEmpty()) null else text.toString()
++        first.entities = if (text.isEmpty()) null else MediaDataController.getInstance(key.account).getEntities(arrayOf(text), true)
++        first.updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(text)
++
++        val account = AccountInstance.getInstance(key.account)
++        var start = 0
++        var firstChunk = true
++        while (start < infos.size) {
++            val asFile = tray.items[start].asFile
++            var end = start
++            while (end < infos.size && end - start < 10 && tray.items[end].asFile == asFile) end++
++            val chunk = ArrayList(infos.subList(start, end))
++            SendMessagesHelper.prepareSendingMedia(
++                account, chunk, key.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote,
++                asFile, tray.group, null, notify, scheduleDate, repeat, fragment.chatMode, firstChunk && first.updateStickersOrder,
++                null, fragment.messageChatSendParams, enter.effectId, tray.invert, payStars, enter.sendMonoForumPeerId, enter.sendMessageSuggestionParams
++            )
++            firstChunk = false
++            start = end
++        }
++        trays.remove(key)
++        changed(key)
++        return SEND_DONE
++    }
++
++    @JvmStatic
++    fun clear(fragment: ChatActivity) {
++        clearTray(keyOf(fragment))
++    }
++
++    @JvmStatic
++    fun draftEntries(fragment: ChatActivity): List<MediaController.PhotoEntry> {
++        if (!enabled()) return emptyList()
++        val tray = tray(keyOf(fragment)) ?: return emptyList()
++        val result = ArrayList<MediaController.PhotoEntry>()
++        for (item in tray.items) {
++            val path = item.sendPath() ?: continue
++            val entry = MediaController.PhotoEntry(0, item.imageId, 0, path, if (item.isVideo) item.duration else item.orientation, item.isVideo, item.width, item.height, item.size)
++            entry.imagePath = path
++            entry.hasSpoiler = item.spoiler
++            entry.ttl = item.ttl
++            result.add(entry)
++        }
++        return result
++    }
++
++    @JvmStatic
++    fun restoreDraft(fragment: ChatActivity, draft: SavedDrafts.Draft): Boolean {
++        if (!enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        val before = tray.items.size
++        if (before == 0) tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        for (file in draft.files) {
++            val stored = SavedDrafts.storedFile(file.storedName)
++            if (!stored.exists()) continue
++            val item = Item()
++            item.path = stored.absolutePath
++            item.isVideo = file.isVideo
++            item.width = file.width
++            item.height = file.height
++            item.duration = file.duration
++            item.size = file.size
++            item.orientation = file.orientation
++            item.spoiler = file.spoiler
++            item.ttl = file.ttl
++            tray.items.add(item)
++        }
++        if (tray.items.size == before) {
++            if (before == 0) trays.remove(key)
++            return false
++        }
++        changed(key)
++        return true
++    }
++
++    @JvmStatic
++    fun keepsDraftLocal(account: Int, dialogId: Long, threadId: Long): Boolean {
++        if (!enabled()) return false
++        ensureLoaded(account)
++        return trays.any { (key, tray) -> key.account == account && key.dialogId == dialogId && tray.items.isNotEmpty() }
++    }
++
++    @JvmStatic
++    fun listDraft(account: Int, dialogId: Long, threadId: Long): TLRPC.DraftMessage? {
++        if (!enabled()) return null
++        ensureLoaded(account)
++        val tray = trays[Key(account, dialogId, threadId)] ?: return null
++        if (tray.items.isEmpty()) return null
++        var draft = tray.draft
++        if (draft == null) {
++            draft = TLRPC.TL_draftMessage()
++            draft.message = title(tray)
++            draft.date = tray.date
++            tray.draft = draft
++        }
++        return draft
++    }
++
++    internal fun title(tray: Tray): String {
++        val videos = tray.items.count { it.isVideo }
++        val photos = tray.items.size - videos
++        val parts = ArrayList<String>(2)
++        if (photos > 0) parts.add(if (photos == 1) "1 photo" else "$photos photos")
++        if (videos > 0) parts.add(if (videos == 1) "1 video" else "$videos videos")
++        return parts.joinToString(", ")
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+new file mode 100644
+index 000000000..5dd182279
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+@@ -0,0 +1,137 @@
++package tele.helpers
++
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.Utilities
++import org.telegram.messenger.VideoEditedInfo
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLRPC
++import tele.db.TeleDatabaseHelper
++
++object DockedStore {
++    private const val MAGIC = 0x444d4544
++    private const val VERSION = 1
++
++    fun load(account: Int): Map<DockedMedia.Key, DockedMedia.Tray> {
++        val result = HashMap<DockedMedia.Key, DockedMedia.Tray>()
++        for (row in TeleDatabaseHelper.getDocked(account)) {
++            val tray = decode(row.data) ?: continue
++            if (tray.items.isNotEmpty()) {
++                result[DockedMedia.Key(account, row.dialogId, row.threadId)] = tray
++            }
++        }
++        return result
++    }
++
++    fun save(key: DockedMedia.Key, tray: DockedMedia.Tray?) {
++        val data = if (tray == null || tray.items.isEmpty()) null else encode(tray)
++        Utilities.globalQueue.postRunnable {
++            runCatching { TeleDatabaseHelper.putDocked(key.account, key.dialogId, key.threadId, data) }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    private fun encode(tray: DockedMedia.Tray): ByteArray {
++        val stream = SerializedData()
++        try {
++            stream.writeInt32(MAGIC)
++            stream.writeInt32(VERSION)
++            stream.writeBool(tray.group)
++            stream.writeBool(tray.invert)
++            stream.writeInt32(tray.date)
++            stream.writeInt32(tray.items.size)
++            for (item in tray.items) {
++                stream.writeString(item.path ?: "")
++                stream.writeString(item.imagePath ?: "")
++                stream.writeString(item.thumbPath ?: "")
++                stream.writeString(item.coverPath ?: "")
++                stream.writeInt32(item.imageId)
++                stream.writeBool(item.isVideo)
++                stream.writeInt32(item.width)
++                stream.writeInt32(item.height)
++                stream.writeInt32(item.duration)
++                stream.writeInt64(item.size)
++                stream.writeInt32(item.orientation)
++                stream.writeInt32(item.invert)
++                stream.writeInt32(item.ttl)
++                stream.writeBool(item.spoiler)
++                stream.writeBool(item.highQuality)
++                stream.writeBool(item.canDeleteAfter)
++                stream.writeBool(item.asFile)
++                stream.writeInt64(item.stars)
++                stream.writeString(item.videoInfo?.getString() ?: "")
++                stream.writeString(item.caption ?: "")
++                val entities = item.entities
++                stream.writeInt32(entities?.size ?: 0)
++                entities?.forEach { it.serializeToStream(stream) }
++                val masks = item.masks
++                stream.writeInt32(masks?.size ?: 0)
++                masks?.forEach { it.serializeToStream(stream) }
++            }
++            return stream.toByteArray()
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    private fun decode(data: ByteArray): DockedMedia.Tray? {
++        val stream = SerializedData(data)
++        try {
++            if (stream.readInt32(false) != MAGIC || stream.readInt32(false) != VERSION) return null
++            val tray = DockedMedia.Tray()
++            tray.group = stream.readBool(false)
++            tray.invert = stream.readBool(false)
++            tray.date = stream.readInt32(false)
++            val count = stream.readInt32(false)
++            for (i in 0 until count) {
++                val item = DockedMedia.Item()
++                item.path = stream.readString(false).ifEmpty { null }
++                item.imagePath = stream.readString(false).ifEmpty { null }
++                item.thumbPath = stream.readString(false).ifEmpty { null }
++                item.coverPath = stream.readString(false).ifEmpty { null }
++                item.imageId = stream.readInt32(false)
++                item.isVideo = stream.readBool(false)
++                item.width = stream.readInt32(false)
++                item.height = stream.readInt32(false)
++                item.duration = stream.readInt32(false)
++                item.size = stream.readInt64(false)
++                item.orientation = stream.readInt32(false)
++                item.invert = stream.readInt32(false)
++                item.ttl = stream.readInt32(false)
++                item.spoiler = stream.readBool(false)
++                item.highQuality = stream.readBool(false)
++                item.canDeleteAfter = stream.readBool(false)
++                item.asFile = stream.readBool(false)
++                item.stars = stream.readInt64(false)
++                val info = stream.readString(false)
++                var broken = false
++                if (info.isNotEmpty()) {
++                    val parsed = VideoEditedInfo()
++                    if (parsed.parseString(info)) item.videoInfo = parsed else broken = true
++                }
++                item.caption = stream.readString(false).ifEmpty { null }
++                val entityCount = stream.readInt32(false)
++                if (entityCount > 0) {
++                    val entities = ArrayList<TLRPC.MessageEntity>(entityCount)
++                    for (e in 0 until entityCount) {
++                        TLRPC.MessageEntity.TLdeserialize(stream, stream.readInt32(false), false)?.let { entities.add(it) }
++                    }
++                    item.entities = entities
++                }
++                val maskCount = stream.readInt32(false)
++                if (maskCount > 0) {
++                    val masks = ArrayList<TLRPC.InputDocument>(maskCount)
++                    for (m in 0 until maskCount) {
++                        TLRPC.InputDocument.TLdeserialize(stream, stream.readInt32(false), false)?.let { masks.add(it) }
++                    }
++                    item.masks = masks
++                }
++                if (!broken) tray.items.add(item)
++            }
++            return tray
++        } catch (e: Throwable) {
++            FileLog.e(e)
++            return null
++        } finally {
++            stream.cleanup()
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+new file mode 100644
+index 000000000..1ee9564a8
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -0,0 +1,177 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.HorizontalScrollView
++import android.widget.LinearLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BackupImageView
++import org.telegram.ui.Components.ChatActivityEnterTopView
++import org.telegram.ui.Components.ChatActivityEnterView
++import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Components.LayoutHelper
++import tele.helpers.DockedMedia
++
++class TeleDockedStrip(
++    context: Context,
++    private val fragment: ChatActivity,
++    private val enter: ChatActivityEnterView,
++    private val topView: ChatActivityEnterTopView,
++    val key: DockedMedia.Key
++) : FrameLayout(context) {
++    var panelShown = false
++    private var forced = false
++    private var replyHidden = false
++    private var hintOwned = false
++    private var shown: List<DockedMedia.Item> = emptyList()
++    private var shownSpoilers: List<Boolean> = emptyList()
++
++    private val row = LinearLayout(context)
++    private val scroll = HorizontalScrollView(context)
++
++    init {
++        tag = TAG
++        visibility = GONE
++        scroll.isHorizontalScrollBarEnabled = false
++        scroll.overScrollMode = OVER_SCROLL_NEVER
++        row.orientation = LinearLayout.HORIZONTAL
++        row.setPadding(AndroidUtilities.dp(8f), 0, AndroidUtilities.dp(8f), 0)
++        scroll.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
++        addView(scroll, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++    }
++
++    override fun onAttachedToWindow() {
++        super.onAttachedToWindow()
++        DockedMedia.register(this)
++        sync(false)
++    }
++
++    override fun onDetachedFromWindow() {
++        super.onDetachedFromWindow()
++        DockedMedia.unregister(this)
++    }
++
++    fun sync(animated: Boolean) {
++        val tray = DockedMedia.tray(key)
++        val has = DockedMedia.enabled() && tray != null && tray.items.isNotEmpty() && !enter.isEditingMessage
++        val show = has && !panelShown
++        if (show && tray != null) {
++            rebuild(tray.items)
++        }
++        visibility = if (show) VISIBLE else GONE
++        val replyView = topView.replyView
++        if (show) {
++            if (replyView != null && replyView.visibility != GONE) {
++                replyView.visibility = GONE
++                replyHidden = true
++            }
++            forced = true
++            enter.tele_showTopView(true, animated)
++        } else {
++            if (replyHidden) {
++                replyHidden = false
++                replyView?.visibility = if (topView.isEditMode) GONE else VISIBLE
++            }
++            if (forced) {
++                forced = false
++                if (!panelShown) enter.tele_showTopView(false, animated)
++            }
++        }
++        enter.tele_setDockedMedia(has, animated)
++        if (has) {
++            hintOwned = true
++            enter.setOverrideHint(LocaleController.getString(R.string.AddCaption))
++        } else if (hintOwned) {
++            hintOwned = false
++            enter.setOverrideHint(null)
++        }
++    }
++
++    private fun rebuild(items: List<DockedMedia.Item>) {
++        val spoilers = items.map { it.spoiler }
++        if (items == shown && spoilers == shownSpoilers) return
++        shown = ArrayList(items)
++        shownSpoilers = spoilers
++        row.removeAllViews()
++        for (item in items) {
++            row.addView(Tile(context, item), LinearLayout.LayoutParams(AndroidUtilities.dp(44f), ViewGroup.LayoutParams.MATCH_PARENT))
++        }
++    }
++
++    private inner class Tile(context: Context, private val item: DockedMedia.Item) : FrameLayout(context) {
++        init {
++            val image = BackupImageView(context)
++            image.setRoundRadius(AndroidUtilities.dp(6f))
++            val filter = if (item.spoiler) "5_5_b" else "64_64"
++            val placeholder = Theme.chat_attachEmptyDrawable
++            val cover = item.coverPath
++            val thumb = item.thumbPath
++            val path = item.path
++            if (cover != null) {
++                image.setImage(cover, filter, placeholder)
++            } else if (thumb != null) {
++                image.setImage(thumb, filter, placeholder)
++            } else if (item.isVideo && path != null) {
++                image.setImage("vthumb://" + item.imageId + ":" + path, filter, placeholder)
++            } else if (item.imagePath != null) {
++                image.setImage(item.imagePath, filter, placeholder)
++            } else if (path != null) {
++                image.setOrientation(item.orientation, item.invert, true)
++                image.setImage("thumb://" + item.imageId + ":" + path, filter, placeholder)
++            }
++            addView(image, LayoutHelper.createFrame(36, 36f, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
++            if (item.isVideo) {
++                val duration = TextView(context)
++                duration.setTextColor(Color.WHITE)
++                duration.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 9f)
++                duration.text = AndroidUtilities.formatShortDuration(item.duration)
++                duration.setShadowLayer(AndroidUtilities.dp(1f).toFloat(), 0f, 0f, Color.BLACK)
++                addView(duration, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 3f, 0f, 0f, 8f))
++            }
++            val badge = Badge(context)
++            badge.setOnClickListener { DockedMedia.remove(key, item) }
++            addView(badge, LayoutHelper.createFrame(22, 22f, Gravity.RIGHT or Gravity.TOP, 0f, 0f, 0f, 0f))
++            setOnLongClickListener {
++                ItemOptions.makeOptions(fragment, this)
++                    .add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) "remove spoiler" else "hide with spoiler") { DockedMedia.toggleSpoiler(key, item) }
++                    .add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
++                    .show()
++                true
++            }
++        }
++    }
++
++    private class Badge(context: Context) : View(context) {
++        private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC000000.toInt() }
++        private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
++            color = Color.WHITE
++            strokeWidth = AndroidUtilities.dp(1.5f).toFloat()
++            strokeCap = Paint.Cap.ROUND
++        }
++
++        override fun onDraw(canvas: Canvas) {
++            val cx = width - AndroidUtilities.dp(7f).toFloat()
++            val cy = AndroidUtilities.dp(7f).toFloat()
++            val r = AndroidUtilities.dp(7f).toFloat()
++            canvas.drawCircle(cx, cy, r, fill)
++            val d = r * 0.4f
++            canvas.drawLine(cx - d, cy - d, cx + d, cy + d, line)
++            canvas.drawLine(cx - d, cy + d, cx + d, cy - d, line)
++        }
++    }
++
++    companion object {
++        const val TAG = "tele_docked"
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index cbdf72718..826eb2be7 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -115,6 +115,7 @@ object TeleSearch {
+             section(1104, "messages as an image", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1105, "screenshot of messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1106, "pick brush colors from the image", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            section(1109, "attach media above the field (beta)", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_UPDATES, "update automatically", "updates", TeleSettingsActivity.MODE_ROOT),
+             section(GUID_UPDATES + 1, "check for updates", "updates", TeleSettingsActivity.MODE_ROOT),
+             section(GUID_UPDATES + 2, "show what's new after updates", "updates", TeleSettingsActivity.MODE_ROOT),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index e420044db..d4a303f48 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -386,6 +386,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             MODE_SENDING -> listOf(
+                 Row(TYPE_HEADER, "sending"),
+                 toggle("send photos in HD by default", TeleConfig.HD_PHOTOS),
++                toggle("attach media above the field (beta)", TeleConfig.DOCKED_MEDIA),
+                 toggle("send scheduled messages on time", TeleConfig.PUNCTUAL_SCHEDULED),
+                 toggle("queue messages behind uploading media", TeleConfig.QUEUE_BEHIND_MEDIA),
+                 toggle("send replies to older messages right away", TeleConfig.SEND_OLDER_REPLIES),

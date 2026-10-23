@@ -1,0 +1,334 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 20:30:00 +0300
+Subject: [PATCH 046/128] feat: rewrite pasted links by rules
+
+Rules live in tele_kv: either domain rules (from/to lists, the host is
+swapped keeping www/m/mobile prefixes out, several targets are picked
+per url) or pattern rules (regex find, replace template with $1..$9
+group refs and $$ for a literal dollar). Pasting into the message
+field intercepts android.R.id.paste: when the clipboard text changes,
+the rewritten version is inserted at the cursor and a toast lists what
+changed; untouched clips fall through to stock paste. Off by default.
+
+Constraint: intercepts only when a rule actually rewrote something
+Rejected: rewriting on send | pasting is where the author decides
+Confidence: medium
+Scope-risk: narrow
+---
+ .../ui/Components/ChatActivityEnterView.java  |   3 +
+ .../ui/Components/EditTextCaption.java        |  58 ++++++
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/helpers/LinkRewrites.kt    | 182 ++++++++++++++++++
+ 4 files changed, 245 insertions(+)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 52b511d9a..881ffb001 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -5704,6 +5704,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+ 
+             @Override
+             public boolean onTextContextMenuItem(int id) {
++                if (id == android.R.id.paste && teleRewritePaste()) {
++                    return true;
++                }
+                 if (id == android.R.id.paste && handleRichHtmlPaste()) {
+                     return true;
+                 }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+index 343d012df..75cc36214 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextCaption.java
+@@ -16,6 +16,7 @@ import android.app.Activity;
+ import android.content.ClipData;
+ import android.content.ClipboardManager;
+ import android.content.Context;
++import android.widget.Toast;
+ import android.graphics.Canvas;
+ import android.graphics.Paint;
+ import android.graphics.Rect;
+@@ -39,6 +40,8 @@ import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.accessibility.AccessibilityNodeInfo;
+ import android.view.inputmethod.EditorInfo;
++import android.view.inputmethod.InputConnection;
++import android.view.inputmethod.InputConnectionWrapper;
+ import android.widget.FrameLayout;
+ import android.widget.TextView;
+ 
+@@ -962,7 +965,62 @@ public class EditTextCaption extends EditTextBoldCursor implements FloatingToolb
+     }
+ 
+     @Override
++    public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
++        InputConnection ic = super.onCreateInputConnection(outAttrs);
++        if (ic == null) {
++            return null;
++        }
++        return new InputConnectionWrapper(ic, true) {
++            @Override
++            public boolean commitText(CharSequence text, int newCursorPosition) {
++                if (text != null) {
++                    teleNotifyPasted(text);
++                    android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(text.toString());
++                    if (rewritten != null) {
++                        Toast.makeText(getContext(), "tele rewrote links:\n" + TextUtils.join("\n", rewritten.second), Toast.LENGTH_SHORT).show();
++                        return super.commitText(rewritten.first, newCursorPosition);
++                    }
++                }
++                return super.commitText(text, newCursorPosition);
++            }
++        };
++    }
++
++    protected void teleNotifyPasted(CharSequence text) {
++        if (text != null && AndroidUtilities.WEB_URL.matcher(text).find()) {
++            teleNotifyPastedUrl();
++        }
++    }
++
++    protected void teleNotifyPastedUrl() {
++    }
++
++    protected boolean performTeleMenuAction(int itemId) {
++        return false;
++    }
++    protected boolean teleRewritePaste() {
++        ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
++        ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
++        CharSequence clipText = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(getContext()) : null;
++        if (TextUtils.isEmpty(clipText)) {
++            return false;
++        }
++        teleNotifyPasted(clipText);
++        android.util.Pair<String, java.util.ArrayList<String>> rewritten = tele.helpers.LinkRewrites.applyToText(clipText.toString());
++        if (rewritten == null) {
++            return false;
++        }
++        int start = Math.max(0, getSelectionStart());
++        int end = Math.min(getText().length(), getSelectionEnd());
++        setText(getText().replace(start, end, rewritten.first));
++        setSelection(start + rewritten.first.length(), start + rewritten.first.length());
++        Toast.makeText(getContext(), "tele rewrote links:\n" + TextUtils.join("\n", rewritten.second), Toast.LENGTH_SHORT).show();
++        return true;
++    }
+     public boolean onTextContextMenuItem(int id) {
++        if (id == android.R.id.paste && teleRewritePaste()) {
++            return true;
++        }
+         if (id == android.R.id.paste) {
+             ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+             ClipData clipData = clipboard.getPrimaryClip();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 0e24b7180..a3b7c1096 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -114,6 +114,8 @@ object TeleConfig {
+     val CLEAN_OPENED_LINKS = BoolItem("clean_opened_links", false)
+     @JvmField
+     val CLEAN_SENT_LINKS = BoolItem("clean_sent_links", false)
++    @JvmField
++    val REWRITE_PASTED_LINKS = BoolItem("rewrite_pasted_links", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
+index aa0b9cfb6..a5c8a918e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
+@@ -1,11 +1,193 @@
+ package tele.helpers
+ 
++import org.json.JSONArray
++import org.json.JSONObject
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
+ object LinkRewrites {
+ 
++    const val TYPE_DOMAIN = "domain"
++    const val TYPE_PATTERN = "pattern"
++
++    class Rule(
++        val type: String,
++        val from: List<String> = emptyList(),
++        val to: List<String> = emptyList(),
++        val find: String = "",
++        val replace: String = "",
++        val random: Boolean = false
++    ) {
++        fun toJson(): JSONObject = JSONObject().apply {
++            put("type", type)
++            if (type == TYPE_DOMAIN) {
++                put("from", JSONArray(from))
++                put("to", JSONArray(to))
++                if (random) put("random", true)
++            } else {
++                put("find", find)
++                put("replace", replace)
++            }
++        }
++
++        fun summary(): String = if (type == TYPE_DOMAIN) {
++            from.joinToString(", ") + " → " + to.joinToString(", ")
++        } else {
++            find + " → " + replace
++        }
++    }
++
++    private const val KEY = "link_rewrite_rules"
++
++    private val URL_REGEX = Regex("https?://[^\\s<>\"']+")
++
+     @JvmStatic
+     fun usernameToLink(url: String): String {
+         val trimmed = url.trim()
+         val match = Regex("^@([a-zA-Z][a-zA-Z0-9_]{3,31})$").find(trimmed) ?: return url
+         return "https://t.me/" + match.groupValues[1]
+     }
++
++    @JvmStatic
++    fun rules(): List<Rule> {
++        val raw = TeleDatabaseHelper.get(KEY) ?: return emptyList()
++        val out = ArrayList<Rule>()
++        runCatching {
++            val array = JSONArray(raw)
++            for (i in 0 until array.length()) {
++                val obj = array.getJSONObject(i)
++                val type = obj.optString("type", TYPE_DOMAIN)
++                if (type == TYPE_PATTERN) {
++                    out.add(Rule(TYPE_PATTERN, find = obj.optString("find"), replace = obj.optString("replace")))
++                } else {
++                    out.add(Rule(
++                        TYPE_DOMAIN,
++                        from = toStringList(obj.optJSONArray("from")),
++                        to = toStringList(obj.optJSONArray("to")),
++                        random = obj.optBoolean("random", false)
++                    ))
++                }
++            }
++        }
++        return out
++    }
++
++    private fun toStringList(array: JSONArray?): List<String> {
++        if (array == null) return emptyList()
++        val out = ArrayList<String>()
++        for (i in 0 until array.length()) {
++            val value = array.optString(i).trim()
++            if (value.isNotEmpty()) out.add(value)
++        }
++        return out
++    }
++
++    @JvmStatic
++    fun saveRules(rules: List<Rule>) {
++        if (rules.isEmpty()) {
++            TeleDatabaseHelper.put(KEY, null)
++            return
++        }
++        val array = JSONArray()
++        rules.forEach { array.put(it.toJson()) }
++        TeleDatabaseHelper.put(KEY, array.toString())
++    }
++
++    @JvmStatic
++    fun rewritePastedLinksEnabled(): Boolean = TeleConfig.REWRITE_PASTED_LINKS.value
++
++    // returns the rewritten text and up to three change notes, or null when nothing matched
++    @JvmStatic
++    fun applyToText(text: String): android.util.Pair<String, java.util.ArrayList<String>>? {
++        if (!TeleConfig.REWRITE_PASTED_LINKS.value) return null
++        val rules = rules()
++        if (rules.isEmpty()) return null
++        val notes = ArrayList<String>()
++        val memo = HashMap<String, String>()
++        val result = URL_REGEX.replace(text) { match ->
++            val url = match.value
++            if (memo.containsKey(url)) return@replace memo[url]!!
++            val rewritten = applyRules(url, rules)
++            if (rewritten != null) {
++                memo[url] = rewritten
++                if (notes.size < 3) notes.add(url + " → " + rewritten)
++                rewritten
++            } else {
++                url
++            }
++        }
++        if (notes.isEmpty()) return null
++        return android.util.Pair(result, notes)
++    }
++
++    private fun applyRules(url: String, rules: List<Rule>): String? {
++        for (rule in rules) {
++            if (rule.type == TYPE_DOMAIN) {
++                applyDomains(url, rule)?.let { return it }
++            } else if (rule.find.isNotEmpty()) {
++                val rewritten = runCatching {
++                    val regex = Regex(rule.find, RegexOption.IGNORE_CASE)
++                    val match = regex.find(url) ?: return@runCatching null
++                    url.replaceRange(match.range, expand(rule.replace, match))
++                }.getOrNull()
++                if (rewritten != null) return rewritten
++            }
++        }
++        return null
++    }
++
++    private fun hostOf(url: String): Pair<Int, String>? {
++        val match = Regex("^https?://(?:[^/?#@\\s]*@)?([^/?#:@\\s]+)", RegexOption.IGNORE_CASE).find(url) ?: return null
++        var host = match.groupValues[1].lowercase().trimEnd('.')
++        runCatching { host = java.net.IDN.toASCII(host).lowercase() }
++        return match.groups[1]!!.range.first to host
++    }
++
++    private fun applyDomains(url: String, rule: Rule): String? {
++        if (rule.to.isEmpty()) return null
++        val (hostStart, host) = hostOf(url) ?: return null
++        for (domain in rule.from) {
++            val d = domain.lowercase()
++            var prefix = when {
++                host == d -> ""
++                host.endsWith(".$d") -> host.substring(0, host.length - d.length)
++                else -> continue
++            }
++            if (prefix == "www." || prefix == "m." || prefix == "mobile.") prefix = ""
++            val target = if (rule.random && rule.to.size > 1) {
++                rule.to[(url.hashCode() % rule.to.size + rule.to.size) % rule.to.size]
++            } else {
++                rule.to.first()
++            }
++            val hostEnd = hostStart + host.length
++            return url.substring(0, hostStart) + prefix + target + url.substring(hostEnd)
++        }
++        return null
++    }
++
++    private fun expand(template: String, match: MatchResult): String {
++        val out = StringBuilder()
++        var i = 0
++        while (i < template.length) {
++            val ch = template[i]
++            if (ch == '$' && i + 1 < template.length) {
++                val next = template[i + 1]
++                if (next == '$') {
++                    out.append('$')
++                    i += 2
++                    continue
++                } else if (next.isDigit()) {
++                    val group = next - '0'
++                    if (group <= match.groupValues.size - 1) {
++                        out.append(match.groupValues[group])
++                    }
++                    i += 2
++                    continue
++                }
++            }
++            out.append(ch)
++            i++
++        }
++        return out.toString()
++    }
+ }
+\ No newline at end of file

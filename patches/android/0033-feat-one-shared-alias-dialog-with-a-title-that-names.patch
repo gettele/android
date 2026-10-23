@@ -1,0 +1,291 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 06:07:33 +0300
+Subject: [PATCH 033/128] feat: one shared alias dialog with a title that names
+ the peer
+
+ChatActivity and ProfileActivity each carried their own copy of the
+alias dialog, which is why the chat and channel menus still showed the
+old bare '@alias' placeholder while the settings list did not. Both now
+call TeleHooks, which also picks up the themed colours of the chat, the
+underline, the spacing and the Delete button.
+
+Titles follow the tele wording: 'Set an alias for <peer>' and 'Name only
+you see'. Both live in strings_tele.xml with the Tele prefix.
+
+Constraint: fork strings go to strings_tele.xml, never stock strings.xml
+Rejected: patching each duplicate separately | three copies drift apart again
+Confidence: high
+Scope-risk: moderate
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 34 +----------
+ .../java/org/telegram/ui/ProfileActivity.java | 61 +------------------
+ TMessagesProj/src/main/java/tele/TeleHooks.kt | 58 +++++++++++++-----
+ .../src/main/res/values/strings_tele.xml      |  2 +
+ 4 files changed, 50 insertions(+), 105 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 46bd695aa..36bb33099 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -45055,40 +45055,10 @@ public class ChatActivity extends BaseFragment implements
+     }
+ 
+     private void showTeleChatAliasDialog() {
+-        final android.app.Activity activity = getParentActivity();
+-        if (activity == null || currentChat == null) {
++        if (getParentActivity() == null || currentChat == null) {
+             return;
+         }
+-        final long did = getDialogId();
+-        final String current = tele.helpers.Aliases.aliasOf(currentAccount, did);
+-        android.widget.EditText input = new android.widget.EditText(activity);
+-        input.setText(current);
+-        input.setSingleLine(true);
+-        input.setHint("@alias");
+-        android.widget.FrameLayout container = new android.widget.FrameLayout(activity);
+-        container.addView(input, new android.widget.FrameLayout.LayoutParams(
+-                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+-        final int pad = AndroidUtilities.dp(20);
+-        container.setPadding(pad, pad / 2, pad, 0);
+-        org.telegram.ui.ActionBar.AlertDialog.Builder builder =
+-                new org.telegram.ui.ActionBar.AlertDialog.Builder(activity, themeDelegate);
+-        builder.setTitle("set an alias for me");
+-        builder.setView(container);
+-        builder.setPositiveButton(LocaleController.getString(R.string.Save), (di, w) -> {
+-            final String alias = input.getText().toString().trim();
+-            if (current != null) {
+-                tele.helpers.Aliases.remove(currentAccount, current);
+-            }
+-            if (!alias.isEmpty()) {
+-                if (!tele.helpers.Aliases.isValid(alias)) {
+-                    android.widget.Toast.makeText(activity, "alias must be letters, digits and underscore, up to 32", android.widget.Toast.LENGTH_SHORT).show();
+-                    return;
+-                }
+-                tele.helpers.Aliases.set(currentAccount, alias, did);
+-            }
+-        });
+-        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+-        showDialog(builder.create());
++        tele.TeleHooks.showUsernameAliasDialog(ChatActivity.this, getDialogId());
+     }
+ 
+     public void didLongPressUsername(ChatMessageCell cell, CharacterStyle link, String username) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 2f18e9b26..41e1d74d6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -2447,41 +2447,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         if (getParentActivity() == null) {
+             return;
+         }
+-        final long did = -chatId;
+-        final String current = tele.helpers.Aliases.aliasOf(currentAccount, did);
+-        android.widget.EditText input = new android.widget.EditText(getParentActivity());
+-        input.setText(current);
+-        input.setSingleLine(true);
+-        input.setHint("@alias");
+-        android.widget.FrameLayout container = new android.widget.FrameLayout(getParentActivity());
+-        container.addView(input, new android.widget.FrameLayout.LayoutParams(
+-                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+-        final int pad = AndroidUtilities.dp(20);
+-        container.setPadding(pad, pad / 2, pad, 0);
+-        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
+-        builder.setTitle("set an alias for me");
+-        builder.setView(container);
+-        builder.setPositiveButton(getString(R.string.Save), (di, w) -> {
+-            final String alias = input.getText().toString().trim();
+-            if (current != null) {
+-                tele.helpers.Aliases.remove(currentAccount, current);
+-            }
+-            if (!alias.isEmpty()) {
+-                if (!tele.helpers.Aliases.isValid(alias)) {
+-                    if (getParentActivity() != null) {
+-                        Toast.makeText(getParentActivity(), "alias must be letters, digits and underscore, up to 32", Toast.LENGTH_SHORT).show();
+-                    }
+-                    return;
+-                }
+-                tele.helpers.Aliases.set(currentAccount, alias, did);
+-            }
++        tele.TeleHooks.showUsernameAliasDialog(this, -chatId, () -> {
+             updateRowsIds();
+             if (listView != null && listView.getAdapter() != null) {
+                 listView.getAdapter().notifyDataSetChanged();
+             }
+         });
+-        builder.setNegativeButton(getString(R.string.Cancel), null);
+-        showDialog(builder.create());
+     }
+ 
+     private void showAliasDialog() {
+@@ -2489,41 +2460,13 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             return;
+         }
+         final long did = userId != 0 ? userId : -chatId;
+-        final String current = tele.helpers.Aliases.aliasOf(currentAccount, did);
+-        android.widget.EditText input = new android.widget.EditText(getParentActivity());
+-        input.setText(current);
+-        input.setSingleLine(true);
+-        input.setHint("@alias");
+-        android.widget.FrameLayout container = new android.widget.FrameLayout(getParentActivity());
+-        container.addView(input, new android.widget.FrameLayout.LayoutParams(
+-                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+-        final int pad = AndroidUtilities.dp(20);
+-        container.setPadding(pad, pad / 2, pad, 0);
+-        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
+-        builder.setTitle("set an alias for me");
+-        builder.setView(container);
+-        builder.setPositiveButton(getString(R.string.Save), (di, w) -> {
+-            final String alias = input.getText().toString().trim();
+-            if (current != null) {
+-                tele.helpers.Aliases.remove(currentAccount, current);
+-            }
+-            if (!alias.isEmpty()) {
+-                if (!tele.helpers.Aliases.isValid(alias)) {
+-                    if (getParentActivity() != null) {
+-                        Toast.makeText(getParentActivity(), "alias must be letters, digits and underscore, up to 32", Toast.LENGTH_SHORT).show();
+-                    }
+-                    return;
+-                }
+-                tele.helpers.Aliases.set(currentAccount, alias, did);
+-            }
++        tele.TeleHooks.showUsernameAliasDialog(this, did, () -> {
+             updateRowsIds();
+             if (listView != null && listView.getAdapter() != null) {
+                 listView.getAdapter().notifyDataSetChanged();
+             }
+             NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_NAME);
+         });
+-        builder.setNegativeButton(getString(R.string.Cancel), null);
+-        showDialog(builder.create());
+     }
+ 
+     public ActionBar createActionBar(Context context) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index b05fe0423..e5a08caa6 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -103,11 +103,30 @@ object TeleHooks {
+     @JvmStatic
+     fun storiesHeaderTitle(stock: CharSequence?): CharSequence = stock ?: TeleBuild.label()
+ 
+-    private fun themedField(activity: Context): EditTextBoldCursor {
++        private fun peerName(account: Int, peerId: Long): String {
++        val controller = org.telegram.messenger.MessagesController.getInstance(account)
++        if (peerId > 0) {
++            val user = controller.getUser(peerId)
++            if (user != null) return ContactsController.formatName(user.first_name, user.last_name)
++        } else {
++            val chat = controller.getChat(-peerId)
++            if (chat != null) return chat.title
++        }
++        return ""
++    }
++
++    private fun themedField(activity: Context, provider: Theme.ResourcesProvider?): EditTextBoldCursor {
+         val field = EditTextBoldCursor(activity)
+         field.setSingleLine(true)
+-        field.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+-        field.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText))
++        field.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
++        field.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, provider))
++        field.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, provider))
++        field.setBackgroundDrawable(null)
++        field.setLineColors(
++            Theme.getColor(Theme.key_windowBackgroundWhiteInputField, provider),
++            Theme.getColor(Theme.key_windowBackgroundWhiteInputFieldActivated, provider),
++            Theme.getColor(Theme.key_text_RedRegular, provider)
++        )
+         return field
+     }
+ 
+@@ -116,8 +135,7 @@ object TeleHooks {
+         container.orientation = LinearLayout.VERTICAL
+         container.addView(field, LinearLayout.LayoutParams(
+             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+-        val pad = AndroidUtilities.dp(20f)
+-        container.setPadding(pad, pad / 2, pad, 0)
++        container.setPadding(AndroidUtilities.dp(20f), AndroidUtilities.dp(12f), AndroidUtilities.dp(20f), AndroidUtilities.dp(4f))
+         return container
+     }
+ 
+@@ -126,11 +144,12 @@ object TeleHooks {
+         val activity = fragment.parentActivity ?: return
+         val controller = AccountInstance.getInstance(UserConfig.selectedAccount)
+         val user = controller.messagesController.getUser(userId) ?: return
+-        val input = themedField(activity)
++        val provider = fragment.resourceProvider
++        val input = themedField(activity, provider)
+         input.setText(LocalNames.get(userId))
+         input.hint = ContactsController.formatName(user.first_name, user.last_name)
+-        val builder = AlertDialog.Builder(activity)
+-        builder.setTitle("set a name for me")
++        val builder = if (provider != null) AlertDialog.Builder(activity, provider) else AlertDialog.Builder(activity)
++        builder.setTitle(LocaleController.getString(R.string.TeleNameOnlyYouSee))
+         builder.setView(wrapField(activity, input))
+         if (LocalNames.stored(userId) != null) {
+             builder.setNeutralButton(LocaleController.getString(R.string.Delete)) { _, _ ->
+@@ -148,28 +167,38 @@ object TeleHooks {
+     }
+ 
+     @JvmStatic
+-    fun showUsernameAliasDialog(fragment: BaseFragment, peerId: Long) {
++    @JvmOverloads
++    fun showUsernameAliasDialog(fragment: BaseFragment, peerId: Long, onChanged: Runnable? = null) {
+         val activity = fragment.parentActivity ?: return
+         val account = UserConfig.selectedAccount
++        val provider = fragment.resourceProvider
+         val current = Aliases.storedAliasOf(account, peerId)
+-        val input = themedField(activity)
++        val input = themedField(activity, provider)
+         input.setText(current)
+         input.hint = "alias"
+         val at = android.widget.TextView(activity)
+         at.text = "@"
+         at.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
+-        at.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
++        at.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, provider))
+         at.gravity = Gravity.CENTER_VERTICAL
+         val row = LinearLayout(activity)
+         row.orientation = LinearLayout.HORIZONTAL
+-        row.addView(at, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        row.gravity = Gravity.CENTER_VERTICAL
++        val atParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++        atParams.rightMargin = AndroidUtilities.dp(2f)
++        row.addView(at, atParams)
+         row.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+-        val builder = AlertDialog.Builder(activity)
+-        builder.setTitle("set an alias for me")
++        val builder = if (provider != null) AlertDialog.Builder(activity, provider) else AlertDialog.Builder(activity)
++        val name = peerName(account, peerId)
++        builder.setTitle(
++            if (name.isEmpty()) "set an alias for me"
++            else LocaleController.formatString("TeleSetAliasFor", R.string.TeleSetAliasFor, name)
++        )
+         builder.setView(wrapField(activity, row))
+         if (current != null) {
+             builder.setNeutralButton(LocaleController.getString(R.string.Delete)) { _, _ ->
+                 Aliases.remove(account, current)
++                onChanged?.run()
+             }
+         }
+         builder.setPositiveButton(LocaleController.getString(R.string.Save)) { _, _ ->
+@@ -184,6 +213,7 @@ object TeleHooks {
+                 }
+                 Aliases.set(account, value, peerId)
+             }
++            onChanged?.run()
+         }
+         builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+         fragment.showDialog(builder.create())
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 32fff44c3..d9dadc940 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -7,4 +7,6 @@
+     <string name="TeleIdCopied">ID copied to clipboard</string>
+     <string name="TeleDcCopied">DC copied to clipboard</string>
+     <string name="TeleMessageIdCopied">Message ID copied to clipboard</string>
++    <string name="TeleSetAliasFor">Set an alias for %s</string>
++    <string name="TeleNameOnlyYouSee">Name only you see</string>
+ </resources>

@@ -1,0 +1,434 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Thu, 22 Oct 2026 07:14:16 +0300
+Subject: [PATCH 120/128] feat: collapse tele setting suboptions
+
+---
+ .../org/telegram/ui/Cells/TextCheckCell2.java | 104 +++++++++-
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 195 +++++++++++++++++-
+ 2 files changed, 283 insertions(+), 16 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextCheckCell2.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextCheckCell2.java
+index 49b98401c..7931b7625 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextCheckCell2.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextCheckCell2.java
+@@ -18,6 +18,7 @@ import android.graphics.drawable.Drawable;
+ import android.text.TextUtils;
+ import android.util.TypedValue;
+ import android.view.Gravity;
++import android.view.MotionEvent;
+ import android.view.View;
+ import android.view.accessibility.AccessibilityNodeInfo;
+ import android.widget.FrameLayout;
+@@ -46,6 +47,16 @@ public class TextCheckCell2 extends FrameLayout {
+     private AnimatedTextView animatedTextView;
+     private View collapsedArrow;
+     private View checkBoxClickArea;
++    private int collapseReservedRight;
++    private Runnable collapseSwitchClick;
++
++    private boolean collapseAlignToTitle;
++    private boolean collapseDivider = true;
++
++    public void setCollapseDividerVisible(boolean visible) {
++        collapseDivider = visible;
++        if (checkBoxClickArea != null) checkBoxClickArea.invalidate();
++    }
+ 
+     public void setCollapseArrow(String text, boolean collapsed, Runnable onCheckClick) {
+         if (collapseViewContainer == null) {
+@@ -72,7 +83,7 @@ public class TextCheckCell2 extends FrameLayout {
+                 @Override
+                 protected void onDraw(Canvas canvas) {
+                     super.onDraw(canvas);
+-                    canvas.drawLine(0, dp(14), 2, getMeasuredHeight()- dp(14), Theme.dividerPaint);
++                    if (collapseDivider) canvas.drawLine(0, dp(14), 2, getMeasuredHeight()- dp(14), Theme.dividerPaint);
+                 }
+             };
+             checkBoxClickArea.setBackground(Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector), 2));
+@@ -81,7 +92,53 @@ public class TextCheckCell2 extends FrameLayout {
+         animatedTextView.setText(text);
+         collapsedArrow.animate().cancel();
+         collapsedArrow.animate().rotation(collapsed ? 0 : 180).setDuration(340).setInterpolator(CubicBezierInterpolator.EASE_OUT_QUINT).start();
+-        checkBoxClickArea.setOnClickListener(v -> onCheckClick.run());
++        checkBoxClickArea.setOnTouchListener((v, event) -> {
++            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
++                float switchLeft = checkBox.getLeft() - checkBoxClickArea.getLeft();
++                float switchRight = checkBox.getRight() - checkBoxClickArea.getLeft();
++                if (collapseSwitchClick != null && event.getX() >= switchLeft && event.getX() <= switchRight) {
++                    collapseSwitchClick.run();
++                } else {
++                    onCheckClick.run();
++                }
++                v.performClick();
++            }
++            return true;
++        });
++    }
++    public void setCollapseSwitchClick(Runnable onSwitchClick) {
++        collapseSwitchClick = onSwitchClick;
++    }
++
++
++    /** Reserves a fixed column for the counter and arrow before the switch. */
++    public void setCollapseLayout(int reservedRight, boolean alignToTitle) {
++        collapseReservedRight = reservedRight;
++        collapseAlignToTitle = alignToTitle;
++        updateCollapseMargins();
++        requestLayout();
++    }
++
++    /** Restores the stock text width when a recycled holder becomes a normal toggle. */
++    public void clearCollapseLayout() {
++        collapseReservedRight = 0;
++        collapseAlignToTitle = false;
++        updateCollapseMargins();
++    }
++
++    private void updateCollapseMargins() {
++        int margin = collapseReservedRight > 0 ? collapseReservedRight : dp(64);
++        LayoutParams titleParams = (LayoutParams) textView.getLayoutParams();
++        LayoutParams valueParams = (LayoutParams) valueTextView.getLayoutParams();
++        if (LocaleController.isRTL) {
++            titleParams.leftMargin = margin;
++            valueParams.leftMargin = margin;
++        } else {
++            titleParams.rightMargin = margin;
++            valueParams.rightMargin = margin;
++        }
++        textView.setLayoutParams(titleParams);
++        valueTextView.setLayoutParams(valueParams);
+     }
+ 
+     public void hideCollapseArrow() {
+@@ -135,11 +192,21 @@ public class TextCheckCell2 extends FrameLayout {
+     @Override
+     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+         super.onLayout(changed, left, top, right, bottom);
+-        if (collapseViewContainer != null) {
++        if (collapseViewContainer != null && collapseViewContainer.getVisibility() == View.VISIBLE) {
++            int width = collapseViewContainer.getMeasuredWidth();
++            int targetLeft;
+             if (LocaleController.isRTL) {
+-                collapseViewContainer.setTranslationX(textView.getLeft() - collapseViewContainer.getMeasuredWidth() - dp(8));
++                targetLeft = Math.max(dp(76), textView.getLeft() - width - dp(8));
+             } else {
+-                collapseViewContainer.setTranslationX(textView.getRight() + dp(8));
++                int maxRight = getWidth() - dp(76) - dp(4);
++                targetLeft = Math.min(textView.getRight() + dp(8), maxRight - width);
++            }
++            collapseViewContainer.setTranslationX(targetLeft - collapseViewContainer.getLeft());
++            if (collapseAlignToTitle && valueTextView.getVisibility() == View.VISIBLE) {
++                int targetTop = textView.getTop() + (textView.getHeight() - collapseViewContainer.getMeasuredHeight()) / 2;
++                collapseViewContainer.setTranslationY(targetTop - collapseViewContainer.getTop());
++            } else {
++                collapseViewContainer.setTranslationY(0);
+             }
+         }
+     }
+@@ -161,6 +228,33 @@ public class TextCheckCell2 extends FrameLayout {
+         setWillNotDraw(!divider);
+     }
+ 
++    /** Updates the parent label and description without resetting its animated switch state. */
++    public void setTextAndValue(CharSequence text, CharSequence value, boolean multiline, boolean divider) {
++        textView.setText(text);
++        valueTextView.setText(value);
++        needDivider = divider;
++        valueTextView.setVisibility(VISIBLE);
++        isMultiline = multiline;
++        if (multiline) {
++            valueTextView.setLines(0);
++            valueTextView.setMaxLines(0);
++            valueTextView.setSingleLine(false);
++            valueTextView.setEllipsize(null);
++            valueTextView.setPadding(0, 0, 0, dp(11));
++        } else {
++            valueTextView.setLines(1);
++            valueTextView.setMaxLines(1);
++            valueTextView.setSingleLine(true);
++            valueTextView.setEllipsize(TextUtils.TruncateAt.END);
++            valueTextView.setPadding(0, 0, 0, 0);
++        }
++        LayoutParams layoutParams = (LayoutParams) textView.getLayoutParams();
++        layoutParams.height = LayoutParams.WRAP_CONTENT;
++        layoutParams.topMargin = dp(10);
++        textView.setLayoutParams(layoutParams);
++        setWillNotDraw(!divider);
++    }
++
+     public void setTextAndValueAndCheck(CharSequence text, CharSequence value, boolean checked, boolean multiline, boolean divider) {
+         textView.setText(text);
+         valueTextView.setText(value);
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 3f879b650..b1335dfe9 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -28,7 +28,7 @@ import tele.TeleConfig
+ 
+ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String = MODE_ROOT, private val jumpTo: String? = null) : BaseFragment() {
+ 
+-    private class Row(
++    private data class Row(
+         val type: Int,
+         val title: String? = null,
+         val subtitle: String? = null,
+@@ -37,13 +37,106 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         val mode: String? = null,
+         val icon: Int = 0,
+         val badge: Boolean = false,
+-        val view: View? = null
++        val view: View? = null,
++        /** The parent toggle of a child row. */
++        val parent: Item<*>? = null,
++        /** The indent level of a child row. */
++        val indent: Int = 0,
++        /** The row is a parent toggle with children. */
++        val expandable: Boolean = false,
++        /** The number of the enabled children of a parent toggle. */
++        val childCount: Int = 0
+     )
+ 
+     private var listView: UniversalRecyclerView? = null
+     private var rows: List<Row> = emptyList()
+     private var screenContext: Context? = null
+ 
++    /** The expanded groups are transient: they are not a setting and not exported. */
++    private val expandedGroups = HashSet<String>()
++
++    private val itemsByKey: Map<String, Item<*>> by lazy {
++        tele.configItems.associateBy { it.key }
++    }
++
++    /** Puts the children of a group under their parent and hides them while the group is collapsed. */
++    private fun withGroups(page: List<Row>): List<Row> {
++        if (GROUPS.isEmpty()) return page
++        val childParent = HashMap<String, String>()
++        for ((parent, children) in GROUPS) {
++            for (child in children) {
++                childParent[child] = parent
++            }
++        }
++        val result = ArrayList<Row>()
++        for (row in page) {
++            val key = row.item?.key
++            val parentKey = if (key != null) childParent[key] else null
++            if (parentKey != null && page.any { it.item?.key == parentKey }) {
++                continue // the child is shown under its parent
++            }
++            val children = if (key != null) GROUPS[key] else null
++            if (children == null) {
++                result.add(row)
++                continue
++            }
++            var on = 0
++            for (childKey in children) {
++                if (itemsByKey[childKey]?.value as? Boolean == true) on++
++            }
++            result.add(row.copy(expandable = true, childCount = on))
++            if (!expandedGroups.contains(key)) continue
++            for (childKey in children) {
++                val child = page.firstOrNull { it.item?.key == childKey } ?: continue
++                result.add(child.copy(parent = row.item, indent = 1))
++            }
++        }
++        return result
++    }
++
++    /** The parent of a child row: the group it belongs to. */
++    private fun parentKeyOf(childKey: String): String? {
++        for ((parent, children) in GROUPS) {
++            if (childKey in children) return parent
++        }
++        return null
++    }
++
++    private fun setValue(item: Item<*>, value: Any) {
++        TeleConfig.set(item, value)
++        TeleHooks.onConfigChanged(item)
++    }
++
++    /** Turns the parent of a group on and remembers the values of its children. */
++    private fun setGroupValue(row: Row, value: Boolean) {
++        val item = row.item ?: return
++        setValue(item, value)
++        if (value) {
++            // like the desktop client, a group without an enabled child turns all of them on
++            val children = GROUPS[item.key] ?: return
++            var any = false
++            for (childKey in children) {
++                if (itemsByKey[childKey]?.value as? Boolean == true) {
++                    any = true
++                    break
++                }
++            }
++            if (!any) {
++                for (childKey in children) {
++                    val childItem = itemsByKey[childKey] ?: continue
++                    if (childItem.value is Boolean) setValue(childItem, true)
++                }
++            }
++        }
++        refresh()
++    }
++
++    private fun toggleExpanded(row: Row) {
++        val key = row.item?.key ?: return
++        if (!expandedGroups.remove(key)) expandedGroups.add(key)
++        refresh()
++    }
++
+     /** The row the search points to: the stock jumps to it by this field name. */
+     @JvmField
+     var teleSearchRow = -1
+@@ -164,7 +257,14 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+     override fun createView(context: Context): View {
+         screenContext = context
+         // the search opens the section on the row it points to
+-        teleSearchRow = jumpTo?.let { title -> buildRows(mode).indexOfFirst { it.title == title } } ?: -1
++        val page = buildRows(mode)
++        val target = jumpTo?.let { title -> page.firstOrNull { it.title == title } }
++        val targetKey = target?.item?.key
++        if (targetKey != null) {
++            // a child of a group is shown when its group is expanded
++            parentKeyOf(targetKey)?.let { expandedGroups.add(it) }
++        }
++        teleSearchRow = jumpTo?.let { title -> withGroups(page).indexOfFirst { it.title == title } } ?: -1
+         actionBar.setBackButtonImage(R.drawable.ic_ab_back)
+         actionBar.setAllowOverlayTitle(true)
+         actionBar.setTitle(sectionTitle())
+@@ -187,20 +287,51 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         return fragmentView
+     }
+     private fun fillItems(items: ArrayList<UItem>, adapter: UniversalAdapter) {
+-        rows = buildRows(mode)
++        rows = withGroups(buildRows(mode))
+         rows.forEachIndexed { position, row ->
+             val title = row.title.orEmpty()
+             if (row.type == TYPE_HEADER) {
+                 items.add(UItem.asHeader(position, displayTitle(title)))
+             } else {
+                 items.add(when (row.type) {
+-                    TYPE_TOGGLE -> UItem.asSwitchNoIcon(position, displayTitle(title)).apply {
+-                        checked = row.item!!.value as Boolean
+-                        if (!row.subtitle.isNullOrEmpty()) {
+-                            bind = Utilities.Callback { view: View -> (view as TextCheckCell2).setTextAndValueAndCheck(displayTitle(title), row.subtitle, checked, true, true) }
++                    TYPE_TOGGLE -> {
++                        if (row.expandable) {
++                            UItem.asExpandableSwitch(position, displayTitle(title), "${row.childCount} on").apply {
++                                 checked = row.item!!.value as Boolean
++                                 collapsed = !expandedGroups.contains(row.item.key)
++                                clickCallback = View.OnClickListener { toggleExpanded(row) }
++                                 bind = Utilities.Callback { view: View ->
++                                     val cell = view as TextCheckCell2
++                                    cell.setCollapseSwitchClick { setGroupValue(row, !(row.item!!.value as Boolean)) }
++                                    cell.setCollapseDividerVisible(false)
++                                    if (!row.subtitle.isNullOrEmpty()) {
++                                         cell.setTextAndValue(displayTitle(title), row.subtitle, true, true)
++                                     }
++                                     cell.setPadding(0, 0, 0, 0)
++                                     cell.setCollapseLayout(AndroidUtilities.dp(140f), true)
++                                 }
++                             }
++                        } else {
++                            val parentEnabled = row.parent?.value as? Boolean ?: true
++                            UItem.asSwitchNoIcon(position, displayTitle(title)).apply {
++                                checked = row.item!!.value as Boolean
++                                enabled = parentEnabled
++                                bind = Utilities.Callback { view: View ->
++                                    val cell = view as TextCheckCell2
++                                    cell.clearCollapseLayout()
++                                    if (!row.subtitle.isNullOrEmpty()) {
++                                        cell.setTextAndValueAndCheck(displayTitle(title), row.subtitle, checked, true, true)
++                                    }
++                                    cell.setPadding(if (row.indent > 0) AndroidUtilities.dp(16f) else 0, 0, 0, 0)
++                                    cell.setEnabled(parentEnabled)
++                                 }
++                            }
+                         }
+                     }
+-                    TYPE_VALUE -> UItem.asButton(position, displayTitle(title), row.value.orEmpty())
++                    TYPE_VALUE -> UItem.asButton(position, displayTitle(title), row.value.orEmpty()).apply {
++                        // TextCell dims its own text; alpha on the view would fade the section background too
++                        enabled = row.parent?.value as? Boolean ?: true
++                    }
+                     TYPE_LINK_ICON -> UItem.asButton(position, row.icon, if (row.badge) tele.helpers.TeleNewSettings.withBadge(displayTitle(title)) else if (row.mode == MODE_MENU || row.mode == MODE_RULES) title else displayTitle(title))
+                     TYPE_LINK -> UItem.asButton(position, if (row.mode == MODE_MENU || row.mode == MODE_RULES) title else displayTitle(title), row.value.orEmpty())
+                     TYPE_SHADOW -> UItem.asShadow(row.title)
+@@ -218,9 +349,19 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         val row = rows.getOrNull(item.id) ?: return
+         when {
+             row.type == TYPE_TOGGLE && row.item != null -> {
++                if (row.expandable) {
++                    val switchArea = if (org.telegram.messenger.LocaleController.isRTL) x < AndroidUtilities.dp(76f) else x > view.width - AndroidUtilities.dp(76f)
++                    if (switchArea) setGroupValue(row, !(row.item!!.value as Boolean)) else toggleExpanded(row)
++                    return
++                }
+                 val checked = !item.checked
+                 item.checked = checked
+                 (view as TextCheckCell2).setChecked(checked)
++                val parent = row.parent
++                if (parent != null && parent.value as? Boolean != true) {
++                    // the parent gates its children, it turns on first
++                    setValue(parent, true)
++                }
+                 TeleConfig.set(row.item, checked)
+                 android.util.Log.d("TeleToggle", "key=${row.item.key} state=$checked")
+                 if (row.item == TeleConfig.IGNORE_FADE) {
+@@ -262,7 +403,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+     private fun refresh() {
+         listView?.adapter?.update(true)
+-    }
++     }
+ 
+     /** The live preview of the ghost mode with the caption under it, like in the desktop client. */
+     private fun customView(row: Row): View? {
+@@ -285,7 +426,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         }
+     }
+ 
+-    private val updaterListener = Runnable { if (mode == MODE_ROOT) refresh() }
++    private val updaterListener = Runnable { if (mode == MODE_ROOT || mode == MODE_UPDATES) refresh() }
+ 
+     override fun onResume() {
+         super.onResume()
+@@ -311,6 +452,38 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+ 
+     companion object {
++
++        /** The parent toggles with their children: the children are shown when the group is expanded. */
++        private val GROUPS = mapOf(
++            TeleConfig.KEEP_DELETED_MESSAGES.key to listOf(
++                TeleConfig.KEEP_SELF_DELETED_MESSAGES.key,
++                TeleConfig.DELETED_MARKER.key,
++                TeleConfig.DELETED_REPLY.key
++            ),
++            TeleConfig.SHOW_PEER_ID.key to listOf(
++                TeleConfig.PEER_IDS_WITHOUT_SPACES.key,
++                TeleConfig.BOT_API_PEER_IDS.key,
++                TeleConfig.SHOW_DC.key,
++                TeleConfig.MERGE_ID_DC.key
++            ),
++            TeleConfig.QUEUE_BEHIND_MEDIA.key to listOf(
++                TeleConfig.SEND_OLDER_REPLIES.key,
++                TeleConfig.DOUBLE_ENTER_SEND.key
++            ),
++            TeleConfig.CALCMULA.key to listOf(
++                TeleConfig.CALCMULA_PREVIEW.key
++            )
++        )
++
++        init {
++            // the groups are built once: a group can't hold itself and the parents can't be nested
++            for ((parent, children) in GROUPS) {
++                check(parent !in children) { "the group $parent holds itself" }
++                for (child in children) {
++                    check(child !in GROUPS) { "the group $parent holds the group $child" }
++                }
++            }
++        }
+         const val MODE_ROOT = "root"
+         const val MODE_INTERFACE = "interface"
+         const val MODE_CHATS = "chats"

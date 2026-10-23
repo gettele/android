@@ -1,0 +1,276 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 6 Oct 2026 19:54:24 +0300
+Subject: [PATCH 056/128] feat: send scheduled messages on time
+
+A local timer fires server-scheduled messages at the set minute while the app is online.
+
+Constraint: Reuses stock sendScheduledMessages request, no custom send path
+
+Constraint: Only server-scheduled (positive mid) non-encrypted dialogs
+
+Rejected: Client-side scheduling of unsent messages | stock retry path already covers offline sends
+
+Confidence: medium
+
+Scope-risk: moderate
+
+Not-tested: Wall-clock delivery on device
+---
+ .../telegram/messenger/ApplicationLoader.java |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../java/tele/helpers/PunctualScheduled.kt    | 191 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
+ 5 files changed, 197 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index e787bb415..0af4b4579 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -261,6 +261,7 @@ public class ApplicationLoader extends Application {
+                 SendMessagesHelper.getInstance(a).checkUnsentMessages();
+             }
+         }
++        tele.helpers.PunctualScheduled.start();
+ 
+         ApplicationLoader app = (ApplicationLoader) ApplicationLoader.applicationContext;
+         app.initPushServices();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 12a7592bc..4a346510e 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -124,6 +124,8 @@ object TeleConfig {
+     val LINK_PREVIEW_MODE = StringItem("link_preview_mode", "all")
+     @JvmField
+     val HD_PHOTOS = BoolItem("hd_photos", false)
++    @JvmField
++    val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt b/TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt
+new file mode 100644
+index 000000000..0e24ea088
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt
+@@ -0,0 +1,191 @@
++package tele.helpers
++
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.content.Context
++import android.os.Build
++import android.os.Handler
++import android.os.Looper
++import android.widget.Toast
++import androidx.core.app.NotificationCompat
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import java.util.concurrent.ConcurrentHashMap
++
++object PunctualScheduled {
++
++    private const val INTERVAL_MS = 20_000L
++    private const val MAX_ATTEMPTS = 5
++    private val LADDER_MS = longArrayOf(5_000L, 15_000L, 60_000L, 300_000L, 900_000L)
++    private val handler = Handler(Looper.getMainLooper())
++    private var started = false
++
++    private class Attempt {
++        var failures = 0
++        var retryAt = 0L
++        var terminal = false
++    }
++
++    // account: dialog: mid, so two accounts never share a retry
++    private val attempts = ConcurrentHashMap<String, Attempt>()
++
++    @JvmStatic
++    fun start() {
++        if (started) return
++        started = true
++        handler.postDelayed({ tick() }, INTERVAL_MS)
++    }
++
++    private fun tick() {
++        if (tele.TeleConfig.PUNCTUAL_SCHEDULED.value) {
++            runCatching { check() }.onFailure { FileLog.e(it) }
++        }
++        handler.postDelayed({ tick() }, INTERVAL_MS)
++    }
++
++    private fun check() {
++        for (a in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (!UserConfig.getInstance(a).isClientActivated) continue
++            checkAccount(a)
++        }
++    }
++
++    private fun key(account: Int, dialogId: Long, mid: Int): String = "$account:$dialogId:$mid"
++
++    private fun checkAccount(account: Int) {
++        val now = System.currentTimeMillis() / 1000 + 1
++        MessagesStorage.getInstance(account).getStorageQueue().postRunnable {
++            val due = ArrayList<Pair<Long, ArrayList<Int>>>()
++            val scheduled = HashSet<Int>()
++            runCatching {
++                val database = MessagesStorage.getInstance(account).database
++                val cursor = database.queryFinalized(
++                    "SELECT uid, mid FROM scheduled_messages_v2 WHERE mid > 0 AND date <= $now ORDER BY date ASC"
++                )
++                val byDialog = LinkedHashMap<Long, ArrayList<Int>>()
++                while (cursor.next()) {
++                    val uid = cursor.longValue(0)
++                    if (DialogObject.isEncryptedDialog(uid)) continue
++                    val list = byDialog.getOrPut(uid) { ArrayList() }
++                    list.add(cursor.intValue(1))
++                }
++                cursor.dispose()
++                for (entry in byDialog) {
++                    due.add(entry.key to entry.value)
++                }
++                val all = database.queryFinalized("SELECT mid FROM scheduled_messages_v2 WHERE mid > 0")
++                while (all.next()) {
++                    scheduled.add(all.intValue(0))
++                }
++                all.dispose()
++            }.onFailure { FileLog.e(it) }
++
++            // the state of a message that is not scheduled anymore is worthless
++            for (state in attempts.keys) {
++                if (!state.startsWith("$account:")) continue
++                val mid = state.substringAfterLast(':').toIntOrNull() ?: continue
++                if (!scheduled.contains(mid)) attempts.remove(state)
++            }
++
++            val nowMs = System.currentTimeMillis()
++            val ready = ArrayList<Pair<Long, ArrayList<Int>>>()
++            for ((dialogId, ids) in due) {
++                val send = ArrayList<Int>()
++                for (id in ids) {
++                    val attempt = attempts[key(account, dialogId, id)]
++                    if (attempt != null && (attempt.terminal || attempt.retryAt > nowMs)) continue
++                    send.add(id)
++                }
++                if (send.isNotEmpty()) ready.add(dialogId to send)
++            }
++            if (ready.isEmpty()) return@postRunnable
++            org.telegram.messenger.AndroidUtilities.runOnUIThread {
++                for ((dialogId, ids) in ready) {
++                    sendNow(account, dialogId, ids)
++                }
++            }
++        }
++    }
++
++    private fun sendNow(account: Int, dialogId: Long, ids: ArrayList<Int>) {
++        val controller = MessagesController.getInstance(account)
++        val peer = controller.getInputPeer(dialogId) ?: return
++        val request = TLRPC.TL_messages_sendScheduledMessages()
++        request.peer = peer
++        request.id.addAll(ids)
++        ConnectionsManager.getInstance(account).sendRequest(request) { _, error ->
++            runCatching { onResult(account, dialogId, ids, error) }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    private fun onResult(account: Int, dialogId: Long, ids: ArrayList<Int>, error: TLRPC.TL_error?) {
++        if (error == null) {
++            for (id in ids) attempts.remove(key(account, dialogId, id))
++            return
++        }
++        val type = error.text ?: ""
++        val reason = if (type.isEmpty()) "error ${error.code}" else type
++        val now = System.currentTimeMillis()
++        for (id in ids) {
++            val attempt = attempts.getOrPut(key(account, dialogId, id)) { Attempt() }
++            if (attempt.terminal) continue
++            attempt.failures++
++            val delay = retryDelay(type, error.code, attempt.failures)
++            if (delay != null && attempt.failures <= MAX_ATTEMPTS) {
++                attempt.retryAt = now + delay
++                android.util.Log.d("TelePunctualScheduled", "account=$account dialog=$dialogId mid=$id status=retry")
++            } else {
++                attempt.terminal = true
++                attempt.retryAt = 0L
++                android.util.Log.d("TelePunctualScheduled", "account=$account dialog=$dialogId mid=$id status=failed")
++                notifyFailure(account, dialogId, id, reason)
++            }
++        }
++    }
++
++    // the server tells how long to wait, the rest walks the ladder
++    private fun retryDelay(type: String, code: Int, failures: Int): Long? {
++        val wait = waitSeconds(type)
++        if (wait != null) return (maxOf(wait, 1) + 1) * 1000L
++        if (code <= 0 || code >= 500 || type == "TIMEOUT") {
++            val index = (failures - 1).coerceIn(0, LADDER_MS.size - 1)
++            return LADDER_MS[index]
++        }
++        return null
++    }
++
++    private fun waitSeconds(type: String): Int? {
++        if (!type.startsWith("FLOOD_WAIT_") && !type.startsWith("SLOWMODE_WAIT_")) return null
++        return type.substringAfterLast('_').toIntOrNull()
++    }
++
++    private fun notifyFailure(account: Int, dialogId: Long, mid: Int, reason: String) {
++        val text = "couldn't send a scheduled message on time: $reason"
++        handler.post {
++            Toast.makeText(ApplicationLoader.applicationContext, text, Toast.LENGTH_LONG).show()
++        }
++        val context = ApplicationLoader.applicationContext
++        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
++        val channelId = "tele_scheduled_$account"
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            manager.createNotificationChannel(NotificationChannel(
++                channelId, "tele scheduled messages", NotificationManager.IMPORTANCE_DEFAULT))
++        }
++        val name = MessagesController.getInstance(account).getPeerName(dialogId)
++        val title = if (name.isEmpty()) "tele" else name
++        val notification = NotificationCompat.Builder(context, channelId)
++            .setSmallIcon(R.drawable.tele_stat_notification)
++            .setContentTitle(title)
++            .setContentText(text)
++            .setAutoCancel(true)
++            .build()
++        manager.notify(key(account, dialogId, mid).hashCode(), notification)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index bcddb17ee..ad9c748c2 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -84,7 +84,8 @@ object TeleSearch {
+             screen(GUID_DATA + 4, "manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
+ 
+             section(GUID_SENDING, "tele sending", "sending", TeleSettingsActivity.MODE_SENDING),
+-            section(GUID_SENDING + 1, "send photos in HD by default", "sending", TeleSettingsActivity.MODE_SENDING)
++            section(GUID_SENDING + 1, "send photos in HD by default", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(GUID_SENDING + 2, "send scheduled messages on time", "sending", TeleSettingsActivity.MODE_SENDING)
+         )
+     }
+ }
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index e090c01b9..6db577e5c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -238,6 +238,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             MODE_SENDING -> listOf(
+                 Row(TYPE_HEADER, "sending"),
+                 toggle("send photos in HD by default", TeleConfig.HD_PHOTOS),
++                toggle("send scheduled messages on time", TeleConfig.PUNCTUAL_SCHEDULED),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_MENU -> listOf(

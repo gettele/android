@@ -1,0 +1,239 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 19 Oct 2026 06:29:36 +0300
+Subject: [PATCH 085/128] feat: pick brush colors from the image
+
+---
+ .../Paint/Views/LPhotoPaintView.java          |  16 +++
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/helpers/TeleEyedropper.kt  | 120 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
+ 5 files changed, 140 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleEyedropper.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/Paint/Views/LPhotoPaintView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/Paint/Views/LPhotoPaintView.java
+index 6bcadae18..72662d51a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/Paint/Views/LPhotoPaintView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/Paint/Views/LPhotoPaintView.java
+@@ -146,6 +146,7 @@ public class LPhotoPaintView extends SizeNotifierFrameLayoutPhoto implements IPh
+     public FrameLayout bottomLayout;
+     public FrameLayout overlayLayout;
+     private FrameLayout pipetteContainerLayout;
++    private View tele_eyedropperButton;
+     public LinearLayout tabsLayout;
+ 
+     private int tabsSelectedIndex = 0;
+@@ -738,6 +739,7 @@ public class LPhotoPaintView extends SizeNotifierFrameLayoutPhoto implements IPh
+             showColorList(false);
+         });
+         bottomLayout.addView(colorsListView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 84, Gravity.TOP, 56, 0, 56, 6));
++        tele_eyedropperButton = tele.helpers.TeleEyedropper.createButton(bottomLayout, facesBitmap, this::tele_startEyedropper);
+ 
+         setupTabsLayout(context);
+ 
+@@ -1949,6 +1951,7 @@ public class LPhotoPaintView extends SizeNotifierFrameLayoutPhoto implements IPh
+ 
+     @Override
+     public void maybeShowDismissalAlert(PhotoViewer photoViewer, Activity parentActivity, Runnable okRunnable) {
++        if (tele.helpers.TeleEyedropper.cancel(pipetteContainerLayout)) return;
+         if (isColorListShown) {
+             showColorList(false);
+             return;
+@@ -2246,6 +2249,7 @@ public class LPhotoPaintView extends SizeNotifierFrameLayoutPhoto implements IPh
+                 barView.setAlpha(1f - Math.min(toolsTransformProgress, 0.25f) / 0.25f);
+ 
+                 colorsListView.setProgress(toolsTransformProgress, show);
++                tele.helpers.TeleEyedropper.setProgress(tele_eyedropperButton, toolsTransformProgress);
+ 
+                 doneButton.setProgress(toolsTransformProgress);
+                 cancelButton.setProgress(toolsTransformProgress);
+@@ -2284,6 +2288,17 @@ public class LPhotoPaintView extends SizeNotifierFrameLayoutPhoto implements IPh
+         }
+     }
+ 
++    public void tele_startEyedropper() {
++        tele.helpers.TeleEyedropper.start(this, pipetteContainerLayout, renderView, entitiesView, facesBitmap, originalBitmapRotation, color -> {
++            showColorList(false);
++            palette.selectColor(color);
++            palette.saveColors();
++            setNewColor(color);
++            colorsListView.setSelectedColorIndex(palette.getCurrentColorPosition());
++            colorsListView.getAdapter().notifyDataSetChanged();
++        });
++    }
++
+     private void setCurrentSwatch(Swatch swatch, boolean updateInterface) {
+         setCurrentSwatch(swatch, updateInterface, null);
+     }
+@@ -2325,6 +2340,7 @@ public class LPhotoPaintView extends SizeNotifierFrameLayoutPhoto implements IPh
+ 
+     @Override
+     public boolean onBackPressed() {
++        if (tele.helpers.TeleEyedropper.cancel(pipetteContainerLayout)) return true;
+         if (isColorListShown) {
+             showColorList(false);
+             return true;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 957fe604a..7d19b9dc2 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -170,6 +170,8 @@ object TeleConfig {
+     @JvmField
+     val CALCMULA = BoolItem("calcmula", false)
+     @JvmField
++    val EDITOR_EYEDROPPER = BoolItem("editor_eyedropper", false)
++    @JvmField
+     val CALCMULA_PREVIEW = BoolItem("calcmula_preview", false)
+     @JvmField
+     val SHOT = BoolItem("shot", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleEyedropper.kt b/TMessagesProj/src/main/java/tele/helpers/TeleEyedropper.kt
+new file mode 100644
+index 000000000..b7d571c47
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleEyedropper.kt
+@@ -0,0 +1,120 @@
++package tele.helpers
++
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Matrix
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.graphics.drawable.LayerDrawable
++import android.view.Gravity
++import android.view.TextureView
++import android.view.View
++import android.view.ViewGroup
++import android.widget.ImageView
++import androidx.core.util.Consumer
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.Paint.Views.PipettePickerView
++import tele.TeleConfig
++
++object TeleEyedropper {
++    private const val PILL_COLOR = 0xff191919.toInt()
++
++    @JvmStatic
++    fun createButton(host: ViewGroup, photo: Bitmap?, onClick: Runnable): View? {
++        if (!TeleConfig.EDITOR_EYEDROPPER.value || photo == null) return null
++        val button = ImageView(host.context)
++        button.scaleType = ImageView.ScaleType.CENTER
++        button.setImageResource(R.drawable.picker)
++        button.colorFilter = PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN)
++        button.setPadding(AndroidUtilities.dp(6f), AndroidUtilities.dp(6f), AndroidUtilities.dp(6f), AndroidUtilities.dp(6f))
++        button.background = LayerDrawable(arrayOf(
++            Theme.createCircleDrawable(AndroidUtilities.dp(32f), PILL_COLOR),
++            Theme.createSelectorDrawable(Theme.ACTION_BAR_WHITE_SELECTOR_COLOR)
++        ))
++        button.alpha = 0f
++        button.visibility = View.GONE
++        button.setOnClickListener { onClick.run() }
++        host.addView(button, LayoutHelper.createFrame(32, 32f, Gravity.TOP or Gravity.RIGHT, 0f, 12f, 12f, 0f))
++        return button
++    }
++
++    @JvmStatic
++    fun setProgress(button: View?, progress: Float) {
++        button ?: return
++        button.alpha = progress
++        val scale = 0.6f + 0.4f * progress
++        button.scaleX = scale
++        button.scaleY = scale
++        button.visibility = if (progress <= 0f) View.GONE else View.VISIBLE
++        button.isClickable = progress > 0.5f
++    }
++
++    @JvmStatic
++    fun start(
++        paintView: ViewGroup, container: ViewGroup, renderView: View, entities: View,
++        photo: Bitmap, photoRotation: Int, onPicked: Consumer<Int>
++    ) {
++        if (container.childCount > 0) return
++        val bitmap = try {
++            composite(paintView, renderView, entities, photo, photoRotation)
++        } catch (_: Throwable) {
++            return
++        }
++        val view = PipettePickerView(paintView.context, bitmap)
++        view.setColorListener(onPicked)
++        container.addView(view, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        view.animateShow()
++    }
++
++    @JvmStatic
++    fun cancel(container: ViewGroup): Boolean {
++        val view = container.getChildAt(0) as? PipettePickerView ?: return false
++        view.animateDisappear(false)
++        return true
++    }
++
++    private fun composite(paintView: ViewGroup, renderView: View, entities: View, photo: Bitmap, photoRotation: Int): Bitmap {
++        val bitmap = Bitmap.createBitmap(paintView.width, paintView.height, Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(bitmap)
++        canvas.drawColor(Color.BLACK)
++
++        canvas.save()
++        canvas.concat(toParent(renderView))
++        val rotation = ((photoRotation % 360) + 360) % 360
++        val sideways = rotation == 90 || rotation == 270
++        val bw = photo.width.toFloat()
++        val bh = photo.height.toFloat()
++        val rotW = if (sideways) bh else bw
++        val rotH = if (sideways) bw else bh
++        val rw = renderView.width.toFloat()
++        val rh = renderView.height.toFloat()
++        val photoMatrix = Matrix()
++        photoMatrix.postTranslate(-bw / 2f, -bh / 2f)
++        photoMatrix.postRotate(rotation.toFloat())
++        photoMatrix.postScale(rw / rotW, rh / rotH)
++        photoMatrix.postTranslate(rw / 2f, rh / 2f)
++        canvas.drawBitmap(photo, photoMatrix, null)
++        (renderView as? TextureView)?.getBitmap()?.let {
++            canvas.drawBitmap(it, 0f, 0f, null)
++            it.recycle()
++        }
++        canvas.restore()
++
++        canvas.save()
++        canvas.concat(toParent(entities))
++        entities.draw(canvas)
++        canvas.restore()
++        return bitmap
++    }
++
++    private fun toParent(v: View) = Matrix().apply {
++        postTranslate(-v.pivotX, -v.pivotY)
++        postScale(v.scaleX, v.scaleY)
++        postRotate(v.rotation)
++        postTranslate(v.pivotX + v.left + v.translationX, v.pivotY + v.top + v.translationY)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index cc7f7c9de..cbdf72718 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -114,6 +114,7 @@ object TeleSearch {
+             section(1103, "shot", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1104, "messages as an image", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1105, "screenshot of messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            section(1106, "pick brush colors from the image", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(GUID_UPDATES, "update automatically", "updates", TeleSettingsActivity.MODE_ROOT),
+             section(GUID_UPDATES + 1, "check for updates", "updates", TeleSettingsActivity.MODE_ROOT),
+             section(GUID_UPDATES + 2, "show what's new after updates", "updates", TeleSettingsActivity.MODE_ROOT),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 3d4aef4aa..e420044db 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -340,6 +340,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("save messages as a picture", TeleConfig.SHOT),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "editor"),
++                toggle("pick brush colors from the image", TeleConfig.EDITOR_EYEDROPPER),
+                 sectionLink("message menu", MODE_MENU, R.drawable.msg2_permissions),
+                 Row(TYPE_SHADOW)
+             )

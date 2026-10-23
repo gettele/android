@@ -1,0 +1,175 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 5 Oct 2026 04:52:00 +0300
+Subject: [PATCH 030/128] feat: search chats and mentions by alias
+
+Local dialog search and the @-mention autocomplete now resolve
+username aliases, so an alias is enough to find a chat or tag a
+person. Needs 0072.
+---
+ .../ui/Adapters/DialogsSearchAdapter.java     |  1 +
+ .../telegram/ui/Adapters/MentionsAdapter.java |  2 +-
+ .../src/main/java/tele/helpers/Aliases.kt     | 97 ++++++++++++++-----
+ 3 files changed, 75 insertions(+), 25 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
+index 4146704a0..5308d0ecf 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsSearchAdapter.java
+@@ -978,6 +978,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
+             ArrayList<ContactsController.Contact> contacts = new ArrayList<>();
+ 
+             MessagesStorage.getInstance(currentAccount).localSearch(dialogsType, q, resultArray, resultArrayNames, encUsers, filterDialogIds, -1);
++            tele.helpers.Aliases.addToLocalSearch(currentAccount, q, resultArray, resultArrayNames);
+             updateSearchResults(resultArray, resultArrayNames, encUsers, contacts, searchId);
+             FiltersView.fillTipDates(q, localTipDates);
+             localTipArchive = false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
+index 7abafb18e..83748ea85 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/MentionsAdapter.java
+@@ -1664,7 +1664,7 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
+     }
+ 
+     private void showUsersResult(ArrayList<TLObject> newResult, LongSparseArray<TLObject> newMap, boolean notify) {
+-        if (tele.TeleConfig.USERNAME_ALIASES.getValue() && searchResultUsernamesQuery != null && !isSearchingMentions && !newResult.isEmpty()) {
++        if (tele.TeleConfig.USERNAME_ALIASES.getValue() && searchResultUsernamesQuery != null && !isSearchingMentions) {
+             final ArrayList<TLObject> aliased = new ArrayList<>();
+             for (android.util.Pair<String, Long> match : tele.helpers.Aliases.matchingPeers(currentAccount, searchResultUsernamesQuery)) {
+                 final long did = match.second;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+index 015fa2aef..dd38e6a9d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+@@ -82,6 +82,38 @@ object Aliases {
+         }
+     }
+ 
++    private fun mentionFor(account: Int, did: Long, offset: Int, length: Int): Pair<TLRPC.MessageEntity, String>? {
++        val controller = org.telegram.messenger.MessagesController.getInstance(account)
++        if (did > 0) {
++            val user = controller.getUser(did)
++            val username = org.telegram.messenger.UserObject.getPublicUsername(user)
++            if (username != null) {
++                return Pair(TLRPC.TL_messageEntityMention().also {
++                    it.offset = offset
++                    it.length = username.length + 1
++                }, "@$username")
++            }
++            val inputUser = controller.getInputUser(did)
++            val name = if (user != null) org.telegram.messenger.ContactsController.formatName(user.first_name, user.last_name) else null
++            if (inputUser != null && !name.isNullOrEmpty()) {
++                return Pair(TLRPC.TL_inputMessageEntityMentionName().also {
++                    it.user_id = inputUser
++                    it.offset = offset
++                    it.length = name.length
++                }, name)
++            }
++            return null
++        }
++        val username = org.telegram.messenger.ChatObject.getPublicUsername(controller.getChat(-did))
++        if (username != null) {
++            return Pair(TLRPC.TL_messageEntityMention().also {
++                it.offset = offset
++                it.length = username.length + 1
++            }, "@$username")
++        }
++        return null
++    }
++
+     @JvmStatic
+     fun replaceForSend(account: Int, message: Array<CharSequence?>): ArrayList<TLRPC.MessageEntity>? {
+         if (!TeleConfig.USERNAME_ALIASES.value) return null
+@@ -99,28 +131,13 @@ object Aliases {
+                 val did = dialogId(account, alias)
+                 if (did != 0L) {
+                     val shift = if (result == null) 0 else added
+-                    if (did > 0) {
+-                        val inputUser = org.telegram.messenger.MessagesController.getInstance(account).getInputUser(did)
+-                        if (inputUser != null) {
+-                            mentions.add(TLRPC.TL_inputMessageEntityMentionName().also {
+-                                it.user_id = inputUser
+-                                it.offset = i + shift
+-                                it.length = j - i
+-                            })
+-                        }
+-                    } else {
+-                        val chat = org.telegram.messenger.MessagesController.getInstance(account).getChat(-did)
+-                        val username = org.telegram.messenger.ChatObject.getPublicUsername(chat)
+-                        if (username != null) {
+-                            val replacement = "@$username"
+-                            result = result ?: text
+-                            result = result.substring(0, i + shift) + replacement + result.substring(j + shift)
+-                            added += replacement.length - (j - i)
+-                            mentions.add(TLRPC.TL_messageEntityMention().also {
+-                                it.offset = i + shift
+-                                it.length = replacement.length
+-                            })
+-                        }
++                    val mention = mentionFor(account, did, i + shift, j - i)
++                    if (mention != null) {
++                        val replacement = mention.second
++                        result = result ?: text
++                        result = result.substring(0, i + shift) + replacement + result.substring(j + shift)
++                        added += replacement.length - (j - i)
++                        mentions.add(mention.first)
+                     }
+                 }
+                 i = j
+@@ -135,7 +152,8 @@ object Aliases {
+     }
+ 
+     @JvmStatic
+-    fun matchingPeers(account: Int, query: String): List<android.util.Pair<String, Long>> {
++    @JvmOverloads
++    fun matchingPeers(account: Int, query: String, anywhere: Boolean = false): List<android.util.Pair<String, Long>> {
+         if (!TeleConfig.USERNAME_ALIASES.value || query.isEmpty()) return emptyList()
+         val q = query.lowercase()
+         val out = ArrayList<android.util.Pair<String, Long>>()
+@@ -144,7 +162,7 @@ object Aliases {
+             map.forEach { (key, id) ->
+                 if (!key.startsWith("$account:")) return@forEach
+                 val alias = key.substring(account.toString().length + 1)
+-                if (alias.startsWith(q) && alias.length > q.length) {
++                if (if (anywhere) alias.contains(q) else alias.startsWith(q)) {
+                     out.add(android.util.Pair(alias, id))
+                 }
+             }
+@@ -153,6 +171,37 @@ object Aliases {
+         return out
+     }
+ 
++    @JvmStatic
++    fun addToLocalSearch(account: Int, query: String, result: ArrayList<Any>, names: ArrayList<CharSequence>) {
++        if (!TeleConfig.USERNAME_ALIASES.value || query.isEmpty()) return
++        val matches = matchingPeers(account, query, true)
++        if (matches.isEmpty()) return
++        val present = HashSet<Long>()
++        for (obj in result) {
++            if (obj is TLRPC.User) present.add(obj.id)
++            if (obj is TLRPC.Chat) present.add(-obj.id)
++        }
++        val controller = org.telegram.messenger.MessagesController.getInstance(account)
++        for (match in matches) {
++            val alias = match.first
++            val did = match.second
++            if (present.contains(did)) continue
++            if (did > 0) {
++                val user = controller.getUser(did) ?: continue
++                result.add(user)
++                names.add(org.telegram.messenger.AndroidUtilities.generateSearchName(
++                    org.telegram.messenger.ContactsController.formatName(user.first_name, user.last_name),
++                    "@$alias",
++                    "@$query"
++                ))
++            } else {
++                val chat = controller.getChat(-did) ?: continue
++                result.add(chat)
++                names.add(org.telegram.messenger.AndroidUtilities.generateSearchName(chat.title, "@$alias", "@$query"))
++            }
++        }
++    }
++
+     @JvmStatic
+     fun findAll(text: CharSequence): List<String> {
+         val out = ArrayList<String>()
