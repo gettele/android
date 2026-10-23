@@ -1,0 +1,1455 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 17:21:05 +0300
+Subject: [PATCH] feat: redesign saved drafts
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  31 +-
+ .../ui/Components/ChatActivityEnterView.java  |  33 +-
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  59 +++-
+ .../main/java/tele/helpers/DraftDiscards.kt   | 124 +++++++
+ .../main/java/tele/helpers/DraftMessages.kt   | 124 +++++++
+ .../src/main/java/tele/helpers/SavedDrafts.kt | 124 ++++++-
+ .../tele/ui/settings/TeleDraftsActivity.kt    | 251 +++++++++-----
+ .../ui/settings/TeleDraftsChatActivity.kt     | 320 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
+ .../src/main/res/values/strings_tele.xml      |  18 +-
+ 10 files changed, 968 insertions(+), 117 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DraftMessages.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsChatActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 3e11d0169..c55ea5147 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -953,6 +953,7 @@ public class ChatActivity extends BaseFragment implements
+ 
+     private String textToSet;
+     private long teleInsertDraftId;
++    private tele.helpers.DraftDiscards teleDraftDiscards;
+     private tele.ui.CalcmulaPreview tele_calcmulaPreview;
+     private boolean premiumInvoiceBot;
+     private boolean showScrollToMessageError;
+@@ -2292,6 +2293,9 @@ public class ChatActivity extends BaseFragment implements
+         @Override
+         public void onTextChanged(final CharSequence text, boolean bigChange, boolean fromDraft) {
+             MediaController.getInstance().setInputFieldHasText(!TextUtils.isEmpty(text) || chatActivityEnterView.isEditingMessage());
++            if (teleDraftDiscards != null) {
++                teleDraftDiscards.onTextChanged();
++            }
+             if (mentionContainer != null && mentionContainer.getAdapter() != null) {
+                 mentionContainer.getAdapter().searchUsernameOrHashtag(text, chatActivityEnterView.getCursorPosition(), messages, false, false);
+             }
+@@ -3429,6 +3433,10 @@ public class ChatActivity extends BaseFragment implements
+     @Override
+     public void onFragmentDestroy() {
+         super.onFragmentDestroy();
++        if (teleDraftDiscards != null) {
++            teleDraftDiscards.destroy();
++            teleDraftDiscards = null;
++        }
+         if (messageMetricsView != null) {
+             messageMetricsView.finish();
+         }
+@@ -9117,6 +9125,9 @@ public class ChatActivity extends BaseFragment implements
+         ViewCompat.setOnApplyWindowInsetsListener(fragmentView, this::onApplyWindowInsets);
+         Timer.finish(t);
+         updateTeleDraftButton(false);
++        if (teleDraftDiscards == null && chatMode == MODE_DEFAULT && chatActivityEnterView != null) {
++            teleDraftDiscards = new tele.helpers.DraftDiscards(this);
++        }
+         if (teleInsertDraftId != 0) {
+             teleInsertDraft(tele.helpers.SavedDrafts.find(currentAccount, teleInsertDraftId));
+             teleInsertDraftId = 0;
+@@ -15076,7 +15087,7 @@ public class ChatActivity extends BaseFragment implements
+             tele.helpers.SavedDrafts.save(currentAccount, getDialogId(), (int) getTopicId(), finalDraft, files, finalReplyMessage);
+             AndroidUtilities.runOnUIThread(() -> {
+                 updateTeleDraftButton(true);
+-                BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved)).show();
++                BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved), LocaleController.getString(R.string.TeleDraftOpen), this::teleOpenDrafts).show();
+                 chatActivityEnterView.setFieldText("");
+                 tele.helpers.DockedMedia.clear(this);
+                 if (chatAttachAlert != null) {
+@@ -15112,7 +15123,7 @@ public class ChatActivity extends BaseFragment implements
+             tele.helpers.SavedDrafts.save(currentAccount, getDialogId(), (int) getTopicId(), finalDraft, files, finalReplyMessage);
+             AndroidUtilities.runOnUIThread(() -> {
+                 updateTeleDraftButton(true);
+-                BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved)).show();
++                BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check, LocaleController.getString(R.string.TeleDraftSaved), LocaleController.getString(R.string.TeleDraftOpen), this::teleOpenDrafts).show();
+                 chatActivityEnterView.setFieldText("");
+                 alert.getPhotoLayout().clearSelectedPhotos();
+                 alert.dismiss();
+@@ -15211,6 +15222,20 @@ public class ChatActivity extends BaseFragment implements
+         updateTeleDraftButton(true);
+     }
+ 
++    public void teleInsertSavedDraft(long id) {
++        teleInsertDraft(tele.helpers.SavedDrafts.find(currentAccount, id));
++    }
++
++    public void teleOpenDrafts() {
++        presentFragment(tele.ui.settings.TeleDraftsChatActivity.of(getDialogId(), (int) getTopicId()));
++    }
++
++    /** The saved and the discarded drafts of this chat, for the send menu. */
++    public int[] teleDraftCounts() {
++        tele.helpers.SavedDrafts.ChatDrafts drafts = tele.helpers.SavedDrafts.chat(currentAccount, getDialogId(), (int) getTopicId());
++        return new int[]{drafts.saved.size(), drafts.discarded.size()};
++    }
++
+     private void teleInsertLatestDraft() {
+         tele.helpers.SavedDrafts.Draft draft = tele.helpers.SavedDrafts.getLatest(currentAccount, getDialogId(), (int) getTopicId());
+         if (draft != null) {
+@@ -47979,7 +48004,7 @@ public class ChatActivity extends BaseFragment implements
+                 }
+             };
+         } else if (buttonId == ChatActivitySideControlsButtonsLayout.BUTTON_DRAFT) {
+-            presentFragment(new tele.ui.settings.TeleDraftsActivity());
++            teleOpenDrafts();
+             return true;
+         } else {
+             return false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 34fdf566b..f2107c978 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -4867,7 +4867,8 @@ public class ChatActivityEnterView extends FrameLayout implements
+                     sendPopupLayout.addView(sendWithoutSoundButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, DEFAULT_HEIGHT));
+                 }
+ 
+-                ActionBarMenuSubItem saveDraftButton = new ActionBarMenuSubItem(getContext(), !scheduleButtonValue && !sendWithoutSoundButtonValue, true, resourcesProvider);
++                int[] teleDraftCounts = parentFragment != null ? parentFragment.teleDraftCounts() : new int[2];
++                ActionBarMenuSubItem saveDraftButton = new ActionBarMenuSubItem(getContext(), !scheduleButtonValue && !sendWithoutSoundButtonValue, teleDraftCounts[0] == 0 && teleDraftCounts[1] == 0, resourcesProvider);
+                 saveDraftButton.setTextAndIcon(LocaleController.getString(R.string.TeleSaveAsDraft), R.drawable.msg_saved);
+                 saveDraftButton.setMinimumWidth(dp(196));
+                 saveDraftButton.setOnClickListener(v -> {
+@@ -4879,6 +4880,23 @@ public class ChatActivityEnterView extends FrameLayout implements
+                     }
+                 });
+                 sendPopupLayout.addView(saveDraftButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, DEFAULT_HEIGHT));
++                for (int i = 0; i < 2; i++) {
++                    if (teleDraftCounts[i] == 0) {
++                        continue;
++                    }
++                    ActionBarMenuSubItem draftsButton = new ActionBarMenuSubItem(getContext(), false, i == 1 || teleDraftCounts[1] == 0, resourcesProvider);
++                    draftsButton.setTextAndIcon(LocaleController.formatString(i == 0 ? R.string.TeleDraftsSavedMenu : R.string.TeleDraftsDiscardedMenu, teleDraftCounts[i]), i == 0 ? R.drawable.msg_edit : R.drawable.msg_recent);
++                    draftsButton.setMinimumWidth(dp(196));
++                    draftsButton.setOnClickListener(v -> {
++                        if (sendPopupWindow != null && sendPopupWindow.isShowing()) {
++                            sendPopupWindow.dismiss();
++                        }
++                        if (parentFragment != null) {
++                            parentFragment.teleOpenDrafts();
++                        }
++                    });
++                    sendPopupLayout.addView(draftsButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, DEFAULT_HEIGHT));
++                }
+                 sendPopupLayout.setupRadialSelectors(getThemedColor(Theme.key_dialogButtonSelector));
+ 
+                 sendPopupWindow = new ActionBarPopupWindow(sendPopupLayout, LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT) {
+@@ -5121,6 +5139,19 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 }
+                 parentFragment.teleSaveDraftFromField();
+             });
++            int[] teleDraftCounts = parentFragment.teleDraftCounts();
++            for (int i = 0; i < 2; i++) {
++                if (teleDraftCounts[i] == 0) {
++                    continue;
++                }
++                options.add(i == 0 ? R.drawable.msg_edit : R.drawable.msg_recent, LocaleController.formatString(i == 0 ? R.string.TeleDraftsSavedMenu : R.string.TeleDraftsDiscardedMenu, teleDraftCounts[i]), () -> {
++                    if (messageSendPreview != null) {
++                        messageSendPreview.dismiss(false);
++                        messageSendPreview = null;
++                    }
++                    parentFragment.teleOpenDrafts();
++                });
++            }
+         }
+ 
+         if (parentFragment != null && delegate != null && ChatObject.isMonoForum(parentFragment.getCurrentChat())) {
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 28820e85f..9a6853191 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -134,9 +134,16 @@ object TeleDatabaseHelper {
+     }
+ 
+ 
+-    data class ArchivedDraft(val account: Int, val dialogId: Long, val topicId: Int, val id: Long, val created: Int, val edited: Int, val data: ByteArray)
++    data class ArchivedDraft(val account: Int, val dialogId: Long, val topicId: Int, val id: Long, val created: Int, val edited: Int, val data: ByteArray, val discarded: Boolean, val name: String?)
+ 
+-    fun putDraft(account: Int, dialogId: Long, topicId: Int, id: Long, created: Int, edited: Int, data: ByteArray) {
++    private const val DRAFT_COLUMNS = "account, dialog_id, topic_id, draft_id, created, edited, data, discarded, name"
++
++    private fun readDraft(it: android.database.Cursor) = ArchivedDraft(
++        it.getInt(0), it.getLong(1), it.getInt(2), it.getLong(3), it.getInt(4), it.getInt(5), it.getBlob(6),
++        it.getInt(7) != 0, if (it.isNull(8)) null else it.getString(8)
++    )
++
++    fun putDraft(account: Int, dialogId: Long, topicId: Int, id: Long, created: Int, edited: Int, data: ByteArray, discarded: Boolean = false, name: String? = null) {
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -146,53 +153,68 @@ object TeleDatabaseHelper {
+             put("created", created)
+             put("edited", edited)
+             put("data", data)
++            put("discarded", if (discarded) 1 else 0)
++            put("name", name)
+         }
+         db.insertWithOnConflict("tele_drafts", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+     }
+ 
++    /** The drafts newest first, saved and discarded. */
+     fun getDrafts(account: Int, dialogId: Long? = null, topicId: Int = 0): List<ArchivedDraft> {
+         val db = helper?.readableDatabase ?: return emptyList()
+         val result = ArrayList<ArchivedDraft>()
+         val cursor = if (dialogId == null) {
+-            db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? ORDER BY rowid DESC", arrayOf(account.toString()))
++            db.rawQuery("SELECT $DRAFT_COLUMNS FROM tele_drafts WHERE account = ? ORDER BY edited DESC, rowid DESC", arrayOf(account.toString()))
+         } else {
+-            db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? ORDER BY rowid DESC", arrayOf(account.toString(), dialogId.toString(), topicId.toString()))
++            db.rawQuery("SELECT $DRAFT_COLUMNS FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? ORDER BY edited DESC, rowid DESC", arrayOf(account.toString(), dialogId.toString(), topicId.toString()))
+         }
+         cursor.use {
+-            while (it.moveToNext()) result.add(ArchivedDraft(it.getInt(0), it.getLong(1), it.getInt(2), it.getLong(3), it.getInt(4), it.getInt(5), it.getBlob(6)))
++            while (it.moveToNext()) result.add(readDraft(it))
+         }
+         return result
+     }
+ 
+     fun hasDraft(account: Int, dialogId: Long, topicId: Int): Boolean {
+         val db = helper?.readableDatabase ?: return false
+-        db.rawQuery("SELECT 1 FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? LIMIT 1", arrayOf(account.toString(), dialogId.toString(), topicId.toString())).use {
++        db.rawQuery("SELECT 1 FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? AND discarded = 0 LIMIT 1", arrayOf(account.toString(), dialogId.toString(), topicId.toString())).use {
+             return it.moveToFirst()
+         }
+     }
+ 
+     fun getLatestDraft(account: Int, dialogId: Long, topicId: Int): ArchivedDraft? {
+         val db = helper?.readableDatabase ?: return null
+-        db.rawQuery("SELECT account, dialog_id, topic_id, draft_id, created, edited, data FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? ORDER BY rowid DESC LIMIT 1", arrayOf(account.toString(), dialogId.toString(), topicId.toString())).use {
+-            if (it.moveToFirst()) return ArchivedDraft(it.getInt(0), it.getLong(1), it.getInt(2), it.getLong(3), it.getInt(4), it.getInt(5), it.getBlob(6))
++        db.rawQuery("SELECT $DRAFT_COLUMNS FROM tele_drafts WHERE account = ? AND dialog_id = ? AND topic_id = ? AND discarded = 0 ORDER BY edited DESC, rowid DESC LIMIT 1", arrayOf(account.toString(), dialogId.toString(), topicId.toString())).use {
++            if (it.moveToFirst()) return readDraft(it)
+         }
+         return null
+     }
+ 
+-    fun removeDraft(account: Int, id: Long) {
++    fun getDraft(account: Int, id: Long): ArchivedDraft? {
++        val db = helper?.readableDatabase ?: return null
++        db.rawQuery("SELECT $DRAFT_COLUMNS FROM tele_drafts WHERE account = ? AND draft_id = ?", arrayOf(account.toString(), id.toString())).use {
++            if (it.moveToFirst()) return readDraft(it)
++        }
++        return null
++    }
++
++    fun updateDraftMeta(account: Int, id: Long, discarded: Boolean, name: String?, edited: Int) {
+         val db = helper?.writableDatabase ?: return
+-        db.delete("tele_drafts", "account = ? AND draft_id = ?", arrayOf(account.toString(), id.toString()))
++        val values = ContentValues().apply {
++            put("discarded", if (discarded) 1 else 0)
++            put("name", name)
++            put("edited", edited)
++        }
++        db.update("tele_drafts", values, "account = ? AND draft_id = ?", arrayOf(account.toString(), id.toString()))
+     }
+ 
+-    fun removeDrafts(account: Int, dialogId: Long? = null) {
++    fun removeDraft(account: Int, id: Long) {
+         val db = helper?.writableDatabase ?: return
+-        if (dialogId == null) db.delete("tele_drafts", "account = ?", arrayOf(account.toString()))
+-        else db.delete("tele_drafts", "account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString()))
++        db.delete("tele_drafts", "account = ? AND draft_id = ?", arrayOf(account.toString(), id.toString()))
+     }
+ 
+     fun countDrafts(account: Int): Int {
+         val db = helper?.readableDatabase ?: return 0
+-        db.rawQuery("SELECT COUNT(*) FROM tele_drafts WHERE account = ?", arrayOf(account.toString())).use { return if (it.moveToFirst()) it.getInt(0) else 0 }
++        db.rawQuery("SELECT COUNT(*) FROM tele_drafts WHERE account = ? AND discarded = 0", arrayOf(account.toString())).use { return if (it.moveToFirst()) it.getInt(0) else 0 }
+     }
+ 
+     data class ChangelogRow(val messageId: Int, val data: ByteArray)
+@@ -248,7 +270,7 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 7) {
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 8) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -273,7 +295,12 @@ object TeleDatabaseHelper {
+         }
+ 
+         private fun createDraftsTable(db: SQLiteDatabase) {
+-            db.execSQL("CREATE TABLE IF NOT EXISTS tele_drafts (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, draft_id INTEGER NOT NULL, created INTEGER NOT NULL, edited INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, draft_id))")
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_drafts (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, draft_id INTEGER NOT NULL, created INTEGER NOT NULL, edited INTEGER NOT NULL, data BLOB NOT NULL, discarded INTEGER NOT NULL DEFAULT 0, name TEXT, PRIMARY KEY (account, draft_id))")
++            // the tables of the older versions miss the columns of the discarded drafts
++            val columns = HashSet<String>()
++            db.rawQuery("PRAGMA table_info(tele_drafts)", null).use { while (it.moveToNext()) columns.add(it.getString(1)) }
++            if ("discarded" !in columns) db.execSQL("ALTER TABLE tele_drafts ADD COLUMN discarded INTEGER NOT NULL DEFAULT 0")
++            if ("name" !in columns) db.execSQL("ALTER TABLE tele_drafts ADD COLUMN name TEXT")
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_drafts_dialog ON tele_drafts(account, dialog_id, topic_id, created)")
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt b/TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt
+new file mode 100644
+index 000000000..6e8ddc340
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt
+@@ -0,0 +1,124 @@
++package tele.helpers
++
++import android.text.SpannableStringBuilder
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.NotificationCenter
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ChatActivity
++
++/**
++ * Keeps a long text that left the field of a chat as a discarded draft, a port of the desktop capture:
++ * a meaningful text that is mostly lost and not sent within the next moments.
++ */
++class DraftDiscards(private val chat: ChatActivity) : NotificationCenter.NotificationCenterDelegate {
++
++    private class Snapshot(val text: String, val draft: TLRPC.TL_draftMessage, val reply: TLRPC.Message?)
++
++    private class Pending(val snapshot: Snapshot, val at: Long)
++
++    private val account = chat.currentAccount
++    private val dialogId = chat.dialogId
++    private val topicId = chat.topicId.toInt()
++    private var previous: Snapshot? = null
++    private val pending = ArrayList<Pending>()
++    private val snapshotRunnable = Runnable { takeSnapshot() }
++    private val pendingRunnable = Runnable { checkPending() }
++
++    init {
++        NotificationCenter.getInstance(account).addObserver(this, NotificationCenter.didReceiveNewMessages)
++    }
++
++    private fun fieldText(): String? = chat.chatActivityEnterView?.editField?.text?.toString()
++
++    private fun editing(): Boolean = chat.chatActivityEnterView?.isEditingMessage == true
++
++    fun onTextChanged() {
++        if (editing()) {
++            // the edits of a sent message are not drafts
++            previous = null
++            AndroidUtilities.cancelRunOnUIThread(snapshotRunnable)
++            return
++        }
++        val current = fieldText() ?: return
++        val was = previous
++        if (was != null && lost(was.text, current)) {
++            pending.add(Pending(was, System.currentTimeMillis()))
++            previous = null
++            AndroidUtilities.cancelRunOnUIThread(pendingRunnable)
++            AndroidUtilities.runOnUIThread(pendingRunnable, PENDING_DELAY)
++        }
++        AndroidUtilities.cancelRunOnUIThread(snapshotRunnable)
++        if (meaningful(current)) {
++            AndroidUtilities.runOnUIThread(snapshotRunnable, SNAPSHOT_DELAY)
++        } else {
++            previous = null
++        }
++    }
++
++    // the reply and the link preview go with the text, so they are read a moment after typing
++    private fun takeSnapshot() {
++        if (editing()) return
++        val enterView = chat.chatActivityEnterView ?: return
++        val field = enterView.editField ?: return
++        val text = field.text?.toString() ?: return
++        if (!meaningful(text)) return
++        val chars = arrayOf<CharSequence>(SpannableStringBuilder(field.text))
++        val entities = MediaDataController.getInstance(account).getEntities(chars, true)
++        val reply = enterView.replyingMessageObject?.messageOwner
++        previous = Snapshot(text, SavedDrafts.buildDraftMessage(chars[0], entities, reply, enterView.webPage), reply)
++    }
++
++    private fun checkPending() {
++        val current = fieldText()?.let(::normalized)
++        val list = ArrayList(pending)
++        pending.clear()
++        for (entry in list) {
++            if (SavedDrafts.sentSince(dialogId, entry.at - SENT_WINDOW)) continue
++            // the text came back: undone or typed again
++            if (current != null && !editing() && current.contains(normalized(entry.snapshot.text))) continue
++            SavedDrafts.saveDiscarded(account, dialogId, topicId, entry.snapshot.draft, entry.snapshot.reply)
++        }
++    }
++
++    override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++        if (id != NotificationCenter.didReceiveNewMessages) return
++        val targetDialog = args.getOrNull(0) as? Long ?: return
++        @Suppress("UNCHECKED_CAST")
++        val messages = args.getOrNull(1) as? ArrayList<MessageObject> ?: return
++        if (messages.any { it.isOut && it.isSending }) SavedDrafts.noteSent(targetDialog)
++    }
++
++    fun destroy() {
++        NotificationCenter.getInstance(account).removeObserver(this, NotificationCenter.didReceiveNewMessages)
++        AndroidUtilities.cancelRunOnUIThread(snapshotRunnable)
++        AndroidUtilities.cancelRunOnUIThread(pendingRunnable)
++        // leaving the chat right after clearing the field still keeps the text
++        if (pending.isNotEmpty()) checkPending()
++    }
++
++    companion object {
++        private const val MIN_LENGTH = 30
++        private const val SNAPSHOT_DELAY = 300L
++        private const val PENDING_DELAY = 1500L
++        private const val SENT_WINDOW = 2000L
++
++        private fun normalized(text: String) = text.trim().replace(Regex("\\s+"), " ")
++
++        private fun meaningful(text: String) = text.trim().length > MIN_LENGTH
++
++        /** At least half of a meaningful text is gone and the rest does not hold it. */
++        private fun lost(was: String, now: String): Boolean {
++            if (!meaningful(was)) return false
++            val before = normalized(was)
++            val after = normalized(now)
++            var prefix = 0
++            val limit = minOf(before.length, after.length)
++            while (prefix < limit && before[prefix] == after[prefix]) prefix++
++            var suffix = 0
++            while (suffix < limit - prefix && before[before.length - 1 - suffix] == after[after.length - 1 - suffix]) suffix++
++            return (prefix + suffix) * 2 < before.length && !after.contains(before)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DraftMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DraftMessages.kt
+new file mode 100644
+index 000000000..94638010b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DraftMessages.kt
+@@ -0,0 +1,124 @@
++package tele.helpers
++
++import android.provider.MediaStore
++import org.telegram.messenger.ImageLoader
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++
++/** Turns a saved draft into the outgoing bubbles it would send, like a message that is being sent. */
++object DraftMessages {
++
++    // the local media of a stored file is made once per session, it costs a decode and a write
++    private val photos = HashMap<String, TLRPC.TL_photo>()
++    private val videos = HashMap<String, TLRPC.TL_document>()
++
++    private var nextId = 1
++
++    /** Builds off the main thread: the media sizes are written to the cache like for sending. */
++    @JvmStatic
++    fun build(account: Int, draft: SavedDrafts.Draft, emptyText: String): List<ShotEntry> {
++        val files = draft.files.filter { SavedDrafts.storedFile(it.storedName).exists() }
++        val reply = draft.replyMessage?.let { MessageObject(account, it, false, false) }
++        if (files.isEmpty()) {
++            val message = base(account, draft)
++            message.message = draft.text.ifEmpty { emptyText }
++            if (draft.text.isNotEmpty()) message.entities = draft.message.entities
++            withReply(message, reply)
++            return listOf(ShotEntry(MessageObject(account, message, reply, true, true), null))
++        }
++        val groupId = if (files.size > 1) Utilities.random.nextLong() else 0L
++        val objects = ArrayList<MessageObject>(files.size)
++        files.forEachIndexed { index, file ->
++            val message = base(account, draft)
++            message.media = media(account, file)
++            message.attachPath = SavedDrafts.storedFile(file.storedName).absolutePath
++            if (index == 0) {
++                // the caption goes with the first file, as the album is sent
++                message.message = draft.text
++                message.entities = draft.message.entities
++                withReply(message, reply)
++            }
++            if (groupId != 0L) {
++                message.grouped_id = groupId
++                message.flags = message.flags or 131072
++            }
++            objects.add(MessageObject(account, message, if (index == 0) reply else null, true, true))
++        }
++        if (groupId == 0L) return objects.map { ShotEntry(it, null) }
++        val group = MessageObject.GroupedMessages()
++        group.groupId = groupId
++        group.messages.addAll(objects)
++        group.calculate()
++        return objects.map { ShotEntry(it, group) }
++    }
++
++    private fun base(account: Int, draft: SavedDrafts.Draft): TLRPC.TL_message {
++        val message = TLRPC.TL_message()
++        message.id = nextId++
++        message.out = true
++        message.from_id = TLRPC.TL_peerUser().apply { user_id = UserConfig.getInstance(account).getClientUserId() }
++        message.flags = message.flags or TLRPC.MESSAGE_FLAG_HAS_FROM_ID
++        message.peer_id = MessagesController.getInstance(account).getPeer(draft.dialogId)
++        message.dialog_id = draft.dialogId
++        message.date = draft.edited
++        message.message = ""
++        message.media = TLRPC.TL_messageMediaEmpty()
++        return message
++    }
++
++    private fun withReply(message: TLRPC.TL_message, reply: MessageObject?) {
++        reply ?: return
++        message.reply_to = TLRPC.TL_messageReplyHeader().apply {
++            reply_to_msg_id = reply.id
++            flags = flags or 16
++        }
++        message.flags = message.flags or TLRPC.MESSAGE_FLAG_REPLY
++    }
++
++    private fun media(account: Int, file: SavedDrafts.StoredFile): TLRPC.MessageMedia {
++        val path = SavedDrafts.storedFile(file.storedName).absolutePath
++        if (!file.isVideo) {
++            val photo = synchronized(photos) { photos[file.storedName] }
++                ?: SendMessagesHelper.getInstance(account).generatePhotoSizes(path, null)?.also { synchronized(photos) { photos[file.storedName] = it } }
++            return TLRPC.TL_messageMediaPhoto().apply {
++                this.photo = photo
++                flags = flags or 1
++                spoiler = file.spoiler
++            }
++        }
++        val document = synchronized(videos) { videos[file.storedName] } ?: video(path, file).also { synchronized(videos) { videos[file.storedName] = it } }
++        return TLRPC.TL_messageMediaDocument().apply {
++            this.document = document
++            flags = flags or 1
++            spoiler = file.spoiler
++        }
++    }
++
++    // the same document a video gets before its upload
++    private fun video(path: String, file: SavedDrafts.StoredFile): TLRPC.TL_document {
++        val document = TLRPC.TL_document()
++        document.file_reference = ByteArray(0)
++        document.mime_type = "video/mp4"
++        document.size = file.size
++        val thumb = SendMessagesHelper.createVideoThumbnail(path, MediaStore.Video.Thumbnails.MINI_KIND)
++        val size = thumb?.let { ImageLoader.scaleAndSaveImage(it, 320f, 320f, 80, false) }
++        if (size != null) {
++            document.thumbs.add(size)
++            document.flags = document.flags or 1
++        }
++        val attribute = TLRPC.TL_documentAttributeVideo()
++        attribute.supports_streaming = true
++        SendMessagesHelper.fillVideoAttribute(path, attribute, null)
++        if (attribute.w == 0 || attribute.h == 0) {
++            attribute.w = file.width
++            attribute.h = file.height
++        }
++        if (attribute.duration == 0.0) attribute.duration = file.duration.toDouble()
++        document.attributes.add(attribute)
++        return document
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
+index 52419b132..bafd418a6 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
+@@ -18,10 +18,20 @@ object SavedDrafts {
+     private const val MAGIC = 0x53445654
+     private const val VERSION = 1
+ 
+-    class Draft @JvmOverloads constructor(@JvmField val id: Long, @JvmField val dialogId: Long, @JvmField val topicId: Int, @JvmField val created: Int, @JvmField val edited: Int, @JvmField val message: TLRPC.DraftMessage, @JvmField val files: List<StoredFile>, @JvmField val replyMessage: TLRPC.Message? = null) {
++    // the discarded drafts are a safety net, not an archive: few and short-lived, like on desktop
++    private const val DISCARDED_PER_CHAT = 5
++    private const val DISCARDED_LIFETIME = 7 * 86400
++
++    class Draft @JvmOverloads constructor(@JvmField val id: Long, @JvmField val dialogId: Long, @JvmField val topicId: Int, @JvmField val created: Int, @JvmField val edited: Int, @JvmField val message: TLRPC.DraftMessage, @JvmField val files: List<StoredFile>, @JvmField val replyMessage: TLRPC.Message? = null, @JvmField val discarded: Boolean = false, @JvmField val name: String? = null) {
+         val text: String get() = message.message ?: ""
+     }
+ 
++    /** The drafts of one chat or topic. */
++    class ChatDrafts(@JvmField val dialogId: Long, @JvmField val topicId: Int, @JvmField val saved: List<Draft>, @JvmField val discarded: List<Draft>) {
++        val lastEdited: Int get() = maxOf(saved.maxOfOrNull { it.edited } ?: 0, discarded.maxOfOrNull { it.edited } ?: 0)
++        val latest: Draft? get() = saved.firstOrNull() ?: discarded.firstOrNull()
++    }
++
+     class StoredFile(@JvmField val storedName: String, @JvmField val fileName: String, @JvmField val isVideo: Boolean, @JvmField val spoiler: Boolean, @JvmField val ttl: Int, @JvmField val width: Int, @JvmField val height: Int, @JvmField val size: Long, @JvmField val duration: Int, @JvmField val orientation: Int)
+ 
+     fun draftsDirectory(): File {
+@@ -54,10 +64,9 @@ object SavedDrafts {
+         }
+     }
+ 
+-    @JvmStatic
+-    fun save(account: Int, dialogId: Long, topicId: Int, draftMessage: TLRPC.DraftMessage, files: List<StoredFile>, replyMessage: TLRPC.Message?): Long {
+-        val id = Utilities.random.nextLong()
+-        val now = (System.currentTimeMillis() / 1000L).toInt()
++    private fun now() = (System.currentTimeMillis() / 1000L).toInt()
++
++    private fun serialize(draftMessage: TLRPC.DraftMessage, files: List<StoredFile>, replyMessage: TLRPC.Message?): ByteArray {
+         val stream = SerializedData()
+         try {
+             stream.writeInt32(MAGIC)
+@@ -80,13 +89,88 @@ object SavedDrafts {
+             if (replyMessage != null) {
+                 replyMessage.serializeToStream(stream)
+             }
+-            TeleDatabaseHelper.putDraft(account, dialogId, topicId, id, now, now, stream.toByteArray())
++            return stream.toByteArray()
+         } finally {
+             stream.cleanup()
+         }
++    }
++
++    @JvmStatic
++    fun save(account: Int, dialogId: Long, topicId: Int, draftMessage: TLRPC.DraftMessage, files: List<StoredFile>, replyMessage: TLRPC.Message?): Long {
++        val id = Utilities.random.nextLong()
++        val now = now()
++        TeleDatabaseHelper.putDraft(account, dialogId, topicId, id, now, now, serialize(draftMessage, files, replyMessage))
+         return id
+     }
+ 
++    private fun normalized(text: String) = text.trim().replace(Regex("\\s+"), " ")
++
++    /** Keeps a text that left the field; the same text in this chat is only touched, not added again. */
++    @JvmStatic
++    fun saveDiscarded(account: Int, dialogId: Long, topicId: Int, draftMessage: TLRPC.DraftMessage, replyMessage: TLRPC.Message?) {
++        val text = normalized(draftMessage.message ?: "")
++        if (text.isEmpty()) return
++        val same = get(account, dialogId, topicId).firstOrNull { normalized(it.text) == text }
++        if (same != null) {
++            if (same.discarded) TeleDatabaseHelper.updateDraftMeta(account, same.id, true, same.name, now())
++            return
++        }
++        val now = now()
++        TeleDatabaseHelper.putDraft(account, dialogId, topicId, Utilities.random.nextLong(), now, now, serialize(draftMessage, emptyList(), replyMessage), discarded = true)
++        prune(account)
++    }
++
++    /** Drops the discarded drafts older than a week and all but the newest ones of each chat. */
++    @JvmStatic
++    fun prune(account: Int) {
++        val now = now()
++        val counts = HashMap<Pair<Long, Int>, Int>()
++        for (draft in get(account)) {
++            if (!draft.discarded) continue
++            val key = draft.dialogId to draft.topicId
++            val count = (counts[key] ?: 0) + 1
++            counts[key] = count
++            if (draft.edited + DISCARDED_LIFETIME < now || count > DISCARDED_PER_CHAT) remove(account, draft.id)
++        }
++    }
++
++    /** Moves a discarded draft to the saved ones. */
++    @JvmStatic
++    fun keep(account: Int, id: Long) {
++        val draft = find(account, id) ?: return
++        TeleDatabaseHelper.updateDraftMeta(account, id, false, draft.name, now())
++    }
++
++    @JvmStatic
++    fun rename(account: Int, id: Long, name: String?) {
++        val draft = find(account, id) ?: return
++        TeleDatabaseHelper.updateDraftMeta(account, id, draft.discarded, name?.trim()?.ifEmpty { null }, draft.edited)
++    }
++
++    /** A saved copy with its own files, so deleting one keeps the other. */
++    @JvmStatic
++    fun duplicate(account: Int, id: Long) {
++        val draft = find(account, id) ?: return
++        val files = draft.files.mapNotNull { file ->
++            val stored = copyFile(storedFile(file.storedName)) ?: return@mapNotNull null
++            StoredFile(stored, file.fileName, file.isVideo, file.spoiler, file.ttl, file.width, file.height, file.size, file.duration, file.orientation)
++        }
++        val now = now()
++        val name = draft.name?.let { "$it (copy)" }
++        TeleDatabaseHelper.putDraft(account, draft.dialogId, draft.topicId, Utilities.random.nextLong(), now, now, serialize(draft.message, files, draft.replyMessage), name = name)
++    }
++
++    // what was sent where and when: a field emptied by sending is not a discarded draft
++    private val sent = HashMap<Long, Long>()
++
++    @JvmStatic
++    fun noteSent(dialogId: Long) {
++        sent[dialogId] = System.currentTimeMillis()
++    }
++
++    @JvmStatic
++    fun sentSince(dialogId: Long, time: Long): Boolean = (sent[dialogId] ?: 0L) >= time
++
+     private fun deserialize(row: TeleDatabaseHelper.ArchivedDraft): Draft? {
+         return runCatching {
+             val stream = SerializedData(row.data)
+@@ -113,18 +197,35 @@ object SavedDrafts {
+                 if (stream.readBool(false)) {
+                     replyMessage = TLRPC.Message.TLdeserialize(stream, stream.readInt32(false), false)
+                 }
+-                Draft(row.id, row.dialogId, row.topicId, row.created, row.edited, message, files, replyMessage)
++                Draft(row.id, row.dialogId, row.topicId, row.created, row.edited, message, files, replyMessage, row.discarded, row.name)
+             } finally {
+                 stream.cleanup()
+             }
+         }.getOrNull()
+     }
+ 
++    /** All the drafts newest first, the discarded ones included. */
+     @JvmStatic
++    @JvmOverloads
+     fun get(account: Int, dialogId: Long? = null, topicId: Int = 0): List<Draft> {
+         return TeleDatabaseHelper.getDrafts(account, dialogId, topicId).mapNotNull { deserialize(it) }
+     }
+ 
++    /** The chats with drafts, the most recently edited first. */
++    @JvmStatic
++    fun chats(account: Int): List<ChatDrafts> {
++        return get(account)
++            .groupBy { it.dialogId to it.topicId }
++            .map { (key, drafts) -> ChatDrafts(key.first, key.second, drafts.filter { !it.discarded }, drafts.filter { it.discarded }) }
++            .sortedByDescending { it.lastEdited }
++    }
++
++    @JvmStatic
++    fun chat(account: Int, dialogId: Long, topicId: Int): ChatDrafts {
++        val drafts = get(account, dialogId, topicId)
++        return ChatDrafts(dialogId, topicId, drafts.filter { !it.discarded }, drafts.filter { it.discarded })
++    }
++
+     @JvmStatic
+     fun hasDraft(account: Int, dialogId: Long, topicId: Int): Boolean {
+         return TeleDatabaseHelper.hasDraft(account, dialogId, topicId)
+@@ -138,7 +239,7 @@ object SavedDrafts {
+ 
+     @JvmStatic
+     fun find(account: Int, id: Long): Draft? {
+-        return get(account).firstOrNull { it.id == id }
++        return TeleDatabaseHelper.getDraft(account, id)?.let { deserialize(it) }
+     }
+ 
+     @JvmStatic
+@@ -158,12 +259,11 @@ object SavedDrafts {
+     }
+ 
+     @JvmStatic
+-    fun removeAll(account: Int, dialogId: Long? = null) {
+-        val drafts = get(account, dialogId)
+-        TeleDatabaseHelper.removeDrafts(account, dialogId)
+-        deleteStoredFiles(drafts.flatMap { draft -> draft.files.map { it.storedName } })
++    fun removeThread(account: Int, dialogId: Long, topicId: Int) {
++        for (draft in get(account, dialogId, topicId)) remove(account, draft.id)
+     }
+ 
++    /** The saved drafts, without the discarded ones. */
+     @JvmStatic
+     fun count(account: Int): Int = TeleDatabaseHelper.countDrafts(account)
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
+index 6d2e5d674..f28c202d0 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsActivity.kt
+@@ -1,7 +1,11 @@
+ package tele.ui.settings
+ 
+ import android.content.Context
+-import android.graphics.Typeface
++import android.graphics.Canvas
++import android.os.Bundle
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
+ import android.view.View
+ import android.view.ViewGroup
+ import android.widget.FrameLayout
+@@ -11,27 +15,32 @@ import androidx.recyclerview.widget.LinearLayoutManager
+ import androidx.recyclerview.widget.RecyclerView
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.ChatObject
+-import org.telegram.messenger.ContactsController
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.AvatarDrawable
++import org.telegram.ui.Components.BackupImageView
+ import org.telegram.ui.Components.Forum.ForumUtilities
+ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.RecyclerListView
+ import tele.helpers.SavedDrafts
+ 
++/** The chats with drafts, laid out like the chat list: the newest edit first. */
+ class TeleDraftsActivity : BaseFragment() {
+     private val account get() = UserConfig.selectedAccount
+-    private var drafts: List<SavedDrafts.Draft> = emptyList()
++    private var chats: List<SavedDrafts.ChatDrafts> = emptyList()
+     private var adapter: Adapter? = null
+ 
+     private fun reload() {
+-        drafts = SavedDrafts.get(account)
++        SavedDrafts.prune(account)
++        chats = SavedDrafts.chats(account)
+         adapter?.notifyDataSetChanged()
+     }
+ 
+@@ -46,104 +55,119 @@ class TeleDraftsActivity : BaseFragment() {
+         })
+         reload()
+         val container = FrameLayout(context)
+-        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
+         fragmentView = container
+         val list = RecyclerListView(context)
+-        val layoutManager = LinearLayoutManager(context)
+-        list.setLayoutManager(layoutManager)
+-        list.setVerticalScrollBarEnabled(false)
++        list.layoutManager = LinearLayoutManager(context)
++        list.isVerticalScrollBarEnabled = false
+         adapter = Adapter(context)
+         list.adapter = adapter
+         list.setOnItemClickListener { _, position ->
+-            drafts.getOrNull(position)?.let { insertDraft(it) }
++            chats.getOrNull(position)?.let { presentFragment(TeleDraftsChatActivity.of(it.dialogId, it.topicId)) }
+         }
+         list.setOnItemLongClickListener { _, position ->
+-            drafts.getOrNull(position)?.let { confirmDelete(it) }
++            chats.getOrNull(position)?.let { confirmDelete(it) }
+             true
+         }
+         container.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+         return container
+     }
+ 
+-    private fun insertDraft(draft: SavedDrafts.Draft) {
+-        val args = android.os.Bundle()
+-        args.putLong("tele_draft_id", draft.id)
+-        if (draft.dialogId < 0) {
+-            val chat = MessagesController.getInstance(account).getChat(-draft.dialogId)
+-            if (draft.topicId != 0 && chat != null && ChatObject.isForum(chat)) {
+-                val topic = MessagesController.getInstance(account).getTopicsController().findTopic(-draft.dialogId, draft.topicId.toLong())
+-                if (topic != null) {
+-                    val chatActivity = ForumUtilities.getChatActivityForTopic(this, -draft.dialogId, topic, 0, args)
+-                    if (chatActivity != null) {
+-                        presentFragment(chatActivity)
+-                        return
+-                    }
+-                }
+-            }
+-            args.putLong("chat_id", -draft.dialogId)
+-        } else {
+-            args.putLong("user_id", draft.dialogId)
+-        }
+-        presentFragment(org.telegram.ui.ChatActivity(args))
++    override fun onResume() {
++        super.onResume()
++        reload()
+     }
+ 
+-
+-    private fun confirmDelete(draft: SavedDrafts.Draft) {
++    private fun confirmDelete(chat: SavedDrafts.ChatDrafts) {
+         AlertDialog.Builder(context, resourceProvider)
+-            .setTitle(LocaleController.getString(R.string.TeleDeleteDraft))
+-            .setMessage(draft.text.take(80))
++            .setTitle(chatTitle(account, chat.dialogId, chat.topicId))
++            .setMessage(LocaleController.getString(R.string.TeleDeleteChatDrafts))
+             .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
+-                SavedDrafts.remove(account, draft.id)
++                SavedDrafts.removeThread(account, chat.dialogId, chat.topicId)
+                 reload()
+             }
+             .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+             .show()
+     }
+ 
+-    private fun peerTitle(id: Long): String {
+-        val controller = MessagesController.getInstance(account)
+-        if (id > 0) {
+-            val user = controller.getUser(id)
+-            if (user != null) return ContactsController.formatName(user.first_name, user.last_name)
+-        } else if (id < 0) {
+-            val chat = controller.getChat(-id)
+-            if (chat != null) return chat.title
++    /** A row of the chat list: userpic, name and time on top, the latest draft and the counters below. */
++    private class ChatRow(context: Context) : FrameLayout(context) {
++        val avatar = BackupImageView(context)
++        val name = TextView(context)
++        val time = TextView(context)
++        val preview = TextView(context)
++        val saved = TextView(context)
++        val discarded = TextView(context)
++
++        init {
++            setWillNotDraw(false)
++            avatar.setRoundRadius(AndroidUtilities.dp(28f))
++            addView(avatar, LayoutHelper.createFrame(56, 56f, Gravity.LEFT or Gravity.CENTER_VERTICAL, 10f, 0f, 0f, 0f))
++
++            val top = LinearLayout(context)
++            top.orientation = LinearLayout.HORIZONTAL
++            name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++            name.typeface = AndroidUtilities.bold()
++            name.setTextColor(Theme.getColor(Theme.key_chats_name))
++            name.isSingleLine = true
++            name.ellipsize = TextUtils.TruncateAt.END
++            top.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
++            time.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            time.setTextColor(Theme.getColor(Theme.key_chats_date))
++            top.addView(time, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = AndroidUtilities.dp(8f) })
++            addView(top, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 78f, 12f, 14f, 0f))
++
++            val bottom = LinearLayout(context)
++            bottom.orientation = LinearLayout.HORIZONTAL
++            bottom.gravity = Gravity.CENTER_VERTICAL
++            preview.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++            preview.setTextColor(Theme.getColor(Theme.key_chats_message))
++            preview.isSingleLine = true
++            preview.ellipsize = TextUtils.TruncateAt.END
++            bottom.addView(preview, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
++            for (badge in listOf(discarded, saved)) {
++                badge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++                badge.typeface = AndroidUtilities.bold()
++                badge.gravity = Gravity.CENTER
++                badge.minWidth = AndroidUtilities.dp(23f)
++                badge.setPadding(AndroidUtilities.dp(7f), 0, AndroidUtilities.dp(7f), 0)
++                bottom.addView(badge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, AndroidUtilities.dp(23f)).apply { leftMargin = AndroidUtilities.dp(6f) })
++            }
++            saved.setTextColor(Theme.getColor(Theme.key_chats_unreadCounterText))
++            saved.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(11.5f), Theme.getColor(Theme.key_chats_unreadCounter))
++            discarded.setTextColor(Theme.getColor(Theme.key_chats_unreadCounterText))
++            discarded.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(11.5f), Theme.getColor(Theme.key_chats_unreadCounterMuted))
++            addView(bottom, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 78f, 38f, 14f, 0f))
++        }
++
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(AndroidUtilities.dp(72f), MeasureSpec.EXACTLY))
++        }
++
++        // the divider of the chat list starts under the text, not the userpic
++        override fun onDraw(canvas: Canvas) {
++            val left = if (LocaleController.isRTL) 0f else AndroidUtilities.dp(78f).toFloat()
++            val right = if (LocaleController.isRTL) (width - AndroidUtilities.dp(78f)).toFloat() else width.toFloat()
++            canvas.drawLine(left, height - 1f, right, height - 1f, Theme.dividerPaint)
+         }
+-        return "ID $id"
+     }
+ 
+     private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
+-        override fun getItemCount(): Int = maxOf(drafts.size, 1)
+-        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = drafts.isNotEmpty()
++        override fun getItemCount(): Int = maxOf(chats.size, 1)
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = chats.isNotEmpty()
+ 
+-        override fun getItemViewType(position: Int): Int = if (drafts.isEmpty()) TYPE_EMPTY else TYPE_DRAFT
++        override fun getItemViewType(position: Int): Int = if (chats.isEmpty()) TYPE_EMPTY else TYPE_CHAT
+ 
+         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+-            val view: View = when (viewType) {
+-                TYPE_EMPTY -> TextView(context).apply {
++            val view: View = if (viewType == TYPE_EMPTY) {
++                TextView(context).apply {
+                     setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
+-                    textSize = 14f
+-                    setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(12f), AndroidUtilities.dp(16f), AndroidUtilities.dp(4f))
+-                }
+-                else -> LinearLayout(context).apply {
+-                    orientation = LinearLayout.VERTICAL
+-                    setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
+-                    setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(10f), AndroidUtilities.dp(16f), AndroidUtilities.dp(10f))
+-                    addView(TextView(context).apply {
+-                        tag = TITLE_TAG
+-                        setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+-                        textSize = 16f
+-                        maxLines = 2
+-                        ellipsize = android.text.TextUtils.TruncateAt.END
+-                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+-                    addView(TextView(context).apply {
+-                        tag = SUBTITLE_TAG
+-                        setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
+-                        textSize = 13f
+-                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+-                        topMargin = AndroidUtilities.dp(2f)
+-                    })
++                    setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++                    gravity = Gravity.CENTER
++                    setPadding(AndroidUtilities.dp(32f), AndroidUtilities.dp(48f), AndroidUtilities.dp(32f), AndroidUtilities.dp(16f))
+                 }
++            } else {
++                ChatRow(context)
+             }
+             view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+             return RecyclerListView.Holder(view)
+@@ -154,25 +178,84 @@ class TeleDraftsActivity : BaseFragment() {
+                 (holder.itemView as TextView).text = LocaleController.getString(R.string.TeleNoSavedDrafts)
+                 return
+             }
+-            val draft = drafts[position]
+-            val title = holder.itemView.findViewWithTag<TextView>(TITLE_TAG)
+-            val subtitle = holder.itemView.findViewWithTag<TextView>(SUBTITLE_TAG)
+-            title.text = draft.text.ifBlank { LocaleController.getString(R.string.TeleInsertDraft) }
+-            title.setTypeface(Typeface.DEFAULT, Typeface.NORMAL)
+-            val fileCount = draft.files.size
+-            var subtitleText = peerTitle(draft.dialogId)
+-            if (draft.topicId != 0) subtitleText += " · topic ${draft.topicId}"
+-            if (fileCount > 0) subtitleText += " · ${LocaleController.formatString(R.string.TeleDraftFiles, fileCount)}"
+-            subtitleText += " · ${LocaleController.formatDateChat(draft.created.toLong())}"
+-            subtitle.text = subtitleText
++            val chat = chats[position]
++            val row = holder.itemView as ChatRow
++            val controller = MessagesController.getInstance(account)
++            val user = if (chat.dialogId > 0) controller.getUser(chat.dialogId) else null
++            val peer = if (chat.dialogId < 0) controller.getChat(-chat.dialogId) else null
++            when {
++                user != null && UserObject.isUserSelf(user) -> {
++                    val drawable = AvatarDrawable()
++                    drawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED)
++                    row.avatar.setImageDrawable(drawable)
++                }
++                user != null -> row.avatar.setForUserOrChat(user, AvatarDrawable(user))
++                peer != null -> row.avatar.setForUserOrChat(peer, AvatarDrawable(peer))
++                else -> row.avatar.setImageDrawable(AvatarDrawable())
++            }
++            row.name.text = chatTitle(account, chat.dialogId, chat.topicId)
++            row.time.text = LocaleController.stringForMessageListDate(chat.lastEdited.toLong())
++            val latest = chat.latest
++            row.preview.text = when {
++                latest == null -> ""
++                latest.name != null -> latest.name
++                latest.text.isNotBlank() -> latest.text.replace('\n', ' ')
++                else -> LocaleController.formatString(R.string.TeleDraftFiles, latest.files.size)
++            }
++            row.saved.text = chat.saved.size.toString()
++            row.saved.visibility = if (chat.saved.isEmpty()) View.GONE else View.VISIBLE
++            row.discarded.text = chat.discarded.size.toString()
++            row.discarded.visibility = if (chat.discarded.isEmpty()) View.GONE else View.VISIBLE
++            // a chat with only discarded drafts reads like a muted one
++            row.preview.alpha = if (chat.saved.isEmpty()) 0.6f else 1f
+         }
+     }
+ 
+     companion object {
+         const val MODE_DRAFTS = "saved_drafts"
+         private const val TYPE_EMPTY = 0
+-        private const val TYPE_DRAFT = 1
+-        private const val TITLE_TAG = 2
+-        private const val SUBTITLE_TAG = 3
++        private const val TYPE_CHAT = 1
++
++        /** The chat name, with the topic after a › for a forum. */
++        @JvmStatic
++        fun chatTitle(account: Int, dialogId: Long, topicId: Int): String {
++            val controller = MessagesController.getInstance(account)
++            val title = if (dialogId > 0) {
++                val user = controller.getUser(dialogId)
++                when {
++                    user == null -> "ID $dialogId"
++                    UserObject.isUserSelf(user) -> LocaleController.getString(R.string.SavedMessages)
++                    else -> UserObject.getUserName(user)
++                }
++            } else {
++                controller.getChat(-dialogId)?.title ?: "ID $dialogId"
++            }
++            if (topicId == 0) return title
++            val topic = controller.topicsController.findTopic(-dialogId, topicId.toLong())
++            return "$title \u203A ${topic?.title ?: "topic"}"
++        }
++
++        /** Opens the chat of a draft with the draft put into its field. */
++        @JvmStatic
++        fun openChat(fragment: BaseFragment, account: Int, draft: SavedDrafts.Draft) {
++            val args = Bundle()
++            args.putLong("tele_draft_id", draft.id)
++            if (draft.dialogId < 0) {
++                val chat = MessagesController.getInstance(account).getChat(-draft.dialogId)
++                if (draft.topicId != 0 && chat != null && ChatObject.isForum(chat)) {
++                    val topic = MessagesController.getInstance(account).topicsController.findTopic(-draft.dialogId, draft.topicId.toLong())
++                    if (topic != null) {
++                        ForumUtilities.getChatActivityForTopic(fragment, -draft.dialogId, topic, 0, args)?.let {
++                            fragment.presentFragment(it)
++                            return
++                        }
++                    }
++                }
++                args.putLong("chat_id", -draft.dialogId)
++            } else {
++                args.putLong("user_id", draft.dialogId)
++            }
++            fragment.presentFragment(ChatActivity(args))
++        }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsChatActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsChatActivity.kt
+new file mode 100644
+index 000000000..03aa07a8c
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDraftsChatActivity.kt
+@@ -0,0 +1,320 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.Canvas
++import android.os.Bundle
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.EditTextBoldCursor
++import org.telegram.ui.Components.Forum.ForumUtilities
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.SizeNotifierFrameLayout
++import tele.helpers.DraftMessages
++import tele.helpers.SavedDrafts
++import tele.helpers.ShotEntry
++import tele.ui.ShotColumn
++import tele.ui.ShotFlags
++
++/** The drafts of one chat as outgoing bubbles, the saved ones first and the discarded ones faded below. */
++class TeleDraftsChatActivity : BaseFragment() {
++
++    private val account get() = UserConfig.selectedAccount
++    private val dialogId get() = arguments.getLong(ARG_DIALOG_ID)
++    private val topicId get() = arguments.getInt(ARG_TOPIC_ID)
++
++    private sealed class Row {
++        class Label(val text: String) : Row()
++        class Draft(val draft: SavedDrafts.Draft, val entries: List<ShotEntry>) : Row()
++    }
++
++    private var rows: List<Row> = emptyList()
++    private var adapter: Adapter? = null
++    private var listView: RecyclerListView? = null
++    private var generation = 0
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(LocaleController.getString(R.string.TeleDrafts))
++        actionBar.setSubtitle(TeleDraftsActivity.chatTitle(account, dialogId, topicId))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment() else if (id == MENU_CLEAR) confirmClear()
++            }
++        })
++        actionBar.createMenu().addItem(MENU_CLEAR, R.drawable.msg_delete)
++
++        val root = SizeNotifierFrameLayout(context)
++        root.setBackgroundImage(Theme.getCachedWallpaperNonBlocking(), Theme.isWallpaperMotion())
++        actionBar.setAddToContainer(false)
++        actionBar.setCastShadows(false)
++        fragmentView = root
++
++        val list = RecyclerListView(context)
++        val layoutManager = LinearLayoutManager(context)
++        layoutManager.stackFromEnd = true
++        list.layoutManager = layoutManager
++        list.isVerticalScrollBarEnabled = false
++        adapter = Adapter(context)
++        list.adapter = adapter
++        list.setOnItemClickListener { _, position ->
++            (rows.getOrNull(position) as? Row.Draft)?.let { showActions(it.draft) }
++        }
++        listView = list
++        root.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        list.setPadding(0, AndroidUtilities.statusBarHeight + ActionBar.getCurrentActionBarHeight(), 0, AndroidUtilities.dp(8f))
++        list.clipToPadding = false
++        root.addView(actionBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
++        return fragmentView
++    }
++
++    override fun onResume() {
++        super.onResume()
++        reload()
++    }
++
++    /** The bubbles are built off the main thread: a photo gets its local sizes like before an upload. */
++    private fun reload() {
++        val current = ++generation
++        val account = account
++        val dialogId = dialogId
++        val topicId = topicId
++        val emptyText = LocaleController.getString(R.string.TeleDraftEmpty)
++        Utilities.globalQueue.postRunnable {
++            SavedDrafts.prune(account)
++            val chat = SavedDrafts.chat(account, dialogId, topicId)
++            val result = ArrayList<Row>()
++            // oldest first, so the newest sits by the bottom like in a chat
++            for (draft in chat.saved.reversed()) addDraft(result, account, draft, emptyText)
++            if (chat.discarded.isNotEmpty()) {
++                result.add(Row.Label(LocaleController.getString(R.string.TeleDraftsDiscardedHeader)))
++                for (draft in chat.discarded.reversed()) addDraft(result, account, draft, emptyText)
++            }
++            if (result.isEmpty()) result.add(Row.Label(LocaleController.getString(R.string.TeleDraftsChatEmpty)))
++            AndroidUtilities.runOnUIThread {
++                if (current != generation) return@runOnUIThread
++                rows = result
++                adapter?.notifyDataSetChanged()
++                listView?.scrollToPosition(maxOf(0, result.size - 1))
++            }
++        }
++    }
++
++    private fun addDraft(result: ArrayList<Row>, account: Int, draft: SavedDrafts.Draft, emptyText: String) {
++        val notes = ArrayList<String>()
++        draft.name?.let { notes.add(it) }
++        val missing = draft.files.count { !SavedDrafts.storedFile(it.storedName).exists() }
++        if (missing > 0) notes.add(LocaleController.formatString(R.string.TeleDraftFilesMissing, missing))
++        if (notes.isNotEmpty()) result.add(Row.Label(notes.joinToString(" \u00B7 ")))
++        result.add(Row.Draft(draft, DraftMessages.build(account, draft, emptyText)))
++    }
++
++    private fun showActions(draft: SavedDrafts.Draft) {
++        val activity = parentActivity ?: return
++        val labels = ArrayList<String>()
++        val actions = ArrayList<() -> Unit>()
++        fun add(label: String, action: () -> Unit) {
++            labels.add(label)
++            actions.add(action)
++        }
++        if (draft.discarded) {
++            add(LocaleController.getString(R.string.TeleDraftRestore)) { insert(draft) }
++            add(LocaleController.getString(R.string.TeleDraftKeep)) {
++                SavedDrafts.keep(account, draft.id)
++                reload()
++            }
++        } else {
++            add(LocaleController.getString(R.string.TeleInsertDraft)) { insert(draft) }
++            add(LocaleController.getString(R.string.TeleDraftDuplicate)) {
++                SavedDrafts.duplicate(account, draft.id)
++                reload()
++            }
++            add(LocaleController.getString(R.string.TeleDraftRename)) { rename(draft) }
++        }
++        if (draft.text.isNotEmpty()) {
++            add(LocaleController.getString(R.string.Copy)) {
++                AndroidUtilities.addToClipboard(SavedDrafts.toFieldText(draft))
++                BulletinFactory.of(this).createCopyBulletin(LocaleController.getString(R.string.TextCopied)).show()
++            }
++        }
++        add(LocaleController.getString(R.string.Delete)) {
++            if (draft.discarded) {
++                SavedDrafts.remove(account, draft.id)
++                reload()
++            } else {
++                AlertDialog.Builder(activity, resourceProvider)
++                    .setTitle(LocaleController.getString(R.string.TeleDeleteDraft))
++                    .setMessage(draft.name ?: draft.text.take(80))
++                    .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
++                        SavedDrafts.remove(account, draft.id)
++                        reload()
++                    }
++                    .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++                    .show()
++            }
++        }
++        val dialog = AlertDialog.Builder(activity, resourceProvider)
++            .setItems(labels.toTypedArray()) { _, which -> actions[which]() }
++            .create()
++        showDialog(dialog)
++        dialog.setItemColor(labels.size - 1, Theme.getColor(Theme.key_text_RedBold), Theme.getColor(Theme.key_text_RedRegular))
++    }
++
++    private fun rename(draft: SavedDrafts.Draft) {
++        val activity = parentActivity ?: return
++        val field = EditTextBoldCursor(activity)
++        field.setSingleLine(true)
++        field.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
++        field.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        field.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, resourceProvider))
++        field.setBackgroundDrawable(null)
++        field.setLineColors(
++            Theme.getColor(Theme.key_windowBackgroundWhiteInputField, resourceProvider),
++            Theme.getColor(Theme.key_windowBackgroundWhiteInputFieldActivated, resourceProvider),
++            Theme.getColor(Theme.key_text_RedRegular, resourceProvider)
++        )
++        field.hint = LocaleController.getString(R.string.TeleDraftName)
++        field.setText(draft.name.orEmpty())
++        val container = FrameLayout(activity)
++        container.setPadding(AndroidUtilities.dp(20f), AndroidUtilities.dp(8f), AndroidUtilities.dp(20f), 0)
++        container.addView(field, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 44f))
++        showDialog(
++            AlertDialog.Builder(activity, resourceProvider)
++                .setTitle(LocaleController.getString(R.string.TeleDraftRename))
++                .setView(container)
++                .setPositiveButton(LocaleController.getString(R.string.Save)) { _, _ ->
++                    SavedDrafts.rename(account, draft.id, field.text.toString())
++                    reload()
++                }
++                .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++                .create()
++        )
++    }
++
++    /** Puts the draft into the field of its chat: the chat under this screen if it is that one. */
++    private fun insert(draft: SavedDrafts.Draft) {
++        val stack = parentLayout?.fragmentStack
++        val previous = stack?.getOrNull(stack.size - 2) as? ChatActivity
++        if (previous != null && previous.dialogId == draft.dialogId && previous.topicId.toInt() == draft.topicId && previous.chatMode == ChatActivity.MODE_DEFAULT) {
++            finishFragment()
++            previous.teleInsertSavedDraft(draft.id)
++            return
++        }
++        TeleDraftsActivity.openChat(this, account, draft)
++    }
++
++    private fun confirmClear() {
++        val activity = parentActivity ?: return
++        AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(LocaleController.getString(R.string.TeleDrafts))
++            .setMessage(LocaleController.getString(R.string.TeleDeleteChatDrafts))
++            .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
++                SavedDrafts.removeThread(account, dialogId, topicId)
++                reload()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun flags(): ShotFlags {
++        val chat = if (dialogId < 0) MessagesController.getInstance(account).getChat(-dialogId) else null
++        val megagroup = chat != null && ChatObject.isChannel(chat) && chat.megagroup
++        return ShotFlags(
++            isChat = chat != null,
++            isBot = false,
++            isBotForum = false,
++            isMegagroup = megagroup,
++            isForum = ChatObject.isForum(chat),
++            isMonoForum = ChatObject.isMonoForum(chat),
++            isSavedChat = false,
++            isRepliesChat = false,
++            hasDiscussion = false,
++            senderIsChat = chat != null,
++            senderIsSelfOrReplies = false
++        )
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        private val flags by lazy { flags() }
++
++        override fun getItemCount(): Int = rows.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = holder.itemViewType == TYPE_DRAFT
++
++        override fun getItemViewType(position: Int): Int = if (rows[position] is Row.Draft) TYPE_DRAFT else TYPE_LABEL
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = if (viewType == TYPE_LABEL) {
++                FrameLayout(context).apply {
++                    val label = TextView(context)
++                    label.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++                    label.typeface = AndroidUtilities.bold()
++                    label.setTextColor(Theme.getColor(Theme.key_chat_serviceText, resourceProvider))
++                    label.gravity = Gravity.CENTER
++                    label.maxLines = 2
++                    label.ellipsize = TextUtils.TruncateAt.END
++                    label.setPadding(AndroidUtilities.dp(10f), AndroidUtilities.dp(4f), AndroidUtilities.dp(10f), AndroidUtilities.dp(4f))
++                    label.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(13f), Theme.getColor(Theme.key_chat_serviceBackground, resourceProvider))
++                    addView(label, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER, 24f, 10f, 24f, 6f))
++                }
++            } else {
++                FrameLayout(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            when (val row = rows[position]) {
++                is Row.Label -> ((holder.itemView as FrameLayout).getChildAt(0) as TextView).text = row.text
++                is Row.Draft -> {
++                    val frame = holder.itemView as FrameLayout
++                    frame.removeAllViews()
++                    // a fresh column per bind: it rebuilds its cells for the entries anyway
++                    val column = ShotColumn(context, account, resourceProvider, flags)
++                    column.bind(row.entries, tele.helpers.ShotOptions(hidden = 0))
++                    frame.addView(column, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
++                    frame.alpha = if (row.draft.discarded) DISCARDED_ALPHA else 1f
++                }
++            }
++        }
++    }
++
++    companion object {
++        private const val ARG_DIALOG_ID = "dialog_id"
++        private const val ARG_TOPIC_ID = "topic_id"
++        private const val MENU_CLEAR = 1
++        private const val TYPE_LABEL = 0
++        private const val TYPE_DRAFT = 1
++        private const val DISCARDED_ALPHA = 0.5f
++
++        @JvmStatic
++        fun of(dialogId: Long, topicId: Int): TeleDraftsChatActivity = TeleDraftsChatActivity().apply {
++            arguments = Bundle().apply {
++                putLong(ARG_DIALOG_ID, dialogId)
++                putInt(ARG_TOPIC_ID, topicId)
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index ffe2b792c..75c0c91ed 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -767,6 +767,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Drafts and privacy"),
+                 toggle("Keep drafts on this device", TeleConfig.LOCAL_DRAFTS),
++                tele.helpers.SavedDrafts.count(UserConfig.selectedAccount).let { link("Saved drafts", TeleDraftsActivity.MODE_DRAFTS, if (it > 0) it.toString() else "None") },
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Disappearing media"),
+                 toggle("Don't burn disappearing media on view", TeleConfig.KEEP_DISAPPEARING_MEDIA),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 5a58ff89a..a4943d3fb 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -32,8 +32,24 @@
+     <string name="TeleSavedDrafts">Saved drafts</string>
+     <string name="TeleDraftSaved">Draft saved</string>
+     <string name="TeleDraftDeleted">Draft deleted</string>
+-    <string name="TeleNoSavedDrafts">No saved drafts</string>
++    <string name="TeleNoSavedDrafts">No drafts yet. Save one from the menu of the send button, the texts you erase are kept here for a week too.</string>
+     <string name="TeleDeleteDraft">Delete draft</string>
+     <string name="TeleDraftFiles">%1$d file(s)</string>
+     <string name="TeleInsertDraft">Insert draft</string>
++    <string name="TeleDrafts">Drafts</string>
++    <string name="TeleDraftsSaved">%1$d saved</string>
++    <string name="TeleDraftsDiscarded">%1$d discarded</string>
++    <string name="TeleDraftsDiscardedHeader">Recently discarded, kept for 7 days</string>
++    <string name="TeleDraftsChatEmpty">No drafts here yet</string>
++    <string name="TeleDraftsSavedMenu">Saved drafts (%1$d)</string>
++    <string name="TeleDraftsDiscardedMenu">Recently discarded (%1$d)</string>
++    <string name="TeleDraftEmpty">Empty draft</string>
++    <string name="TeleDraftFilesMissing">%1$d file(s) missing</string>
++    <string name="TeleDraftRestore">Restore</string>
++    <string name="TeleDraftKeep">Keep as draft</string>
++    <string name="TeleDraftDuplicate">Duplicate</string>
++    <string name="TeleDraftRename">Rename</string>
++    <string name="TeleDraftName">Draft name</string>
++    <string name="TeleDraftOpen">Open</string>
++    <string name="TeleDeleteChatDrafts">Delete all the drafts of this chat, the discarded ones too?</string>
+ </resources>
