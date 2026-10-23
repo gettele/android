@@ -23,7 +23,9 @@ for maintainers. releases are built and published by github actions and need the
    }
    ```
 
-   `categories` is the order of the groups in the app and in the release notes, and every item's `category` has to be listed. `where` is where to find it and may be empty. one sentence per item, plain text. the limits are the app's (100 items, 16 categories, 64 characters in a category, 1024 in an item), `python3 ci/changelog.py ci/changelog.json --tag v1-tele.1 --repo gettele/android` validates the file. publishing fails while the items equal the previous release's.
+   `categories` is the order of the groups in the app and in the release notes, and every item's `category` has to be listed. `where` is where to find it and may be empty: keep the full path to a new option, like `settings → tele → messages → keep deleted for`. the limits are the app's (100 items, 16 categories, 64 characters in a category, 1024 in an item), `python3 ci/changelog.py ci/changelog.json --tag v1-tele.1 --repo gettele/android` validates the file. publishing fails while the items equal the previous release's.
+
+   write items like the [tele desktop releases](https://github.com/nitreojs/tele/releases): one short lowercase sentence per feature or fix, what the user gets, no trailing period, about 100 characters at most. no implementation details, no lists of every case: the patch and features.md hold those.
 
    the optional `header` and `footer` are one line each (up to 64 characters) put before and after the release notes and the channel post, for one release only: the next release's file drops them like the rest of the previous text. the app ignores them.
 
