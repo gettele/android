@@ -1,0 +1,1015 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:10:04 +0300
+Subject: [PATCH 138/141] feat: bookmark messages
+
+---
+ .../telegram/ui/Cells/ChatMessageCell.java    |   9 +
+ .../java/org/telegram/ui/ChatActivity.java    |  84 ++++++
+ ...ChatActivitySideControlsButtonsLayout.java |   9 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   4 +-
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  54 ++++
+ .../src/main/java/tele/helpers/Bookmarks.kt   | 282 ++++++++++++++++++
+ .../main/java/tele/helpers/ChatBookmarks.kt   |  98 ++++++
+ .../src/main/java/tele/helpers/MessageMenu.kt |   8 +-
+ .../tele/ui/settings/TeleBookmarksActivity.kt | 161 ++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   6 +
+ .../src/main/res/values/strings_tele.xml      |   8 +
+ 13 files changed, 720 insertions(+), 7 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleBookmarksActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index f16491cdd..7cdba910a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -6797,6 +6797,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+ 
+     private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
+         teleKeptDeleted = messageObject != null && tele.helpers.DeletedMessages.isKept(messageObject);
++        teleBookmarked = messageObject != null && tele.helpers.Bookmarks.isBookmarked(messageObject);
+         teleIgnoreMode = messageObject != null ? tele.helpers.PrivacyRules.messageMode(currentAccount, messageObject.getDialogId(), messageObject) : null;
+         if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
+             currentMessageObject = null;
+@@ -13395,6 +13396,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         }
+     }
+     private boolean teleKeptDeleted;
++    private boolean teleBookmarked;
+     private String teleIgnoreMode;
+ 
+ 
+@@ -18574,10 +18576,17 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         if (teleKeptDeleted && tele.helpers.DeletedMessages.textMarker() && !currentMessageObject.notime) {
+             currentTimeString = TextUtils.concat(tele.helpers.DeletedMessages.markerText(), "  ", currentTimeString);
+         }
++        if (teleBookmarked && currentTimeString != null && !currentMessageObject.notime) {
++            currentTimeString = tele.helpers.Bookmarks.timeWithIcon(currentTimeString);
++        }
+         timeTextWidth = timeWidth = (int) Math.ceil(Theme.chat_timePaint.measureText(currentTimeString, 0, currentTimeString == null ? 0 : currentTimeString.length()));
+         if (teleKeptDeleted && tele.helpers.DeletedMessages.iconMarker() && !currentMessageObject.notime) {
+             timeWidth += tele.helpers.DeletedMessages.markerWidth();
+         }
++        if (teleBookmarked && currentTimeString != null && !currentMessageObject.notime) {
++            timeTextWidth += tele.helpers.Bookmarks.iconWidth();
++            timeWidth += tele.helpers.Bookmarks.iconWidth();
++        }
+ 
+         final boolean isInWelcomeMessages = delegate != null && delegate.getChatMode() == ChatActivity.MODE_WELCOME_MESSAGES;
+         if ((messageObject.messageOwner.flags & TLRPC.MESSAGE_FLAG_HAS_VIEWS) != 0 && !isInWelcomeMessages) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 74faad350..05db6d8fe 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1262,6 +1262,8 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_copy_file_path = 220;
+     public final static int tele_option_copy_alias = 221;
+     public final static int tele_option_delete_alias = 222;
++    public final static int tele_option_bookmark = 240;
++    public final static int tele_option_rename_bookmark = 241;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -1730,6 +1732,7 @@ public class ChatActivity extends BaseFragment implements
+     private final static int tele_action_hidden_words = 132;
+     private final static int tele_action_peek_last_seen = 133;
+     private final static int tele_action_remove_mine = 190;
++    private final static int tele_action_bookmarks = 134;
+ 
+     private final static int id_chat_compose_panel = 1000;
+ 
+@@ -1789,6 +1792,64 @@ public class ChatActivity extends BaseFragment implements
+         return chatListView;
+     }
+ 
++    private tele.helpers.ChatBookmarks teleBookmarks;
++
++    /** Bookmarks live in the regular chats: not in secret chats, not in scheduled messages and the like. */
++    public boolean teleBookmarkChat() {
++        return chatMode == MODE_DEFAULT && currentEncryptedChat == null;
++    }
++
++    /** The chats that get the bookmark button: not the comment threads, they share the dialog of the group. */
++    public boolean teleCornerChat() {
++        return teleBookmarkChat() && !isInsideContainer && (threadMessageId == 0 || isTopic);
++    }
++
++    public ChatActivitySideControlsButtonsLayout teleSideControls() {
++        return sideControlsButtonsLayout;
++    }
++
++    public void teleRebind() {
++        if (chatAdapter == null) {
++            return;
++        }
++        for (int i = 0; i < messages.size(); i++) {
++            messages.get(i).forceUpdate = true;
++        }
++        chatAdapter.notifyDataSetChanged();
++    }
++
++    public void teleBookmarksMenu(boolean show) {
++        if (headerItem == null) {
++            return;
++        }
++        if (show) {
++            headerItem.showSubItem(tele_action_bookmarks);
++        } else {
++            headerItem.hideSubItem(tele_action_bookmarks);
++        }
++    }
++
++    public void teleBookmarksChanged(int messageId) {
++        final MessageObject object = messagesDict[0].get(messageId);
++        if (object != null && chatAdapter != null) {
++            final int index = messages.indexOf(object);
++            if (index >= 0) {
++                object.forceUpdate = true;
++                chatAdapter.updateRowAtPosition(chatAdapter.messagesStartRow + index);
++            }
++        }
++        if (teleBookmarks != null) {
++            teleBookmarks.changed();
++        }
++    }
++
++    private void teleBookmarksStart() {
++        if (teleBookmarks == null) {
++            teleBookmarks = new tele.helpers.ChatBookmarks(this);
++        }
++        teleBookmarks.start();
++    }
++
+     private void startMultiselect(int position) {
+         if (isInsideContainer) {
+             return;
+@@ -3820,6 +3881,8 @@ public class ChatActivity extends BaseFragment implements
+                     tele.helpers.LastSeenPeek.peek(ChatActivity.this, getCurrentAccount(), getDialogId());
+                 } else if (id == tele_action_remove_mine) {
+                     tele.helpers.RemoveMine.start(ChatActivity.this, getDialogId(), getTopicId());
++                } else if (id == tele_action_bookmarks) {
++                    presentFragment(tele.ui.settings.TeleBookmarksActivity.of(getCurrentAccount(), getDialogId(), getTopicId()));
+                 } else if (id == copy) {
+                     SpannableStringBuilder str = new SpannableStringBuilder();
+                     long previousUid = 0;
+@@ -4574,6 +4637,10 @@ public class ChatActivity extends BaseFragment implements
+             if (tele.TeleConfig.LAST_SEEN_RESTORE.getValue() && currentUser != null && !currentUser.self && !currentUser.bot && currentEncryptedChat == null && !isTopic) {
+                 headerItem.lazilyAddSubItem(tele_action_peek_last_seen, R.drawable.msg_contacts, "Peek last seen");
+             }
++            if (tele.TeleConfig.BOOKMARKS.getValue() && currentEncryptedChat == null) {
++                headerItem.lazilyAddSubItem(tele_action_bookmarks, R.drawable.msg_saved, getString(R.string.TeleBookmarks));
++                headerItem.hideSubItem(tele_action_bookmarks);
++            }
+             if (!isTopic && !ChatObject.isMonoForum(currentChat)) {
+                 clearHistoryItem = headerItem.lazilyAddSubItem(clear_history, R.drawable.msg_clear,
+                     LocaleController.getString(UserObject.isBotForum(currentUser) ? R.string.ClearAllHistory : R.string.ClearHistory));
+@@ -9141,6 +9208,7 @@ public class ChatActivity extends BaseFragment implements
+         ViewCompat.setOnApplyWindowInsetsListener(fragmentView, this::onApplyWindowInsets);
+         Timer.finish(t);
+         updateTeleDraftButton(false);
++        teleBookmarksStart();
+         if (teleDraftDiscards == null && chatMode == MODE_DEFAULT && chatActivityEnterView != null) {
+             teleDraftDiscards = new tele.helpers.DraftDiscards(this);
+         }
+@@ -30541,6 +30609,7 @@ public class ChatActivity extends BaseFragment implements
+             }
+         }
+         updateTeleDraftButton(false);
++        teleBookmarksStart();
+         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
+             ImportingAlert alert = new ImportingAlert(getParentActivity(), null, this, themeDelegate);
+             alert.setOnHideListener(dialog -> {
+@@ -34279,6 +34348,18 @@ public class ChatActivity extends BaseFragment implements
+                 }
+                 break;
+             }
++            case tele_option_bookmark: {
++                final MessageObject tele_object = selectedObject;
++                closeMenu();
++                tele.helpers.Bookmarks.toggle(this, tele_object);
++                break;
++            }
++            case tele_option_rename_bookmark: {
++                final MessageObject tele_object = selectedObject;
++                closeMenu();
++                tele.helpers.Bookmarks.showRename(this, tele_object);
++                break;
++            }
+             case tele_option_shot: {
+                 final MessageObject tele_object = selectedObject;
+                 final MessageObject.GroupedMessages tele_group = selectedObjectGroup;
+@@ -47537,6 +47618,7 @@ public class ChatActivity extends BaseFragment implements
+             icons.add(0, R.drawable.msg_info);
+         }
+         tele.helpers.TeleShot.fillMenu(this, message, groupedMessages, items, icons, options);
++        tele.helpers.Bookmarks.fillMenu(this, message, items, icons, options);
+         if (teleKeptMessage) {
+             if (!tele.helpers.DeletedReply.quoteMode()) {
+                 for (int i = options.size() - 1; i >= 0; i--) {
+@@ -48020,6 +48102,8 @@ public class ChatActivity extends BaseFragment implements
+             openAttachMenu();
+         } else if (buttonId == ChatActivitySideControlsButtonsLayout.BUTTON_DRAFT) {
+             teleOpenDrafts();
++        } else if (teleBookmarks != null) {
++            teleBookmarks.onClick(buttonId);
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
+index 9eafc28d6..4c535c7da 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
+@@ -36,8 +36,9 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+     public static final int BUTTON_SEARCH_DOWN = 5;
+     public static final int BUTTON_SEARCH_UP = 6;
+     public static final int BUTTON_DRAFT = 7;
++    public static final int BUTTON_BOOKMARKS = 8;
+ 
+-    private static final int BUTTONS_COUNT = 8;
++    private static final int BUTTONS_COUNT = 9;
+ 
+     private static final int ANIMATOR_ID_VISIBILITY = 1;
+     private static final int ANIMATOR_ID_COUNTER_VISIBILITY = 2;
+@@ -50,7 +51,8 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+         R.drawable.menu_poll_notify,
+         R.drawable.pagedown,
+         R.drawable.pagedown,
+-        R.drawable.msg_saved
++        R.drawable.msg_saved,
++        R.drawable.menu_browser_bookmarks
+     };
+ 
+     private final String[] buttonDescriptions = new String[] {
+@@ -61,7 +63,8 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+         LocaleController.getString(R.string.AccDescrPollVotesMentionDown),
+         LocaleController.getString(R.string.AccDescrSearchPrev),
+         LocaleController.getString(R.string.AccDescrSearchNext),
+-        LocaleController.getString(R.string.TeleSavedDrafts)
++        LocaleController.getString(R.string.TeleSavedDrafts),
++        LocaleController.getString(R.string.TeleBookmarks)
+     };
+ 
+     private final Theme.ResourcesProvider resourcesProvider;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 422814646..13864d80c 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -238,6 +238,8 @@ object TeleConfig {
+     val SHOW_START_PARAMETER = BoolItem("show_start_parameter", false)
+     @JvmField
+     val TITLE_TEMPLATE = StringItem("title_template", "tele {build}")
++    @JvmField
++    val BOOKMARKS = BoolItem("bookmarks", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index f097c2227..4d1ce6ea5 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -227,7 +227,7 @@ object TeleHooks {
+         fragment.showDialog(builder.create())
+     }
+ 
+-    private fun themedField(activity: Context, provider: Theme.ResourcesProvider?): EditTextBoldCursor {
++    internal fun themedField(activity: Context, provider: Theme.ResourcesProvider?): EditTextBoldCursor {
+         val field = EditTextBoldCursor(activity)
+         field.setSingleLine(true)
+         field.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
+@@ -242,7 +242,7 @@ object TeleHooks {
+         return field
+     }
+ 
+-    private fun wrapField(activity: Context, field: android.view.View): LinearLayout {
++    internal fun wrapField(activity: Context, field: android.view.View): LinearLayout {
+         val container = LinearLayout(activity)
+         container.orientation = LinearLayout.VERTICAL
+         container.addView(field, LinearLayout.LayoutParams(
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 5fc629eb0..0052270cb 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -338,6 +338,54 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
++    class BookmarkRow(val dialogId: Long, val topicId: Long, val messageId: Int, val name: String?, val preview: String, val created: Int)
++
++    fun putBookmark(account: Int, row: BookmarkRow) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("dialog_id", row.dialogId)
++            put("topic_id", row.topicId)
++            put("message_id", row.messageId)
++            put("name", row.name)
++            put("preview", row.preview)
++            put("created", row.created)
++        }
++        db.insertWithOnConflict("tele_bookmarks", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++    }
++
++    /** The bookmarks of an account, or of one chat, newest first. */
++    fun getBookmarks(account: Int, dialogId: Long? = null): List<BookmarkRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<BookmarkRow>()
++        val columns = "dialog_id, topic_id, message_id, name, preview, created"
++        val cursor = if (dialogId == null) {
++            db.rawQuery("SELECT $columns FROM tele_bookmarks WHERE account = ? ORDER BY created DESC, message_id DESC", arrayOf(account.toString()))
++        } else {
++            db.rawQuery("SELECT $columns FROM tele_bookmarks WHERE account = ? AND dialog_id = ? ORDER BY created DESC, message_id DESC", arrayOf(account.toString(), dialogId.toString()))
++        }
++        cursor.use {
++            while (it.moveToNext()) result.add(BookmarkRow(it.getLong(0), it.getLong(1), it.getInt(2), if (it.isNull(3)) null else it.getString(3), it.getString(4), it.getInt(5)))
++        }
++        return result
++    }
++
++    fun updateBookmarkName(account: Int, dialogId: Long, messageId: Int, name: String?) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply { put("name", name) }
++        db.update("tele_bookmarks", values, "account = ? AND dialog_id = ? AND message_id = ?", arrayOf(account.toString(), dialogId.toString(), messageId.toString()))
++    }
++
++    fun removeBookmark(account: Int, dialogId: Long, messageId: Int) {
++        val db = helper?.writableDatabase ?: return
++        db.delete("tele_bookmarks", "account = ? AND dialog_id = ? AND message_id = ?", arrayOf(account.toString(), dialogId.toString(), messageId.toString()))
++    }
++
++    fun countBookmarks(account: Int): Int {
++        val db = helper?.readableDatabase ?: return 0
++        db.rawQuery("SELECT COUNT(*) FROM tele_bookmarks WHERE account = ?", arrayOf(account.toString())).use { return if (it.moveToFirst()) it.getInt(0) else 0 }
++    }
++
+     private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 9) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+@@ -358,6 +406,7 @@ object TeleDatabaseHelper {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_docked (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, thread_id))")
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_changelog (account INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, message_id))")
+             createRecoveredPostsTable(db)
++            createBookmarkTables(db)
+         }
+ 
+         // the retention stamp of the edit versions and the media file names of the kept messages
+@@ -380,6 +429,11 @@ object TeleDatabaseHelper {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_message_edits (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, edit_date INTEGER NOT NULL, original INTEGER NOT NULL, version_key TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, message_id, version_key))")
+         }
+ 
++        private fun createBookmarkTables(db: SQLiteDatabase) {
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_bookmarks (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, message_id INTEGER NOT NULL, name TEXT, preview TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (account, dialog_id, message_id))")
++            db.execSQL("CREATE INDEX IF NOT EXISTS tele_bookmarks_dialog ON tele_bookmarks(account, dialog_id, topic_id, created)")
++        }
++
+         private fun createDraftsTable(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_drafts (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, draft_id INTEGER NOT NULL, created INTEGER NOT NULL, edited INTEGER NOT NULL, data BLOB NOT NULL, discarded INTEGER NOT NULL DEFAULT 0, name TEXT, PRIMARY KEY (account, draft_id))")
+             // the tables of the older versions miss the columns of the discarded drafts
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt b/TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt
+new file mode 100644
+index 000000000..444d8fb32
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt
+@@ -0,0 +1,282 @@
++package tele.helpers
++
++import android.graphics.Canvas
++import android.graphics.Paint
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.graphics.drawable.Drawable
++import android.os.Bundle
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.style.ReplacementSpan
++import android.widget.Toast
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.Forum.ForumUtilities
++import tele.TeleConfig
++import tele.TeleHooks
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.ConcurrentHashMap
++
++/** Local message bookmarks: they live in tele.db next to the other tele archives, never on the server. */
++object Bookmarks {
++
++    private const val MAX_NAME = 128
++    private const val MAX_PREVIEW = 256
++
++    class Entry(
++        val dialogId: Long,
++        val topicId: Long,
++        val messageId: Int,
++        @Volatile var name: String?,
++        val preview: String,
++        val created: Int
++    ) {
++        /** The name of the user, else the text kept from the time of the bookmark. */
++        fun title(): String {
++            val own = name
++            if (!own.isNullOrBlank()) return own
++            return preview.ifBlank { LocaleController.getString(R.string.TeleBookmarkMessage) }
++        }
++    }
++
++    private val cache = ConcurrentHashMap<Long, ConcurrentHashMap<Int, Entry>>()
++    private val loaded = ConcurrentHashMap.newKeySet<Long>()
++    private val whitespace = Regex("\\s+")
++
++    // the key is used on every bind of a message cell, so it is a plain number, not an object
++    private fun key(account: Int, dialogId: Long): Long = (account.toLong() shl 48) or (dialogId and 0xFFFFFFFFFFFFL)
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.BOOKMARKS.value
++
++    /** The memory only answer for the cells: a chat that is not loaded yet shows no marks and rebinds when it is. */
++    @JvmStatic
++    fun isBookmarked(message: MessageObject): Boolean {
++        if (!enabled() || message.id <= 0) return false
++        return cache[key(message.currentAccount, message.dialogId)]?.containsKey(message.id) == true
++    }
++
++    @JvmStatic
++    fun find(account: Int, dialogId: Long, messageId: Int): Entry? = cache[key(account, dialogId)]?.get(messageId)
++
++    /** The bookmarks of a chat (all its topics) or of one topic, by message id. Needs [load] first. */
++    @JvmStatic
++    fun list(account: Int, dialogId: Long, topicId: Long): List<Entry> {
++        val all = cache[key(account, dialogId)]?.values ?: return emptyList()
++        return all.filter { topicId == 0L || it.topicId == topicId }.sortedBy { it.messageId }
++    }
++
++    @JvmStatic
++    fun isLoaded(account: Int, dialogId: Long): Boolean = loaded.contains(key(account, dialogId))
++
++    /** Reads the bookmarks of a chat off the main thread, [done] runs on the main thread. */
++    @JvmStatic
++    fun load(account: Int, dialogId: Long, done: (() -> Unit)?) {
++        val key = key(account, dialogId)
++        if (loaded.contains(key)) {
++            done?.invoke()
++            return
++        }
++        Utilities.globalQueue.postRunnable {
++            val rows = TeleDatabaseHelper.getBookmarks(account, dialogId)
++            AndroidUtilities.runOnUIThread {
++                val map = cache.getOrPut(key) { ConcurrentHashMap() }
++                // what was bookmarked while the read was running stays
++                for (row in rows) map.putIfAbsent(row.messageId, Entry(row.dialogId, row.topicId, row.messageId, row.name, row.preview, row.created))
++                loaded.add(key)
++                done?.invoke()
++            }
++        }
++    }
++
++    /** Every bookmark of the account, newest first, for the list of all of them. */
++    @JvmStatic
++    fun loadAll(account: Int, done: (List<Entry>) -> Unit) {
++        Utilities.globalQueue.postRunnable {
++            val rows = TeleDatabaseHelper.getBookmarks(account).map { Entry(it.dialogId, it.topicId, it.messageId, it.name, it.preview, it.created) }
++            AndroidUtilities.runOnUIThread { done(rows) }
++        }
++    }
++
++    @JvmStatic
++    fun count(account: Int): Int = TeleDatabaseHelper.countBookmarks(account)
++
++    private fun previewOf(message: MessageObject): String {
++        val text = message.caption?.takeIf { it.isNotEmpty() } ?: message.messageText
++        return (text?.toString() ?: "").replace(whitespace, " ").trim().take(MAX_PREVIEW)
++    }
++
++    // the topic is kept for the forums only, where the list opens the bookmark inside its topic
++    private fun topicOf(account: Int, message: MessageObject): Long {
++        val chat = MessagesController.getInstance(account).getChat(-message.dialogId)
++        return if (chat != null && ChatObject.isForum(chat)) message.topicId.coerceAtLeast(1L) else 0L
++    }
++
++    /** Whether the message can carry a bookmark: a sent message of a regular chat. */
++    @JvmStatic
++    fun allowed(message: MessageObject?): Boolean =
++        message != null && message.id > 0 && !message.scheduled && !message.isEphemeral && !message.isSponsored
++
++    @JvmStatic
++    fun add(account: Int, message: MessageObject) {
++        if (!allowed(message)) return
++        val dialogId = message.dialogId
++        val entry = Entry(dialogId, topicOf(account, message), message.id, null, previewOf(message), ConnectionsManager.getInstance(account).currentTime)
++        cache.getOrPut(key(account, dialogId)) { ConcurrentHashMap() }[entry.messageId] = entry
++        Utilities.globalQueue.postRunnable {
++            TeleDatabaseHelper.putBookmark(account, TeleDatabaseHelper.BookmarkRow(entry.dialogId, entry.topicId, entry.messageId, entry.name, entry.preview, entry.created))
++        }
++    }
++
++    @JvmStatic
++    fun remove(account: Int, dialogId: Long, messageId: Int) {
++        cache[key(account, dialogId)]?.remove(messageId)
++        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.removeBookmark(account, dialogId, messageId) }
++    }
++
++    @JvmStatic
++    fun rename(account: Int, dialogId: Long, messageId: Int, name: String?) {
++        val value = name?.trim()?.take(MAX_NAME)?.ifEmpty { null }
++        cache[key(account, dialogId)]?.get(messageId)?.name = value
++        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.updateBookmarkName(account, dialogId, messageId, value) }
++    }
++
++    // the message menu
++
++    /** Adds the bookmark items before Delete, so they sit with the other message actions. */
++    @JvmStatic
++    fun fillMenu(chat: ChatActivity, message: MessageObject, items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
++        if (!enabled() || !chat.teleBookmarkChat() || !allowed(message)) return
++        val marked = find(chat.currentAccount, message.dialogId, message.id) != null
++        val at = options.indexOf(ChatActivity.OPTION_DELETE).let { if (it >= 0) it else options.size }
++        if (marked) {
++            items.add(at, LocaleController.getString(R.string.TeleBookmarkRename))
++            icons.add(at, R.drawable.menu_tag_rename)
++            options.add(at, ChatActivity.tele_option_rename_bookmark)
++        }
++        val index = if (marked) at + 1 else at
++        items.add(index, LocaleController.getString(if (marked) R.string.TeleBookmarkRemove else R.string.TeleBookmark))
++        icons.add(index, if (marked) R.drawable.menu_tag_delete else R.drawable.msg_saved)
++        options.add(index, ChatActivity.tele_option_bookmark)
++    }
++
++    @JvmStatic
++    fun toggle(chat: ChatActivity, message: MessageObject?) {
++        if (message == null || !enabled() || !allowed(message)) return
++        val account = chat.currentAccount
++        if (find(account, message.dialogId, message.id) != null) remove(account, message.dialogId, message.id) else add(account, message)
++        chat.teleBookmarksChanged(message.id)
++    }
++
++    @JvmStatic
++    fun showRename(chat: ChatActivity, message: MessageObject?) {
++        if (message == null) return
++        val entry = find(chat.currentAccount, message.dialogId, message.id) ?: return
++        showRenameDialog(chat, chat.currentAccount, entry) { chat.teleBookmarksChanged(entry.messageId) }
++    }
++
++    /** The name box of a bookmark, for the chat and for the list. [saved] runs after the new name is stored. */
++    fun showRenameDialog(fragment: BaseFragment, account: Int, entry: Entry, saved: () -> Unit) {
++        val activity = fragment.parentActivity ?: return
++        val provider = fragment.resourceProvider
++        val input = TeleHooks.themedField(activity, provider)
++        input.setText(entry.name)
++        input.hint = LocaleController.getString(R.string.TeleBookmarkName)
++        input.setSelection(input.text?.length ?: 0)
++        val builder = if (provider != null) AlertDialog.Builder(activity, provider) else AlertDialog.Builder(activity)
++        builder.setTitle(LocaleController.getString(R.string.TeleBookmarkRename))
++        builder.setView(TeleHooks.wrapField(activity, input))
++        builder.setPositiveButton(LocaleController.getString(R.string.Save)) { _, _ ->
++            rename(account, entry.dialogId, entry.messageId, input.text.toString())
++            // the list works with its own copy of the entry
++            entry.name = input.text.toString().trim().take(MAX_NAME).ifEmpty { null }
++            saved()
++        }
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        fragment.showDialog(builder.create())
++    }
++
++    // opening
++
++    /** Opens the chat at the message, inside its topic for a forum. A chat that is gone is told, not crashed on. */
++    @JvmStatic
++    fun open(fragment: BaseFragment, account: Int, entry: Entry) {
++        val controller = MessagesController.getInstance(account)
++        val args = Bundle()
++        if (entry.dialogId < 0) {
++            val chat = controller.getChat(-entry.dialogId)
++            if (chat == null) {
++                Toast.makeText(ApplicationLoader.applicationContext, LocaleController.getString(R.string.TeleDraftChatUnavailable), Toast.LENGTH_SHORT).show()
++                return
++            }
++            if (entry.topicId > 0 && ChatObject.isForum(chat)) {
++                val topic = controller.topicsController.findTopic(-entry.dialogId, entry.topicId)
++                if (topic != null) {
++                    ForumUtilities.getChatActivityForTopic(fragment, -entry.dialogId, topic, entry.messageId, args)?.let {
++                        fragment.presentFragment(it)
++                        return
++                    }
++                }
++            }
++            args.putLong("chat_id", -entry.dialogId)
++        } else {
++            if (controller.getUser(entry.dialogId) == null) {
++                Toast.makeText(ApplicationLoader.applicationContext, LocaleController.getString(R.string.TeleDraftChatUnavailable), Toast.LENGTH_SHORT).show()
++                return
++            }
++            args.putLong("user_id", entry.dialogId)
++        }
++        args.putInt("message_id", entry.messageId)
++        fragment.presentFragment(ChatActivity(args))
++    }
++
++    // the mark in the time of a bubble
++
++    /** The width the mark takes in the time line of a bubble. */
++    @JvmStatic
++    fun iconWidth(): Int = AndroidUtilities.dp(16f)
++
++    /** The time of a bubble with the bookmark mark before it. */
++    @JvmStatic
++    fun timeWithIcon(time: CharSequence): CharSequence {
++        val result = SpannableStringBuilder()
++        // a zero width placeholder carries the mark, the cell adds its width to the time width
++        result.append('\u200B')
++        result.setSpan(IconSpan(iconWidth()), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        result.append(time)
++        return result
++    }
++
++    private var icon: Drawable? = null
++    private var iconColor = 0
++
++    private class IconSpan(private val width: Int) : ReplacementSpan() {
++        override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int = width
++
++        override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
++            val drawable = icon ?: ApplicationLoader.applicationContext.getDrawable(R.drawable.msg_saved)?.mutate()?.also { icon = it } ?: return
++            if (iconColor != paint.color) {
++                iconColor = paint.color
++                drawable.colorFilter = PorterDuffColorFilter(paint.color, PorterDuff.Mode.SRC_IN)
++            }
++            drawable.alpha = paint.alpha
++            val size = AndroidUtilities.dp(14f)
++            val centerY = y + (paint.ascent() + paint.descent()) / 2f
++            val left = x.toInt()
++            val upper = (centerY - size / 2f).toInt()
++            drawable.setBounds(left, upper, left + size, upper + size)
++            drawable.draw(canvas)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt b/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
+new file mode 100644
+index 000000000..997be0c14
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
+@@ -0,0 +1,98 @@
++package tele.helpers
++
++import org.telegram.ui.Cells.ChatActionCell
++import org.telegram.ui.Cells.ChatMessageCell
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.chat.layouts.ChatActivitySideControlsButtonsLayout
++
++/** The bookmark marks, the bookmark button and the chat menu entry of one open chat. */
++class ChatBookmarks(private val chat: ChatActivity) {
++
++    private var lastJump = 0
++
++    // what the bubbles were last drawn for, so a rebind only happens when the marks changed
++    private var applied = 0
++
++    private fun marks(): Boolean = Bookmarks.enabled() && chat.teleBookmarkChat()
++
++    private fun buttons(): Boolean = Bookmarks.enabled() && chat.teleCornerChat()
++
++    private fun signature(): Int {
++        if (!Bookmarks.enabled()) return 0
++        val ids = Bookmarks.list(chat.currentAccount, chat.dialogId, 0L).map { it.messageId }
++        return if (ids.isEmpty()) 0 else ids.hashCode()
++    }
++
++    /** Loads what the chat needs and rebinds the bubbles when the marks arrived after them. */
++    fun start() {
++        if (!marks()) {
++            sync()
++            update(false)
++            return
++        }
++        Bookmarks.load(chat.currentAccount, chat.dialogId) {
++            sync()
++            update(false)
++        }
++    }
++
++    private fun sync() {
++        val now = signature()
++        if (now != applied) {
++            applied = now
++            chat.teleRebind()
++        }
++    }
++
++    /** A bookmark of the chat was added, removed or renamed by the chat itself: its row is already redrawn. */
++    fun changed() {
++        applied = signature()
++        update(true)
++    }
++
++    fun update(animated: Boolean) {
++        val side = chat.teleSideControls() ?: return
++        val list = if (buttons()) Bookmarks.list(chat.currentAccount, chat.dialogId, chat.topicId) else emptyList()
++        side.showButton(ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS, list.isNotEmpty(), animated)
++        side.setButtonCount(ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS, list.size, animated)
++        chat.teleBookmarksMenu(list.isNotEmpty())
++    }
++
++    fun onClick(buttonId: Int): Boolean {
++        if (buttonId != ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS) return false
++        jumpToNext()
++        return true
++    }
++
++    /** Walks the bookmarks of the chat from the newest to the oldest, starting near what is on the screen. */
++    private fun jumpToNext() {
++        val list = Bookmarks.list(chat.currentAccount, chat.dialogId, chat.topicId)
++        if (list.isEmpty()) return
++        var target = list.last()
++        val range = visibleRange()
++        val last = list.indexOfFirst { it.messageId == lastJump }
++        if (last >= 0 && range != null && lastJump in range) {
++            if (last > 0) target = list[last - 1]
++        } else if (range != null) {
++            list.lastOrNull { it.messageId <= range.first }?.let { target = it }
++        }
++        lastJump = target.messageId
++        chat.scrollToMessageId(target.messageId, 0, true, 0, true, 0)
++    }
++
++    /** The ids of the messages on the screen, null when the list shows none. */
++    private fun visibleRange(): IntRange? {
++        val list = chat.chatListView ?: return null
++        var min = Int.MAX_VALUE
++        var max = 0
++        for (i in 0 until list.childCount) {
++            val view = list.getChildAt(i)
++            if (view.bottom <= 0 || view.top >= list.height) continue
++            val message = (view as? ChatMessageCell)?.messageObject ?: (view as? ChatActionCell)?.messageObject ?: continue
++            if (message.id <= 0) continue
++            min = minOf(min, message.id)
++            max = maxOf(max, message.id)
++        }
++        return if (max == 0) null else min..max
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index e4b0f9e35..1f719c5c8 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -64,7 +64,9 @@ object MessageMenu {
+         Item(ChatActivity.tele_option_copy_service_text, "Copy service text", "copy_service_text", TeleConfig.COPY_SERVICE_TEXT),
+         Item(ChatActivity.tele_option_copy_file_path, "Copy file path", "copy_file_path", TeleConfig.COPY_FILE_PATH),
+         Item(ChatActivity.tele_option_copy_alias, "Copy alias", "copy_alias", TeleConfig.USERNAME_ALIASES),
+-        Item(ChatActivity.tele_option_delete_alias, "Delete alias", "delete_alias", TeleConfig.USERNAME_ALIASES)
++        Item(ChatActivity.tele_option_delete_alias, "Delete alias", "delete_alias", TeleConfig.USERNAME_ALIASES),
++        Item(ChatActivity.tele_option_bookmark, "Bookmark", "bookmark", TeleConfig.BOOKMARKS),
++        Item(ChatActivity.tele_option_rename_bookmark, "Rename bookmark", "rename_bookmark", TeleConfig.BOOKMARKS)
+     )
+ 
+     private const val KEY = "message_menu_hidden"
+@@ -80,7 +82,9 @@ object MessageMenu {
+         ChatActivity.tele_option_copy_service_text to TeleConfig.COPY_SERVICE_TEXT,
+         ChatActivity.tele_option_copy_file_path to TeleConfig.COPY_FILE_PATH,
+         ChatActivity.tele_option_copy_alias to TeleConfig.USERNAME_ALIASES,
+-        ChatActivity.tele_option_delete_alias to TeleConfig.USERNAME_ALIASES
++        ChatActivity.tele_option_delete_alias to TeleConfig.USERNAME_ALIASES,
++        ChatActivity.tele_option_bookmark to TeleConfig.BOOKMARKS,
++        ChatActivity.tele_option_rename_bookmark to TeleConfig.BOOKMARKS
+     )
+ 
+     private fun loadOrder(): Map<Int, Int> {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleBookmarksActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleBookmarksActivity.kt
+new file mode 100644
+index 000000000..98cd593c7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleBookmarksActivity.kt
+@@ -0,0 +1,161 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.os.Bundle
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.helpers.Bookmarks
++
++/** The bookmarks of one chat (or one forum topic), or of the whole account when no chat is given. */
++class TeleBookmarksActivity : BaseFragment() {
++
++    private val account get() = arguments.getInt(ARG_ACCOUNT)
++    private val dialogId get() = arguments.getLong(ARG_DIALOG_ID)
++    private val topicId get() = arguments.getLong(ARG_TOPIC_ID)
++
++    private var entries: List<Bookmarks.Entry> = emptyList()
++    private var adapter: Adapter? = null
++
++    private fun reload() {
++        val showList = { list: List<Bookmarks.Entry> ->
++            entries = list
++            adapter?.notifyDataSetChanged()
++        }
++        if (dialogId == 0L) {
++            Bookmarks.loadAll(account) { if (fragmentView != null) showList(it) }
++        } else {
++            Bookmarks.load(account, dialogId) {
++                // the newest message first, like the button walks them
++                if (fragmentView != null) showList(Bookmarks.list(account, dialogId, topicId).asReversed())
++            }
++        }
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(LocaleController.getString(R.string.TeleBookmarks))
++        if (dialogId != 0L) actionBar.setSubtitle(TeleDraftsActivity.chatTitle(account, dialogId, topicId.toInt()))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment()
++            }
++        })
++        val container = FrameLayout(context)
++        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++        fragmentView = container
++        val list = RecyclerListView(context)
++        list.layoutManager = LinearLayoutManager(context)
++        list.isVerticalScrollBarEnabled = false
++        adapter = Adapter(context)
++        list.adapter = adapter
++        list.setOnItemClickListener { _, position -> entries.getOrNull(position)?.let { Bookmarks.open(this, account, it) } }
++        list.setOnItemLongClickListener { _, position ->
++            entries.getOrNull(position)?.let { showActions(it) }
++            true
++        }
++        container.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        reload()
++        return container
++    }
++
++    override fun onResume() {
++        super.onResume()
++        reload()
++    }
++
++    private fun showActions(entry: Bookmarks.Entry) {
++        val activity = parentActivity ?: return
++        val labels = arrayOf<CharSequence>(LocaleController.getString(R.string.TeleBookmarkRename), LocaleController.getString(R.string.TeleBookmarkRemove))
++        val dialog = AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(entry.title())
++            .setItems(labels) { _, which ->
++                if (which == 0) {
++                    Bookmarks.showRenameDialog(this, account, entry) { adapter?.notifyDataSetChanged() }
++                } else {
++                    Bookmarks.remove(account, entry.dialogId, entry.messageId)
++                    reload()
++                }
++            }
++            .create()
++        showDialog(dialog)
++        dialog.setItemColor(1, Theme.getColor(Theme.key_text_RedBold), Theme.getColor(Theme.key_text_RedRegular))
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        override fun getItemCount(): Int = maxOf(entries.size, 1)
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = entries.isNotEmpty()
++        override fun getItemViewType(position: Int): Int = if (entries.isEmpty()) TYPE_EMPTY else TYPE_ENTRY
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = if (viewType == TYPE_EMPTY) {
++                TextView(context).apply {
++                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++                    setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++                    gravity = Gravity.CENTER
++                    setPadding(AndroidUtilities.dp(32f), AndroidUtilities.dp(48f), AndroidUtilities.dp(32f), AndroidUtilities.dp(16f))
++                }
++            } else {
++                TeleChatRow(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            if (getItemViewType(position) == TYPE_EMPTY) {
++                (holder.itemView as TextView).text = LocaleController.getString(R.string.TeleNoBookmarks)
++                return
++            }
++            val entry = entries[position]
++            val row = holder.itemView as TeleChatRow
++            row.setPeer(account, entry.dialogId)
++            row.name.text = entry.title()
++            row.time.text = LocaleController.stringForMessageListDate(entry.created.toLong())
++            // the chat of the bookmark in the full list, the text it was made on when the user named it
++            row.preview.text = when {
++                dialogId == 0L -> TeleDraftsActivity.chatTitle(account, entry.dialogId, entry.topicId.toInt())
++                !entry.name.isNullOrBlank() -> entry.preview
++                else -> ""
++            }
++            row.counter.visibility = View.GONE
++            row.secondary.visibility = View.GONE
++        }
++    }
++
++    companion object {
++        const val MODE_BOOKMARKS = "bookmarks_list"
++        private const val ARG_ACCOUNT = "account"
++        private const val ARG_DIALOG_ID = "dialog_id"
++        private const val ARG_TOPIC_ID = "topic_id"
++        private const val TYPE_EMPTY = 0
++        private const val TYPE_ENTRY = 1
++
++        /** The bookmarks of a chat or a topic of it, or of the whole account for dialogId 0. */
++        @JvmStatic
++        @JvmOverloads
++        fun of(account: Int, dialogId: Long = 0L, topicId: Long = 0L): TeleBookmarksActivity =
++            TeleBookmarksActivity().apply {
++                arguments = Bundle().apply {
++                    putInt(ARG_ACCOUNT, account)
++                    putLong(ARG_DIALOG_ID, dialogId)
++                    putLong(ARG_TOPIC_ID, topicId)
++                }
++            }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index e246cdf6d..997b4bfbd 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -183,6 +183,8 @@ object TeleSearch {
+             section(1125, "No edited mark on bot messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1126, "Show the start parameter", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1124, "Hide phone numbers in profiles", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(1230, "Message bookmarks", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            screen(1231, "Bookmarks") { TeleBookmarksActivity.of(org.telegram.messenger.UserConfig.selectedAccount) },
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 200f6011c..5c44536fa 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -438,6 +438,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "words_global" -> presentFragment(TeleWordsActivity(UserConfig.selectedAccount, 0L))
+                 TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
+                 TeleDraftsActivity.MODE_DRAFTS -> presentFragment(TeleDraftsActivity())
++                TeleBookmarksActivity.MODE_BOOKMARKS -> presentFragment(TeleBookmarksActivity.of(UserConfig.selectedAccount))
+                 MODE_RULES -> presentFragment(TeleRulesActivity())
+                 "backup_export" -> exportSettings()
+                 "backup_import" -> importSettings()
+@@ -667,6 +668,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Peek at hidden last seen" to "Briefly show the last seen of a peer that hides it, then restore your own rule. The peer can see that you looked.",
+             "Streamer mode" to "Block screen capture in every window and hide the notification previews.",
+             "Hide phone numbers in profiles" to "Do not show the phone number row in a profile.",
++            "Message bookmarks" to "Adds Bookmark to the message menu and a button to walk the bookmarks of a chat. They stay on this device.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -814,6 +816,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Edited history"),
+                 toggle("Keep edit history", TeleConfig.EDIT_HISTORY),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Bookmarks"),
++                toggle("Message bookmarks", TeleConfig.BOOKMARKS),
++                link("Bookmarks", TeleBookmarksActivity.MODE_BOOKMARKS),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Links"),
+                 toggle("Disable link previews", TeleConfig.NO_LINK_PREVIEWS),
+                 choice("Automatic link previews", TeleConfig.LINK_PREVIEW_MODE),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 9731f58cd..8355407a3 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -98,4 +98,12 @@
+     <string name="TeleRemoveMineStopped">Stopped. Removed messages: %1$d</string>
+     <string name="TeleRemoveMineFailed">Couldn\'t remove messages: %1$s</string>
+     <string name="TeleRemoveMineCountFailed">Couldn\'t count your messages: %1$s</string>
++    <string name="TeleBookmark">Bookmark</string>
++    <string name="TeleBookmarkRemove">Remove bookmark</string>
++    <string name="TeleBookmarkRename">Rename bookmark</string>
++    <string name="TeleBookmarkName">Name</string>
++    <string name="TeleBookmarks">Bookmarks</string>
++    <string name="TeleNoBookmarks">No bookmarks yet. Bookmark a message from its menu.</string>
++    <string name="TeleBookmarkMessage">Message</string>
++    <string name="TeleBookmarkRemoveAsk">Remove this bookmark?</string>
+ </resources>

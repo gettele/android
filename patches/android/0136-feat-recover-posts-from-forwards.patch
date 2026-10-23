@@ -1,0 +1,501 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:05:03 +0300
+Subject: [PATCH 136/141] feat: recover posts from forwards
+
+---
+ .../telegram/ui/Cells/ChatMessageCell.java    |   2 +-
+ .../java/org/telegram/ui/ChatActivity.java    |   7 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  31 +++
+ .../main/java/tele/helpers/DeletedMessages.kt |  10 +
+ .../main/java/tele/helpers/RecoveredPosts.kt  | 262 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   3 +
+ .../src/main/res/values/strings_tele.xml      |   2 +
+ 9 files changed, 318 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index 92613ef3c..f16491cdd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -4199,7 +4199,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     private boolean checkDateMotionEvent(MotionEvent event) {
+-        if (!currentMessageObject.isImportedForward()) {
++        if (!currentMessageObject.isImportedForward() && !(teleKeptDeleted && tele.helpers.RecoveredPosts.isRecovered(currentMessageObject))) {
+             return false;
+         }
+         int x = (int) getEventX(event);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 6d5b8dd91..6170cddb0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -22059,7 +22059,7 @@ public class ChatActivity extends BaseFragment implements
+                     highlightTaskId = taskId;
+                     highlightPollOptionId = pollOptionId;
+                 }
+-                if (showScrollToMessageError && messageId != startLoadFromMessageId) {
++                if (showScrollToMessageError && messageId != startLoadFromMessageId && !tele.helpers.RecoveredPosts.recover(this, startLoadFromMessageId)) {
+                     BulletinFactory.of(this).createErrorBulletin(LocaleController.getString(R.string.MessageNotFound), themeDelegate).show();
+                 }
+                 scrollToMessage = obj;
+@@ -36903,6 +36903,7 @@ public class ChatActivity extends BaseFragment implements
+             scrollToMessageId(messageObject.messageOwner.fwd_from.saved_from_msg_id, messageObject.getId(), true, 0, true, 0);
+             return;
+         }
++        tele.helpers.RecoveredPosts.note(currentAccount, messageObject, null, messageObject.messageOwner.fwd_from.saved_from_peer.channel_id, messageObject.messageOwner.fwd_from.saved_from_msg_id);
+         Bundle args = new Bundle();
+         if (messageObject.messageOwner.fwd_from.saved_from_peer.channel_id != 0) {
+             args.putLong("chat_id", messageObject.messageOwner.fwd_from.saved_from_peer.channel_id);
+@@ -40402,6 +40403,9 @@ public class ChatActivity extends BaseFragment implements
+ 
+         @Override
+         public void didPressTime(ChatMessageCell cell) {
++            if (tele.helpers.RecoveredPosts.showSource(ChatActivity.this, cell.getMessageObject())) {
++                return;
++            }
+             createUndoView();
+             if (undoView == null) {
+                 return;
+@@ -40918,6 +40922,7 @@ public class ChatActivity extends BaseFragment implements
+                     scrollToMessageId(postId, cell.getMessageObject().getId(), true, 0, false, 0);
+                 }
+             } else if (currentChat == null || chat.id != currentChat.id || isThreadChat()) {
++                tele.helpers.RecoveredPosts.note(currentAccount, cell.getMessageObject(), cell.getCurrentMessagesGroup(), chat.id, postId);
+                 Bundle args = new Bundle();
+                 args.putLong("chat_id", chat.id);
+                 if (postId != 0) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 6b0230b1d..33881b108 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -132,6 +132,8 @@ object TeleConfig {
+     @JvmField
+     val DELETED_RETENTION = StringItem("deleted_retention", "forever")
+     @JvmField
++    val RECOVER_FORWARDED_POSTS = BoolItem("recover_forwarded_posts", false)
++    @JvmField
+     val SELECT_SERVICE_MESSAGES = BoolItem("select_service_messages", true)
+     @JvmField
+     val DELETED_MARKER = StringItem("deleted_marker", "fade")
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index cc0da16a9..5fc629eb0 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -288,6 +288,30 @@ object TeleDatabaseHelper {
+         db.delete("tele_changelog", "account = ?", arrayOf(account.toString()))
+     }
+ 
++    class RecoveredRow(val messageId: Int, val sourceDialogId: Long, val sourceMessageId: Int, val sourceName: String)
++
++    fun putRecoveredPost(account: Int, dialogId: Long, messageId: Int, sourceDialogId: Long, sourceMessageId: Int, sourceName: String) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("dialog_id", dialogId)
++            put("message_id", messageId)
++            put("source_dialog_id", sourceDialogId)
++            put("source_message_id", sourceMessageId)
++            put("source_name", sourceName)
++        }
++        db.insertWithOnConflict("tele_recovered_posts", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++    }
++
++    fun getRecoveredPosts(account: Int, dialogId: Long): List<RecoveredRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<RecoveredRow>()
++        db.rawQuery("SELECT message_id, source_dialog_id, source_message_id, source_name FROM tele_recovered_posts WHERE account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString())).use {
++            while (it.moveToNext()) result.add(RecoveredRow(it.getInt(0), it.getLong(1), it.getInt(2), it.getString(3) ?: ""))
++        }
++        return result
++    }
++
+     class DockedRow(val dialogId: Long, val threadId: Long, val data: ByteArray)
+ 
+     fun putDocked(account: Int, dialogId: Long, threadId: Long, data: ByteArray?) {
+@@ -333,6 +357,7 @@ object TeleDatabaseHelper {
+             createDraftsTable(db)
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_docked (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, thread_id))")
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_changelog (account INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, message_id))")
++            createRecoveredPostsTable(db)
+         }
+ 
+         // the retention stamp of the edit versions and the media file names of the kept messages
+@@ -364,5 +389,11 @@ object TeleDatabaseHelper {
+             if ("name" !in columns) db.execSQL("ALTER TABLE tele_drafts ADD COLUMN name TEXT")
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_drafts_dialog ON tele_drafts(account, dialog_id, topic_id, created)")
+         }
++
++        private fun createRecoveredPostsTable(db: SQLiteDatabase) {
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_recovered_posts (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, source_dialog_id INTEGER NOT NULL, source_message_id INTEGER NOT NULL, source_name TEXT NOT NULL, PRIMARY KEY (account, dialog_id, message_id))")
++            // the marker lives and dies with the kept copy; REPLACE of the kept row doesn't fire it
++            db.execSQL("CREATE TRIGGER IF NOT EXISTS tele_recovered_posts_forget AFTER DELETE ON tele_deleted_messages BEGIN DELETE FROM tele_recovered_posts WHERE account = old.account AND dialog_id = old.dialog_id AND message_id = old.message_id; END")
++        }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index 41df3f6a7..ef7b465b0 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -63,6 +63,7 @@ object DeletedMessages {
+     @JvmStatic
+     fun removeKeptDb(account: Int, dialogId: Long, messageId: Int) {
+         TeleDatabaseHelper.removeDeletedMessage(account, dialogId, messageId)
++        RecoveredPosts.forget(account, dialogId, messageId)
+     }
+ 
+     /** Drops the kept mark of messages whose deletion failed on the server; returns the ids that were kept. Storage queue only. */
+@@ -94,6 +95,13 @@ object DeletedMessages {
+         val ids = TeleDatabaseHelper.getKeptIds(account, dialogId)
+         val dialogIds = keptInChat.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap.newKeySet() }
+         dialogIds.addAll(ids)
++        RecoveredPosts.load(account, dialogId)
++    }
++
++    /** Marks the messages that were put to the archive without being deleted first as kept in the chat. */
++    fun markKept(account: Int, dialogId: Long, ids: Collection<Int>) {
++        ensureLoaded(account, dialogId)
++        keptInChat.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap.newKeySet() }.addAll(ids)
+     }
+ 
+     @JvmStatic
+@@ -183,6 +191,7 @@ object DeletedMessages {
+ 
+     fun deleteAll(account: Int, dialogId: Long? = null) {
+         TeleDatabaseHelper.deleteDeletedMessages(account, dialogId)
++        RecoveredPosts.forgetAll(account, dialogId)
+     }
+ 
+     // the messages being purged: their local copies are deleted for good, not archived again
+@@ -200,6 +209,7 @@ object DeletedMessages {
+         purging.addAll(keys)
+         keptInChat[account]?.get(dialogId)?.removeAll(ids.toSet())
+         for (id in ids) TeleDatabaseHelper.removeDeletedMessage(account, dialogId, id)
++        for (id in ids) RecoveredPosts.forget(account, dialogId, id)
+         org.telegram.messenger.MessagesController.getInstance(account).deleteMessagesFromUser(ArrayList(ids), null, null, dialogId, 0, false, 0)
+         // the storage and the open chat see the deletion later, the mark has to outlive both
+         AndroidUtilities.runOnUIThread({ purging.removeAll(keys.toSet()) }, 60_000)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt b/TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt
+new file mode 100644
+index 000000000..48f6fa1a6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt
+@@ -0,0 +1,262 @@
++package tele.helpers
++
++import android.os.SystemClock
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.lang.ref.WeakReference
++import java.util.concurrent.ConcurrentHashMap
++
++/**
++ * A deleted channel post comes back from the forward it was opened from:
++ * the post is rebuilt locally, kept like a deleted message and marked with the chat of the forward.
++ */
++object RecoveredPosts {
++    class Source(@JvmField val dialogId: Long, @JvmField val messageId: Int, @JvmField val name: String)
++
++    private class Pending(
++        val account: Int,
++        val channelId: Long,
++        val postId: Int,
++        val forwards: List<TLRPC.Message>,
++        val groupSize: Int,
++        val at: Long
++    )
++
++    private const val PENDING_TIMEOUT = 120_000L
++
++    @Volatile
++    private var pending: Pending? = null
++
++    // account -> dialog -> message -> where the post was recovered from
++    private val sources = ConcurrentHashMap<Int, ConcurrentHashMap<Long, ConcurrentHashMap<Int, Source>>>()
++
++    private fun enabled(): Boolean = TeleConfig.KEEP_DELETED_MESSAGES.value && TeleConfig.RECOVER_FORWARDED_POSTS.value
++
++    /** The id of the channel post the message is a forward of, 0 when it isn't a forward from that channel. */
++    private fun forwardedPost(message: TLRPC.Message?, channelId: Long): Int {
++        val fwd = message?.fwd_from ?: return 0
++        val from = fwd.from_id
++        return if (from != null && from.channel_id == channelId) fwd.channel_post else 0
++    }
++
++    /** Remembers the forward the user is jumping from to its original post; only the last jump counts. */
++    @JvmStatic
++    fun note(account: Int, message: MessageObject?, group: MessageObject.GroupedMessages?, channelId: Long, postId: Int) {
++        pending = null
++        if (!enabled() || message == null || postId <= 0 || channelId <= 0) return
++        val owner = message.messageOwner ?: return
++        val dialogId = message.dialogId
++        if (DialogObject.isEncryptedDialog(dialogId) || dialogId == -channelId || owner.id <= 0) return
++        if (forwardedPost(owner, channelId) != postId) return
++        val members = group?.messages?.takeIf { it.contains(message) } ?: arrayListOf(message)
++        val forwards = members.mapNotNull { it.messageOwner }.filter { forwardedPost(it, channelId) > 0 }
++        pending = Pending(account, channelId, postId, forwards, members.size, SystemClock.elapsedRealtime())
++    }
++
++    /**
++     * The chat didn't find the post it was opened at: when the jump came from a forward of it,
++     * the post is restored from the forward. Returns true when the restoring took over the "not found" report.
++     */
++    @JvmStatic
++    fun recover(chat: ChatActivity, postId: Int): Boolean {
++        val data = pending ?: return false
++        if (data.postId != postId || data.account != chat.getCurrentAccount() || chat.getDialogId() != -data.channelId) return false
++        pending = null
++        if (!enabled() || SystemClock.elapsedRealtime() - data.at > PENDING_TIMEOUT) return false
++        val channel = MessagesController.getInstance(data.account).getChat(data.channelId) ?: return false
++        if (!ChatObject.isChannelAndNotMegaGroup(channel) || channel is TLRPC.TL_channelForbidden) return false
++        val weak = WeakReference(chat)
++        MessagesStorage.getInstance(data.account).storageQueue.postRunnable {
++            val shown = runCatching { store(data) }.onFailure { FileLog.e(it) }.getOrDefault(false)
++            AndroidUtilities.runOnUIThread {
++                val target = weak.get() ?: return@runOnUIThread
++                if (target.isFinished || target.parentActivity == null) return@runOnUIThread
++                if (shown) {
++                    target.scrollToMessageId(data.postId, 0, true, 0, true, 0)
++                } else {
++                    BulletinFactory.of(target).createErrorBulletin(LocaleController.getString(R.string.MessageNotFound), target.themeDelegate).show()
++                }
++            }
++        }
++        return true
++    }
++
++    // storage queue: true when the post is in the local storage as a kept message
++    private fun store(data: Pending): Boolean {
++        val account = data.account
++        val dialogId = -data.channelId
++        val storage = MessagesStorage.getInstance(account)
++        val ids = data.forwards.map { forwardedPost(it, data.channelId) }.distinct()
++        val existing = HashSet<Int>()
++        val cursor = storage.database.queryFinalized("SELECT mid FROM messages_v2 WHERE uid = $dialogId AND mid IN (${ids.joinToString(",")})")
++        try {
++            while (cursor.next()) existing.add(cursor.intValue(0))
++        } finally {
++            cursor.dispose()
++        }
++        if (data.postId in existing) return DeletedMessages.isKeptDb(account, dialogId, data.postId)
++        val missing = data.forwards.filter { forwardedPost(it, data.channelId) !in existing }
++        val grouped = if (data.groupSize > 1 && missing.size == data.groupSize) missing[0].grouped_id else 0L
++        val posts = ArrayList<TLRPC.Message>()
++        val sourcesOf = HashMap<Int, Source>()
++        for (forward in missing) {
++            val post = build(forward, data.channelId, grouped) ?: continue
++            if (!DeletedMessages.keepInChat(account, post, false)) continue
++            if (posts.any { it.id == post.id }) continue
++            posts.add(post)
++            val forwardDialog = MessageObject.getDialogId(forward)
++            sourcesOf[post.id] = Source(forwardDialog, forward.id, nameOf(account, forwardDialog))
++        }
++        if (posts.none { it.id == data.postId }) return false
++        // the kept copy needs the row of the storage to be shown in the chat
++        storage.putMessages(posts, true, false, true, 0, ChatActivity.MODE_DEFAULT, 0)
++        for (post in posts) {
++            DeletedMessages.archiveMessage(account, post)
++            val source = sourcesOf[post.id] ?: continue
++            TeleDatabaseHelper.putRecoveredPost(account, dialogId, post.id, source.dialogId, source.messageId, source.name)
++            put(account, dialogId, post.id, source)
++        }
++        DeletedMessages.markKept(account, dialogId, posts.map { it.id })
++        return true
++    }
++
++    private fun build(forward: TLRPC.Message, channelId: Long, grouped: Long): TLRPC.Message? {
++        val fwd = forward.fwd_from ?: return null
++        val post = fwd.channel_post
++        if (post <= 0 || forward.action != null && forward.action !is TLRPC.TL_messageActionEmpty) return null
++        val stream = SerializedData(forward.objectSize)
++        val copy: TLRPC.Message?
++        try {
++            forward.serializeToStream(stream)
++            val read = SerializedData(stream.toByteArray())
++            try {
++                copy = TLRPC.Message.TLdeserialize(read, read.readInt32(false), false)
++            } finally {
++                read.cleanup()
++            }
++        } finally {
++            stream.cleanup()
++        }
++        if (copy == null) return null
++        copy.id = post
++        copy.dialog_id = -channelId
++        copy.peer_id = TLRPC.TL_peerChannel().also { it.channel_id = channelId }
++        copy.from_id = null
++        copy.saved_peer_id = null
++        copy.fwd_from = null
++        copy.reply_to = null
++        copy.reply_markup = null
++        copy.replies = null
++        copy.reactions = null
++        copy.factcheck = null
++        copy.suggested_post = null
++        copy.restriction_reason.clear()
++        copy.guestchat_via_from = null
++        copy.summary_from_language = null
++        copy.from_rank = null
++        copy.via_business_bot_id = 0
++        copy.views = 0
++        copy.forwards = 0
++        copy.edit_date = 0
++        copy.ttl_period = 0
++        copy.quick_reply_shortcut_id = 0
++        copy.effect = 0
++        copy.paid_message_stars = 0
++        copy.report_delivery_until_date = 0
++        copy.schedule_repeat_period = 0
++        copy.from_boosts_applied = 0
++        copy.post = true
++        copy.out = false
++        copy.unread = false
++        copy.mentioned = false
++        copy.media_unread = false
++        copy.pinned = false
++        copy.from_scheduled = false
++        copy.legacy = false
++        copy.send_state = 0
++        copy.local_id = 0
++        copy.attachPath = ""
++        copy.date = if (fwd.date != 0) fwd.date else forward.date
++        copy.post_author = fwd.post_author
++        copy.grouped_id = grouped
++        if (copy.message == null) copy.message = ""
++        // the forward's flags describe the forward: keep only what the post has
++        var flags = 0
++        if (copy.media != null) flags = flags or TLRPC.MESSAGE_FLAG_HAS_MEDIA
++        if (copy.entities.isNotEmpty()) flags = flags or TLRPC.MESSAGE_FLAG_HAS_ENTITIES
++        if (copy.via_bot_id != 0L) flags = flags or TLRPC.MESSAGE_FLAG_HAS_BOT_ID
++        if (!copy.post_author.isNullOrEmpty()) flags = flags or (1 shl 16)
++        if (grouped != 0L) flags = flags or (1 shl 17)
++        copy.flags = flags
++        copy.flags2 = if (copy.rich_message != null) 1 shl 13 else 0
++        return copy
++    }
++
++    private fun nameOf(account: Int, dialogId: Long): String {
++        if (dialogId == UserConfig.getInstance(account).clientUserId) return LocaleController.getString(R.string.SavedMessages)
++        return MessagesController.getInstance(account).getPeerName(dialogId)
++    }
++
++    private fun put(account: Int, dialogId: Long, messageId: Int, source: Source) {
++        sources.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap() }[messageId] = source
++    }
++
++    @JvmStatic
++    fun load(account: Int, dialogId: Long) {
++        for (row in TeleDatabaseHelper.getRecoveredPosts(account, dialogId)) {
++            put(account, dialogId, row.messageId, Source(row.sourceDialogId, row.sourceMessageId, row.sourceName))
++        }
++    }
++
++    @JvmStatic
++    fun forget(account: Int, dialogId: Long, messageId: Int) {
++        sources[account]?.get(dialogId)?.remove(messageId)
++    }
++
++    @JvmStatic
++    fun forgetAll(account: Int, dialogId: Long?) {
++        if (dialogId == null) sources.remove(account) else sources[account]?.remove(dialogId)
++    }
++
++    private fun sourceOf(messageObject: MessageObject?): Source? {
++        if (messageObject == null || messageObject.messageOwner == null) return null
++        val account = messageObject.currentAccount
++        val dialogId = messageObject.dialogId
++        val source = sources[account]?.get(dialogId)?.get(messageObject.id) ?: return null
++        return if (DeletedMessages.isKept(account, dialogId, messageObject.id)) source else null
++    }
++
++    /** Whether the message is a kept post that was recovered from a forward; the bound cells already loaded the dialog. */
++    @JvmStatic
++    fun isRecovered(messageObject: MessageObject?): Boolean = sourceOf(messageObject) != null
++
++    @JvmStatic
++    fun sourceText(messageObject: MessageObject?): CharSequence? {
++        val source = sourceOf(messageObject) ?: return null
++        val account = messageObject!!.currentAccount
++        val name = nameOf(account, source.dialogId).ifEmpty { source.name }
++        return if (name.isEmpty()) LocaleController.getString(R.string.TeleRecoveredFromUnknown) else LocaleController.formatString(R.string.TeleRecoveredFrom, name)
++    }
++
++    /** Tells where the recovered post came from; false when the message isn't one. */
++    @JvmStatic
++    fun showSource(chat: ChatActivity, messageObject: MessageObject?): Boolean {
++        val text = sourceText(messageObject) ?: return false
++        BulletinFactory.of(chat).createSimpleBulletin(R.raw.info, text).show()
++        return true
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 200ff9370..c1f4b6ab4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -141,6 +141,7 @@ object TeleSearch {
+             section(1194, "Keep deleted messages in Saved Messages", "messages", TeleSettingsActivity.MODE_MESSAGES, "In Saved Messages"),
+             section(1195, "Keep the messages you delete", "messages", TeleSettingsActivity.MODE_MESSAGES, "Ones you delete"),
+             section(1196, "Keep deleted for", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1200, "Recover channel posts from forwards", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(GUID_DATA + 5, "Deleted messages") { TeleDeletedMessagesActivity() },
+             screen(GUID_DATA + 11, "Saved drafts") { TeleDraftsActivity() },
+             section(GUID_DATA + 6, "Keep edit history", "messages", TeleSettingsActivity.MODE_MESSAGES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 29c8a690e..63be1a549 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -513,6 +513,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.KEEP_DELETED_SAVED.key,
+                 TeleConfig.KEEP_DELETED_OWN.key,
+                 TeleConfig.DELETED_RETENTION.key,
++                TeleConfig.RECOVER_FORWARDED_POSTS.key,
+                 TeleConfig.DELETED_MARKER.key,
+                 TeleConfig.DELETED_REPLY.key
+             ),
+@@ -646,6 +647,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "In bot chats" to "Keep messages deleted in chats with bots.",
+             "In Saved Messages" to "Keep messages deleted in Saved Messages.",
+             "Ones you delete" to "Keep the messages you delete from this device.",
++            "Recover channel posts from forwards" to "Show a deleted channel post from its forward when you open it from there.",
+             "Keep edit history" to "Save previous versions of edited messages on this device.",
+             "Username aliases" to "Link local aliases to chats and usernames.",
+             "Usernames from the server" to "Show usernames and aliases provided by the tele server.",
+@@ -803,6 +805,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("In Saved Messages", TeleConfig.KEEP_DELETED_SAVED),
+                 toggle("Ones you delete", TeleConfig.KEEP_DELETED_OWN),
+                 Row(TYPE_VALUE, "Keep deleted for", value = DELETED_RETENTION_LABELS[arrayOf("1", "7", "30", "forever").indexOf(TeleConfig.DELETED_RETENTION.value).let { if (it < 0) 3 else it }], item = TeleConfig.DELETED_RETENTION),
++                toggle("Recover channel posts from forwards", TeleConfig.RECOVER_FORWARDED_POSTS),
+                 Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
+                 Row(TYPE_VALUE, "Reply to deleted messages", value = if (TeleConfig.DELETED_REPLY.value == "quote") "Quote them" else "Skip them", item = TeleConfig.DELETED_REPLY),
+                 link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 1e8b73b6d..3fba7ed37 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -27,6 +27,8 @@
+     <string name="TeleDeletedClearChat">Forget the deleted messages of this chat? They also leave the chat itself.</string>
+     <string name="TeleDeletedClearAll">Forget all the deleted messages? They also leave the chats themselves.</string>
+     <string name="TeleDeleteFailed">Couldn\'t delete messages: %1$s</string>
++    <string name="TeleRecoveredFrom">Recovered from a forward in %1$s</string>
++    <string name="TeleRecoveredFromUnknown">Recovered from a forward</string>
+ 
+     <string name="TeleEditHistory">Edit history</string>
+     <string name="TeleNoEditHistory">No edit history</string>

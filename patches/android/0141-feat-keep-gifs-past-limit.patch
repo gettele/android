@@ -1,0 +1,569 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:02:13 +0300
+Subject: [PATCH 141/141] feat: keep gifs past limit
+
+---
+ .../messenger/MediaDataController.java        |  37 ++-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  39 +++
+ .../src/main/java/tele/helpers/PastLimit.kt   | 290 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ 7 files changed, 373 insertions(+), 5 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+index e57795128..f785c019e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+@@ -346,6 +346,7 @@ public class MediaDataController extends BaseController {
+     private boolean[] emojiStatusesFetching = new boolean[4];
+ 
+     public void cleanup() {
++        tele.helpers.PastLimit.cleanup(currentAccount);
+         for (int a = 0; a < recentStickers.length; a++) {
+             if (recentStickers[a] != null) {
+                 recentStickers[a].clear();
+@@ -911,6 +912,12 @@ public class MediaDataController extends BaseController {
+ 
+     public ArrayList<TLRPC.Document> getRecentStickers(int type, boolean firstEmpty) {
+         ArrayList<TLRPC.Document> arrayList = recentStickers[type];
++        if (type == TYPE_FAVE) {
++            ArrayList<TLRPC.Document> merged = tele.helpers.PastLimit.faved(currentAccount, arrayList);
++            if (merged != arrayList) {
++                return new ArrayList<>(merged);
++            }
++        }
+         if (type == TYPE_PREMIUM_STICKERS) {
+             return new ArrayList<>(recentStickers[type]);
+         }
+@@ -922,7 +929,7 @@ public class MediaDataController extends BaseController {
+     }
+ 
+     public ArrayList<TLRPC.Document> getRecentStickersNoCopy(int type) {
+-        return recentStickers[type];
++        return type == TYPE_FAVE ? tele.helpers.PastLimit.faved(currentAccount, recentStickers[type]) : recentStickers[type];
+     }
+ 
+     public boolean isStickerInFavorites(TLRPC.Document document) {
+@@ -935,7 +942,7 @@ public class MediaDataController extends BaseController {
+                 return true;
+             }
+         }
+-        return false;
++        return tele.helpers.PastLimit.hasFaved(currentAccount, document.id);
+     }
+ 
+     public void clearRecentStickers() {
+@@ -960,6 +967,9 @@ public class MediaDataController extends BaseController {
+         if (type == TYPE_GREETINGS || !MessageObject.isStickerDocument(document) && !MessageObject.isAnimatedStickerDocument(document, true)) {
+             return;
+         }
++        if (type == TYPE_FAVE && tele.helpers.PastLimit.beforeFaved(currentAccount, document, remove, recentStickers[type])) {
++            return;
++        }
+         boolean found = false;
+         for (int a = 0; a < recentStickers[type].size(); a++) {
+             TLRPC.Document image = recentStickers[type].get(a);
+@@ -1021,7 +1031,11 @@ public class MediaDataController extends BaseController {
+             maxCount = getMessagesController().maxRecentStickersCount;
+         }
+         if (recentStickers[type].size() > maxCount || remove) {
++            int sizeBefore = recentStickers[type].size();
+             TLRPC.Document old = remove ? document : recentStickers[type].remove(recentStickers[type].size() - 1);
++            if (type == TYPE_FAVE && !remove) {
++                tele.helpers.PastLimit.keepFaved(currentAccount, old, sizeBefore);
++            }
+             getMessagesStorage().getStorageQueue().postRunnable(() -> {
+                 int cacheType;
+                 if (type == TYPE_IMAGE) {
+@@ -1051,16 +1065,21 @@ public class MediaDataController extends BaseController {
+     }
+ 
+     public ArrayList<TLRPC.Document> getRecentGifs() {
+-        return new ArrayList<>(recentGifs);
++        return tele.helpers.PastLimit.gifs(currentAccount, new ArrayList<>(recentGifs));
+     }
+ 
+     public void removeRecentGif(TLRPC.Document document) {
++        boolean inServerList = false;
+         for (int i = 0, N = recentGifs.size(); i < N; i++) {
+             if (recentGifs.get(i).id == document.id) {
+                 recentGifs.remove(i);
++                inServerList = true;
+                 break;
+             }
+         }
++        if (tele.helpers.PastLimit.removeGif(currentAccount, document.id, inServerList)) {
++            return;
++        }
+         TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
+         req.id = new TLRPC.TL_inputDocument();
+         req.id.id = document.id;
+@@ -1093,7 +1112,7 @@ public class MediaDataController extends BaseController {
+                 return true;
+             }
+         }
+-        return false;
++        return tele.helpers.PastLimit.hasGif(currentAccount, document.id);
+     }
+ 
+     public void addRecentGif(TLRPC.Document document, int date, boolean showReplaceBulletin) {
+@@ -1113,8 +1132,10 @@ public class MediaDataController extends BaseController {
+         if (!found) {
+             recentGifs.add(0, document);
+         }
++        tele.helpers.PastLimit.forgetGif(currentAccount, document.id);
+         if ((recentGifs.size() > getMessagesController().savedGifsLimitDefault && !UserConfig.getInstance(currentAccount).isPremium()) || recentGifs.size() > getMessagesController().savedGifsLimitPremium) {
+             TLRPC.Document old = recentGifs.remove(recentGifs.size() - 1);
++            boolean kept = tele.helpers.PastLimit.keepGif(currentAccount, old);
+             getMessagesStorage().getStorageQueue().postRunnable(() -> {
+                 try {
+                     getMessagesStorage().getDatabase().executeFast("DELETE FROM web_recent_v3 WHERE id = '" + old.id + "' AND type = 2").stepThis().dispose();
+@@ -1122,7 +1143,7 @@ public class MediaDataController extends BaseController {
+                     FileLog.e(e);
+                 }
+             });
+-            if (showReplaceBulletin) {
++            if (showReplaceBulletin && !kept) {
+                 AndroidUtilities.runOnUIThread(() -> {
+                     NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_STICKER, document, StickerSetBulletinLayout.TYPE_REPLACED_TO_FAVORITES_GIFS);
+                 });
+@@ -1909,6 +1930,9 @@ public class MediaDataController extends BaseController {
+     }
+ 
+     public void loadRecents(int type, boolean gif, boolean cache, boolean force) {
++        if (gif || type == TYPE_FAVE) {
++            tele.helpers.PastLimit.preload(currentAccount);
++        }
+         if (gif) {
+             if (loadingRecentGifs) {
+                 return;
+@@ -2180,6 +2204,9 @@ public class MediaDataController extends BaseController {
+ 
+                 }
+                 if (documents != null) {
++                    if (gif || type == TYPE_FAVE) {
++                        tele.helpers.PastLimit.reconcile(currentAccount, gif, gif ? recentGifs : recentStickers[type], documents);
++                    }
+                     if (gif) {
+                         recentGifs = documents;
+                     } else {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 323d1d2b4..c2c2addf7 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -211,6 +211,8 @@ object TeleConfig {
+     @JvmField
+     val QUICK_REPLIES_IN_GROUPS = BoolItem("quick_replies_in_groups", false)
+     @JvmField
++    val KEEP_MEDIA_PAST_LIMIT = BoolItem("keep_media_past_limit", false)
++    @JvmField
+     val CALCMULA = BoolItem("calcmula", false)
+     @JvmField
+     val EDITOR_EYEDROPPER = BoolItem("editor_eyedropper", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 4d1ce6ea5..a1b560427 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -135,6 +135,9 @@ object TeleHooks {
+         if (item === TeleConfig.REDUCE_MOTION) {
+             tele.helpers.TeleReduceMotion.apply()
+         }
++        if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
++            tele.helpers.PastLimit.onToggled()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index c3428f824..a6690aa0e 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -470,6 +470,44 @@ object TeleDatabaseHelper {
+         return 0
+     }
+ 
++    class PastLimitRow(val kind: Int, val docId: Long, val data: ByteArray)
++
++    // ordered by the position inside the kind: the newest first
++    fun getPastLimit(account: Int): List<PastLimitRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<PastLimitRow>()
++        db.rawQuery("SELECT kind, doc_id, data FROM tele_past_limit WHERE account = ? ORDER BY kind, position", arrayOf(account.toString())).use { c ->
++            while (c.moveToNext()) result.add(PastLimitRow(c.getInt(0), c.getLong(1), c.getBlob(2)))
++        }
++        return result
++    }
++
++    fun replacePastLimit(account: Int, kind: Int, rows: List<PastLimitRow>) {
++        val db = helper?.writableDatabase ?: return
++        db.beginTransaction()
++        try {
++            db.delete("tele_past_limit", "account = ? AND kind = ?", arrayOf(account.toString(), kind.toString()))
++            rows.forEachIndexed { index, row ->
++                val values = ContentValues().apply {
++                    put("account", account)
++                    put("kind", kind)
++                    put("doc_id", row.docId)
++                    put("position", index)
++                    put("data", row.data)
++                }
++                db.insertWithOnConflict("tele_past_limit", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++            }
++            db.setTransactionSuccessful()
++        } finally {
++            db.endTransaction()
++        }
++    }
++
++    fun removePastLimit(account: Int) {
++        val db = helper?.writableDatabase ?: return
++        db.delete("tele_past_limit", "account = ?", arrayOf(account.toString()))
++    }
++
+     private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 9) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+@@ -492,6 +530,7 @@ object TeleDatabaseHelper {
+             createRecoveredPostsTable(db)
+             createBookmarkTables(db)
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_read_log (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, till INTEGER NOT NULL, date INTEGER NOT NULL, PRIMARY KEY (account, dialog_id, till))")
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_past_limit (account INTEGER NOT NULL, kind INTEGER NOT NULL, doc_id INTEGER NOT NULL, position INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, kind, doc_id))")
+         }
+ 
+         // the retention stamp of the edit versions and the media file names of the kept messages
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt b/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
+new file mode 100644
+index 000000000..e6822c7a0
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
+@@ -0,0 +1,290 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.Components.Bulletin
++import org.telegram.ui.Components.StickerSetBulletinLayout
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * Saved GIFs and favorite stickers that no longer fit the server limit stay in tele.db and are merged
++ * into the lists the stock code shows. The stock lists keep mirroring the server, so nothing local
++ * is ever sent to it.
++ */
++object PastLimit {
++    const val GIFS = 0
++    const val FAVED = 1
++    private const val KINDS = 2
++    private const val TYPE_FAVE = 2 // MediaDataController.TYPE_FAVE
++
++    private class State {
++        // the newest first
++        val lists = Array(KINDS) { ArrayList<TLRPC.Document>() }
++        // the changes made before the stored rows arrived
++        val forgotten = Array(KINDS) { HashSet<Long>() }
++        val dirty = BooleanArray(KINDS)
++        var loaded = false
++        var loading = false
++    }
++
++    private val states = arrayOfNulls<State>(UserConfig.MAX_ACCOUNT_COUNT)
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.KEEP_MEDIA_PAST_LIMIT.value
++
++    @Synchronized
++    private fun state(account: Int): State {
++        var s = states[account]
++        if (s == null) {
++            s = State()
++            states[account] = s
++        }
++        return s
++    }
++
++    // reads the stored rows once per session without blocking the caller
++    @Synchronized
++    @JvmStatic
++    fun preload(account: Int) {
++        if (!enabled()) return
++        val s = state(account)
++        if (s.loaded || s.loading) return
++        s.loading = true
++        Utilities.globalQueue.postRunnable {
++            val rows = runCatching { TeleDatabaseHelper.getPastLimit(account) }.onFailure { FileLog.e(it) }.getOrDefault(emptyList())
++            val decoded = rows.mapNotNull { row -> decode(row.data)?.let { row.kind to it } }
++            AndroidUtilities.runOnUIThread { finishLoad(account, s, decoded) }
++        }
++    }
++
++    @Synchronized
++    private fun finishLoad(account: Int, s: State, rows: List<Pair<Int, TLRPC.Document>>) {
++        if (states[account] !== s) return
++        for ((kind, document) in rows) {
++            if (kind !in 0 until KINDS || document.id in s.forgotten[kind]) continue
++            val list = s.lists[kind]
++            if (list.none { it.id == document.id }) list.add(document)
++        }
++        s.loaded = true
++        s.loading = false
++        for (kind in 0 until KINDS) {
++            s.forgotten[kind].clear()
++            if (s.dirty[kind]) {
++                s.dirty[kind] = false
++                persist(account, s, kind)
++            }
++        }
++        if (s.lists.any { it.isNotEmpty() }) notifyLists(account)
++    }
++
++    private fun limit(account: Int, kind: Int): Int {
++        val controller = MessagesController.getInstance(account)
++        val premium = UserConfig.getInstance(account).isPremium
++        return if (kind == GIFS) {
++            if (premium) controller.savedGifsLimitPremium else controller.savedGifsLimitDefault
++        } else {
++            if (premium) controller.stickersFavedLimitPremium else controller.stickersFavedLimitDefault
++        }
++    }
++
++    private fun persist(account: Int, s: State, kind: Int) {
++        if (!s.loaded) {
++            s.dirty[kind] = true
++            return
++        }
++        val snapshot = ArrayList(s.lists[kind])
++        Utilities.globalQueue.postRunnable {
++            runCatching {
++                val rows = snapshot.mapNotNull { document -> encode(document)?.let { TeleDatabaseHelper.PastLimitRow(kind, document.id, it) } }
++                TeleDatabaseHelper.replacePastLimit(account, kind, rows)
++            }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    private fun encode(document: TLRPC.Document): ByteArray? {
++        val stream = SerializedData()
++        return try {
++            document.serializeToStream(stream)
++            stream.toByteArray()
++        } catch (e: Exception) {
++            FileLog.e(e)
++            null
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    private fun decode(data: ByteArray): TLRPC.Document? {
++        val stream = SerializedData(data)
++        return try {
++            TLRPC.Document.TLdeserialize(stream, stream.readInt32(false), false)?.takeIf { it !is TLRPC.TL_documentEmpty && it.id != 0L }
++        } catch (e: Exception) {
++            FileLog.e(e)
++            null
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    private fun notifyLists(account: Int) {
++        val center = NotificationCenter.getInstance(account)
++        center.postNotificationName(NotificationCenter.recentDocumentsDidLoad, true, 0)
++        center.postNotificationName(NotificationCenter.recentDocumentsDidLoad, false, TYPE_FAVE)
++    }
++
++    // adds the documents of the extras the server list lacks; the same instance comes back when there is nothing to add
++    @Synchronized
++    private fun merge(account: Int, kind: Int, server: ArrayList<TLRPC.Document>): ArrayList<TLRPC.Document> {
++        if (!enabled()) return server
++        preload(account)
++        val extra = state(account).lists[kind]
++        if (extra.isEmpty()) return server
++        val ids = HashSet<Long>(server.size * 2)
++        server.forEach { ids.add(it.id) }
++        var result = server
++        for (document in extra) {
++            if (!ids.add(document.id)) continue
++            if (result === server) result = ArrayList(server)
++            result.add(document)
++        }
++        return result
++    }
++
++    @Synchronized
++    private fun has(account: Int, kind: Int, id: Long): Boolean {
++        if (!enabled()) return false
++        preload(account)
++        return state(account).lists[kind].any { it.id == id }
++    }
++
++    // true when the document was held locally
++    @Synchronized
++    private fun forget(account: Int, kind: Int, id: Long): Boolean {
++        val s = states[account] ?: return false
++        if (!s.loaded) s.forgotten[kind].add(id)
++        val removed = s.lists[kind].removeAll { it.id == id }
++        if (removed) persist(account, s, kind)
++        return removed
++    }
++
++    // the server list with the local extras after it, for the saved GIFs
++    @JvmStatic
++    fun gifs(account: Int, server: ArrayList<TLRPC.Document>): ArrayList<TLRPC.Document> = merge(account, GIFS, server)
++
++    // the server list with the local extras after it, for the favorite stickers
++    @JvmStatic
++    fun faved(account: Int, server: ArrayList<TLRPC.Document>): ArrayList<TLRPC.Document> = merge(account, FAVED, server)
++
++    @JvmStatic
++    fun hasGif(account: Int, id: Long): Boolean = has(account, GIFS, id)
++
++    @JvmStatic
++    fun hasFaved(account: Int, id: Long): Boolean = has(account, FAVED, id)
++
++    // the GIF got back into the server list
++    @JvmStatic
++    fun forgetGif(account: Int, id: Long) {
++        forget(account, GIFS, id)
++    }
++
++    /** True when the GIF was only local: the caller must not touch the server then. */
++    @JvmStatic
++    fun removeGif(account: Int, id: Long, inServerList: Boolean): Boolean {
++        if (!enabled() || !forget(account, GIFS, id) || inServerList) return false
++        notifyLists(account)
++        return true
++    }
++
++    /**
++     * Before a favorite sticker is added or removed. True when the removal only concerned a local
++     * extra and is done: the server doesn't know the sticker.
++     */
++    @JvmStatic
++    fun beforeFaved(account: Int, document: TLRPC.Document, remove: Boolean, server: List<TLRPC.Document>): Boolean {
++        if (!enabled()) return false
++        val wasLocal = forget(account, FAVED, document.id)
++        if (!remove || !wasLocal || server.any { it.id == document.id }) return false
++        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_STICKER, document, StickerSetBulletinLayout.TYPE_REMOVED_FROM_FAVORITES)
++        notifyLists(account)
++        return true
++    }
++
++    /** The stock trimming dropped a saved GIF past the limit. True when it is kept locally. */
++    @JvmStatic
++    fun keepGif(account: Int, document: TLRPC.Document): Boolean = keep(account, GIFS, document)
++
++    /** The stock trimming dropped a favorite sticker; [sizeBefore] is the list size before it. */
++    @JvmStatic
++    fun keepFaved(account: Int, document: TLRPC.Document, sizeBefore: Int): Boolean {
++        if (sizeBefore <= limit(account, FAVED)) return false
++        return keep(account, FAVED, document)
++    }
++
++    @Synchronized
++    private fun keep(account: Int, kind: Int, document: TLRPC.Document): Boolean {
++        if (!enabled() || document.id == 0L) return false
++        preload(account)
++        val s = state(account)
++        val list = s.lists[kind]
++        if (list.none { it.id == document.id }) {
++            list.add(0, document)
++            persist(account, s, kind)
++        }
++        return true
++    }
++
++    /**
++     * A fresh server list replaces the stock one: what the server dropped to stay within its limit
++     * goes to the extras and what it lists again leaves them.
++     */
++    @Synchronized
++    @JvmStatic
++    fun reconcile(account: Int, gif: Boolean, old: List<TLRPC.Document>, fresh: List<TLRPC.Document>) {
++        if (!enabled()) return
++        preload(account)
++        val kind = if (gif) GIFS else FAVED
++        val s = state(account)
++        val list = s.lists[kind]
++        val freshIds = HashSet<Long>(fresh.size * 2)
++        fresh.forEach { freshIds.add(it.id) }
++        var changed = false
++        if (fresh.size >= limit(account, kind)) {
++            val known = HashSet<Long>(freshIds)
++            list.forEach { known.add(it.id) }
++            val dropped = old.filter { known.add(it.id) }
++            if (dropped.isNotEmpty()) {
++                list.addAll(0, dropped)
++                changed = true
++            }
++        }
++        if (list.removeAll { it.id in freshIds }) changed = true
++        if (changed) persist(account, s, kind)
++    }
++
++    // the settings switch: the panels show or hide the extras
++    @JvmStatic
++    fun onToggled() {
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (!UserConfig.getInstance(account).isClientActivated) continue
++            preload(account)
++            notifyLists(account)
++        }
++    }
++
++    // the account logs out: its extras must not reach the next user of the slot
++    @Synchronized
++    @JvmStatic
++    fun cleanup(account: Int) {
++        states[account] = null
++        Utilities.globalQueue.postRunnable {
++            runCatching { TeleDatabaseHelper.removePastLimit(account) }.onFailure { FileLog.e(it) }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index cbb4851ca..e6ef50a0a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -158,6 +158,9 @@ object TeleSearch {
+             section(GUID_SENDING + 4, "Send replies to older messages right away", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 5, "Send right away on double enter", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 6, "Offer quick replies in groups", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1197, "Keep saved GIFs and favorite stickers past the limit", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1198, "Saved GIFs limit", "chats", TeleSettingsActivity.MODE_CHATS, "Keep saved GIFs and favorite stickers past the limit"),
++            section(1199, "Favorite stickers limit", "chats", TeleSettingsActivity.MODE_CHATS, "Keep saved GIFs and favorite stickers past the limit"),
+             section(GUID_SENDING + 7, "Forward protected messages as copies", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SERVER, "tele server", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 1, "Server url", "server", TeleSettingsActivity.MODE_SERVER),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4f8e146ef..4375c78ab 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -671,6 +671,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Hide phone numbers in profiles" to "Do not show the phone number row in a profile.",
+             "Message bookmarks" to "Adds Bookmark to the message menu and a button to walk the bookmarks of a chat. They stay on this device.",
+             "Return to where you were reading" to "After you send a message while scrolled up, a button jumps back to the message you left. Nothing is marked as read.",
++            "Keep saved GIFs and favorite stickers past the limit" to "Extra saved GIFs and favorite stickers stay on this device and show after the ones the server keeps.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -780,6 +781,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Chat features"),
+                 toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Saved GIFs and stickers"),
++                toggle("Keep saved GIFs and favorite stickers past the limit", TeleConfig.KEEP_MEDIA_PAST_LIMIT),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Sponsored"),
+                 toggle("Hide sponsored messages", TeleConfig.HIDE_SPONSORED),
+                 toggle("Hide the proxy sponsor channel", TeleConfig.HIDE_PROXY_SPONSOR),

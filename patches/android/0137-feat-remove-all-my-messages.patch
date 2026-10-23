@@ -1,0 +1,618 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:04:24 +0300
+Subject: [PATCH 137/141] feat: remove all my messages
+
+---
+ .../messenger/MessagesController.java         |   2 +
+ .../java/org/telegram/ui/ChatActivity.java    |   6 +
+ .../java/org/telegram/ui/DialogsActivity.java |  13 +
+ .../java/org/telegram/ui/TopicsFragment.java  |  11 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/RemoveMine.kt  | 401 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ .../src/main/res/values/strings_tele.xml      |  12 +
+ 9 files changed, 452 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/RemoveMine.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 989d8afe3..a827e6487 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -9468,6 +9468,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             }
+ 
+             getConnectionsManager().sendRequest(req, (response, error) -> {
++                tele.helpers.RemoveMine.onDeleteDone(currentAccount, dialogId, req.id, error);
+                 if (error == null) {
+                     TLRPC.TL_messages_affectedMessages res = (TLRPC.TL_messages_affectedMessages) response;
+                     processNewChannelDifferenceParams(res.pts, res.pts_count, channelId);
+@@ -9504,6 +9505,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             }
+ 
+             getConnectionsManager().sendRequest(req, (response, error) -> {
++                tele.helpers.RemoveMine.onDeleteDone(currentAccount, dialogId, req.id, error);
+                 if (error == null) {
+                     TLRPC.TL_messages_affectedMessages res = (TLRPC.TL_messages_affectedMessages) response;
+                     processNewDifferenceParams(-1, res.pts, -1, res.pts_count);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 6170cddb0..74faad350 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1729,6 +1729,7 @@ public class ChatActivity extends BaseFragment implements
+     private final static int tele_action_shot = 131;
+     private final static int tele_action_hidden_words = 132;
+     private final static int tele_action_peek_last_seen = 133;
++    private final static int tele_action_remove_mine = 190;
+ 
+     private final static int id_chat_compose_panel = 1000;
+ 
+@@ -3817,6 +3818,8 @@ public class ChatActivity extends BaseFragment implements
+                     presentFragment(new tele.ui.settings.TeleWordsActivity(getCurrentAccount(), getDialogId()));
+                 } else if (id == tele_action_peek_last_seen) {
+                     tele.helpers.LastSeenPeek.peek(ChatActivity.this, getCurrentAccount(), getDialogId());
++                } else if (id == tele_action_remove_mine) {
++                    tele.helpers.RemoveMine.start(ChatActivity.this, getDialogId(), getTopicId());
+                 } else if (id == copy) {
+                     SpannableStringBuilder str = new SpannableStringBuilder();
+                     long previousUid = 0;
+@@ -4575,6 +4578,9 @@ public class ChatActivity extends BaseFragment implements
+                 clearHistoryItem = headerItem.lazilyAddSubItem(clear_history, R.drawable.msg_clear,
+                     LocaleController.getString(UserObject.isBotForum(currentUser) ? R.string.ClearAllHistory : R.string.ClearHistory));
+             }
++            if (chatMode == 0 && (isTopic || threadMessageId == 0) && tele.helpers.RemoveMine.available(currentAccount, getDialogId(), getTopicId())) {
++                headerItem.lazilyAddSubItem(tele_action_remove_mine, R.drawable.msg_delete, tele.helpers.RemoveMine.title());
++            }
+             boolean addedSettings = false;
+             if (!isTopic) {
+                 if (ChatObject.isChannel(currentChat) && !currentChat.creator) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index b4d8b1d42..ef9efe1ad 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -592,6 +592,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     private ActionBarMenuSubItem readItem;
+     @Nullable
+     private ActionBarMenuSubItem blockItem;
++    @Nullable
++    private ActionBarMenuSubItem teleRemoveMineItem;
+ 
+     private float additionalFloatingTranslation;
+     private float floatingButtonPanOffset;
+@@ -713,6 +715,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     private final static int add_to_folder = 109;
+     private final static int remove_from_folder = 110;
+     private final static int community_ungroup = 111;
++    private final static int tele_remove_mine = 190;
+ 
+     private final static int ARCHIVE_ITEM_STATE_PINNED = 0;
+     private final static int ARCHIVE_ITEM_STATE_SHOWED = 1;
+@@ -4013,6 +4016,12 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                         undoView.showWithAction(did, UndoView.ACTION_REMOVED_FROM_FOLDER, neverShow.size(), filter, null, null);
+                     }
+                     hideActionMode(false);
++                } else if (id == tele_remove_mine) {
++                    if (selectedDialogs.size() == 1) {
++                        final long teleDialogId = selectedDialogs.get(0);
++                        hideActionMode(false);
++                        tele.helpers.RemoveMine.start(DialogsActivity.this, teleDialogId, 0);
++                    }
+                 } else if (id == pin || id == read || id == delete || id == clear || id == mute || id == archive || id == block || id == archive2 || id == pin2) {
+                     performSelectedDialogsAction(selectedDialogs, id, true, false);
+                 }
+@@ -6755,6 +6764,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         readItem = otherItem.addSubItem(read, R.drawable.msg_markread, LocaleController.getString(R.string.MarkAsRead));
+         clearItem = otherItem.addSubItem(clear, R.drawable.msg_clear, LocaleController.getString(R.string.ClearHistory));
+         blockItem = otherItem.addSubItem(block, R.drawable.msg_block, LocaleController.getString(R.string.BlockUser));
++        teleRemoveMineItem = otherItem.addSubItem(tele_remove_mine, R.drawable.msg_delete, tele.helpers.RemoveMine.title());
+ 
+         muteItem.setOnLongClickListener(e -> {
+             performSelectedDialogsAction(selectedDialogs, mute, true, true);
+@@ -9941,6 +9951,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 blockItem.setVisibility(View.VISIBLE);
+             }
+         }
++        if (teleRemoveMineItem != null) {
++            teleRemoveMineItem.setVisibility(communitiesCount == 0 && selectedDialogs.size() == 1 && tele.helpers.RemoveMine.available(currentAccount, selectedDialogs.get(0), 0) ? View.VISIBLE : View.GONE);
++        }
+         if (removeFromFolderItem != null) {
+             boolean cantRemoveFromFolder = filterTabsView == null || filterTabsView.getVisibility() != View.VISIBLE || filterTabsView.currentTabIsDefault();
+             if (!cantRemoveFromFolder) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java
+index e24829d40..5b84a29b9 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java
+@@ -2075,6 +2075,17 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
+             previewMenu[0].addView(closeItem);
+         }
+ 
++        if (tele.helpers.RemoveMine.available(currentAccount, -chatId, topic.id)) {
++            ActionBarMenuSubItem teleRemoveMineItem = new ActionBarMenuSubItem(getParentActivity(), false, false);
++            teleRemoveMineItem.setTextAndIcon(tele.helpers.RemoveMine.title(), R.drawable.msg_delete);
++            teleRemoveMineItem.setMinimumWidth(160);
++            teleRemoveMineItem.setOnClickListener(e -> {
++                finishPreviewFragment();
++                tele.helpers.RemoveMine.start(TopicsFragment.this, -chatId, topic.id);
++            });
++            previewMenu[0].addView(teleRemoveMineItem);
++        }
++
+         if (ChatObject.canDeleteTopic(currentAccount, getCurrentChat(), topic)) {
+             ActionBarMenuSubItem deleteItem = new ActionBarMenuSubItem(getParentActivity(), false, true);
+             deleteItem.setTextAndIcon(LocaleController.getPluralString("DeleteTopics", 1), R.drawable.msg_delete);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 33881b108..422814646 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -157,6 +157,8 @@ object TeleConfig {
+     @JvmField
+     val MESSAGE_ID_MENU = BoolItem("message_id_menu", false)
+     @JvmField
++    val REMOVE_MY_MESSAGES = BoolItem("remove_my_messages", false)
++    @JvmField
+     val SHOW_GIFT_IDS = BoolItem("show_gift_ids", false)
+     @JvmField
+     val SHOW_REGULAR_GIFT_IDS = BoolItem("show_regular_gift_ids", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/RemoveMine.kt b/TMessagesProj/src/main/java/tele/helpers/RemoveMine.kt
+new file mode 100644
+index 000000000..b99f5f876
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/RemoveMine.kt
+@@ -0,0 +1,401 @@
++package tele.helpers
++
++import android.widget.Toast
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserObject
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.RequestDelegate
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import tele.TeleConfig
++import java.util.concurrent.ConcurrentHashMap
++
++/**
++ * Removes all the messages the current account wrote in a chat or a forum topic: the own messages
++ * are searched page by page and deleted for everyone by the stock deleter, newest first.
++ * The state of a run lives on the UI thread, only the stock delete callback comes from outside.
++ */
++object RemoveMine {
++
++    private const val PER_PAGE = 100
++    private const val PAUSE = 300L
++    private const val PAUSE_JITTER = 200
++    private const val WAIT_JITTER = 1000
++    private const val ANNOUNCE_WAIT = 10
++    private const val SERVICE_NOTIFICATIONS = 777000L
++
++    private val FLOOD = Regex("^FLOOD(?:_PREMIUM)?_WAIT_(\\d+)$")
++    private val runs = ConcurrentHashMap<String, Run>()
++
++    private fun runKey(account: Int, dialogId: Long, topicId: Long) = "$account:$dialogId:$topicId"
++
++    private fun string(res: Int, vararg args: Any): String =
++        if (args.isEmpty()) LocaleController.getString(res) else LocaleController.formatString(res, *args)
++
++    @JvmStatic
++    fun title(): String = string(R.string.TeleRemoveMine)
++
++    /** The menu item is offered when the option is on, and always while a run goes on in the chat. */
++    @JvmStatic
++    fun available(account: Int, dialogId: Long, topicId: Long): Boolean {
++        if (!TeleConfig.REMOVE_MY_MESSAGES.value && !runs.containsKey(runKey(account, dialogId, topicId))) return false
++        return eligible(account, dialogId, topicId)
++    }
++
++    private fun eligible(account: Int, dialogId: Long, topicId: Long): Boolean {
++        if (dialogId == 0L || DialogObject.isEncryptedDialog(dialogId) || dialogId == TeleChat.PEER_ID) return false
++        val controller = MessagesController.getInstance(account)
++        if (DialogObject.isUserDialog(dialogId)) {
++            if (topicId != 0L || dialogId == SERVICE_NOTIFICATIONS || dialogId == UserObject.VERIFY || UserObject.isReplyUser(dialogId)) return false
++            val user = controller.getUser(dialogId) ?: return false
++            return !user.self && !user.bot
++        }
++        val chat = controller.getChat(-dialogId) ?: return false
++        if (ChatObject.isNotInChat(chat)) return false
++        if (ChatObject.isChannel(chat) && (!chat.megagroup || chat.monoforum)) return false
++        return topicId == 0L || ChatObject.isForum(chat)
++    }
++
++    /** Opens the progress of the run of this chat, or counts the messages and asks for a confirmation. */
++    @JvmStatic
++    fun start(fragment: BaseFragment, dialogId: Long, topicId: Long) {
++        val account = fragment.currentAccount
++        val activity = fragment.parentActivity ?: return
++        val running = runs[runKey(account, dialogId, topicId)]
++        if (running != null) {
++            running.attach(fragment)
++            return
++        }
++        if (!eligible(account, dialogId, topicId)) return
++        val targets = arrayListOf(dialogId)
++        if (topicId == 0L && DialogObject.isChatDialog(dialogId)) {
++            val migrated = MessagesController.getInstance(account).getChatFull(-dialogId)?.migrated_from_chat_id ?: 0L
++            if (migrated != 0L) targets.add(-migrated)
++        }
++        val spinner = AlertDialog(activity, AlertDialog.ALERT_TYPE_SPINNER)
++        spinner.showDelayed(300)
++        count(account, targets, topicId, 0, 0) { total, error ->
++            spinner.dismiss()
++            if (error != null) {
++                toast(string(R.string.TeleRemoveMineCountFailed, error))
++            } else if (total <= 0) {
++                toast(string(R.string.TeleRemoveMineNone))
++            } else if (fragment.parentActivity != null) {
++                confirm(fragment, dialogId, topicId, targets, total)
++            }
++        }
++    }
++
++    private fun count(account: Int, targets: List<Long>, topicId: Long, index: Int, sum: Int, done: (Int, String?) -> Unit) {
++        val req = searchRequest(account, targets[index], if (index == 0) topicId else 0L, 0, 1)
++        ConnectionsManager.getInstance(account).sendRequest(req, RequestDelegate { response: TLObject?, error: TLRPC.TL_error? ->
++            AndroidUtilities.runOnUIThread {
++                if (error != null) {
++                    done(0, error.text ?: "")
++                    return@runOnUIThread
++                }
++                val result = response as? TLRPC.messages_Messages
++                val next = sum + if (result == null) 0 else maxOf(result.count, result.messages.size)
++                if (index + 1 < targets.size) {
++                    count(account, targets, topicId, index + 1, next, done)
++                } else {
++                    done(next, null)
++                }
++            }
++        }, ConnectionsManager.RequestFlagFailOnServerErrors)
++    }
++
++    private fun confirm(fragment: BaseFragment, dialogId: Long, topicId: Long, targets: List<Long>, total: Int) {
++        val activity = fragment.parentActivity ?: return
++        val account = fragment.currentAccount
++        val controller = MessagesController.getInstance(account)
++        val isUser = DialogObject.isUserDialog(dialogId)
++        val name = when {
++            isUser -> UserObject.getUserName(controller.getUser(dialogId))
++            topicId != 0L -> controller.getTopicsController().findTopic(-dialogId, topicId)?.title ?: controller.getChat(-dialogId)?.title ?: ""
++            else -> controller.getChat(-dialogId)?.title ?: ""
++        }
++        val text = string(if (isUser) R.string.TeleRemoveMineConfirmUser else R.string.TeleRemoveMineConfirmChat, total, name)
++        val dialog = AlertDialog.Builder(activity)
++            .setTitle(title())
++            .setMessage(text)
++            .setPositiveButton(string(R.string.TeleRemoveMineAction)) { _, _ ->
++                if (runs.containsKey(runKey(account, dialogId, topicId))) return@setPositiveButton
++                val run = Run(account, dialogId, topicId, ArrayList(targets), total)
++                runs[run.key] = run
++                run.attach(fragment)
++                run.requestPage()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .create()
++        fragment.showDialog(dialog)
++        dialog.makeRed(android.content.DialogInterface.BUTTON_POSITIVE)
++    }
++
++    /** Called by the stock deleter when the server has answered a delete request. */
++    @JvmStatic
++    fun onDeleteDone(account: Int, dialogId: Long, ids: List<Int>, error: TLRPC.TL_error?) {
++        if (runs.isEmpty()) return
++        val copy = ArrayList(ids)
++        AndroidUtilities.runOnUIThread {
++            for (run in runs.values) {
++                if (run.account == account && run.matches(dialogId, copy)) {
++                    run.deleted(error)
++                    return@runOnUIThread
++                }
++            }
++        }
++    }
++
++    private fun toast(text: String) {
++        Toast.makeText(ApplicationLoader.applicationContext, text, Toast.LENGTH_LONG).show()
++    }
++
++    private fun searchRequest(account: Int, dialogId: Long, topicId: Long, offsetId: Int, limit: Int): TLRPC.TL_messages_search {
++        val req = TLRPC.TL_messages_search()
++        req.peer = MessagesController.getInstance(account).getInputPeer(dialogId)
++        req.q = ""
++        req.from_id = TLRPC.TL_inputPeerSelf()
++        req.saved_reaction = null
++        if (topicId != 0L) {
++            req.flags = req.flags or TLObject.FLAG_1
++            req.top_msg_id = topicId.toInt()
++        }
++        req.filter = TLRPC.TL_inputMessagesFilterEmpty()
++        req.offset_id = offsetId
++        req.limit = limit
++        return req
++    }
++
++    private fun floodWait(type: String): Int =
++        FLOOD.matchEntire(type)?.groupValues?.get(1)?.toIntOrNull()?.coerceAtLeast(1) ?: 0
++
++    private class Run(val account: Int, val dialogId: Long, val topicId: Long, val targets: ArrayList<Long>, val total: Int) {
++        val key = runKey(account, dialogId, topicId)
++
++        private var index = 0
++        private var offsetId = 0
++        private var nextOffsetId = 0
++        private var chunkLimit = PER_PAGE
++        private var removed = 0
++        private var finished = false
++        private var inFlight = false
++        private var chunk: List<Int> = emptyList()
++        private val chunks = ArrayDeque<List<Int>>()
++        private val skip = HashSet<Int>()
++        private val done = HashSet<Int>()
++        private var scheduled: Runnable? = null
++        private var dialog: AlertDialog? = null
++        private var status: String? = null
++
++        private val target get() = targets[index]
++        // the topic belongs to the chat itself, not to the chat it migrated from
++        private val topic get() = if (index == 0) topicId else 0L
++
++        fun matches(dialogId: Long, ids: List<Int>): Boolean = inFlight && !finished && dialogId == target && ids == chunk
++
++        fun attach(fragment: BaseFragment) {
++            val activity = fragment.parentActivity ?: return
++            if (finished) return
++            dialog?.let { if (it.isShowing) it.dismiss() }
++            val progress = AlertDialog(activity, AlertDialog.ALERT_TYPE_LOADING)
++            progress.setCanceledOnTouchOutside(false)
++            progress.setCancelable(false)
++            progress.setNegativeButton(string(R.string.TeleRemoveMineStop)) { _, _ -> stop() }
++            dialog = progress
++            render()
++            fragment.showDialog(progress)
++        }
++
++        private fun render() {
++            val progress = dialog ?: return
++            progress.setMessage(status ?: string(R.string.TeleRemoveMineProgress, removed, total))
++            progress.setProgress(if (total > 0) minOf(removed * 100L / total, 100L).toInt() else 0)
++        }
++
++        fun stop() {
++            finish(string(R.string.TeleRemoveMineStopped, removed))
++        }
++
++        private fun finish(text: String) {
++            if (finished) return
++            finished = true
++            scheduled?.let { AndroidUtilities.cancelRunOnUIThread(it) }
++            scheduled = null
++            dialog?.let { if (it.isShowing) it.dismiss() }
++            dialog = null
++            runs.remove(key, this)
++            toast(text)
++        }
++
++        private fun schedule(delay: Long, action: () -> Unit) {
++            scheduled?.let { AndroidUtilities.cancelRunOnUIThread(it) }
++            val runnable = Runnable {
++                scheduled = null
++                if (!finished) action()
++            }
++            scheduled = runnable
++            AndroidUtilities.runOnUIThread(runnable, delay)
++        }
++
++        private fun pause() = PAUSE + Utilities.fastRandom.nextInt(PAUSE_JITTER)
++
++        fun requestPage() {
++            if (finished) return
++            val req = searchRequest(account, target, topic, offsetId, PER_PAGE)
++            ConnectionsManager.getInstance(account).sendRequest(req, RequestDelegate { response: TLObject?, error: TLRPC.TL_error? ->
++                AndroidUtilities.runOnUIThread {
++                    if (error != null) {
++                        pageFailed(error)
++                    } else {
++                        pageReceived(response as? TLRPC.messages_Messages)
++                    }
++                }
++            }, ConnectionsManager.RequestFlagFailOnServerErrors)
++        }
++
++        private fun pageFailed(error: TLRPC.TL_error) {
++            if (finished) return
++            val type = error.text ?: ""
++            val wait = floodWait(type)
++            if (wait > 0) {
++                waitFor(wait) { requestPage() }
++            } else {
++                finish(string(R.string.TeleRemoveMineFailed, type))
++            }
++        }
++
++        private fun waitFor(seconds: Int, action: () -> Unit) {
++            if (seconds >= ANNOUNCE_WAIT) {
++                status = string(R.string.TeleRemoveMineWaiting, seconds)
++                render()
++            }
++            schedule(seconds * 1000L + Utilities.fastRandom.nextInt(WAIT_JITTER)) {
++                status = null
++                render()
++                action()
++            }
++        }
++
++        private fun pageReceived(result: TLRPC.messages_Messages?) {
++            if (finished) return
++            val messages = result?.messages
++            if (messages.isNullOrEmpty()) {
++                passFinished()
++                return
++            }
++            val ids = ArrayList<Int>(messages.size)
++            var minId = 0
++            for (message in messages) {
++                val id = message.id
++                if (minId == 0 || id < minId) minId = id
++                if (id in done || id in skip) continue
++                if (message is TLRPC.TL_messageEmpty || message.date == 0 || !message.out
++                    || MessageObject.getPeerId(message.peer_id) != target
++                    || DeletedMessages.isKept(account, target, id)
++                ) {
++                    skip.add(id)
++                    continue
++                }
++                ids.add(id)
++            }
++            nextOffsetId = minId
++            if (ids.isEmpty()) {
++                advance()
++                return
++            }
++            ids.sortDescending()
++            chunks.clear()
++            ids.chunked(chunkLimit).forEach { chunks.addLast(it) }
++            deleteNext()
++        }
++
++        private fun deleteNext() {
++            if (finished) return
++            val next = chunks.removeFirstOrNull()
++            if (next == null) {
++                advance()
++                return
++            }
++            chunk = next
++            sendChunk()
++        }
++
++        private fun sendChunk() {
++            inFlight = true
++            // userInitiated: the chat keeps the messages the way it does for any delete the user made
++            MessagesController.getInstance(account).deleteMessages(
++                ArrayList(chunk), null, null, target, true, 0, false, 0, null, topic.toInt(), false, 0, true
++            )
++        }
++
++        fun deleted(error: TLRPC.TL_error?) {
++            inFlight = false
++            if (error == null) {
++                removed += chunk.size
++                done.addAll(chunk)
++                chunk = emptyList()
++                render()
++                schedule(pause()) { deleteNext() }
++                return
++            }
++            val type = error.text ?: ""
++            val wait = floodWait(type)
++            if (wait > 0) {
++                waitFor(wait) { sendChunk() }
++                return
++            }
++            if (type == "MESSAGE_DELETE_FORBIDDEN" || type == "MESSAGE_ID_INVALID") {
++                if (chunk.size == 1) {
++                    skip.add(chunk[0])
++                    chunk = emptyList()
++                    schedule(pause()) { deleteNext() }
++                } else {
++                    // find the message the server refuses by deleting in smaller pieces
++                    chunkLimit = maxOf(chunk.size / 2, 1)
++                    chunk = emptyList()
++                    chunks.clear()
++                    schedule(pause()) { requestPage() }
++                }
++                return
++            }
++            finish(string(R.string.TeleRemoveMineFailed, type))
++        }
++
++        private fun advance() {
++            if (nextOffsetId == 0 || (offsetId != 0 && nextOffsetId >= offsetId)) {
++                passFinished()
++                return
++            }
++            offsetId = nextOffsetId
++            chunkLimit = PER_PAGE
++            schedule(pause()) { requestPage() }
++        }
++
++        private fun passFinished() {
++            if (index + 1 >= targets.size) {
++                finish(string(R.string.TeleRemoveMineDone, removed))
++                return
++            }
++            index++
++            skip.clear()
++            done.clear()
++            chunks.clear()
++            chunk = emptyList()
++            offsetId = 0
++            nextOffsetId = 0
++            chunkLimit = PER_PAGE
++            schedule(pause()) { requestPage() }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index c1f4b6ab4..e246cdf6d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -142,6 +142,7 @@ object TeleSearch {
+             section(1195, "Keep the messages you delete", "messages", TeleSettingsActivity.MODE_MESSAGES, "Ones you delete"),
+             section(1196, "Keep deleted for", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1200, "Recover channel posts from forwards", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1201, "Remove my messages", "menus", TeleSettingsActivity.MODE_MENUS),
+             screen(GUID_DATA + 5, "Deleted messages") { TeleDeletedMessagesActivity() },
+             screen(GUID_DATA + 11, "Saved drafts") { TeleDraftsActivity() },
+             section(GUID_DATA + 6, "Keep edit history", "messages", TeleSettingsActivity.MODE_MESSAGES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 63be1a549..200f6011c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -583,6 +583,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+ 
+         private val DESCRIPTIONS = mapOf(
++            "Remove my messages" to "Adds it to chat menus; deletes for everyone, newest first.",
+             "Show seconds in message times" to "Message timestamps include seconds, like 14:03:21. Service messages like joins and pins also show their time.",
+             "Hide the all chats folder" to "The chat list opens on your first folder instead.",
+             "Hide call buttons" to "Remove call buttons from private chats and profiles.",
+@@ -853,6 +854,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Copy the text of service messages", TeleConfig.COPY_SERVICE_TEXT),
+                 toggle("Copy the path of a downloaded file", TeleConfig.COPY_FILE_PATH),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Chat menu items"),
++                toggle("Remove my messages", TeleConfig.REMOVE_MY_MESSAGES),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Message tools"),
+                 toggle("View messages as TL", TeleConfig.VIEW_AS_TL),
+                 toggle("Save messages as a picture", TeleConfig.SHOT),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 3fba7ed37..9731f58cd 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -86,4 +86,16 @@
+     <string name="TeleDraftChargesStars">This chat charges for messages, send the draft from the chat itself.</string>
+     <string name="TeleDraftTooLong">This draft is too long to send.</string>
+     <string name="TeleDraftNothingToSend">There is nothing to send in this draft.</string>
++    <string name="TeleRemoveMine">Remove my messages</string>
++    <string name="TeleRemoveMineConfirmUser">Remove %1$d of your messages from %2$s for both of you? This can\'t be undone.</string>
++    <string name="TeleRemoveMineConfirmChat">Remove %1$d of your messages from %2$s for everyone? This can\'t be undone.</string>
++    <string name="TeleRemoveMineAction">Remove</string>
++    <string name="TeleRemoveMineStop">Stop</string>
++    <string name="TeleRemoveMineProgress">Removed %1$d of %2$d</string>
++    <string name="TeleRemoveMineWaiting">Rate limited, going on in %1$d s</string>
++    <string name="TeleRemoveMineNone">You have no messages here</string>
++    <string name="TeleRemoveMineDone">Removed messages: %1$d</string>
++    <string name="TeleRemoveMineStopped">Stopped. Removed messages: %1$d</string>
++    <string name="TeleRemoveMineFailed">Couldn\'t remove messages: %1$s</string>
++    <string name="TeleRemoveMineCountFailed">Couldn\'t count your messages: %1$s</string>
+ </resources>

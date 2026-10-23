@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 22:56:26 +0300
+Subject: [PATCH 133/141] feat: choose deleted messages to keep
+
+---
+ TMessagesProj/src/main/java/tele/TeleConfig.kt    |  6 ++++++
+ .../src/main/java/tele/helpers/DeletedMessages.kt | 15 +++++++++++++--
+ .../src/main/java/tele/ui/settings/TeleSearch.kt  |  3 +++
+ .../java/tele/ui/settings/TeleSettingsActivity.kt |  9 +++++++++
+ 4 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index dad2a08ad..835e87819 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -124,6 +124,12 @@ object TeleConfig {
+     @JvmField
+     val KEEP_SELF_DELETED_MESSAGES = BoolItem("keep_self_deleted_messages", false)
+     @JvmField
++    val KEEP_DELETED_BOTS = BoolItem("keep_deleted_bots", true)
++    @JvmField
++    val KEEP_DELETED_SAVED = BoolItem("keep_deleted_saved", true)
++    @JvmField
++    val KEEP_DELETED_OWN = BoolItem("keep_deleted_own", true)
++    @JvmField
+     val SELECT_SERVICE_MESSAGES = BoolItem("select_service_messages", true)
+     @JvmField
+     val DELETED_MARKER = StringItem("deleted_marker", "fade")
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index 867cf3886..a4e401233 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -17,8 +17,19 @@ import java.util.concurrent.ConcurrentHashMap
+ 
+ object DeletedMessages {
+     @JvmStatic
+-    fun shouldArchive(account: Int, outgoing: Boolean, userInitiated: Boolean = false, dialogId: Long = 0L): Boolean =
+-        !org.telegram.messenger.DialogObject.isEncryptedDialog(dialogId) && (TeleConfig.KEEP_DELETED_MESSAGES.value || outgoing && userInitiated && TeleConfig.KEEP_SELF_DELETED_MESSAGES.value)
++    fun shouldArchive(account: Int, outgoing: Boolean, userInitiated: Boolean = false, dialogId: Long = 0L): Boolean {
++        if (org.telegram.messenger.DialogObject.isEncryptedDialog(dialogId)) return false
++        val own = outgoing && userInitiated && TeleConfig.KEEP_SELF_DELETED_MESSAGES.value
++        if (!own && !(TeleConfig.KEEP_DELETED_MESSAGES.value && (!userInitiated || TeleConfig.KEEP_DELETED_OWN.value))) return false
++        return wantedIn(account, dialogId)
++    }
++
++    // the where-filters: Saved Messages and bot chats can be left out
++    private fun wantedIn(account: Int, dialogId: Long): Boolean {
++        if (dialogId == UserConfig.getInstance(account).clientUserId) return TeleConfig.KEEP_DELETED_SAVED.value
++        if (dialogId <= 0 || TeleConfig.KEEP_DELETED_BOTS.value) return true
++        return org.telegram.messenger.MessagesController.getInstance(account).getUser(dialogId)?.bot != true
++    }
+ 
+     @JvmStatic
+     fun keepInChat(account: Int, message: TLRPC.Message, userInitiated: Boolean): Boolean {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 192c67cd1..7fe9dd053 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -137,6 +137,9 @@ object TeleSearch {
+             section(GUID_DATA + 2, "Username aliases", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(GUID_DATA + 3, "Keep deleted messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(GUID_DATA + 4, "Keep messages you delete yourself", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1193, "Keep deleted messages in bot chats", "messages", TeleSettingsActivity.MODE_MESSAGES, "In bot chats"),
++            section(1194, "Keep deleted messages in Saved Messages", "messages", TeleSettingsActivity.MODE_MESSAGES, "In Saved Messages"),
++            section(1195, "Keep the messages you delete", "messages", TeleSettingsActivity.MODE_MESSAGES, "Ones you delete"),
+             screen(GUID_DATA + 5, "Deleted messages") { TeleDeletedMessagesActivity() },
+             screen(GUID_DATA + 11, "Saved drafts") { TeleDraftsActivity() },
+             section(GUID_DATA + 6, "Keep edit history", "messages", TeleSettingsActivity.MODE_MESSAGES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 75c0c91ed..8f7ed537f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -492,6 +492,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         private val GROUPS = mapOf(
+             TeleConfig.KEEP_DELETED_MESSAGES.key to listOf(
+                 TeleConfig.KEEP_SELF_DELETED_MESSAGES.key,
++                TeleConfig.KEEP_DELETED_BOTS.key,
++                TeleConfig.KEEP_DELETED_SAVED.key,
++                TeleConfig.KEEP_DELETED_OWN.key,
+                 TeleConfig.DELETED_MARKER.key,
+                 TeleConfig.DELETED_REPLY.key
+             ),
+@@ -622,6 +625,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Local names for people" to "Set names for people that only you can see.",
+             "Keep deleted messages" to "Keep messages deleted for everyone in your local archive.",
+             "Keep messages you delete yourself" to "Keep your own deleted messages in the local archive.",
++            "In bot chats" to "Keep messages deleted in chats with bots.",
++            "In Saved Messages" to "Keep messages deleted in Saved Messages.",
++            "Ones you delete" to "Keep the messages you delete from this device.",
+             "Keep edit history" to "Save previous versions of edited messages on this device.",
+             "Username aliases" to "Link local aliases to chats and usernames.",
+             "Usernames from the server" to "Show usernames and aliases provided by the tele server.",
+@@ -775,6 +781,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Deleted messages"),
+                 toggle("Keep deleted messages", TeleConfig.KEEP_DELETED_MESSAGES),
+                 toggle("Keep messages you delete yourself", TeleConfig.KEEP_SELF_DELETED_MESSAGES),
++                toggle("In bot chats", TeleConfig.KEEP_DELETED_BOTS),
++                toggle("In Saved Messages", TeleConfig.KEEP_DELETED_SAVED),
++                toggle("Ones you delete", TeleConfig.KEEP_DELETED_OWN),
+                 Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
+                 Row(TYPE_VALUE, "Reply to deleted messages", value = if (TeleConfig.DELETED_REPLY.value == "quote") "Quote them" else "Skip them", item = TeleConfig.DELETED_REPLY),
+                 link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),

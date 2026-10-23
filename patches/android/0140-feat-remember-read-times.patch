@@ -1,0 +1,282 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 22:59:58 +0300
+Subject: [PATCH 140/141] feat: remember read times
+
+---
+ .../messenger/MessagesController.java         |  1 +
+ .../java/org/telegram/ui/ChatActivity.java    | 10 +++-
+ .../ui/Components/MessagePrivateSeenView.java | 15 ++++-
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   | 56 +++++++++++++++++++
+ .../src/main/java/tele/helpers/ReadLog.kt     | 52 +++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  3 +
+ 8 files changed, 138 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReadLog.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index a827e6487..ca349c869 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -18875,6 +18875,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                 if (value == null) {
+                     value = getMessagesStorage().getDialogReadMax(true, dialogId);
+                 }
++                if (dialogId > 0) tele.helpers.ReadLog.onOutboxRead(currentAccount, dialogId, value, update.max_id, fromGetDifference);
+                 dialogs_read_outbox_max.put(dialogId, Math.max(value, update.max_id));
+             } else if (baseUpdate instanceof TL_update.TL_updateDeleteMessages) {
+                 TL_update.TL_updateDeleteMessages update = (TL_update.TL_updateDeleteMessages) baseUpdate;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index f32454b81..7c50d531e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -31902,6 +31902,7 @@ public class ChatActivity extends BaseFragment implements
+             final boolean showMessageSeen = !suggestEdit && !isEphemeral && !isReactionsViewAvailable && !isInScheduleMode() && currentChat != null && message.isOutOwner() && message.isSent() && !message.isEditing() && !message.isSending() && !message.isSendError() && !message.isContentUnread() && !message.isUnread() && (ConnectionsManager.getInstance(currentAccount).getCurrentTime() - message.messageOwner.date < getMessagesController().chatReadMarkExpirePeriod) && (ChatObject.isMegagroup(currentChat) || !ChatObject.isChannel(currentChat)) && chatInfo != null && chatInfo.participants_count <= getMessagesController().chatReadMarkSizeThreshold && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest) && chatMode != MODE_SAVED && message.canSetReaction() && !ChatObject.isMonoForum(currentChat);
+             final boolean showMessageAuthor = !suggestEdit && !isEphemeral && currentChat != null && !message.isOut() && ChatObject.isMonoForum(currentChat) && ChatObject.canManageMonoForum(currentAccount, currentChat) && -currentChat.linked_monoforum_id == message.getFromChatId();
+             final boolean showPrivateMessageSeen = !suggestEdit && !isEphemeral && !isReactionsViewAvailable && currentChat == null && currentEncryptedChat == null && (currentUser != null && !UserObject.isUserSelf(currentUser) && !UserObject.isReplyUser(currentUser) && !UserObject.isAnonymous(currentUser) && !currentUser.bot && !UserObject.isService(currentUser.id)) && (userInfo == null || !userInfo.read_dates_private) && !isInScheduleMode() && message.isOutOwner() && message.isSent() && !message.isEditing() && !message.isSending() && !message.isSendError() && !message.isContentUnread() && !message.isUnread() && (ConnectionsManager.getInstance(currentAccount).getCurrentTime() - message.messageOwner.date < getMessagesController().pmReadDateExpirePeriod) && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest);
++            final boolean showTeleReadTime = !showPrivateMessageSeen && !suggestEdit && !isEphemeral && currentChat == null && currentEncryptedChat == null && !isInScheduleMode() && message.isSent() && !message.isEditing() && !message.isSending() && !message.isSendError() && !message.isUnread() && tele.helpers.ReadLog.available(currentAccount, message) && tele.helpers.ReadLog.date(currentAccount, message.getDialogId(), message.getId()) > 0;
+             final boolean showPrivateMessageEdit = !suggestEdit && !isEphemeral && (currentUser == null || !UserObject.isReplyUser(currentUser) && !UserObject.isAnonymous(currentUser)) && !isInScheduleMode() && message.isEdited() && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest);
+             final boolean showPrivateMessageFwdOriginal = !suggestEdit && !isEphemeral && false && (currentUser == null || !UserObject.isReplyUser(currentUser) && !UserObject.isAnonymous(currentUser)) && !isInScheduleMode() && message.isForwarded() && !(message.messageOwner.action instanceof TLRPC.TL_messageActionChatJoinedByRequest);
+             final boolean showSponsorInfo = !suggestEdit && !isEphemeral && selectedObject != null && selectedObject.isSponsored() && (selectedObject.sponsoredInfo != null || selectedObject.sponsoredAdditionalInfo != null || selectedObject.sponsoredUrl != null && !selectedObject.sponsoredUrl.startsWith("https://" + getMessagesController().linkPrefix));
+@@ -32361,6 +32362,13 @@ public class ChatActivity extends BaseFragment implements
+                     popupLayout.addView(messagePrivateSeenView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 36));
+                     addGap = true;
+                 }
++                if (showTeleReadTime) {
++                    MessagePrivateSeenView teleReadTimeView = new MessagePrivateSeenView(getContext(), MessagePrivateSeenView.TYPE_LOCAL_SEEN, message, () -> {
++                        closeMenu(true);
++                    }, themeDelegate);
++                    popupLayout.addView(teleReadTimeView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 36));
++                    addGap = true;
++                }
+                 if (showPrivateMessageEdit) {
+                     MessagePrivateSeenView messagePrivateSeenView = new MessagePrivateSeenView(getContext(), MessagePrivateSeenView.TYPE_EDIT, message, () -> {
+                         closeMenu(true);
+@@ -32378,7 +32386,7 @@ public class ChatActivity extends BaseFragment implements
+                 boolean showRateTranscription = selectedObject != null && selectedObject.isVoice() && selectedObject.messageOwner != null && getUserConfig().isPremium() && !TextUtils.isEmpty(selectedObject.messageOwner.voiceTranscription) && selectedObject.messageOwner != null && !selectedObject.messageOwner.voiceTranscriptionRated && selectedObject.messageOwner.voiceTranscriptionId != 0 && selectedObject.messageOwner.voiceTranscriptionOpen;
+ 
+                 if (!showRateTranscription && message.probablyRingtone() && currentEncryptedChat == null) {
+-                    ActionBarMenuSubItem cell = new ActionBarMenuSubItem(getParentActivity(), !showPrivateMessageSeen && !showPrivateMessageEdit && !showPrivateMessageFwdOriginal, false, themeDelegate);
++                    ActionBarMenuSubItem cell = new ActionBarMenuSubItem(getParentActivity(), !showPrivateMessageSeen && !showTeleReadTime && !showPrivateMessageEdit && !showPrivateMessageFwdOriginal, false, themeDelegate);
+                     cell.setMinimumWidth(AndroidUtilities.dp(200));
+                     cell.setTextAndIcon(getString(R.string.SaveForNotifications), R.drawable.msg_tone_add);
+                     popupLayout.addView(cell);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/MessagePrivateSeenView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/MessagePrivateSeenView.java
+index 079ed6f20..78d66c4f6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/MessagePrivateSeenView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/MessagePrivateSeenView.java
+@@ -50,6 +50,7 @@ public class MessagePrivateSeenView extends FrameLayout {
+     public static final int TYPE_SEEN = 0;
+     public static final int TYPE_EDIT = 1;
+     public static final int TYPE_FORWARD = 2;
++    public static final int TYPE_LOCAL_SEEN = 3;
+ 
+     private final int currentAccount;
+     private final int type;
+@@ -146,6 +147,13 @@ public class MessagePrivateSeenView extends FrameLayout {
+             valueTextView.setText(LocaleController.formatPmFwdDate(fwd_date));
+             return;
+         }
++        if (type == TYPE_LOCAL_SEEN) {
++            valueLayout.setAlpha(1f);
++            loadingView.setAlpha(0f);
++            premiumTextView.setVisibility(View.GONE);
++            valueTextView.setText(LocaleController.formatPmSeenDate(tele.helpers.ReadLog.date(currentAccount, dialogId, messageId)));
++            return;
++        }
+         setOnClickListener(null);
+         valueLayout.setAlpha(0f);
+         loadingView.setAlpha(1f);
+@@ -155,7 +163,12 @@ public class MessagePrivateSeenView extends FrameLayout {
+         req.peer = MessagesController.getInstance(currentAccount).getInputPeer(dialogId);
+         req.msg_id = messageId;
+         ConnectionsManager.getInstance(currentAccount).sendRequest(req, (res, err) -> AndroidUtilities.runOnUIThread(() -> {
+-            if (err != null) {
++            // the server gives no read time here, the local log may have it
++            int teleDate = err != null && ("USER_PRIVACY_RESTRICTED".equals(err.text) || "YOUR_PRIVACY_RESTRICTED".equals(err.text)) ? tele.helpers.ReadLog.date(currentAccount, dialogId, messageId) : 0;
++            if (teleDate > 0) {
++                valueTextView.setText(LocaleController.formatPmSeenDate(teleDate));
++                premiumTextView.setVisibility(View.GONE);
++            } else if (err != null) {
+                 if ("USER_PRIVACY_RESTRICTED".equals(err.text)) {
+                     valueTextView.setText(LocaleController.getString(R.string.PmReadUnknown));
+                     premiumTextView.setVisibility(View.GONE);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index c8efd88ec..323d1d2b4 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -143,6 +143,8 @@ object TeleConfig {
+     @JvmField
+     val EDIT_HISTORY = BoolItem("edit_history", false)
+     @JvmField
++    val READ_LOG = BoolItem("read_log", false)
++    @JvmField
+     val SHOW_PEER_ID = BoolItem("show_peer_id", false)
+     @JvmField
+     val PEER_IDS_WITHOUT_SPACES = BoolItem("peer_ids_without_spaces", false)
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index b1eaabed7..c3428f824 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -415,6 +415,61 @@ object TeleDatabaseHelper {
+         db.delete("tele_return_points", "account = ? AND dialog_id = ? AND topic_id = ?", arrayOf(account.toString(), dialogId.toString(), topicId.toString()))
+     }
+ 
++    /**
++     * One row says that the messages after the previous row up to [till] were read at [date];
++     * date 0 marks the edge where the log starts or rotates, the read time is unknown there.
++     */
++    fun addReadLog(account: Int, dialogId: Long, was: Int, till: Int, date: Int, maxEntries: Int, maxChats: Int) {
++        val db = helper?.writableDatabase ?: return
++        val args = arrayOf(account.toString(), dialogId.toString())
++        db.beginTransaction()
++        try {
++            var last = 0
++            var known = false
++            db.rawQuery("SELECT MAX(till) FROM tele_read_log WHERE account = ? AND dialog_id = ?", args).use {
++                if (it.moveToFirst() && !it.isNull(0)) {
++                    last = it.getInt(0)
++                    known = true
++                }
++            }
++            // an older update never rewrites the newer state
++            if (till <= last) return
++            if (!known) {
++                var chats = 0
++                db.rawQuery("SELECT COUNT(DISTINCT dialog_id) FROM tele_read_log WHERE account = ?", arrayOf(account.toString())).use { if (it.moveToFirst()) chats = it.getInt(0) }
++                if (chats >= maxChats) {
++                    db.execSQL("DELETE FROM tele_read_log WHERE account = ? AND dialog_id = (SELECT dialog_id FROM tele_read_log WHERE account = ? GROUP BY dialog_id ORDER BY MAX(date) ASC LIMIT 1)", arrayOf(account, account))
++                }
++            }
++            if (was > last) {
++                db.execSQL("INSERT OR IGNORE INTO tele_read_log (account, dialog_id, till, date) VALUES (?, ?, ?, 0)", arrayOf(account, dialogId, was))
++            }
++            db.execSQL("INSERT OR REPLACE INTO tele_read_log (account, dialog_id, till, date) VALUES (?, ?, ?, ?)", arrayOf(account, dialogId, till, date))
++            var count = 0
++            db.rawQuery("SELECT COUNT(*) FROM tele_read_log WHERE account = ? AND dialog_id = ?", args).use { if (it.moveToFirst()) count = it.getInt(0) }
++            if (count > maxEntries) {
++                // the dropped rows are replaced with one edge row, so the log stays at the limit
++                val drop = count - maxEntries + 1
++                var edge = 0
++                db.rawQuery("SELECT till FROM tele_read_log WHERE account = ? AND dialog_id = ? ORDER BY till ASC LIMIT 1 OFFSET ?", arrayOf(args[0], args[1], (drop - 1).toString())).use { if (it.moveToFirst()) edge = it.getInt(0) }
++                db.execSQL("DELETE FROM tele_read_log WHERE account = ? AND dialog_id = ? AND till <= ?", arrayOf(account, dialogId, edge))
++                db.execSQL("INSERT OR REPLACE INTO tele_read_log (account, dialog_id, till, date) VALUES (?, ?, ?, 0)", arrayOf(account, dialogId, edge))
++            }
++            db.setTransactionSuccessful()
++        } finally {
++            db.endTransaction()
++        }
++    }
++
++    /** The read time of the message, 0 when it is unknown. */
++    fun findReadLog(account: Int, dialogId: Long, messageId: Int): Int {
++        val db = helper?.readableDatabase ?: return 0
++        db.rawQuery("SELECT date FROM tele_read_log WHERE account = ? AND dialog_id = ? AND till >= ? ORDER BY till ASC LIMIT 1", arrayOf(account.toString(), dialogId.toString(), messageId.toString())).use {
++            if (it.moveToFirst()) return it.getInt(0)
++        }
++        return 0
++    }
++
+     private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 9) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+@@ -436,6 +491,7 @@ object TeleDatabaseHelper {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_changelog (account INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, message_id))")
+             createRecoveredPostsTable(db)
+             createBookmarkTables(db)
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_read_log (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, till INTEGER NOT NULL, date INTEGER NOT NULL, PRIMARY KEY (account, dialog_id, till))")
+         }
+ 
+         // the retention stamp of the edit versions and the media file names of the kept messages
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ReadLog.kt b/TMessagesProj/src/main/java/tele/helpers/ReadLog.kt
+new file mode 100644
+index 000000000..ff1f8648a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ReadLog.kt
+@@ -0,0 +1,52 @@
++package tele.helpers
++
++import org.telegram.messenger.DispatchQueue
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.UserObject
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * Remembers when the outgoing messages of private chats were read. The outbox read updates carry
++ * no time, so the time is the moment the update arrives; the updates replayed by the difference
++ * request are skipped because their moment is lost.
++ */
++object ReadLog {
++
++    // the limits of the desktop log
++    private const val MAX_ENTRIES = 200
++    private const val MAX_CHATS = 1000
++
++    // one queue keeps the updates of a chat in the order of their arrival
++    private val queue by lazy { DispatchQueue("teleReadLog") }
++
++    @JvmStatic
++    fun enabled() = TeleConfig.READ_LOG.value
++
++    private fun logged(account: Int, userId: Long): Boolean {
++        val user = MessagesController.getInstance(account).getUser(userId) ?: return false
++        return !user.bot && !UserObject.isUserSelf(user) && !UserObject.isService(userId)
++    }
++
++    /** [was] is the outbox read position before the update, [till] the one the update brings. */
++    @JvmStatic
++    fun onOutboxRead(account: Int, userId: Long, was: Int, till: Int, fromDifference: Boolean) {
++        if (!enabled() || fromDifference || till <= was || !logged(account, userId)) return
++        val date = org.telegram.tgnet.ConnectionsManager.getInstance(account).currentTime
++        queue.postRunnable { TeleDatabaseHelper.addReadLog(account, userId, was, till, date, MAX_ENTRIES, MAX_CHATS) }
++    }
++
++    /** Whether the private chat is the kind the log is kept for. */
++    @JvmStatic
++    fun available(account: Int, message: org.telegram.messenger.MessageObject): Boolean {
++        if (!enabled() || !message.isOutOwner || message.dialogId <= 0) return false
++        return logged(account, message.dialogId)
++    }
++
++    /** The logged read time of the message, 0 when there is none. It is one indexed read of a single row. */
++    @JvmStatic
++    fun date(account: Int, dialogId: Long, messageId: Int): Int {
++        if (!enabled() || dialogId <= 0 || messageId <= 0) return 0
++        return TeleDatabaseHelper.findReadLog(account, dialogId, messageId)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index ac13aef0d..cbb4851ca 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -146,6 +146,7 @@ object TeleSearch {
+             screen(GUID_DATA + 5, "Deleted messages") { TeleDeletedMessagesActivity() },
+             screen(GUID_DATA + 11, "Saved drafts") { TeleDraftsActivity() },
+             section(GUID_DATA + 6, "Keep edit history", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1192, "Remember read times", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(GUID_DATA + 8, "Manage local names") { TeleNamesActivity(TeleNamesActivity.MODE_LOCAL) },
+             screen(GUID_DATA + 9, "Manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
+             section(GUID_DATA + 10, "Mark deleted messages with", "messages", TeleSettingsActivity.MODE_MESSAGES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 664024584..4f8e146ef 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -651,6 +651,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Ones you delete" to "Keep the messages you delete from this device.",
+             "Recover channel posts from forwards" to "Show a deleted channel post from its forward when you open it from there.",
+             "Keep edit history" to "Save previous versions of edited messages on this device.",
++            "Remember read times" to "Keep when a private chat read your message and show it in the message menu when the server gives none.",
+             "Username aliases" to "Link local aliases to chats and usernames.",
+             "Usernames from the server" to "Show usernames and aliases provided by the tele server.",
+             "Send crash reports" to "Offer to send crash reports to the tele server.",
+@@ -821,6 +822,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Message bookmarks", TeleConfig.BOOKMARKS),
+                 toggle("Return to where you were reading", TeleConfig.RETURN_POINT),
+                 link("Bookmarks", TeleBookmarksActivity.MODE_BOOKMARKS),
++                Row(TYPE_HEADER, "Read times"),
++                toggle("Remember read times", TeleConfig.READ_LOG),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Links"),
+                 toggle("Disable link previews", TeleConfig.NO_LINK_PREVIEWS),

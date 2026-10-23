@@ -1,0 +1,1033 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:49:38 +0300
+Subject: [PATCH] feat: keep deleted chats and topics
+
+---
+ .../messenger/MessagesController.java         |   5 +
+ .../telegram/messenger/MessagesStorage.java   |   6 +
+ .../telegram/messenger/TopicsController.java  |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  88 ++++-
+ .../main/java/tele/helpers/DeletedChats.kt    | 335 ++++++++++++++++++
+ .../main/java/tele/helpers/DeletedMessages.kt |  26 +-
+ .../java/tele/helpers/DeletedRetention.kt     |   2 +
+ .../main/java/tele/ui/settings/TeleChatRow.kt |  27 +-
+ .../settings/TeleDeletedMessagesActivity.kt   | 109 ++++--
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   3 +
+ .../src/main/res/values/strings_tele.xml      |   3 +
+ 13 files changed, 575 insertions(+), 33 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index ca349c869..bd2a3d3c6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -6990,6 +6990,9 @@ public class MessagesController extends BaseController implements NotificationCe
+         }
+         try { tele.helpers.TeleBadges.applyChat(currentAccount, chat); } catch (Throwable ignore) {}
+         TLRPC.Chat oldChat = chats.get(chat.id);
++        if (oldChat != null) {
++            tele.helpers.DeletedChats.chatReplacing(currentAccount, oldChat, chat);
++        }
+         if (oldChat == chat) {
+             return;
+         }
+@@ -20319,6 +20322,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                             if (dialog == null && chat instanceof TLRPC.TL_channel && !chat.left) {
+                                 Utilities.stageQueue.postRunnable(() -> getChannelDifference(update.channel_id, 1, 0, null));
+                             } else if (ChatObject.isNotInChat(chat) && dialog != null && (promoDialog == null || promoDialog.id != dialog.id)) {
++                                tele.helpers.DeletedChats.noteRemoved(currentAccount, dialog.id);
+                                 deleteDialog(dialog.id, 0);
+                             }
+                             if (chat instanceof TLRPC.TL_channelForbidden || chat.kicked) {
+@@ -20358,6 +20362,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                             }
+                             TLRPC.Dialog dialog = dialogs_dict.get(-chat.id);
+                             if (dialog != null) {
++                                tele.helpers.DeletedChats.noteRemoved(currentAccount, dialog.id);
+                                 deleteDialog(dialog.id, 0);
+                             }
+                         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index 160d63e57..ed4daaa3c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -2163,6 +2163,7 @@ public class MessagesStorage extends BaseController {
+     public void removeTopic(long dialogId, long topicId) {
+         storageQueue.postRunnable(() -> {
+             try {
++                tele.helpers.DeletedChats.archiveTopic(currentAccount, database, dialogId, topicId);
+                 database.executeFast(String.format(Locale.US, "DELETE FROM topics WHERE did = %d AND topic_id = %d", dialogId, topicId)).stepThis().dispose();
+                 database.executeFast(String.format(Locale.US,
+                     "DELETE FROM messages_v2 WHERE uid = %d AND mid IN (" +
+@@ -2179,6 +2180,7 @@ public class MessagesStorage extends BaseController {
+     public void removeTopics(long dialogId, ArrayList<Long> topicIds) {
+         storageQueue.postRunnable(() -> {
+             try {
++                tele.helpers.DeletedChats.archiveTopics(currentAccount, database, dialogId, topicIds);
+                 String topics = TextUtils.join(", ", topicIds);
+                 database.executeFast(String.format(Locale.US, "DELETE FROM topics WHERE did = %d AND topic_id IN (%s)", dialogId, topics)).stepThis().dispose();
+                 try {
+@@ -4419,6 +4421,9 @@ public class MessagesStorage extends BaseController {
+                         return;
+                     }
+                 }
++                if (messagesOnly == 0) {
++                    tele.helpers.DeletedChats.archiveDialog(currentAccount, database, did);
++                }
+                 if (DialogObject.isEncryptedDialog(did) || messagesOnly == 2) {
+                     cursor = database.queryFinalized("SELECT data FROM messages_v2 WHERE uid = " + did);
+                     ArrayList<File> filesToDelete = new ArrayList<>();
+@@ -15105,6 +15110,7 @@ public class MessagesStorage extends BaseController {
+                 if (topicsToDelete != null) {
+                     for (int i = 0; i < topicsToDelete.size(); i++) {
+                         TopicKey topicKey = topicsToDelete.get(i);
++                        tele.helpers.DeletedChats.archiveTopic(currentAccount, database, topicKey.dialogId, topicKey.topicId);
+                         database.executeFast(String.format(Locale.US, "DELETE FROM topics WHERE did = %d AND topic_id = %d", topicKey.dialogId, topicKey.topicId)).stepThis().dispose();
+                     }
+                     getMessagesController().getTopicsController().onTopicsDeletedServerSide(topicsToDelete);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java
+index 7a21aad04..23ab3bcb1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java
+@@ -702,6 +702,7 @@ public class TopicsController extends BaseController {
+     }
+ 
+     public void deleteTopics(long chatId, ArrayList<Integer> topicIds) {
++        tele.helpers.DeletedChats.noteOwnTopics(currentAccount, chatId, topicIds);
+         ArrayList<TLRPC.TL_forumTopic> topicsArray = topicsByChatId.get(chatId);
+         LongSparseArray<TLRPC.TL_forumTopic> topicsMap = topicsMapByChatId.get(chatId);
+         if (topicsMap != null && topicsArray != null) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index c2c2addf7..7d927a2fc 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -130,6 +130,8 @@ object TeleConfig {
+     @JvmField
+     val KEEP_DELETED_OWN = BoolItem("keep_deleted_own", true)
+     @JvmField
++    val KEEP_DELETED_CHATS = BoolItem("keep_deleted_chats", false)
++    @JvmField
+     val DELETED_RETENTION = StringItem("deleted_retention", "forever")
+     @JvmField
+     val RECOVER_FORWARDED_POSTS = BoolItem("recover_forwarded_posts", false)
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index a6690aa0e..5de91bc87 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -41,7 +41,8 @@ object TeleDatabaseHelper {
+     data class ArchivedDialog(val dialogId: Long, val count: Int, val lastDeletedAt: Int)
+ 
+ 
+-    fun putDeletedMessage(account: Int, dialogId: Long, messageId: Int, date: Int, deletedAt: Int, data: ByteArray) {
++    /** [via] 1 is a message archived with its deleted chat, 2 with its deleted topic: such rows never replace a message that was kept on its own. */
++    fun putDeletedMessage(account: Int, dialogId: Long, messageId: Int, date: Int, deletedAt: Int, data: ByteArray, via: Int = 0) {
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -50,8 +51,9 @@ object TeleDatabaseHelper {
+             put("date", date)
+             put("deleted_at", deletedAt)
+             put("data", data)
++            put("by_chat", via)
+         }
+-        db.insertWithOnConflict("tele_deleted_messages", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++        db.insertWithOnConflict("tele_deleted_messages", null, values, if (via != 0) SQLiteDatabase.CONFLICT_IGNORE else SQLiteDatabase.CONFLICT_REPLACE)
+     }
+ 
+     fun getDeletedMessages(account: Int, dialogId: Long? = null): List<ArchivedMessage> {
+@@ -109,6 +111,82 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
++    fun countDeletedMessages(account: Int, dialogId: Long): Int {
++        val db = helper?.readableDatabase ?: return 0
++        db.rawQuery("SELECT COUNT(*) FROM tele_deleted_messages WHERE account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString())).use { return if (it.moveToFirst()) it.getInt(0) else 0 }
++    }
++
++    /** A deleted chat (topic 0) or one of its topics; [data] is the serialized chat, user or forum topic, [whole] a topic that went with its chat. */
++    class DeletedChatRow(val dialogId: Long, val topicId: Long, val deletedAt: Int, val own: Boolean, val whole: Boolean, val data: ByteArray)
++
++    fun putDeletedChat(account: Int, row: DeletedChatRow, replace: Boolean) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("dialog_id", row.dialogId)
++            put("topic_id", row.topicId)
++            put("deleted_at", row.deletedAt)
++            put("own", if (row.own) 1 else 0)
++            put("whole", if (row.whole) 1 else 0)
++            put("data", row.data)
++        }
++        db.insertWithOnConflict("tele_deleted_chats", null, values, if (replace) SQLiteDatabase.CONFLICT_REPLACE else SQLiteDatabase.CONFLICT_IGNORE)
++    }
++
++    fun getDeletedChats(account: Int): List<DeletedChatRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<DeletedChatRow>()
++        db.rawQuery("SELECT dialog_id, topic_id, deleted_at, own, whole, data FROM tele_deleted_chats WHERE account = ? ORDER BY deleted_at DESC", arrayOf(account.toString())).use {
++            while (it.moveToNext()) result.add(DeletedChatRow(it.getLong(0), it.getLong(1), it.getInt(2), it.getInt(3) != 0, it.getInt(4) != 0, it.getBlob(5)))
++        }
++        return result
++    }
++
++    /** The chat is back: forgets its row and the topics that went with it; with [dropChatMessages] also the messages that only the chat deletion archived. Returns their ids. */
++    fun removeDeletedChat(account: Int, dialogId: Long, dropChatMessages: Boolean): List<Int> {
++        val db = helper?.writableDatabase ?: return emptyList()
++        val ids = ArrayList<Int>()
++        db.beginTransaction()
++        try {
++            db.delete("tele_deleted_chats", "account = ? AND dialog_id = ? AND (topic_id = 0 OR whole = 1)", arrayOf(account.toString(), dialogId.toString()))
++            if (dropChatMessages) {
++                db.rawQuery("SELECT message_id FROM tele_deleted_messages WHERE account = ? AND dialog_id = ? AND by_chat = 1", arrayOf(account.toString(), dialogId.toString())).use {
++                    while (it.moveToNext()) ids.add(it.getInt(0))
++                }
++                db.delete("tele_deleted_messages", "account = ? AND dialog_id = ? AND by_chat = 1", arrayOf(account.toString(), dialogId.toString()))
++            }
++            db.setTransactionSuccessful()
++        } finally {
++            db.endTransaction()
++        }
++        return ids
++    }
++
++    /** Drops the chat rows left without any kept message; the topic rows go with their chat. */
++    fun pruneDeletedChats() {
++        val db = helper?.writableDatabase ?: return
++        db.execSQL("DELETE FROM tele_deleted_chats WHERE NOT EXISTS (SELECT 1 FROM tele_deleted_messages m WHERE m.account = tele_deleted_chats.account AND m.dialog_id = tele_deleted_chats.dialog_id)")
++    }
++
++    /** Forgets the rows of a chat with all its topics, or of one topic; the messages are the caller's business. */
++    fun forgetDeletedChat(account: Int, dialogId: Long, topicId: Long?) {
++        val db = helper?.writableDatabase ?: return
++        if (topicId == null) db.delete("tele_deleted_chats", "account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString()))
++        else db.delete("tele_deleted_chats", "account = ? AND dialog_id = ? AND topic_id = ?", arrayOf(account.toString(), dialogId.toString(), topicId.toString()))
++    }
++
++    /** One commit for a burst of writes. */
++    fun transaction(block: () -> Unit) {
++        val db = helper?.writableDatabase ?: return
++        db.beginTransaction()
++        try {
++            block()
++            db.setTransactionSuccessful()
++        } finally {
++            db.endTransaction()
++        }
++    }
++
+ 
+     fun putMessageVersion(account: Int, dialogId: Long, messageId: Int, editDate: Int, original: Boolean, versionKey: String, data: ByteArray) {
+         val db = helper?.writableDatabase ?: return
+@@ -508,7 +586,7 @@ object TeleDatabaseHelper {
+         db.delete("tele_past_limit", "account = ?", arrayOf(account.toString()))
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 9) {
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 10) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -531,6 +609,8 @@ object TeleDatabaseHelper {
+             createBookmarkTables(db)
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_read_log (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, till INTEGER NOT NULL, date INTEGER NOT NULL, PRIMARY KEY (account, dialog_id, till))")
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_past_limit (account INTEGER NOT NULL, kind INTEGER NOT NULL, doc_id INTEGER NOT NULL, position INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, kind, doc_id))")
++            // topic_id 0 is the chat itself; data is the serialized chat or user, or the forum topic
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_deleted_chats (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL, own INTEGER NOT NULL DEFAULT 0, whole INTEGER NOT NULL DEFAULT 0, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, topic_id))")
+         }
+ 
+         // the retention stamp of the edit versions and the media file names of the kept messages
+@@ -547,6 +627,8 @@ object TeleDatabaseHelper {
+             db.rawQuery("PRAGMA table_info(tele_deleted_messages)", null).use { while (it.moveToNext()) deleted.add(it.getString(1)) }
+             // NULL means not computed yet
+             if ("media_names" !in deleted) db.execSQL("ALTER TABLE tele_deleted_messages ADD COLUMN media_names TEXT")
++            // 1 and 2 mark the rows that a chat or a topic deletion archived; the first ones go when the chat comes back
++            if ("by_chat" !in deleted) db.execSQL("ALTER TABLE tele_deleted_messages ADD COLUMN by_chat INTEGER NOT NULL DEFAULT 0")
+         }
+ 
+         private fun createMessageEditTable(db: SQLiteDatabase) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt
+new file mode 100644
+index 000000000..bcd27b0a7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt
+@@ -0,0 +1,335 @@
++package tele.helpers
++
++import org.telegram.SQLite.SQLiteDatabase
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.ConcurrentHashMap
++
++/**
++ * Chats and forum topics that were deleted, left or taken away: their cached messages stay in the archive,
++ * next to the title and userpic they had, and the overview lists them marked as deleted.
++ */
++object DeletedChats {
++    private const val FRESH = 60_000L
++    private const val VIA_CHAT = 1
++    private const val VIA_TOPIC = 2
++    private const val GENERAL_TOPIC = 1L
++
++    private class Rows(val chats: MutableSet<Long>, val any: MutableSet<Long>)
++
++    private val rows = ConcurrentHashMap<Int, Rows>()
++
++    // what the stock code is about to do, told by its callers a moment before the storage gets to it
++    private val removed = ConcurrentHashMap<String, Long>()
++    private val ownTopics = ConcurrentHashMap<String, Long>()
++
++    // the last full copy of a chat the server turns into a stub without a userpic
++    private val snapshots = ConcurrentHashMap<String, ByteArray>()
++
++    private fun enabled(): Boolean = TeleConfig.KEEP_DELETED_MESSAGES.value && TeleConfig.KEEP_DELETED_CHATS.value
++
++    private fun now(): Int = (System.currentTimeMillis() / 1000L).toInt()
++
++    private fun key(account: Int, dialogId: Long) = "$account:$dialogId"
++
++    private fun topicKey(account: Int, dialogId: Long, topicId: Long) = "$account:$dialogId:$topicId"
++
++    private fun take(map: ConcurrentHashMap<String, Long>, key: String): Boolean {
++        val at = map.remove(key) ?: return false
++        return System.currentTimeMillis() - at < FRESH
++    }
++
++    private fun rowsOf(account: Int): Rows = rows[account] ?: synchronized(this) {
++        rows[account] ?: load(account).also { rows[account] = it }
++    }
++
++    private fun load(account: Int): Rows {
++        val chats = ConcurrentHashMap.newKeySet<Long>()
++        val any = ConcurrentHashMap.newKeySet<Long>()
++        runCatching {
++            for (row in TeleDatabaseHelper.getDeletedChats(account)) {
++                any.add(row.dialogId)
++                if (row.topicId == 0L) chats.add(row.dialogId)
++            }
++        }.onFailure { FileLog.e(it) }
++        return Rows(chats, any)
++    }
++
++    /** Whether a chat or topic of the dialog is kept as deleted. */
++    @JvmStatic
++    fun hasRows(account: Int, dialogId: Long): Boolean = rowsOf(account).any.contains(dialogId)
++
++    @JvmStatic
++    fun isDeletedChat(account: Int, dialogId: Long): Boolean = rowsOf(account).chats.contains(dialogId)
++
++    /** The chat is taken from the user (kicked, banned, deleted by its owner), not deleted by them. */
++    @JvmStatic
++    fun noteRemoved(account: Int, dialogId: Long) {
++        if (enabled()) removed[key(account, dialogId)] = System.currentTimeMillis()
++    }
++
++    /** The user deletes these topics themselves. */
++    @JvmStatic
++    fun noteOwnTopics(account: Int, chatId: Long, topicIds: List<Int>) {
++        if (!enabled()) return
++        val at = System.currentTimeMillis()
++        for (id in topicIds) ownTopics[topicKey(account, -chatId, id.toLong())] = at
++    }
++
++    /** The stock chat map is about to swap a chat for its forbidden stub. */
++    @JvmStatic
++    fun chatReplacing(account: Int, old: TLRPC.Chat?, new: TLRPC.Chat) {
++        if (old == null || !enabled() || !isStub(new) || isStub(old)) return
++        runCatching { snapshots[key(account, -old.id)] = serialize(old) }.onFailure { FileLog.e(it) }
++    }
++
++    private fun isStub(chat: TLRPC.Chat) = chat is TLRPC.TL_channelForbidden || chat is TLRPC.TL_chatForbidden
++
++    private fun serialize(obj: TLObject): ByteArray {
++        val stream = SerializedData(obj.getObjectSize())
++        try {
++            obj.serializeToStream(stream)
++            return stream.toByteArray()
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    /** The chat or user of a chat row. */
++    @JvmStatic
++    fun peerOf(dialogId: Long, data: ByteArray): TLObject? = runCatching {
++        val stream = SerializedData(data)
++        try {
++            val constructor = stream.readInt32(false)
++            if (dialogId < 0) TLRPC.Chat.TLdeserialize(stream, constructor, false) else TLRPC.User.TLdeserialize(stream, constructor, false)
++        } finally {
++            stream.cleanup()
++        }
++    }.getOrNull()
++
++    @JvmStatic
++    fun topicOf(data: ByteArray): TLRPC.TL_forumTopic? = runCatching {
++        val stream = SerializedData(data)
++        try {
++            TLRPC.TL_forumTopic.TLdeserialize(stream, stream.readInt32(false), false)
++        } finally {
++            stream.cleanup()
++        }
++    }.getOrNull()
++
++    @JvmStatic
++    fun titleOf(peer: TLObject?): String? = when (peer) {
++        is TLRPC.Chat -> peer.title
++        is TLRPC.User -> UserObject.getUserName(peer)
++        else -> null
++    }
++
++    /** The topic a message of a forum belongs to. */
++    @JvmStatic
++    fun topicIdOf(account: Int, message: TLRPC.Message): Long = MessageObject.getTopicId(account, message, MessagesStorage.FORUM_TYPE_CHAT)
++
++    private fun supported(account: Int, dialogId: Long, chat: TLRPC.Chat?, user: TLRPC.User?): Boolean {
++        if (dialogId == UserConfig.getInstance(account).clientUserId) return false
++        if (user != null && (UserObject.isReplyUser(user) || UserObject.isService(user.id))) return false
++        if (chat != null && (ChatObject.isMonoForum(chat) || ChatObject.isCommunity(chat))) return false
++        return true
++    }
++
++    /** The storage queue, right before a dialog is wiped for good: the cached messages and the chat itself go to the archive. */
++    @JvmStatic
++    fun archiveDialog(account: Int, db: SQLiteDatabase, dialogId: Long) {
++        val taken = take(removed, key(account, dialogId))
++        val snapshot = snapshots.remove(key(account, dialogId))
++        if (!enabled() || DialogObject.isEncryptedDialog(dialogId)) return
++        val own = !taken
++        if (own && !TeleConfig.KEEP_DELETED_OWN.value) return
++        val controller = MessagesController.getInstance(account)
++        val chat = if (dialogId < 0) controller.getChat(-dialogId) else null
++        val user = if (dialogId > 0) controller.getUser(dialogId) else null
++        if (!supported(account, dialogId, chat, user)) return
++        runCatching {
++            TeleDatabaseHelper.transaction { archiveMessages(account, db, dialogId, "SELECT mid, date, data FROM messages_v2 WHERE uid = $dialogId", own, VIA_CHAT) }
++            if (TeleDatabaseHelper.countDeletedMessages(account, dialogId) == 0) return
++            val data = snapshot ?: chat?.let { serialize(it) } ?: user?.let { serialize(it) } ?: storedPeer(db, dialogId) ?: return
++            val stamp = now()
++            TeleDatabaseHelper.transaction {
++                // a second delete of the same chat (leave, then delete) sees the stub, the first copy is the good one
++                TeleDatabaseHelper.putDeletedChat(account, TeleDatabaseHelper.DeletedChatRow(dialogId, 0, stamp, own, false, data), !isDeletedChat(account, dialogId))
++                if (dialogId < 0) {
++                    // the topics go along, so a deleted forum opens topic by topic
++                    val cursor = db.queryFinalized("SELECT topic_id, data FROM topics WHERE did = $dialogId")
++                    try {
++                        while (cursor.next()) {
++                            val topic = cursor.byteArrayValue(1) ?: continue
++                            TeleDatabaseHelper.putDeletedChat(account, TeleDatabaseHelper.DeletedChatRow(dialogId, cursor.longValue(0), stamp, own, true, topic), false)
++                        }
++                    } finally {
++                        cursor.dispose()
++                    }
++                }
++            }
++            val cache = rowsOf(account)
++            cache.chats.add(dialogId)
++            cache.any.add(dialogId)
++        }.onFailure { FileLog.e(it) }
++    }
++
++    /** The chat as the storage knows it, when nothing fresher is in memory. */
++    private fun storedPeer(db: SQLiteDatabase, dialogId: Long): ByteArray? {
++        val cursor = db.queryFinalized(if (dialogId < 0) "SELECT data FROM chats WHERE uid = ${-dialogId}" else "SELECT data FROM users WHERE uid = $dialogId")
++        try {
++            if (!cursor.next()) return null
++            return cursor.byteArrayValue(0)
++        } finally {
++            cursor.dispose()
++        }
++    }
++
++    private fun archiveMessages(account: Int, db: SQLiteDatabase, dialogId: Long, sql: String, own: Boolean, via: Int) {
++        val self = UserConfig.getInstance(account).clientUserId
++        val cursor = db.queryFinalized(sql)
++        try {
++            while (cursor.next()) {
++                val mid = cursor.intValue(0)
++                val date = cursor.intValue(1)
++                val data = cursor.byteBufferValue(2) ?: continue
++                val message = try {
++                    TLRPC.Message.TLdeserialize(data, data.readInt32(false), false)?.also { it.readAttachPath(data, self) }
++                } finally {
++                    data.reuse()
++                }
++                if (message == null) continue
++                message.id = mid
++                message.dialog_id = dialogId
++                message.date = date
++                DeletedMessages.archiveWithChat(account, message, own, via)
++            }
++        } finally {
++            cursor.dispose()
++        }
++    }
++
++    /** The storage queue, right before topics of a forum go: the messages and the topic itself go to the archive. */
++    @JvmStatic
++    fun archiveTopics(account: Int, db: SQLiteDatabase, dialogId: Long, topicIds: List<Long>) {
++        for (id in topicIds) archiveTopic(account, db, dialogId, id)
++    }
++
++    @JvmStatic
++    fun archiveTopic(account: Int, db: SQLiteDatabase, dialogId: Long, topicId: Long) {
++        val own = take(ownTopics, topicKey(account, dialogId, topicId))
++        if (!enabled() || dialogId >= 0 || topicId == GENERAL_TOPIC) return
++        if (own && !TeleConfig.KEEP_DELETED_OWN.value) return
++        val controller = MessagesController.getInstance(account)
++        val chat = controller.getChat(-dialogId)
++        if (!supported(account, dialogId, chat, null) || isDeletedChat(account, dialogId)) return
++        runCatching {
++            var found: ByteArray? = null
++            val cursor = db.queryFinalized("SELECT data FROM topics WHERE did = $dialogId AND topic_id = $topicId")
++            try {
++                if (cursor.next()) found = cursor.byteArrayValue(0)
++            } finally {
++                cursor.dispose()
++            }
++            val topic = found ?: return
++            TeleDatabaseHelper.transaction {
++                archiveMessages(account, db, dialogId, "SELECT mid, date, data FROM messages_v2 WHERE uid = $dialogId AND mid IN (SELECT mid FROM messages_topics WHERE uid = $dialogId AND topic_id = $topicId)", own, VIA_TOPIC)
++                TeleDatabaseHelper.putDeletedChat(account, TeleDatabaseHelper.DeletedChatRow(dialogId, topicId, now(), own, false, topic), false)
++            }
++            rowsOf(account).any.add(dialogId)
++        }.onFailure { FileLog.e(it) }
++    }
++
++    // the dialog is in the list again and the user is in the chat
++    private fun isBack(account: Int, dialogId: Long): Boolean = runCatching {
++        val controller = MessagesController.getInstance(account)
++        if (controller.dialogs_dict.get(dialogId) == null) return@runCatching false
++        if (dialogId > 0) return@runCatching true
++        val chat = controller.getChat(-dialogId) ?: return@runCatching false
++        !ChatObject.isNotInChat(chat)
++    }.getOrDefault(false)
++
++    /** The deleted chats of the account that are back in the chat list; main thread. */
++    @JvmStatic
++    fun backDialogs(account: Int): List<Long> = rowsOf(account).chats.filter { isBack(account, it) }
++
++    /** A chat that came back is a live chat again: no longer deleted, its messages are live too. */
++    @JvmStatic
++    fun releaseIfBack(account: Int, dialogId: Long) {
++        if (!rowsOf(account).chats.contains(dialogId) || !isBack(account, dialogId)) return
++        release(account, dialogId)
++    }
++
++    @JvmStatic
++    fun release(account: Int, dialogId: Long) {
++        // a user's chat keeps its messages: they stay deleted whatever happens to the chat
++        val ids = runCatching { TeleDatabaseHelper.removeDeletedChat(account, dialogId, dialogId < 0) }.onFailure { FileLog.e(it) }.getOrDefault(emptyList())
++        DeletedMessages.dropKeptInChat(account, dialogId, ids)
++        snapshots.remove(key(account, dialogId))
++        rowsOf(account).chats.remove(dialogId)
++    }
++
++    /** The user forgets a chat in the overview; its messages are forgotten by the caller. */
++    @JvmStatic
++    fun forgetChat(account: Int, dialogId: Long) {
++        runCatching { TeleDatabaseHelper.forgetDeletedChat(account, dialogId, null) }.onFailure { FileLog.e(it) }
++        snapshots.remove(key(account, dialogId))
++        val cache = rowsOf(account)
++        cache.chats.remove(dialogId)
++        cache.any.remove(dialogId)
++    }
++
++    @JvmStatic
++    fun forgetTopic(account: Int, dialogId: Long, topicId: Long) {
++        runCatching { TeleDatabaseHelper.forgetDeletedChat(account, dialogId, topicId) }.onFailure { FileLog.e(it) }
++    }
++
++    @JvmStatic
++    fun forgetAll(account: Int, dialogId: Long?) {
++        if (dialogId != null) {
++            forgetChat(account, dialogId)
++            return
++        }
++        for (id in rowsOf(account).any.toList()) forgetChat(account, id)
++    }
++
++    /** Rows left without a kept message go; the retention sweep and the overview call it. */
++    @JvmStatic
++    fun prune() {
++        runCatching { TeleDatabaseHelper.pruneDeletedChats() }.onFailure { FileLog.e(it) }
++        rows.clear()
++    }
++
++    class TopicInfo(val topicId: Long, val title: String, val topic: TLRPC.TL_forumTopic?)
++
++    /** A dialog with deleted chat info: [peer] is the chat as it was, [deleted] is set when the chat itself was deleted. */
++    class Info(val peer: TLObject?, val deleted: Boolean, val topics: MutableList<TopicInfo>)
++
++    /** The deleted chats and topics of the account by dialog. */
++    @JvmStatic
++    fun infos(account: Int): Map<Long, Info> {
++        val result = HashMap<Long, Info>()
++        val all = runCatching { TeleDatabaseHelper.getDeletedChats(account) }.onFailure { FileLog.e(it) }.getOrDefault(emptyList())
++        for (row in all) {
++            val info = result.getOrPut(row.dialogId) { Info(null, false, ArrayList()) }
++            if (row.topicId == 0L) {
++                result[row.dialogId] = Info(peerOf(row.dialogId, row.data), true, info.topics)
++            } else {
++                val topic = topicOf(row.data)
++                info.topics.add(TopicInfo(row.topicId, topic?.title ?: "", topic))
++            }
++        }
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index ef7b465b0..fa2ab5062 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -55,6 +55,20 @@ object DeletedMessages {
+         }
+     }
+ 
++    /** A message of a deleted chat ([via] 1) or topic (2) goes to the archive only: the place it was in is gone. */
++    @JvmStatic
++    fun archiveWithChat(account: Int, message: TLRPC.Message, own: Boolean, via: Int) {
++        if (message.id <= 0 || !shouldArchive(account, message.out, own, message.dialog_id)) return
++        if (message.media?.ttl_seconds.let { it != null && it != 0 }) return
++        val stream = SerializedData(message.getObjectSize())
++        try {
++            message.serializeToStream(stream)
++            TeleDatabaseHelper.putDeletedMessage(account, message.dialog_id, message.id, message.date, (System.currentTimeMillis() / 1000L).toInt(), stream.toByteArray(), via)
++        } finally {
++            stream.cleanup()
++        }
++    }
++
+     @JvmStatic
+     fun isKeptDb(account: Int, dialogId: Long, messageId: Int): Boolean {
+         return TeleDatabaseHelper.hasDeletedMessage(account, dialogId, messageId)
+@@ -92,12 +106,18 @@ object DeletedMessages {
+     fun ensureLoaded(account: Int, dialogId: Long) {
+         val key = dialogKey(account, dialogId)
+         if (!loadedDialogs.add(key)) return
++        DeletedChats.releaseIfBack(account, dialogId)
+         val ids = TeleDatabaseHelper.getKeptIds(account, dialogId)
+         val dialogIds = keptInChat.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap.newKeySet() }
+         dialogIds.addAll(ids)
+         RecoveredPosts.load(account, dialogId)
+     }
+ 
++    /** Forgets that these kept ids stay in an open chat: their rows are gone. */
++    fun dropKeptInChat(account: Int, dialogId: Long, ids: Collection<Int>) {
++        keptInChat[account]?.get(dialogId)?.removeAll(ids.toSet())
++    }
++
+     /** Marks the messages that were put to the archive without being deleted first as kept in the chat. */
+     fun markKept(account: Int, dialogId: Long, ids: Collection<Int>) {
+         ensureLoaded(account, dialogId)
+@@ -192,6 +212,7 @@ object DeletedMessages {
+     fun deleteAll(account: Int, dialogId: Long? = null) {
+         TeleDatabaseHelper.deleteDeletedMessages(account, dialogId)
+         RecoveredPosts.forgetAll(account, dialogId)
++        DeletedChats.forgetAll(account, dialogId)
+     }
+ 
+     // the messages being purged: their local copies are deleted for good, not archived again
+@@ -210,7 +231,10 @@ object DeletedMessages {
+         keptInChat[account]?.get(dialogId)?.removeAll(ids.toSet())
+         for (id in ids) TeleDatabaseHelper.removeDeletedMessage(account, dialogId, id)
+         for (id in ids) RecoveredPosts.forget(account, dialogId, id)
+-        org.telegram.messenger.MessagesController.getInstance(account).deleteMessagesFromUser(ArrayList(ids), null, null, dialogId, 0, false, 0)
++        val controller = org.telegram.messenger.MessagesController.getInstance(account)
++        // a deleted chat or topic has no server copy to ask about
++        if (DeletedChats.hasRows(account, dialogId)) controller.deleteMessages(ArrayList(ids), null, null, dialogId, 0, false, 0, true)
++        else controller.deleteMessagesFromUser(ArrayList(ids), null, null, dialogId, 0, false, 0)
+         // the storage and the open chat see the deletion later, the mark has to outlive both
+         AndroidUtilities.runOnUIThread({ purging.removeAll(keys.toSet()) }, 60_000)
+     }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
+index 0fc160121..64b1799c3 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
+@@ -64,6 +64,8 @@ object DeletedRetention {
+             emptyList()
+         }
+         if (expired.isEmpty() && edits < BATCH) {
++            // the deleted chats whose last kept message expired go too
++            DeletedChats.prune()
+             running.set(false)
+             return
+         }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt
+index a9a881c83..a26d89fbd 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatRow.kt
+@@ -2,6 +2,8 @@ package tele.ui.settings
+ 
+ import android.content.Context
+ import android.graphics.Canvas
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
+ import android.text.TextUtils
+ import android.util.TypedValue
+ import android.view.Gravity
+@@ -13,6 +15,9 @@ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.UserObject
++import org.telegram.messenger.R
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Components.AvatarDrawable
+ import org.telegram.ui.Components.BackupImageView
+@@ -69,11 +74,11 @@ class TeleChatRow(context: Context) : FrameLayout(context) {
+         addView(bottom, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 78f, 38f, 14f, 0f))
+     }
+ 
+-    /** The userpic of a chat, the bookmark for Saved Messages. */
+-    fun setPeer(account: Int, dialogId: Long) {
++    /** The userpic of a chat, the bookmark for Saved Messages; a deleted chat brings its own copy, the chat map may hold a stub. */
++    fun setPeer(account: Int, dialogId: Long, snapshot: TLObject? = null) {
+         val controller = MessagesController.getInstance(account)
+-        val user = if (dialogId > 0) controller.getUser(dialogId) else null
+-        val chat = if (dialogId < 0) controller.getChat(-dialogId) else null
++        val user = (snapshot as? TLRPC.User) ?: if (dialogId > 0) controller.getUser(dialogId) else null
++        val chat = (snapshot as? TLRPC.Chat) ?: if (dialogId < 0) controller.getChat(-dialogId) else null
+         when {
+             user != null && UserObject.isUserSelf(user) -> avatar.setImageDrawable(AvatarDrawable().apply { setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED) })
+             user != null -> avatar.setForUserOrChat(user, AvatarDrawable(user))
+@@ -82,6 +87,20 @@ class TeleChatRow(context: Context) : FrameLayout(context) {
+         }
+     }
+ 
++    /** The trash before the name of a chat or topic that was deleted. */
++    fun setDeleted(deleted: Boolean) {
++        if (!deleted) {
++            name.setCompoundDrawables(null, null, null, null)
++            return
++        }
++        val icon = context.getDrawable(R.drawable.msg_delete)?.mutate() ?: return
++        icon.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_chats_date), PorterDuff.Mode.SRC_ATOP)
++        val size = AndroidUtilities.dp(15f)
++        icon.setBounds(0, 0, size, size)
++        name.setCompoundDrawables(icon, null, null, null)
++        name.compoundDrawablePadding = AndroidUtilities.dp(4f)
++    }
++
+     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+         super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(AndroidUtilities.dp(72f), MeasureSpec.EXACTLY))
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+index 81d9dbd4e..7c5360a52 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+@@ -21,6 +21,7 @@ import org.telegram.messenger.UserConfig
+ import org.telegram.messenger.UserObject
+ import org.telegram.messenger.Utilities
+ import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.TLObject
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+@@ -32,6 +33,7 @@ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.RecyclerListView
+ import org.telegram.ui.Components.SizeNotifierFrameLayout
+ import tele.helpers.DeletedMessages
++import tele.helpers.DeletedChats
+ import tele.helpers.ShotEntry
+ import tele.helpers.ShotOptions
+ import tele.ui.ShotColumn
+@@ -47,8 +49,9 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+     private val account get() = UserConfig.selectedAccount
+     private val dialogId get() = arguments?.getLong(ARG_DIALOG_ID) ?: 0L
+     private val isDialogMode get() = dialogId != 0L
++    private val topicId get() = arguments?.getLong(ARG_TOPIC_ID) ?: 0L
+ 
+-    private class Chat(val dialogId: Long, val count: Int, val lastDeletedAt: Int, val preview: CharSequence)
++    private class Chat(val dialogId: Long, val topicId: Long, val count: Int, val lastDeletedAt: Int, val preview: CharSequence, val title: String?, val peer: TLObject?, val deleted: Boolean)
+ 
+     private sealed class Row {
+         class Label(val text: String) : Row()
+@@ -60,6 +63,8 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+     private var adapter: RecyclerView.Adapter<*>? = null
+     private var listView: RecyclerListView? = null
+     private var generation = 0
++    private var peer: TLObject? = null
++    private var deletedHere = false
+ 
+     override fun createView(context: Context): View {
+         tele.helpers.DeletedRetention.sweep()
+@@ -75,7 +80,7 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+         list.isVerticalScrollBarEnabled = false
+         listView = list
+         if (isDialogMode) {
+-            actionBar.setTitle(TeleDraftsActivity.chatTitle(account, dialogId, 0))
++            actionBar.setTitle(TeleDraftsActivity.chatTitle(account, dialogId, topicId.toInt()))
+             val root = SizeNotifierFrameLayout(context)
+             root.setBackgroundImage(Theme.getCachedWallpaperNonBlocking(), Theme.isWallpaperMotion())
+             actionBar.setAddToContainer(false)
+@@ -106,10 +111,10 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+             adapter = overview
+             list.adapter = overview
+             list.setOnItemClickListener { _, position ->
+-                chats.getOrNull(position)?.let { presentFragment(ofDialog(it.dialogId)) }
++                chats.getOrNull(position)?.let { presentFragment(ofDialog(it.dialogId, it.topicId)) }
+             }
+             list.setOnItemLongClickListener { _, position ->
+-                chats.getOrNull(position)?.let { confirmClearChat(it.dialogId) }
++                chats.getOrNull(position)?.let { confirmClearChat(it.dialogId, it.topicId) }
+                 true
+             }
+             container.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+@@ -127,21 +132,54 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+         val current = ++generation
+         val account = account
+         val dialogId = dialogId
++        val topicId = topicId
++        // the chats that came back to the list are live again, the main thread knows them
++        val back = DeletedChats.backDialogs(account)
+         Utilities.globalQueue.postRunnable {
++            for (id in back) DeletedChats.release(account, id)
++            DeletedChats.prune()
++            val infos = DeletedChats.infos(account)
+             if (dialogId != 0L) {
+-                val result = buildRows(account, dialogId)
++                val info = infos[dialogId]
++                val topic = if (topicId != 0L) info?.topics?.firstOrNull { it.topicId == topicId } else null
++                val deleted = if (topicId != 0L) topic != null else info?.deleted == true
++                val banner = when {
++                    !deleted -> null
++                    topicId != 0L -> LocaleController.getString(R.string.TeleDeletedTopicBanner)
++                    else -> LocaleController.getString(R.string.TeleDeletedChatBanner)
++                }
++                val title = DeletedChats.titleOf(info?.peer)?.let { if (topicId != 0L) "$it \u203A ${topic?.title ?: ""}" else it }
++                val result = buildRows(account, dialogId, topicId, banner)
+                 AndroidUtilities.runOnUIThread {
+                     if (current != generation) return@runOnUIThread
+                     rows = result
++                    peer = info?.peer
++                    deletedHere = deleted
++                    if (title != null) actionBar?.setTitle(title)
+                     val count = result.sumOf { (it as? Row.Run)?.deleted?.size ?: 0 }
+                     actionBar?.setSubtitle(if (count == 1) "1 deleted message" else "$count deleted messages")
+                     adapter?.notifyDataSetChanged()
+                     listView?.scrollToPosition(maxOf(0, result.size - 1))
+                 }
+             } else {
+-                val result = DeletedMessages.getDialogs(account).map { dialog ->
+-                    val latest = DeletedMessages.entries(account, dialog.dialogId).firstOrNull()?.message
+-                    Chat(dialog.dialogId, dialog.count, dialog.lastDeletedAt, latest?.let { preview(account, it) } ?: "")
++                val result = ArrayList<Chat>()
++                for (dialog in DeletedMessages.getDialogs(account)) {
++                    val entries = DeletedMessages.entries(account, dialog.dialogId)
++                    val info = infos[dialog.dialogId]
++                    val title = DeletedChats.titleOf(info?.peer)
++                    val latest = entries.firstOrNull()?.message
++                    result.add(Chat(dialog.dialogId, 0L, dialog.count, dialog.lastDeletedAt, latest?.let { preview(account, it) } ?: "", title, info?.peer, info?.deleted == true))
++                    if (info == null) continue
++                    // the deleted topics sit under their chat
++                    for (topic in info.topics) {
++                        val own = entries.filter { DeletedChats.topicIdOf(account, it.message) == topic.topicId }
++                        if (own.isEmpty()) {
++                            DeletedChats.forgetTopic(account, dialog.dialogId, topic.topicId)
++                            continue
++                        }
++                        val chatTitle = title ?: TeleDraftsActivity.chatTitle(account, dialog.dialogId, 0)
++                        result.add(Chat(dialog.dialogId, topic.topicId, own.size, own.first().deletedAt, preview(account, own.first().message), "$chatTitle \u203A ${topic.title}", info.peer, true))
++                    }
+                 }
+                 AndroidUtilities.runOnUIThread {
+                     if (current != generation) return@runOnUIThread
+@@ -191,9 +229,11 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+     }
+ 
+     /** The chat in the order it was written: a date label per day, one column per run of a sender. */
+-    private fun buildRows(account: Int, dialogId: Long): List<Row> {
+-        val entries = DeletedMessages.entries(account, dialogId).sortedWith(compareBy({ it.message.date }, { it.message.id }))
++    private fun buildRows(account: Int, dialogId: Long, topicId: Long, banner: String?): List<Row> {
++        val all = DeletedMessages.entries(account, dialogId)
++        val entries = (if (topicId != 0L) all.filter { DeletedChats.topicIdOf(account, it.message) == topicId } else all).sortedWith(compareBy({ it.message.date }, { it.message.id }))
+         val result = ArrayList<Row>()
++        if (banner != null) result.add(Row.Label(banner))
+         var day = -1
+         var run = ArrayList<DeletedMessages.Entry>()
+         fun flush() {
+@@ -216,7 +256,7 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+             run.add(entry)
+         }
+         flush()
+-        if (result.isEmpty()) result.add(Row.Label(LocaleController.getString(R.string.TeleDeletedHistoryEmpty)))
++        if (entries.isEmpty()) result.add(Row.Label(LocaleController.getString(R.string.TeleDeletedHistoryEmpty)))
+         return result
+     }
+ 
+@@ -258,8 +298,11 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+                 BulletinFactory.of(this).createCopyBulletin(LocaleController.getString(R.string.TextCopied)).show()
+             }
+         }
+-        labels.add(LocaleController.getString(R.string.TeleDeletedShowInChat))
+-        actions.add { openInChat(message) }
++        // a deleted chat or topic has no live chat to show it in
++        if (!deletedHere) {
++            labels.add(LocaleController.getString(R.string.TeleDeletedShowInChat))
++            actions.add { openInChat(message) }
++        }
+         labels.add(LocaleController.getString(R.string.Delete))
+         actions.add {
+             // an album goes away whole, like it was deleted
+@@ -287,13 +330,20 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+         presentFragment(ChatActivity(args))
+     }
+ 
+-    private fun confirmClearChat(target: Long) {
++    private fun confirmClearChat(target: Long, topic: Long = 0L) {
+         val activity = parentActivity ?: return
+         AlertDialog.Builder(activity, resourceProvider)
+-            .setTitle(TeleDraftsActivity.chatTitle(account, target, 0))
+-            .setMessage(LocaleController.getString(R.string.TeleDeletedClearChat))
++            .setTitle(TeleDraftsActivity.chatTitle(account, target, topic.toInt()))
++            .setMessage(LocaleController.getString(if (topic != 0L) R.string.TeleDeletedClearTopic else R.string.TeleDeletedClearChat))
+             .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
+-                DeletedMessages.purge(account, target, DeletedMessages.entries(account, target).map { it.message.id })
++                val entries = DeletedMessages.entries(account, target)
++                if (topic != 0L) {
++                    DeletedMessages.purge(account, target, entries.filter { DeletedChats.topicIdOf(account, it.message) == topic }.map { it.message.id })
++                    DeletedChats.forgetTopic(account, target, topic)
++                } else {
++                    DeletedMessages.purge(account, target, entries.map { it.message.id })
++                    DeletedChats.forgetChat(account, target)
++                }
+                 reload()
+             }
+             .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+@@ -302,7 +352,7 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+ 
+     private fun confirmClear() {
+         if (isDialogMode) {
+-            confirmClearChat(dialogId)
++            confirmClearChat(dialogId, topicId)
+             return
+         }
+         val activity = parentActivity ?: return
+@@ -311,7 +361,10 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+             .setTitle(LocaleController.getString(R.string.TeleDeletedMessages))
+             .setMessage(LocaleController.getString(R.string.TeleDeletedClearAll))
+             .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
+-                for (chat in chats) DeletedMessages.purge(account, chat.dialogId, DeletedMessages.entries(account, chat.dialogId).map { it.message.id })
++                for (id in chats.map { it.dialogId }.distinct()) {
++                    DeletedMessages.purge(account, id, DeletedMessages.entries(account, id).map { it.message.id })
++                    DeletedChats.forgetChat(account, id)
++                }
+                 reload()
+             }
+             .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+@@ -319,9 +372,10 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+     }
+ 
+     private fun flags(): ShotFlags {
+-        val chat = if (dialogId < 0) MessagesController.getInstance(account).getChat(-dialogId) else null
++        // a deleted chat can be a stub in the chat map: the copy kept with it knows what the chat was
++        val chat = (peer as? TLRPC.Chat) ?: if (dialogId < 0) MessagesController.getInstance(account).getChat(-dialogId) else null
+         val megagroup = chat != null && ChatObject.isChannel(chat) && chat.megagroup
+-        val user = if (dialogId > 0) MessagesController.getInstance(account).getUser(dialogId) else null
++        val user = (peer as? TLRPC.User) ?: if (dialogId > 0) MessagesController.getInstance(account).getUser(dialogId) else null
+         return ShotFlags(
+             isChat = chat != null && (megagroup || !ChatObject.isChannel(chat)),
+             isBot = user?.bot == true,
+@@ -409,8 +463,9 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+             }
+             val chat = chats[position]
+             val row = holder.itemView as TeleChatRow
+-            row.setPeer(account, chat.dialogId)
+-            row.name.text = TeleDraftsActivity.chatTitle(account, chat.dialogId, 0)
++            row.setPeer(account, chat.dialogId, chat.peer)
++            row.setDeleted(chat.deleted)
++            row.name.text = chat.title ?: TeleDraftsActivity.chatTitle(account, chat.dialogId, 0)
+             row.time.text = LocaleController.stringForMessageListDate(chat.lastDeletedAt.toLong())
+             row.preview.text = chat.preview
+             row.secondary.text = chat.count.toString()
+@@ -422,6 +477,7 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+     companion object {
+         const val MODE_ARCHIVE = "deleted_archive"
+         private const val ARG_DIALOG_ID = "dialog_id"
++        private const val ARG_TOPIC_ID = "topic_id"
+         private const val MENU_CLEAR = 1
+         private const val TYPE_EMPTY = 0
+         private const val TYPE_CHAT = 1
+@@ -431,8 +487,11 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+         private const val RUN_LIMIT = 30
+ 
+         @JvmStatic
+-        fun ofDialog(dialogId: Long): TeleDeletedMessagesActivity = TeleDeletedMessagesActivity().apply {
+-            arguments = Bundle().apply { putLong(ARG_DIALOG_ID, dialogId) }
++        fun ofDialog(dialogId: Long, topicId: Long = 0L): TeleDeletedMessagesActivity = TeleDeletedMessagesActivity().apply {
++            arguments = Bundle().apply {
++                putLong(ARG_DIALOG_ID, dialogId)
++                putLong(ARG_TOPIC_ID, topicId)
++            }
+         }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index e6ef50a0a..2bdf0c0a3 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -140,6 +140,7 @@ object TeleSearch {
+             section(1193, "Keep deleted messages in bot chats", "messages", TeleSettingsActivity.MODE_MESSAGES, "In bot chats"),
+             section(1194, "Keep deleted messages in Saved Messages", "messages", TeleSettingsActivity.MODE_MESSAGES, "In Saved Messages"),
+             section(1195, "Keep the messages you delete", "messages", TeleSettingsActivity.MODE_MESSAGES, "Ones you delete"),
++            section(1202, "Keep deleted chats and topics", "messages", TeleSettingsActivity.MODE_MESSAGES, "Deleted chats and topics"),
+             section(1196, "Keep deleted for", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1200, "Recover channel posts from forwards", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1201, "Remove my messages", "menus", TeleSettingsActivity.MODE_MENUS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4375c78ab..eeada4efe 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -513,6 +513,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.KEEP_DELETED_BOTS.key,
+                 TeleConfig.KEEP_DELETED_SAVED.key,
+                 TeleConfig.KEEP_DELETED_OWN.key,
++                TeleConfig.KEEP_DELETED_CHATS.key,
+                 TeleConfig.DELETED_RETENTION.key,
+                 TeleConfig.RECOVER_FORWARDED_POSTS.key,
+                 TeleConfig.DELETED_MARKER.key,
+@@ -649,6 +650,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "In bot chats" to "Keep messages deleted in chats with bots.",
+             "In Saved Messages" to "Keep messages deleted in Saved Messages.",
+             "Ones you delete" to "Keep the messages you delete from this device.",
++            "Deleted chats and topics" to "Keep the messages of a chat or topic that is deleted, left or removed, under Deleted messages. You can read them there.",
+             "Recover channel posts from forwards" to "Show a deleted channel post from its forward when you open it from there.",
+             "Keep edit history" to "Save previous versions of edited messages on this device.",
+             "Remember read times" to "Keep when a private chat read your message and show it in the message menu when the server gives none.",
+@@ -813,6 +815,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("In bot chats", TeleConfig.KEEP_DELETED_BOTS),
+                 toggle("In Saved Messages", TeleConfig.KEEP_DELETED_SAVED),
+                 toggle("Ones you delete", TeleConfig.KEEP_DELETED_OWN),
++                toggle("Deleted chats and topics", TeleConfig.KEEP_DELETED_CHATS),
+                 Row(TYPE_VALUE, "Keep deleted for", value = DELETED_RETENTION_LABELS[arrayOf("1", "7", "30", "forever").indexOf(TeleConfig.DELETED_RETENTION.value).let { if (it < 0) 3 else it }], item = TeleConfig.DELETED_RETENTION),
+                 toggle("Recover channel posts from forwards", TeleConfig.RECOVER_FORWARDED_POSTS),
+                 Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 974ca9962..ff65f2f2b 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -26,6 +26,9 @@
+     <string name="TeleDeletedAt">Deleted %1$s</string>
+     <string name="TeleDeletedClearChat">Forget the deleted messages of this chat? They also leave the chat itself.</string>
+     <string name="TeleDeletedClearAll">Forget all the deleted messages? They also leave the chats themselves.</string>
++    <string name="TeleDeletedChatBanner">This chat was deleted. Its kept messages are read-only.</string>
++    <string name="TeleDeletedTopicBanner">This topic was deleted. Its kept messages are read-only.</string>
++    <string name="TeleDeletedClearTopic">Forget the kept messages of this topic?</string>
+     <string name="TeleDeleteFailed">Couldn\'t delete messages: %1$s</string>
+     <string name="TeleRecoveredFrom">Recovered from a forward in %1$s</string>
+     <string name="TeleRecoveredFromUnknown">Recovered from a forward</string>

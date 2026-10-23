@@ -1,0 +1,276 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:08:26 +0300
+Subject: [PATCH 135/141] fix: restore failed deletions
+
+---
+ .../messenger/MessagesController.java         |   4 +
+ .../java/org/telegram/ui/ChatActivity.java    |   6 +-
+ .../main/java/tele/helpers/DeleteRollback.kt  | 154 ++++++++++++++++++
+ .../main/java/tele/helpers/DeletedMessages.kt |  19 ++-
+ .../src/main/res/values/strings_tele.xml      |   1 +
+ 5 files changed, 180 insertions(+), 4 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DeleteRollback.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 700e968e6..989d8afe3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -9471,6 +9471,8 @@ public class MessagesController extends BaseController implements NotificationCe
+                 if (error == null) {
+                     TLRPC.TL_messages_affectedMessages res = (TLRPC.TL_messages_affectedMessages) response;
+                     processNewChannelDifferenceParams(res.pts, res.pts_count, channelId);
++                } else {
++                    tele.helpers.DeleteRollback.failed(currentAccount, dialogId, channelId, req.id, error);
+                 }
+                 if (newTaskId != 0) {
+                     getMessagesStorage().removePendingTask(newTaskId);
+@@ -9505,6 +9507,8 @@ public class MessagesController extends BaseController implements NotificationCe
+                 if (error == null) {
+                     TLRPC.TL_messages_affectedMessages res = (TLRPC.TL_messages_affectedMessages) response;
+                     processNewDifferenceParams(-1, res.pts, -1, res.pts_count);
++                } else {
++                    tele.helpers.DeleteRollback.failed(currentAccount, dialogId, channelId, req.id, error);
+                 }
+                 if (newTaskId != 0) {
+                     getMessagesStorage().removePendingTask(newTaskId);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index a44a88e53..6d5b8dd91 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -26396,7 +26396,7 @@ public class ChatActivity extends BaseFragment implements
+                         newMentionsCount++;
+                     }
+                 }
+-                if (!isAd) {
++                if (!isAd && !tele.helpers.DeleteRollback.isRestored(obj)) {
+                     newUnreadMessageCount++;
+                 }
+                 if (obj.type == 10 || obj.type == MessageObject.TYPE_ACTION_PHOTO) {
+@@ -26629,7 +26629,7 @@ public class ChatActivity extends BaseFragment implements
+                     minDate[0] = obj.messageOwner.date;
+                 }
+ 
+-                if (obj.isOut() && !(obj.messageOwner.action instanceof TLRPC.TL_messageActionTodoCompletions || obj.messageOwner.action instanceof TLRPC.TL_messageActionTodoAppendTasks) && !obj.messageOwner.from_scheduled) {
++                if (obj.isOut() && !(obj.messageOwner.action instanceof TLRPC.TL_messageActionTodoCompletions || obj.messageOwner.action instanceof TLRPC.TL_messageActionTodoAppendTasks) && !obj.messageOwner.from_scheduled && !tele.helpers.DeleteRollback.isRestored(obj)) {
+                     removeUnreadPlane(true);
+                     hideInfoView();
+                     hasFromMe = true;
+@@ -26771,7 +26771,7 @@ public class ChatActivity extends BaseFragment implements
+                         newMentionsCount++;
+                     }
+                 }
+-                if (!isAd) {
++                if (!isAd && !tele.helpers.DeleteRollback.isRestored(obj)) {
+                     newUnreadMessageCount++;
+                 }
+                 if (obj.type == 10 || obj.type == MessageObject.TYPE_ACTION_PHOTO) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeleteRollback.kt b/TMessagesProj/src/main/java/tele/helpers/DeleteRollback.kt
+new file mode 100644
+index 000000000..06806ad26
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DeleteRollback.kt
+@@ -0,0 +1,154 @@
++package tele.helpers
++
++import android.os.SystemClock
++import androidx.collection.LongSparseArray
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.ImageLoader
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import java.util.Collections
++import java.util.WeakHashMap
++
++/**
++ * A deletion the server refused is taken back: what the server still has returns to the chat
++ * and loses the deleted mark. Like on desktop, every error counts, the server answer decides.
++ */
++object DeleteRollback {
++    private const val TOAST_SKIP_MS = 3000L
++
++    // objects brought back by a rollback, the chat must not treat them as new messages
++    private val restored: MutableSet<MessageObject> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap<MessageObject, Boolean>()))
++
++    private var lastToastKey = ""
++    private var lastToastAt = 0L
++
++    @JvmStatic
++    fun isRestored(message: MessageObject?): Boolean = message != null && restored.isNotEmpty() && restored.contains(message)
++
++    /** Called from the error branch of a delete request, on the network callback thread. */
++    @JvmStatic
++    fun failed(account: Int, dialogId: Long, channelId: Long, ids: List<Int>?, error: TLRPC.TL_error?) {
++        if (ids.isNullOrEmpty() || DialogObject.isEncryptedDialog(dialogId)) return
++        // forgetting kept messages deletes them again, a refusal there changes nothing
++        val serverIds = ids.filter { it > 0 && !DeletedMessages.isPurging(account, dialogId, it) }
++        if (serverIds.isEmpty()) return
++        toast(account, dialogId, error)
++        runCatching { fetch(account, dialogId, channelId, serverIds) }.onFailure { FileLog.e(it) }
++    }
++
++    private fun toast(account: Int, dialogId: Long, error: TLRPC.TL_error?) {
++        val reason = error?.text.orEmpty().ifEmpty { "unknown" }
++        AndroidUtilities.runOnUIThread {
++            val key = "$account:$dialogId:$reason"
++            val now = SystemClock.elapsedRealtime()
++            // a big deletion goes out in parts that usually fail together
++            val repeated = key == lastToastKey && now - lastToastAt < TOAST_SKIP_MS
++            lastToastKey = key
++            lastToastAt = now
++            if (!repeated) {
++                BulletinFactory.global().createSimpleBulletin(R.raw.error, LocaleController.formatString(R.string.TeleDeleteFailed, reason)).show()
++            }
++        }
++    }
++
++    private fun fetch(account: Int, dialogId: Long, channelId: Long, ids: List<Int>) {
++        val request: TLObject = if (channelId != 0L) {
++            TLRPC.TL_channels_getMessages().also {
++                it.channel = MessagesController.getInstance(account).getInputChannel(channelId)
++                it.id.addAll(ids)
++            }
++        } else {
++            TLRPC.TL_messages_getMessages().also { it.id.addAll(ids) }
++        }
++        ConnectionsManager.getInstance(account).sendRequest(request) { response, error ->
++            runCatching {
++                val result = response as? TLRPC.messages_Messages
++                if (error != null || result == null) {
++                    unkeepOnly(account, dialogId, ids)
++                } else {
++                    bringBack(account, dialogId, channelId, ids, result)
++                }
++            }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    // the server could not be asked: nothing to put back, but the kept copies stop being deleted
++    private fun unkeepOnly(account: Int, dialogId: Long, ids: List<Int>) {
++        if (dialogId == 0L) return
++        MessagesStorage.getInstance(account).storageQueue.postRunnable {
++            val snapshots = ids.mapNotNull { DeletedMessages.getMessage(account, dialogId, it) }
++            val kept = DeletedMessages.unkeep(account, dialogId, ids).toHashSet()
++            val objects = ArrayList(snapshots.filter { it.id in kept }.map { MessageObject(account, it, true, true) })
++            if (objects.isEmpty()) return@postRunnable
++            AndroidUtilities.runOnUIThread {
++                NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.replaceMessagesObjects, dialogId, objects)
++            }
++        }
++    }
++
++    private fun bringBack(account: Int, dialogId: Long, channelId: Long, ids: List<Int>, result: TLRPC.messages_Messages) {
++        val controller = MessagesController.getInstance(account)
++        val storage = MessagesStorage.getInstance(account)
++        val wanted = ids.toHashSet()
++        val byDialog = LinkedHashMap<Long, ArrayList<TLRPC.Message>>()
++        for (message in result.messages) {
++            // the ids the server no longer has come back empty: those deletions did happen
++            if (message == null || message is TLRPC.TL_messageEmpty || message.id !in wanted) continue
++            val did = if (dialogId != 0L) dialogId else MessageObject.getDialogId(message)
++            if (did == 0L) continue
++            message.dialog_id = did
++            byDialog.getOrPut(did) { ArrayList() }.add(message)
++        }
++        if (byDialog.isEmpty()) return
++
++        val users = LongSparseArray<TLRPC.User>()
++        for (user in result.users) users.put(user.id, user)
++        val chats = LongSparseArray<TLRPC.Chat>()
++        for (chat in result.chats) chats.put(chat.id, chat)
++
++        for ((did, messages) in byDialog) {
++            val inbox = controller.dialogs_read_inbox_max[did] ?: storage.getDialogReadMax(false, did).also { controller.dialogs_read_inbox_max[did] = it }
++            val outbox = controller.dialogs_read_outbox_max[did] ?: storage.getDialogReadMax(true, did).also { controller.dialogs_read_outbox_max[did] = it }
++            val objects = ArrayList<MessageObject>(messages.size)
++            for (message in messages) {
++                message.unread = (if (message.out) outbox else inbox) < message.id
++                objects.add(MessageObject(account, message, users, chats, true, true))
++            }
++            ImageLoader.saveMessagesThumbs(messages)
++            val part = TLRPC.TL_messages_messages()
++            part.messages = messages
++            part.users = result.users
++            part.chats = result.chats
++            val dialogChannel = if (channelId != 0L) channelId else MessageObject.getChannelId(messages[0])
++            val restoredIds = ArrayList(messages.map { it.id })
++
++            // behind the deletion's own storage work: the kept marks and the rows change in order
++            storage.storageQueue.postRunnable {
++                val kept = DeletedMessages.unkeep(account, did, restoredIds).toHashSet()
++                storage.putMessages(part, did, -1, 0, false, ChatActivity.MODE_DEFAULT, 0)
++                // the chat list takes the last message from the rows that are back
++                storage.storageQueue.postRunnable { storage.updateDialogsWithDeletedMessages(did, dialogChannel, restoredIds, null) }
++                val keptObjects = ArrayList(objects.filter { it.id in kept })
++                restored.addAll(objects)
++                AndroidUtilities.runOnUIThread {
++                    val center = NotificationCenter.getInstance(account)
++                    // the chat skips what it still shows and inserts the rest
++                    center.postNotificationName(NotificationCenter.didReceiveNewMessages, did, objects, false, ChatActivity.MODE_DEFAULT)
++                    // a kept message is still shown: it takes the fresh object and loses the mark
++                    if (keptObjects.isNotEmpty()) center.postNotificationName(NotificationCenter.replaceMessagesObjects, did, keptObjects)
++                }
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index a4e401233..41df3f6a7 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -65,6 +65,23 @@ object DeletedMessages {
+         TeleDatabaseHelper.removeDeletedMessage(account, dialogId, messageId)
+     }
+ 
++    /** Drops the kept mark of messages whose deletion failed on the server; returns the ids that were kept. Storage queue only. */
++    @JvmStatic
++    fun unkeep(account: Int, dialogId: Long, ids: List<Int>): List<Int> {
++        if (ids.isEmpty()) return emptyList()
++        ensureLoaded(account, dialogId)
++        val inChat = keptInChat[account]?.get(dialogId)
++        val result = ArrayList<Int>(ids.size)
++        for (id in ids) {
++            val wasInChat = inChat?.remove(id) == true
++            if (wasInChat || TeleDatabaseHelper.hasDeletedMessage(account, dialogId, id)) {
++                TeleDatabaseHelper.removeDeletedMessage(account, dialogId, id)
++                result.add(id)
++            }
++        }
++        return result
++    }
++
+     private val keptInChat = ConcurrentHashMap<Int, ConcurrentHashMap<Long, MutableSet<Int>>>()
+     private val loadedDialogs = ConcurrentHashMap.newKeySet<Long>()
+ 
+@@ -173,7 +190,7 @@ object DeletedMessages {
+ 
+     private fun purgeKey(account: Int, dialogId: Long, messageId: Int) = "$account:$dialogId:$messageId"
+ 
+-    private fun isPurging(account: Int, dialogId: Long, messageId: Int) = purging.contains(purgeKey(account, dialogId, messageId))
++    fun isPurging(account: Int, dialogId: Long, messageId: Int) = purging.contains(purgeKey(account, dialogId, messageId))
+ 
+     /** Forgets kept messages: the archive rows and the copies left in the chat. */
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index f06d841ae..1e8b73b6d 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -26,6 +26,7 @@
+     <string name="TeleDeletedAt">Deleted %1$s</string>
+     <string name="TeleDeletedClearChat">Forget the deleted messages of this chat? They also leave the chat itself.</string>
+     <string name="TeleDeletedClearAll">Forget all the deleted messages? They also leave the chats themselves.</string>
++    <string name="TeleDeleteFailed">Couldn\'t delete messages: %1$s</string>
+ 
+     <string name="TeleEditHistory">Edit history</string>
+     <string name="TeleNoEditHistory">No edit history</string>

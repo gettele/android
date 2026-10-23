@@ -1,0 +1,425 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:00:00 +0300
+Subject: [PATCH 134/141] feat: deleted messages retention
+
+---
+ .../messenger/AutoDeleteMediaTask.java        |   4 +-
+ .../org/telegram/ui/CacheControlActivity.java |   5 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   1 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  63 +++++++-
+ .../java/tele/helpers/DeletedRetention.kt     | 150 ++++++++++++++++++
+ .../settings/TeleDeletedMessagesActivity.kt   |   1 +
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  19 +++
+ 9 files changed, 241 insertions(+), 5 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AutoDeleteMediaTask.java b/TMessagesProj/src/main/java/org/telegram/messenger/AutoDeleteMediaTask.java
+index f63e6a8db..b7b99467e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AutoDeleteMediaTask.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AutoDeleteMediaTask.java
+@@ -81,7 +81,7 @@ public class AutoDeleteMediaTask {
+                         ArrayList<CacheByChatsController.KeepMediaFile> keepMediaFiles = new ArrayList<>();
+                         if (files != null) {
+                             for (int i = 0; i < files.length; i++) {
+-                                if (files[i].isDirectory() || usingFilePaths.contains(files[i].getAbsolutePath())) {
++                                if (files[i].isDirectory() || usingFilePaths.contains(files[i].getAbsolutePath()) || tele.helpers.KeptMedia.isProtected(files[i])) {
+                                     continue;
+                                 }
+                                 keepMediaFiles.add(new CacheByChatsController.KeepMediaFile(files[i]));
+@@ -173,7 +173,7 @@ public class AutoDeleteMediaTask {
+                         if (allFiles.get(i).keepMedia == CacheByChatsController.KEEP_MEDIA_FOREVER) {
+                             continue;
+                         }
+-                        if (allFiles.get(i).lastUsageDate <= 0) {
++                        if (allFiles.get(i).lastUsageDate <= 0 || tele.helpers.KeptMedia.isProtected(allFiles.get(i).file)) {
+                             skippedFiles++;
+                             continue;
+                         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CacheControlActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CacheControlActivity.java
+index 5e9a7e1d0..23261f52b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/CacheControlActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/CacheControlActivity.java
+@@ -926,7 +926,7 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
+                     }
+                     cleanDirJava(fileName + "/" + name, docType, p, onProgress);
+                 } else {
+-                    entry.delete();
++                    if (!tele.helpers.KeptMedia.isProtected(entry)) entry.delete();
+ 
+                     p[0]++;
+                     if (onProgress != null) {
+@@ -1531,9 +1531,10 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
+         b.show();
+ 
+         ArrayList<CacheModel.FileInfo> fileInfos = new ArrayList<>(filesToRemove);
+-        getFileLoader().getFileDatabase().removeFiles(fileInfos);
+         getFileLoader().cancelLoadAllFiles();
+         getFileLoader().getFileLoaderQueue().postRunnable(() -> {
++            fileInfos.removeIf(info -> tele.helpers.KeptMedia.isProtected(info.file));
++            getFileLoader().getFileDatabase().removeFiles(fileInfos);
+             for (int i = 0; i < fileInfos.size(); i++) {
+                 fileInfos.get(i).file.delete();
+             }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 835e87819..6b0230b1d 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -130,6 +130,8 @@ object TeleConfig {
+     @JvmField
+     val KEEP_DELETED_OWN = BoolItem("keep_deleted_own", true)
+     @JvmField
++    val DELETED_RETENTION = StringItem("deleted_retention", "forever")
++    @JvmField
+     val SELECT_SERVICE_MESSAGES = BoolItem("select_service_messages", true)
+     @JvmField
+     val DELETED_MARKER = StringItem("deleted_marker", "fade")
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index a0ef43cfb..f097c2227 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -38,6 +38,7 @@ object TeleHooks {
+         tele.helpers.PrivacyRules.init()
+         tele.helpers.LastSeenPeek.restorePending()
+         tele.helpers.TeleReduceMotion.apply()
++        tele.helpers.DeletedRetention.start()
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 9a6853191..cc0da16a9 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -120,10 +120,54 @@ object TeleDatabaseHelper {
+             put("original", if (original) 1 else 0)
+             put("version_key", versionKey)
+             put("data", data)
++            put("archived_at", (System.currentTimeMillis() / 1000L).toInt())
+         }
+         db.insertWithOnConflict("tele_message_edits", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+     }
+ 
++    data class ExpiredMessage(val account: Int, val dialogId: Long, val messageId: Int)
++
++    fun getExpiredDeleted(cutoff: Int, limit: Int): List<ExpiredMessage> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<ExpiredMessage>()
++        db.rawQuery("SELECT account, dialog_id, message_id FROM tele_deleted_messages WHERE deleted_at < ? ORDER BY deleted_at LIMIT ?", arrayOf(cutoff.toString(), limit.toString())).use {
++            while (it.moveToNext()) result.add(ExpiredMessage(it.getInt(0), it.getLong(1), it.getInt(2)))
++        }
++        return result
++    }
++
++    /** Deletes one batch of the edit versions archived before the cutoff, returns how many went. */
++    fun deleteExpiredEdits(cutoff: Int, limit: Int): Int {
++        val db = helper?.writableDatabase ?: return 0
++        return db.delete("tele_message_edits", "rowid IN (SELECT rowid FROM tele_message_edits WHERE archived_at < ? LIMIT ?)", arrayOf(cutoff.toString(), limit.toString()))
++    }
++
++    class MediaPending(val account: Int, val dialogId: Long, val messageId: Int, val data: ByteArray)
++
++    /** Archived rows whose media file names are not computed yet. */
++    fun getMediaPending(limit: Int): List<MediaPending> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<MediaPending>()
++        db.rawQuery("SELECT account, dialog_id, message_id, data FROM tele_deleted_messages WHERE media_names IS NULL LIMIT ?", arrayOf(limit.toString())).use {
++            while (it.moveToNext()) result.add(MediaPending(it.getInt(0), it.getLong(1), it.getInt(2), it.getBlob(3)))
++        }
++        return result
++    }
++
++    fun setMediaNames(account: Int, dialogId: Long, messageId: Int, names: String) {
++        val db = helper?.writableDatabase ?: return
++        db.execSQL("UPDATE tele_deleted_messages SET media_names = ? WHERE account = ? AND dialog_id = ? AND message_id = ?", arrayOf<Any>(names, account, dialogId, messageId))
++    }
++
++    fun getAllMediaNames(): List<String> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<String>()
++        db.rawQuery("SELECT media_names FROM tele_deleted_messages WHERE media_names IS NOT NULL AND media_names != ''", null).use {
++            while (it.moveToNext()) result.add(it.getString(0))
++        }
++        return result
++    }
++
+     fun getMessageVersions(account: Int, dialogId: Long, messageId: Int): List<ArchivedVersion> {
+         val db = helper?.readableDatabase ?: return emptyList()
+         val result = ArrayList<ArchivedVersion>()
+@@ -270,7 +314,7 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 8) {
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 9) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -285,11 +329,28 @@ object TeleDatabaseHelper {
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_deleted_messages_date ON tele_deleted_messages(account, deleted_at DESC)")
+             createMessageEditTable(db)
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_message_edits_message ON tele_message_edits(account, dialog_id, message_id, edit_date)")
++            createRetentionColumns(db)
+             createDraftsTable(db)
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_docked (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, thread_id))")
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_changelog (account INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, message_id))")
+         }
+ 
++        // the retention stamp of the edit versions and the media file names of the kept messages
++        private fun createRetentionColumns(db: SQLiteDatabase) {
++            val edits = HashSet<String>()
++            db.rawQuery("PRAGMA table_info(tele_message_edits)", null).use { while (it.moveToNext()) edits.add(it.getString(1)) }
++            if ("archived_at" !in edits) {
++                db.execSQL("ALTER TABLE tele_message_edits ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0")
++                // the old versions count from now, their real archive time is unknown
++                db.execSQL("UPDATE tele_message_edits SET archived_at = ?", arrayOf<Any>((System.currentTimeMillis() / 1000L).toInt()))
++            }
++            db.execSQL("CREATE INDEX IF NOT EXISTS tele_message_edits_archived ON tele_message_edits(archived_at)")
++            val deleted = HashSet<String>()
++            db.rawQuery("PRAGMA table_info(tele_deleted_messages)", null).use { while (it.moveToNext()) deleted.add(it.getString(1)) }
++            // NULL means not computed yet
++            if ("media_names" !in deleted) db.execSQL("ALTER TABLE tele_deleted_messages ADD COLUMN media_names TEXT")
++        }
++
+         private fun createMessageEditTable(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_message_edits (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, edit_date INTEGER NOT NULL, original INTEGER NOT NULL, version_key TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, message_id, version_key))")
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
+new file mode 100644
+index 000000000..0fc160121
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedRetention.kt
+@@ -0,0 +1,150 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.FileLoader
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.io.File
++import java.util.concurrent.atomic.AtomicBoolean
++
++/** Drops the kept deleted messages and the edit versions that outlived the chosen period. */
++object DeletedRetention {
++    private const val DAY = 24 * 60 * 60L
++    private const val BATCH = 200
++    private const val PAUSE = 300L
++    private const val TICK = 60 * 60 * 1000L
++    private val running = AtomicBoolean(false)
++
++    /** The period in seconds, 0 is forever. */
++    @JvmStatic
++    fun seconds(): Long = when (TeleConfig.DELETED_RETENTION.value) {
++        "1" -> DAY
++        "7" -> 7 * DAY
++        "30" -> 30 * DAY
++        else -> 0L
++    }
++
++    /** Sweeps shortly after the start and then every hour. */
++    @JvmStatic
++    fun start() {
++        Utilities.globalQueue.postRunnable(object : Runnable {
++            override fun run() {
++                sweep()
++                Utilities.globalQueue.postRunnable(this, TICK)
++            }
++        }, 30_000)
++    }
++
++    @JvmStatic
++    fun sweep() {
++        if (seconds() == 0L || !running.compareAndSet(false, true)) return
++        Utilities.globalQueue.postRunnable { step() }
++    }
++
++    private fun step() {
++        val period = seconds()
++        if (period == 0L) {
++            running.set(false)
++            return
++        }
++        val cutoff = (System.currentTimeMillis() / 1000L - period).toInt()
++        val edits = try {
++            TeleDatabaseHelper.deleteExpiredEdits(cutoff, BATCH)
++        } catch (e: Exception) {
++            0
++        }
++        val expired = try {
++            TeleDatabaseHelper.getExpiredDeleted(cutoff, BATCH)
++        } catch (e: Exception) {
++            emptyList()
++        }
++        if (expired.isEmpty() && edits < BATCH) {
++            running.set(false)
++            return
++        }
++        AndroidUtilities.runOnUIThread {
++            for ((account, rows) in expired.groupBy { it.account }) {
++                val active = account in 0 until UserConfig.MAX_ACCOUNT_COUNT && UserConfig.getInstance(account).isClientActivated
++                for ((dialogId, ids) in rows.groupBy { it.dialogId }) {
++                    if (active) DeletedMessages.purge(account, dialogId, ids.map { it.messageId })
++                    else for (row in ids) TeleDatabaseHelper.removeDeletedMessage(account, dialogId, row.messageId)
++                }
++            }
++            Utilities.globalQueue.postRunnable({ step() }, PAUSE)
++        }
++    }
++}
++
++/** The files the cache cleaners must leave: the media of the kept deleted messages, from tele.db. */
++object KeptMedia {
++    private const val TTL = 5_000L
++    private const val BATCH = 100
++    private val lock = Any()
++    private var names: Set<String> = emptySet()
++    private var loadedAt = 0L
++
++    /** For the cleaners: runs on their background threads. */
++    @JvmStatic
++    fun isProtected(file: File?): Boolean {
++        if (file == null) return false
++        val name = file.name
++        val base = if (name.startsWith("q_")) name.substring(2) else name
++        val set = snapshot()
++        return set.contains(name) || set.contains(base)
++    }
++
++    private fun snapshot(): Set<String> = synchronized(lock) {
++        val now = System.currentTimeMillis()
++        if (now - loadedAt > TTL) {
++            names = try {
++                fill()
++                val all = HashSet<String>()
++                for (row in TeleDatabaseHelper.getAllMediaNames()) all.addAll(row.split('\n'))
++                all
++            } catch (e: Exception) {
++                names
++            }
++            loadedAt = System.currentTimeMillis()
++        }
++        names
++    }
++
++    // the rows archived before the names were kept, or replaced since
++    private fun fill() {
++        while (true) {
++            val pending = TeleDatabaseHelper.getMediaPending(BATCH)
++            if (pending.isEmpty()) return
++            for (row in pending) {
++                TeleDatabaseHelper.setMediaNames(row.account, row.dialogId, row.messageId, namesOf(row.data))
++            }
++            if (pending.size < BATCH) return
++        }
++    }
++
++    private fun namesOf(data: ByteArray): String {
++        val stream = SerializedData(data)
++        try {
++            val message = TLRPC.Message.TLdeserialize(stream, stream.readInt32(false), false) ?: return ""
++            val result = LinkedHashSet<String>()
++            MessageObject.getPhoto(message)?.sizes?.forEach { add(result, FileLoader.getAttachFileName(it)) }
++            MessageObject.getDocument(message)?.let { document ->
++                add(result, FileLoader.getAttachFileName(document))
++                document.thumbs?.forEach { add(result, FileLoader.getAttachFileName(it)) }
++            }
++            return result.joinToString("\n")
++        } catch (e: Exception) {
++            return ""
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    private fun add(result: MutableSet<String>, name: String?) {
++        if (!name.isNullOrEmpty()) result.add(name)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+index a8a7611dc..81d9dbd4e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDeletedMessagesActivity.kt
+@@ -62,6 +62,7 @@ class TeleDeletedMessagesActivity : BaseFragment() {
+     private var generation = 0
+ 
+     override fun createView(context: Context): View {
++        tele.helpers.DeletedRetention.sweep()
+         actionBar.setBackButtonImage(R.drawable.ic_ab_back)
+         actionBar.setAllowOverlayTitle(true)
+         actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 7fe9dd053..200ff9370 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -140,6 +140,7 @@ object TeleSearch {
+             section(1193, "Keep deleted messages in bot chats", "messages", TeleSettingsActivity.MODE_MESSAGES, "In bot chats"),
+             section(1194, "Keep deleted messages in Saved Messages", "messages", TeleSettingsActivity.MODE_MESSAGES, "In Saved Messages"),
+             section(1195, "Keep the messages you delete", "messages", TeleSettingsActivity.MODE_MESSAGES, "Ones you delete"),
++            section(1196, "Keep deleted for", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(GUID_DATA + 5, "Deleted messages") { TeleDeletedMessagesActivity() },
+             screen(GUID_DATA + 11, "Saved drafts") { TeleDraftsActivity() },
+             section(GUID_DATA + 6, "Keep edit history", "messages", TeleSettingsActivity.MODE_MESSAGES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 8f7ed537f..29c8a690e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -167,6 +167,20 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         showDialog(builder.create())
+     }
+ 
++    private fun chooseDeletedRetention() {
++        val activity = parentActivity ?: return
++        val values = arrayOf("1", "7", "30", "forever")
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle("Keep deleted for")
++        builder.setMessage("Applies to deleted messages and edit history kept on this device. Nothing is synced with or restored from the server.")
++        builder.setItems(DELETED_RETENTION_LABELS) { _, which ->
++            TeleConfig.set(TeleConfig.DELETED_RETENTION, values[which])
++            tele.helpers.DeletedRetention.sweep()
++            refresh()
++        }
++        showDialog(builder.create())
++    }
++
+     private fun chooseDeletedReply() {
+         val activity = parentActivity ?: return
+         val values = arrayOf("skip", "quote")
+@@ -404,6 +418,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             }
+             row.type == TYPE_VALUE && row.item == TeleConfig.LINK_PREVIEW_MODE -> chooseLinkPreviewMode()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_MARKER -> chooseDeletedMarker()
++            row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_RETENTION -> chooseDeletedRetention()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_REPLY -> chooseDeletedReply()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TELE_SERVER_URL -> chooseServerUrl()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TITLE_TEMPLATE -> TeleTitleEditor.show(this) { refresh() }
+@@ -488,6 +503,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+     companion object {
+ 
++        private val DELETED_RETENTION_LABELS = arrayOf("1 day", "7 days", "30 days", "Forever")
++
+         /** The parent toggles with their children: the children are shown when the group is expanded. */
+         private val GROUPS = mapOf(
+             TeleConfig.KEEP_DELETED_MESSAGES.key to listOf(
+@@ -495,6 +512,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.KEEP_DELETED_BOTS.key,
+                 TeleConfig.KEEP_DELETED_SAVED.key,
+                 TeleConfig.KEEP_DELETED_OWN.key,
++                TeleConfig.DELETED_RETENTION.key,
+                 TeleConfig.DELETED_MARKER.key,
+                 TeleConfig.DELETED_REPLY.key
+             ),
+@@ -784,6 +802,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("In bot chats", TeleConfig.KEEP_DELETED_BOTS),
+                 toggle("In Saved Messages", TeleConfig.KEEP_DELETED_SAVED),
+                 toggle("Ones you delete", TeleConfig.KEEP_DELETED_OWN),
++                Row(TYPE_VALUE, "Keep deleted for", value = DELETED_RETENTION_LABELS[arrayOf("1", "7", "30", "forever").indexOf(TeleConfig.DELETED_RETENTION.value).let { if (it < 0) 3 else it }], item = TeleConfig.DELETED_RETENTION),
+                 Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
+                 Row(TYPE_VALUE, "Reply to deleted messages", value = if (TeleConfig.DELETED_REPLY.value == "quote") "Quote them" else "Skip them", item = TeleConfig.DELETED_REPLY),
+                 link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),

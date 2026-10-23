@@ -272,15 +272,15 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0151 | какие удалённые хранить | todo | `DeletedMessages.shouldArchive`; S; зависит от android 0060; боты и избранное |
-| 0219 | откат неудавшегося удаления | todo | `MessagesController.deleteMessages`, `DeletedMessages.kt`; M; зависит от android 0060; различать FLOOD/сеть и жёсткие ошибки |
-| 0182 | хранение удалённых после рестарта | todo | `DeletedMessages`, `MessageHistory`; S; зависит от android 0060, android 0061, 0151; реш.: 0182 срок 1/7/30/навсегда; остаток: срок + защита kept-медиа |
-| 0283 | сохранять удалённые чаты и топики | todo | `MessagesController`, `TopicsController`, `DialogCell`; L; зависит от 0019, 0151, 0256, android 0060, 0182; реш.: 0283 как desktop; все пути удаления |
-| 0321 | восстановить пост канала из форварда | todo | `DeletedMessages.kt`, `ChatMessageCell`; M; зависит от 0019, android 0060; маркер в fork-таблице |
-| 0301 | удалить все мои сообщения из чата | todo | `RemoveMine.kt`, `ChatActivity`, `DialogsActivity`, `TopicsFragment`; M; зависит от 0019, android 0060; FLOOD_WAIT, пропуск kept deleted |
-| 0126 | закладки и точка возврата | todo | `ChatActivity`, `ChatMessageCell`, `tele.db`; L; зависит от android 0042; реш.: 0126 tele.db; два тумблера, можно разделить на два патча |
-| 0147 | время прочтения ваших сообщений | todo | `MessagesController`, `MessageSeenView`, `tele.db`; M; по умолч.: тумблер выкл; лимиты как у десктопа |
-| 0164 | gif и избранное сверх лимита | todo | `MediaDataController`, `tele.db`; M; file_reference refresh |
+| 0151 | какие удалённые хранить | built | `0133-feat-choose-deleted-messages-to-keep`; `DeletedMessages.shouldArchive`; S; зависит от android 0060; боты и избранное |
+| 0219 | откат неудавшегося удаления | built | `0135-fix-restore-failed-deletions`; `MessagesController.deleteMessages`, `DeletedMessages.kt`; M; зависит от android 0060; различать FLOOD/сеть и жёсткие ошибки |
+| 0182 | хранение удалённых после рестарта | built | `0134-feat-deleted-messages-retention`; `DeletedMessages`, `MessageHistory`; S; зависит от android 0060, android 0061, 0151; реш.: 0182 срок 1/7/30/навсегда; остаток: срок + защита kept-медиа |
+| 0283 | сохранять удалённые чаты и топики | built | `0142-feat-keep-deleted-chats-and-topics`; `MessagesController`, `TopicsController`, `DialogCell`; L; зависит от 0019, 0151, 0256, android 0060, 0182; реш.: 0283 как desktop; все пути удаления |
+| 0321 | восстановить пост канала из форварда | built | `0136-feat-recover-posts-from-forwards`; `DeletedMessages.kt`, `ChatMessageCell`; M; зависит от 0019, android 0060; маркер в fork-таблице |
+| 0301 | удалить все мои сообщения из чата | built | `0137-feat-remove-all-my-messages`; `RemoveMine.kt`, `ChatActivity`, `DialogsActivity`, `TopicsFragment`; M; зависит от 0019, android 0060; FLOOD_WAIT, пропуск kept deleted |
+| 0126 | закладки и точка возврата | built | `0138-feat-bookmark-messages` + `0139-feat-return-to-where-you-were`; `ChatActivity`, `ChatMessageCell`, `tele.db`; L; зависит от android 0042; реш.: 0126 tele.db; два тумблера, можно разделить на два патча |
+| 0147 | время прочтения ваших сообщений | built | `0140-feat-remember-read-times`; `MessagesController`, `MessageSeenView`, `tele.db`; M; по умолч.: тумблер выкл; лимиты как у десктопа |
+| 0164 | gif и избранное сверх лимита | built | `0141-feat-keep-gifs-past-limit`; `MediaDataController`, `tele.db`; M; file_reference refresh |
 
 ## пачка 15 — списки: пины, папки и лимиты
 

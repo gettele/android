@@ -1,0 +1,418 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 23:12:13 +0300
+Subject: [PATCH 139/141] feat: return to where you were
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 11 +++
+ ...ChatActivitySideControlsButtonsLayout.java |  9 +-
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   | 30 +++++++
+ .../main/java/tele/helpers/ChatBookmarks.kt   | 86 +++++++++++++++++--
+ .../src/main/java/tele/helpers/ReturnPoint.kt | 61 +++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ .../src/main/res/values/strings_tele.xml      |  1 +
+ 9 files changed, 195 insertions(+), 8 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 05db6d8fe..f32454b81 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1808,6 +1808,11 @@ public class ChatActivity extends BaseFragment implements
+         return sideControlsButtonsLayout;
+     }
+ 
++    /** The list shows the newest message and the chat is loaded down to it. */
++    public boolean teleAtBottom() {
++        return chatLayoutManager == null || chatAdapter == null || forwardEndReached[0] && chatLayoutManager.findFirstVisibleItemPosition() <= chatAdapter.messagesStartRow;
++    }
++
+     public void teleRebind() {
+         if (chatAdapter == null) {
+             return;
+@@ -7036,6 +7041,9 @@ public class ChatActivity extends BaseFragment implements
+                 final ChatActivity chatToUpdate = parentChatActivity != null ? parentChatActivity : ChatActivity.this;
+ 
+                 chatListView.invalidate();
++                if (teleBookmarks != null) {
++                    teleBookmarks.onScrolled();
++                }
+                 if (contentView != null) {
+                     contentView.updateBlurContent();
+                 }
+@@ -26146,6 +26154,9 @@ public class ChatActivity extends BaseFragment implements
+     }
+     private void processNewMessages(ArrayList<MessageObject> arr, final boolean animatedFromBottom) {
+         FileLog.d("processNewMessages " + arr.size() + " messages");
++        if (teleBookmarks != null) {
++            teleBookmarks.beforeNewMessages(arr);
++        }
+ 
+         final boolean isBot = UserObject.isBot(currentUser);
+         final boolean isStreamingTopic = isBot && BotForumHelper.getInstance(currentAccount).isStreamingTopic(getDialogId(), getTopicId());
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
+index 4c535c7da..92ef66891 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/chat/layouts/ChatActivitySideControlsButtonsLayout.java
+@@ -36,9 +36,10 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+     public static final int BUTTON_SEARCH_DOWN = 5;
+     public static final int BUTTON_SEARCH_UP = 6;
+     public static final int BUTTON_DRAFT = 7;
+-    public static final int BUTTON_BOOKMARKS = 8;
++    public static final int BUTTON_RETURN = 8;
++    public static final int BUTTON_BOOKMARKS = 9;
+ 
+-    private static final int BUTTONS_COUNT = 9;
++    private static final int BUTTONS_COUNT = 10;
+ 
+     private static final int ANIMATOR_ID_VISIBILITY = 1;
+     private static final int ANIMATOR_ID_COUNTER_VISIBILITY = 2;
+@@ -52,6 +53,7 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+         R.drawable.pagedown,
+         R.drawable.pagedown,
+         R.drawable.msg_saved,
++        R.drawable.pagedown,
+         R.drawable.menu_browser_bookmarks
+     };
+ 
+@@ -64,6 +66,7 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+         LocaleController.getString(R.string.AccDescrSearchPrev),
+         LocaleController.getString(R.string.AccDescrSearchNext),
+         LocaleController.getString(R.string.TeleSavedDrafts),
++        LocaleController.getString(R.string.TeleBookmarkReturn),
+         LocaleController.getString(R.string.TeleBookmarks)
+     };
+ 
+@@ -263,7 +266,7 @@ public class ChatActivitySideControlsButtonsLayout extends FrameLayout implement
+                 return false;
+             });
+ 
+-            if (buttonId == BUTTON_SEARCH_UP) {
++            if (buttonId == BUTTON_SEARCH_UP || buttonId == BUTTON_RETURN) {
+                 button.reverseIconByY();
+             }
+             if (buttonId == BUTTON_PAGE_DOWN) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 13864d80c..c8efd88ec 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -240,6 +240,8 @@ object TeleConfig {
+     val TITLE_TEMPLATE = StringItem("title_template", "tele {build}")
+     @JvmField
+     val BOOKMARKS = BoolItem("bookmarks", false)
++    @JvmField
++    val RETURN_POINT = BoolItem("return_point", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 0052270cb..b1eaabed7 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -386,6 +386,35 @@ object TeleDatabaseHelper {
+         db.rawQuery("SELECT COUNT(*) FROM tele_bookmarks WHERE account = ?", arrayOf(account.toString())).use { return if (it.moveToFirst()) it.getInt(0) else 0 }
+     }
+ 
++    class ReturnPointRow(val topicId: Long, val messageId: Int)
++
++    fun putReturnPoint(account: Int, dialogId: Long, topicId: Long, messageId: Int, created: Int) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("dialog_id", dialogId)
++            put("topic_id", topicId)
++            put("message_id", messageId)
++            put("created", created)
++        }
++        db.insertWithOnConflict("tele_return_points", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++    }
++
++    /** The return points of the topics of a chat. */
++    fun getReturnPoints(account: Int, dialogId: Long): List<ReturnPointRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<ReturnPointRow>()
++        db.rawQuery("SELECT topic_id, message_id FROM tele_return_points WHERE account = ? AND dialog_id = ?", arrayOf(account.toString(), dialogId.toString())).use {
++            while (it.moveToNext()) result.add(ReturnPointRow(it.getLong(0), it.getInt(1)))
++        }
++        return result
++    }
++
++    fun removeReturnPoint(account: Int, dialogId: Long, topicId: Long) {
++        val db = helper?.writableDatabase ?: return
++        db.delete("tele_return_points", "account = ? AND dialog_id = ? AND topic_id = ?", arrayOf(account.toString(), dialogId.toString(), topicId.toString()))
++    }
++
+     private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 9) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+@@ -432,6 +461,7 @@ object TeleDatabaseHelper {
+         private fun createBookmarkTables(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_bookmarks (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, message_id INTEGER NOT NULL, name TEXT, preview TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (account, dialog_id, message_id))")
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_bookmarks_dialog ON tele_bookmarks(account, dialog_id, topic_id, created)")
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_return_points (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, message_id INTEGER NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (account, dialog_id, topic_id))")
+         }
+ 
+         private fun createDraftsTable(db: SQLiteDatabase) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt b/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
+index 997be0c14..5247f0711 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ChatBookmarks.kt
+@@ -1,11 +1,13 @@
+ package tele.helpers
+ 
++import android.view.View
++import org.telegram.messenger.MessageObject
+ import org.telegram.ui.Cells.ChatActionCell
+ import org.telegram.ui.Cells.ChatMessageCell
+ import org.telegram.ui.ChatActivity
+ import org.telegram.ui.Components.chat.layouts.ChatActivitySideControlsButtonsLayout
+ 
+-/** The bookmark marks, the bookmark button and the chat menu entry of one open chat. */
++/** The bookmark marks, the bookmark and return buttons and the chat menu entry of one open chat. */
+ class ChatBookmarks(private val chat: ChatActivity) {
+ 
+     private var lastJump = 0
+@@ -13,18 +15,26 @@ class ChatBookmarks(private val chat: ChatActivity) {
+     // what the bubbles were last drawn for, so a rebind only happens when the marks changed
+     private var applied = 0
+ 
++    // the return point was off the screen since it was set, scrolling back to it by hand drops it
++    private var away = false
++
+     private fun marks(): Boolean = Bookmarks.enabled() && chat.teleBookmarkChat()
+ 
+     private fun buttons(): Boolean = Bookmarks.enabled() && chat.teleCornerChat()
+ 
++    private fun returns(): Boolean = ReturnPoint.enabled() && chat.teleCornerChat()
++
+     private fun signature(): Int {
+         if (!Bookmarks.enabled()) return 0
+         val ids = Bookmarks.list(chat.currentAccount, chat.dialogId, 0L).map { it.messageId }
+         return if (ids.isEmpty()) 0 else ids.hashCode()
+     }
+ 
++    private fun point(): Int = if (returns()) ReturnPoint.get(chat.currentAccount, chat.dialogId, chat.topicId) else 0
++
+     /** Loads what the chat needs and rebinds the bubbles when the marks arrived after them. */
+     fun start() {
++        if (returns()) ReturnPoint.load(chat.currentAccount, chat.dialogId) { update(false) }
+         if (!marks()) {
+             sync()
+             update(false)
+@@ -56,14 +66,64 @@ class ChatBookmarks(private val chat: ChatActivity) {
+         side.showButton(ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS, list.isNotEmpty(), animated)
+         side.setButtonCount(ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS, list.size, animated)
+         chat.teleBookmarksMenu(list.isNotEmpty())
++        updateReturn(animated)
++    }
++
++    /** Shows the return button while a point is set, drops the point once the user is back at it. */
++    private fun updateReturn(animated: Boolean) {
++        val side = chat.teleSideControls() ?: return
++        var point = point()
++        if (point != 0) {
++            val range = visibleRange()
++            if (range == null || point !in range) {
++                away = true
++            } else if (away) {
++                ReturnPoint.clear(chat.currentAccount, chat.dialogId, chat.topicId)
++                away = false
++                point = 0
++            }
++        }
++        side.showButton(ChatActivitySideControlsButtonsLayout.BUTTON_RETURN, point != 0, animated)
++    }
++
++    /** The list scrolled: only a set return point has to watch it. */
++    fun onScrolled() {
++        if (point() != 0) updateReturn(true)
++    }
++
++    /**
++     * Called before the new messages of the chat are added. A message of the user sent while the chat is
++     * scrolled up remembers the message at the top of the screen, the send itself scrolls the chat down.
++     */
++    fun beforeNewMessages(messages: List<MessageObject>) {
++        if (!returns() || chat.teleAtBottom()) return
++        val sending = messages.any { it.isOutOwner && it.isSending && (!chat.isTopic || it.topicId == chat.topicId) }
++        if (!sending) return
++        val id = topVisible()
++        if (id == 0) return
++        ReturnPoint.set(chat.currentAccount, chat.dialogId, chat.topicId, id)
++        away = false
++        updateReturn(true)
+     }
+ 
+     fun onClick(buttonId: Int): Boolean {
+-        if (buttonId != ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS) return false
+-        jumpToNext()
++        when (buttonId) {
++            ChatActivitySideControlsButtonsLayout.BUTTON_BOOKMARKS -> jumpToNext()
++            ChatActivitySideControlsButtonsLayout.BUTTON_RETURN -> jumpBack()
++            else -> return false
++        }
+         return true
+     }
+ 
++    private fun jumpBack() {
++        val point = point()
++        if (point == 0) return
++        ReturnPoint.clear(chat.currentAccount, chat.dialogId, chat.topicId)
++        away = false
++        updateReturn(true)
++        chat.scrollToMessageId(point, 0, true, 0, true, 0)
++    }
++
+     /** Walks the bookmarks of the chat from the newest to the oldest, starting near what is on the screen. */
+     private fun jumpToNext() {
+         val list = Bookmarks.list(chat.currentAccount, chat.dialogId, chat.topicId)
+@@ -80,6 +140,9 @@ class ChatBookmarks(private val chat: ChatActivity) {
+         chat.scrollToMessageId(target.messageId, 0, true, 0, true, 0)
+     }
+ 
++    private fun messageOf(view: View): MessageObject? =
++        ((view as? ChatMessageCell)?.messageObject ?: (view as? ChatActionCell)?.messageObject)?.takeIf { it.id > 0 }
++
+     /** The ids of the messages on the screen, null when the list shows none. */
+     private fun visibleRange(): IntRange? {
+         val list = chat.chatListView ?: return null
+@@ -88,11 +151,24 @@ class ChatBookmarks(private val chat: ChatActivity) {
+         for (i in 0 until list.childCount) {
+             val view = list.getChildAt(i)
+             if (view.bottom <= 0 || view.top >= list.height) continue
+-            val message = (view as? ChatMessageCell)?.messageObject ?: (view as? ChatActionCell)?.messageObject ?: continue
+-            if (message.id <= 0) continue
++            val message = messageOf(view) ?: continue
+             min = minOf(min, message.id)
+             max = maxOf(max, message.id)
+         }
+         return if (max == 0) null else min..max
+     }
++
++    /** The message at the top of the screen, the next one when the first is half scrolled away. */
++    private fun topVisible(): Int {
++        val list = chat.chatListView ?: return 0
++        val shown = ArrayList<View>()
++        for (i in 0 until list.childCount) {
++            val view = list.getChildAt(i)
++            if (view.bottom > list.paddingTop && view.top < list.height && messageOf(view) != null) shown.add(view)
++        }
++        shown.sortBy { it.top }
++        val first = shown.firstOrNull() ?: return 0
++        val view = if (first.top < list.paddingTop && shown.size > 1) shown[1] else first
++        return messageOf(view)?.id ?: 0
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt b/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
+new file mode 100644
+index 000000000..6cefa815a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
+@@ -0,0 +1,61 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.ConnectionsManager
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.ConcurrentHashMap
++
++/**
++ * The place a chat was left from when a message was sent while scrolled up.
++ * It is only remembered here: nothing marks the chat as read and nothing goes to the server.
++ */
++object ReturnPoint {
++
++    private data class Key(val account: Int, val dialogId: Long, val topicId: Long)
++
++    private val points = ConcurrentHashMap<Key, Int>()
++    private val loaded = ConcurrentHashMap.newKeySet<Pair<Int, Long>>()
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.RETURN_POINT.value
++
++    @JvmStatic
++    fun isLoaded(account: Int, dialogId: Long): Boolean = loaded.contains(account to dialogId)
++
++    /** Reads the return points of a chat off the main thread, [done] runs on the main thread. */
++    @JvmStatic
++    fun load(account: Int, dialogId: Long, done: (() -> Unit)?) {
++        if (isLoaded(account, dialogId)) {
++            done?.invoke()
++            return
++        }
++        Utilities.globalQueue.postRunnable {
++            val rows = TeleDatabaseHelper.getReturnPoints(account, dialogId)
++            AndroidUtilities.runOnUIThread {
++                // a point set while the read was running is newer
++                for (row in rows) points.putIfAbsent(Key(account, dialogId, row.topicId), row.messageId)
++                loaded.add(account to dialogId)
++                done?.invoke()
++            }
++        }
++    }
++
++    /** The message to return to, 0 when there is none. */
++    @JvmStatic
++    fun get(account: Int, dialogId: Long, topicId: Long): Int = points[Key(account, dialogId, topicId)] ?: 0
++
++    @JvmStatic
++    fun set(account: Int, dialogId: Long, topicId: Long, messageId: Int) {
++        if (points.put(Key(account, dialogId, topicId), messageId) == messageId) return
++        val now = ConnectionsManager.getInstance(account).currentTime
++        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.putReturnPoint(account, dialogId, topicId, messageId, now) }
++    }
++
++    @JvmStatic
++    fun clear(account: Int, dialogId: Long, topicId: Long) {
++        if (points.remove(Key(account, dialogId, topicId)) == null) return
++        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.removeReturnPoint(account, dialogId, topicId) }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 997b4bfbd..ac13aef0d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -184,6 +184,7 @@ object TeleSearch {
+             section(1126, "Show the start parameter", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1124, "Hide phone numbers in profiles", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(1230, "Message bookmarks", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1232, "Return to where you were reading", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(1231, "Bookmarks") { TeleBookmarksActivity.of(org.telegram.messenger.UserConfig.selectedAccount) },
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5c44536fa..664024584 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -669,6 +669,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Streamer mode" to "Block screen capture in every window and hide the notification previews.",
+             "Hide phone numbers in profiles" to "Do not show the phone number row in a profile.",
+             "Message bookmarks" to "Adds Bookmark to the message menu and a button to walk the bookmarks of a chat. They stay on this device.",
++            "Return to where you were reading" to "After you send a message while scrolled up, a button jumps back to the message you left. Nothing is marked as read.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -818,6 +819,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Bookmarks"),
+                 toggle("Message bookmarks", TeleConfig.BOOKMARKS),
++                toggle("Return to where you were reading", TeleConfig.RETURN_POINT),
+                 link("Bookmarks", TeleBookmarksActivity.MODE_BOOKMARKS),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Links"),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 8355407a3..974ca9962 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -103,6 +103,7 @@
+     <string name="TeleBookmarkRename">Rename bookmark</string>
+     <string name="TeleBookmarkName">Name</string>
+     <string name="TeleBookmarks">Bookmarks</string>
++    <string name="TeleBookmarkReturn">Jump to where you were reading</string>
+     <string name="TeleNoBookmarks">No bookmarks yet. Bookmark a message from its menu.</string>
+     <string name="TeleBookmarkMessage">Message</string>
+     <string name="TeleBookmarkRemoveAsk">Remove this bookmark?</string>
