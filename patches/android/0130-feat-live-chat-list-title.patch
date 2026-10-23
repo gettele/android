@@ -1,0 +1,949 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 23 Oct 2026 16:29:20 +0300
+Subject: [PATCH] feat: live chat list title
+
+---
+ .../java/org/telegram/ui/DialogsActivity.java |  10 +-
+ .../ui/Stories/DialogStoriesCell.java         |   6 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |  10 +-
+ .../src/main/java/tele/helpers/TeleTitle.kt   | 514 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ .../java/tele/ui/settings/TeleTitleEditor.kt  | 304 +++++++++++
+ 7 files changed, 847 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleTitle.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleTitleEditor.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index dd53d6dbb..b4d8b1d42 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -149,7 +149,7 @@ import org.telegram.ui.ActionBar.ActionBarPopupWindow;
+ import org.telegram.ui.ActionBar.AlertDialog;
+ import org.telegram.ui.ActionBar.BackDrawable;
+ import org.telegram.ui.ActionBar.BaseFragment;
+-import tele.TeleBuild;
++import tele.TeleHooks;
+ import org.telegram.ui.ActionBar.BottomSheet;
+ import org.telegram.ui.ActionBar.INavigationLayout;
+ import org.telegram.ui.ActionBar.MenuDrawable;
+@@ -3517,7 +3517,13 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             } else {
+                 statusDrawable = new AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable(null, dp(26));
+                 statusDrawable.center = true;
+-                actionBar.setTitle(TeleBuild.label(), statusDrawable);
++                actionBar.setTitle(TeleHooks.dialogsTitle(currentAccount), statusDrawable);
++                TeleHooks.bindDialogsTitle(actionBar, currentAccount, () -> {
++                    actionBar.setTitle(TeleHooks.dialogsTitle(currentAccount), statusDrawable);
++                    if (dialogStoriesCell != null) {
++                        dialogStoriesCell.refreshTeleTitle();
++                    }
++                });
+                 updateStatus(UserConfig.getInstance(currentAccount).getCurrentUser(), false);
+             }
+             if (folderId == 0) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stories/DialogStoriesCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Stories/DialogStoriesCell.java
+index e0260386d..476ba0901 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stories/DialogStoriesCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stories/DialogStoriesCell.java
+@@ -1312,6 +1312,12 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
+         }
+     }
+ 
++    public void refreshTeleTitle() {
++        if (!hasOverlayText) {
++            setTitleOverlayText(null, 0);
++        }
++    }
++
+     public void setClipTop(int clipTop) {
+         if (clipTop < 0) {
+             clipTop = 0;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index cf7499d40..dad2a08ad 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -224,6 +224,8 @@ object TeleConfig {
+     val HIDE_BOT_EDITED_LABEL = BoolItem("hide_bot_edited_label", false)
+     @JvmField
+     val SHOW_START_PARAMETER = BoolItem("show_start_parameter", false)
++    @JvmField
++    val TITLE_TEMPLATE = StringItem("title_template", "tele {build}")
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 201af08d1..a0ef43cfb 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -180,8 +180,16 @@ object TeleHooks {
+         }
+     }
+ 
++    /** The stories header shows the title template when the stock has no title of its own. */
+     @JvmStatic
+-    fun storiesHeaderTitle(stock: CharSequence?): CharSequence = stock ?: TeleBuild.label()
++    fun storiesHeaderTitle(stock: CharSequence?): CharSequence? = stock ?: tele.helpers.TeleTitle.text(UserConfig.selectedAccount).ifEmpty { null }
++
++    /** The chat list title: the tele template, or the app name when the template is empty. */
++    @JvmStatic
++    fun dialogsTitle(account: Int): CharSequence = tele.helpers.TeleTitle.text(account).ifEmpty { LocaleController.getString(R.string.AppName) }
++
++    @JvmStatic
++    fun bindDialogsTitle(view: android.view.View, account: Int, apply: Runnable) = tele.helpers.TeleTitle.bind(view, account, apply)
+ 
+         private fun peerName(account: Int, peerId: Long): String {
+         val controller = org.telegram.messenger.MessagesController.getInstance(account)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTitle.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTitle.kt
+new file mode 100644
+index 000000000..a05181b86
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTitle.kt
+@@ -0,0 +1,514 @@
++package tele.helpers
++
++import android.view.View
++import java.text.DateFormat
++import java.text.SimpleDateFormat
++import java.util.Calendar
++import java.util.Date
++import java.util.Locale
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.BuildVars
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.NotificationsController
++import org.telegram.messenger.SharedConfig
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.ConnectionsManager
++import tele.TeleBuild
++import tele.TeleConfig
++
++/** The live template of the chat list title, a port of the desktop title bar label. */
++object TeleTitle {
++
++    enum class Tick { NONE, MINUTE, SECOND }
++
++    enum class SpanType { VARIABLE, INVALID, BRACKET }
++
++    class Modifier(val name: String, val argument: String = "", val number: Int = 0)
++
++    class Token(
++        val text: String = "",
++        val name: String = "",
++        val format: String = "",
++        val modifiers: List<Modifier> = emptyList(),
++        val group: List<Token> = emptyList(),
++        val variable: Boolean = false,
++        val optional: Boolean = false,
++        val broken: Boolean = false,
++        val brief: Boolean = false
++    )
++
++    class Span(val from: Int, val till: Int, val type: SpanType)
++
++    class Template(val tokens: List<Token>, val spans: List<Span>, val errors: List<String>, val tick: Tick)
++
++    private enum class Arity { NONE, NUMBER, TEXT }
++
++    private class Parsing {
++        val spans = ArrayList<Span>()
++        val errors = ArrayList<String>()
++    }
++
++    private val KNOWN = setOf(
++        "build", "version", "time", "date", "weekday", "day", "month",
++        "name", "username", "id", "accounts", "unread", "status"
++    )
++
++    private fun formatted(name: String) = name == "time" || name == "date"
++
++    private fun quoted(text: String) = "\u201C$text\u201D"
++
++    private fun arity(name: String): Arity? = when (name) {
++        "lower", "upper", "title", "cap", "short", "first", "last", "k" -> Arity.NONE
++        "max", "pad" -> Arity.NUMBER
++        "default" -> Arity.TEXT
++        else -> null
++    }
++
++    /** A modifier or the error that explains why it isn't one. */
++    private fun parseModifier(segment: String): Pair<Modifier?, String> {
++        val colon = segment.indexOf(':')
++        val name = (if (colon < 0) segment else segment.substring(0, colon)).trim()
++        val argument = if (colon < 0) "" else segment.substring(colon + 1)
++        if (name.isEmpty()) return null to "empty modifier"
++        val arity = arity(name) ?: return null to "unknown modifier ${quoted(name)}"
++        return when (arity) {
++            Arity.NONE -> if (colon >= 0) null to "${quoted(name)} takes no value" else Modifier(name) to ""
++            Arity.NUMBER -> {
++                val limit = if (name == "max") 1000 else 64
++                val number = argument.trim().toIntOrNull()
++                if (colon < 0 || number == null || number < 1 || number > limit) {
++                    null to "${quoted(name)} needs a number from 1 to $limit, like $name:${if (name == "max") 20 else 2}"
++                } else {
++                    Modifier(name, number = number) to ""
++                }
++            }
++            Arity.TEXT -> if (colon < 0) null to "${quoted(name)} needs a value, like $name:none" else Modifier(name, argument = argument) to ""
++        }
++    }
++
++    /** The pipes outside of the quoted parts of a date format. */
++    private fun pipes(text: String): List<Int> {
++        val result = ArrayList<Int>()
++        var quotedPart = false
++        text.forEachIndexed { i, ch ->
++            if (ch == '\'') quotedPart = !quotedPart else if (ch == '|' && !quotedPart) result.add(i)
++        }
++        return result
++    }
++
++    private fun parseModifiers(tail: String, error: ((String) -> Unit)?): List<Modifier>? {
++        val result = ArrayList<Modifier>()
++        for (segment in tail.split('|')) {
++            val (modifier, message) = parseModifier(segment)
++            if (modifier == null) {
++                error?.invoke(message)
++                return null
++            }
++            result.add(modifier)
++        }
++        return result
++    }
++
++    private fun validFormat(format: String): Boolean = try {
++        SimpleDateFormat(format, Locale.US)
++        true
++    } catch (e: IllegalArgumentException) {
++        false
++    }
++
++    private fun parseVariable(source: String, from: Int, till: Int, out: Parsing): Token {
++        val text = source.substring(from, till)
++        val body = source.substring(from + 1, till - 1)
++        var end = 0
++        while (end < body.length && body[end] != ':' && body[end] != '|') end++
++        val name = body.substring(0, end).trim()
++        var format = ""
++        var tail: String? = null
++        if (end < body.length && body[end] == ':') {
++            val rest = body.substring(end + 1)
++            if (formatted(name)) {
++                // a date format may hold a pipe, the modifiers start at the first pipe that parses
++                val pipes = pipes(rest)
++                val split = pipes.firstOrNull { parseModifiers(rest.substring(it + 1), null) != null } ?: -1
++                if (split >= 0) {
++                    format = rest.substring(0, split)
++                    tail = rest.substring(split + 1)
++                } else {
++                    format = rest
++                    if (pipes.isNotEmpty()) {
++                        val first = rest.substring(pipes.first() + 1).substringBefore('|').substringBefore(':').trim()
++                        out.errors.add("$text: ${quoted(first)} isn't a modifier, so it stays in the format")
++                    }
++                }
++            } else {
++                val pipe = rest.indexOf('|')
++                format = if (pipe < 0) rest else rest.substring(0, pipe)
++                if (pipe >= 0) tail = rest.substring(pipe + 1)
++            }
++        } else if (end < body.length) {
++            tail = body.substring(end + 1)
++        }
++        var invalid = false
++        var broken = false
++        var modifiers: List<Modifier> = emptyList()
++        if (tail != null) {
++            var error = ""
++            val parsed = parseModifiers(tail) { error = it }
++            if (parsed != null) {
++                modifiers = parsed
++            } else {
++                broken = true
++                invalid = true
++                out.errors.add("$text: $error")
++            }
++        }
++        if (name !in KNOWN) {
++            invalid = true
++            out.errors.add("$text: unknown variable")
++        } else if (formatted(name) && format.isNotEmpty() && !validFormat(format)) {
++            // java throws on a bad pattern, so the token stays as typed
++            broken = true
++            invalid = true
++            out.errors.add("$text: bad date format")
++        }
++        out.spans.add(Span(from, till, if (invalid) SpanType.INVALID else SpanType.VARIABLE))
++        return Token(
++            text = text,
++            name = name,
++            format = format,
++            modifiers = modifiers,
++            variable = true,
++            broken = broken,
++            brief = modifiers.any { it.name == "short" }
++        )
++    }
++
++    private fun unmatched(ch: Char) = "Unmatched $ch, use $ch$ch for a literal one"
++
++    private class Cursor(var position: Int)
++
++    /** Returns the tokens and whether a nested group found its closing bracket. */
++    private fun parseTokens(source: String, cursor: Cursor, nested: Boolean, out: Parsing): Pair<List<Token>, Boolean> {
++        val result = ArrayList<Token>()
++        val literal = StringBuilder()
++        fun flush() {
++            if (literal.isNotEmpty()) {
++                result.add(Token(text = literal.toString()))
++                literal.setLength(0)
++            }
++        }
++        fun invalid(at: Int, ch: Char) {
++            out.spans.add(Span(at, at + 1, SpanType.INVALID))
++            out.errors.add(unmatched(ch))
++        }
++        val size = source.length
++        while (cursor.position < size) {
++            val position = cursor.position
++            val ch = source[position]
++            val doubled = position + 1 < size && source[position + 1] == ch
++            if (doubled && (ch == '{' || ch == '}' || ch == '[' || ch == ']')) {
++                literal.append(ch)
++                cursor.position += 2
++            } else if (ch == '{') {
++                val end = source.indexOf('}', position + 1)
++                if (end < 0) {
++                    invalid(position, ch)
++                    literal.append(source, position, size)
++                    cursor.position = size
++                    break
++                }
++                flush()
++                result.add(parseVariable(source, position, end + 1, out))
++                cursor.position = end + 1
++            } else if (ch == '[') {
++                cursor.position = position + 1
++                val (group, closed) = parseTokens(source, cursor, true, out)
++                if (!closed) {
++                    invalid(position, ch)
++                    literal.append(ch)
++                    flush()
++                    result.addAll(group)
++                    break
++                }
++                out.spans.add(Span(position, position + 1, SpanType.BRACKET))
++                out.spans.add(Span(cursor.position - 1, cursor.position, SpanType.BRACKET))
++                flush()
++                result.add(Token(group = group, optional = true))
++            } else if (ch == ']' && nested) {
++                cursor.position++
++                flush()
++                return result to true
++            } else {
++                if (ch == ']' || ch == '}') invalid(position, ch)
++                literal.append(ch)
++                cursor.position++
++            }
++        }
++        flush()
++        return result to false
++    }
++
++    private fun tickFor(tokens: List<Token>): Tick {
++        var result = Tick.NONE
++        for (token in tokens) {
++            val tick = when {
++                token.optional -> tickFor(token.group)
++                !token.variable -> Tick.NONE
++                formatted(token.name) -> if (token.format.contains('s') || token.format.contains('S')) Tick.SECOND else Tick.MINUTE
++                token.name == "weekday" || token.name == "day" || token.name == "month" -> Tick.MINUTE
++                else -> Tick.NONE
++            }
++            if (tick > result) result = tick
++        }
++        return result
++    }
++
++    @JvmStatic
++    fun parse(source: String): Template {
++        val out = Parsing()
++        val (tokens, _) = parseTokens(source, Cursor(0), false, out)
++        return Template(tokens, out.spans.sortedBy { it.from }, out.errors.distinct(), tickFor(tokens))
++    }
++
++    private fun empty(value: String) = value.isEmpty() || value == "0"
++
++    private fun digits(value: String) = value.isNotEmpty() && value.all { it in '0'..'9' }
++
++    private fun word(text: String, first: Boolean): String {
++        val words = text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
++        return if (words.isEmpty()) "" else if (first) words.first() else words.last()
++    }
++
++    private fun titled(text: String): String {
++        val result = StringBuilder(text.length)
++        var start = true
++        for (ch in text) {
++            if (ch.isWhitespace()) {
++                start = true
++                result.append(ch)
++            } else {
++                result.append(if (start) ch.uppercaseChar() else ch)
++                start = false
++            }
++        }
++        return result.toString()
++    }
++
++    private fun capitalized(text: String): String {
++        val index = text.indexOfFirst { !it.isWhitespace() }
++        return if (index < 0) text else text.substring(0, index) + text[index].uppercaseChar() + text.substring(index + 1)
++    }
++
++    private fun elided(text: String, limit: Int): String {
++        if (text.length <= limit) return text
++        var cut = limit - 1
++        if (cut > 0 && Character.isHighSurrogate(text[cut - 1])) cut--
++        while (cut > 0 && text[cut - 1].isWhitespace()) cut--
++        return text.substring(0, cut) + "\u2026"
++    }
++
++    private fun padded(text: String, width: Int): String =
++        if (text.length >= width) text else (if (digits(text)) "0" else " ").repeat(width - text.length) + text
++
++    /** Shortens a number like 1234 to 1.2k. */
++    @JvmStatic
++    fun compact(number: String): String {
++        if (!digits(number) || number.length > 15) return number
++        val value = number.toLong()
++        fun format(unit: Long, suffix: Char): String {
++            val whole = value / unit
++            val tenth = if (whole < 10) (value % unit) * 10 / unit else 0
++            return whole.toString() + (if (tenth != 0L) ".$tenth" else "") + suffix
++        }
++        return when {
++            value < 1000 -> number
++            value < 1000000 -> format(1000, 'k')
++            value < 1000000000 -> format(1000000, 'm')
++            else -> format(1000000000, 'b')
++        }
++    }
++
++    private fun apply(modifier: Modifier, text: String): Pair<String, Boolean> = when (modifier.name) {
++        "lower" -> text.lowercase() to false
++        "upper" -> text.uppercase() to false
++        "title" -> titled(text) to false
++        "cap" -> capitalized(text) to false
++        "first" -> word(text, true) to false
++        "last" -> word(text, false) to false
++        "k" -> compact(text) to false
++        "max" -> elided(text, modifier.number) to false
++        "pad" -> padded(text, modifier.number) to false
++        "default" -> if (empty(text)) modifier.argument to true else text to false
++        else -> text to false
++    }
++
++    /** Renders the tokens; a group gives null when a variable inside is empty or 0. */
++    private fun render(tokens: List<Token>, resolve: (Token) -> String?, optional: Boolean): String? {
++        val result = StringBuilder()
++        for (token in tokens) {
++            when {
++                token.optional -> result.append(render(token.group, resolve, true) ?: "")
++                !token.variable || token.broken -> result.append(token.text)
++                else -> {
++                    val value = resolve(token)
++                    if (value == null) {
++                        result.append(token.text)
++                        continue
++                    }
++                    var text: String = value
++                    var filled = false
++                    for (modifier in token.modifiers) {
++                        val (next, fill) = apply(modifier, text)
++                        text = next
++                        filled = filled || fill
++                    }
++                    if (optional && empty(value) && !filled) return null
++                    result.append(text)
++                }
++            }
++        }
++        return result.toString()
++    }
++
++    private fun counter(count: Int, brief: Boolean): String = count.toString().let { if (brief) compact(it) else it }
++
++    /** The unread count of the app badge, without the muted chats. */
++    private fun unread(): Int {
++        var count = 0
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (!UserConfig.getInstance(account).isClientActivated) continue
++            if (!SharedConfig.showNotificationsForAllAccounts && account != UserConfig.selectedAccount) continue
++            count += NotificationsController.getInstance(account).totalUnreadCount
++        }
++        return count
++    }
++
++    private fun connecting(account: Int): Boolean = when (ConnectionsManager.getInstance(account).connectionState) {
++        ConnectionsManager.ConnectionStateConnecting,
++        ConnectionsManager.ConnectionStateWaitingForNetwork,
++        ConnectionsManager.ConnectionStateConnectingToProxy -> true
++        else -> false
++    }
++
++    private fun value(token: Token, account: Int, now: Date): String? {
++        val brief = token.brief
++        val user = UserConfig.getInstance(account).currentUser
++        return when (token.name) {
++            "build" -> if (TeleBuild.BUILD > 0) TeleBuild.BUILD.toString() else "dev"
++            "version" -> BuildVars.BUILD_VERSION_STRING.let { if (brief) it.split('.').take(2).joinToString(".") else it }
++            "time" -> SimpleDateFormat(token.format.ifEmpty { "HH:mm" }, Locale.getDefault()).format(now)
++            "date" -> if (token.format.isEmpty()) {
++                DateFormat.getDateInstance(DateFormat.SHORT, Locale.getDefault()).format(now)
++            } else {
++                SimpleDateFormat(token.format, Locale.getDefault()).format(now)
++            }
++            "weekday" -> SimpleDateFormat(if (brief) "EEE" else "EEEE", Locale.getDefault()).format(now)
++            "day" -> Calendar.getInstance().apply { time = now }.get(Calendar.DAY_OF_MONTH).toString()
++            "month" -> SimpleDateFormat(if (brief) "LLL" else "LLLL", Locale.getDefault()).format(now)
++            "name" -> when {
++                user == null -> ""
++                brief && !user.first_name.isNullOrEmpty() -> user.first_name
++                else -> UserObject.getUserName(user)
++            }
++            "username" -> user?.let { UserObject.getPublicUsername(it) }.orEmpty()
++            "id" -> user?.id?.toString().orEmpty()
++            "accounts" -> counter(UserConfig.getActivatedAccountsCount(), brief)
++            "unread" -> counter(unread(), brief)
++            "status" -> if (connecting(account)) (if (brief) "\u2026" else "connecting") else ""
++            else -> null
++        }
++    }
++
++    private var cachedSource: String? = null
++    private var cachedTemplate: Template? = null
++
++    private fun parsed(source: String): Template {
++        val cached = cachedTemplate
++        if (cached != null && cachedSource == source) return cached
++        return parse(source).also {
++            cachedSource = source
++            cachedTemplate = it
++        }
++    }
++
++    /** Renders any template, the editor previews with it. */
++    @JvmStatic
++    fun preview(account: Int, source: String): String {
++        val now = Date()
++        return render(parsed(source).tokens, { value(it, account, now) }, false).orEmpty()
++    }
++
++    /** The current title, empty when the template is empty. */
++    @JvmStatic
++    fun text(account: Int): String = preview(account, TeleConfig.TITLE_TEMPLATE.value)
++
++    private fun delay(tick: Tick): Long {
++        val period = if (tick == Tick.SECOND) 1000L else 60_000L
++        return period - System.currentTimeMillis() % period + 10
++    }
++
++    /** Keeps a title fresh while its view is attached: ticks for the time and listens for the counters. */
++    @JvmStatic
++    fun bind(view: View, account: Int, apply: Runnable) {
++        val binding = Binding(account, apply)
++        view.addOnAttachStateChangeListener(binding)
++        if (view.isAttachedToWindow) binding.onViewAttachedToWindow(view)
++    }
++
++    private class Binding(private val account: Int, private val apply: Runnable) :
++        View.OnAttachStateChangeListener, NotificationCenter.NotificationCenterDelegate, Runnable {
++
++        private var attached = false
++        private var last: String? = null
++
++        override fun onViewAttachedToWindow(v: View) {
++            if (attached) return
++            attached = true
++            val center = NotificationCenter.getInstance(account)
++            center.addObserver(this, NotificationCenter.updateInterfaces)
++            center.addObserver(this, NotificationCenter.dialogsUnreadCounterChanged)
++            center.addObserver(this, NotificationCenter.didUpdateConnectionState)
++            center.addObserver(this, NotificationCenter.mainUserInfoChanged)
++            NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.notificationsCountUpdated)
++            // the template may have changed while the view was away
++            last = null
++            run()
++        }
++
++        override fun onViewDetachedFromWindow(v: View) {
++            if (!attached) return
++            attached = false
++            val center = NotificationCenter.getInstance(account)
++            center.removeObserver(this, NotificationCenter.updateInterfaces)
++            center.removeObserver(this, NotificationCenter.dialogsUnreadCounterChanged)
++            center.removeObserver(this, NotificationCenter.didUpdateConnectionState)
++            center.removeObserver(this, NotificationCenter.mainUserInfoChanged)
++            NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.notificationsCountUpdated)
++            AndroidUtilities.cancelRunOnUIThread(this)
++        }
++
++        override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++            if (id == NotificationCenter.updateInterfaces) {
++                val mask = args.firstOrNull() as? Int ?: return
++                if (mask and MessagesController.UPDATE_MASK_NAME == 0) return
++            }
++            push()
++        }
++
++        private fun push() {
++            val text = text(account)
++            if (text == last) return
++            last = text
++            apply.run()
++        }
++
++        override fun run() {
++            AndroidUtilities.cancelRunOnUIThread(this)
++            push()
++            val tick = parsed(TeleConfig.TITLE_TEMPLATE.value).tick
++            if (attached && tick != Tick.NONE) AndroidUtilities.runOnUIThread(this, delay(tick))
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 7474e92d8..ffe2b792c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -406,6 +406,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_MARKER -> chooseDeletedMarker()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_REPLY -> chooseDeletedReply()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TELE_SERVER_URL -> chooseServerUrl()
++            row.type == TYPE_VALUE && row.item == TeleConfig.TITLE_TEMPLATE -> TeleTitleEditor.show(this) { refresh() }
+             row.type == TYPE_LINK || row.type == TYPE_LINK_ICON -> when (row.mode) {
+                 TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+                 TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
+@@ -717,6 +718,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         private fun buildRows(mode: String): List<Row> = when (canonicalMode(mode)) {
+             MODE_INTERFACE -> listOf(
+                 Row(TYPE_HEADER, "interface"),
++                Row(TYPE_HEADER, "Chat list title"),
++                Row(TYPE_VALUE, "Title", value = TeleTitleEditor.summary(), item = TeleConfig.TITLE_TEMPLATE),
++                Row(TYPE_SHADOW, "A live template for the title above the chat list: the build, the time, your name, the unread count and more. Empty shows the app name."),
+                 Row(TYPE_HEADER, "Animations"),
+                 toggle("Reduce motion", TeleConfig.REDUCE_MOTION),
+                 Row(TYPE_SHADOW),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTitleEditor.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTitleEditor.kt
+new file mode 100644
+index 000000000..4067588c8
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTitleEditor.kt
+@@ -0,0 +1,304 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.text.Editable
++import android.text.Spanned
++import android.text.TextWatcher
++import android.text.style.BackgroundColorSpan
++import android.text.style.ForegroundColorSpan
++import android.util.TypedValue
++import android.view.View
++import android.view.ViewGroup
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import androidx.core.graphics.ColorUtils
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.EditTextBoldCursor
++import tele.TeleConfig
++import tele.TeleHooks
++import tele.helpers.TeleTitle
++
++/** The editor of the chat list title template, a port of the desktop title template box. */
++object TeleTitleEditor {
++
++    private class Variable(val name: String, val variants: List<String>)
++
++    private class Group(val title: String, val variables: List<Variable>)
++
++    private val GROUPS = listOf(
++        Group("App", listOf(
++            Variable("build", listOf("")),
++            Variable("version", listOf("", "|short"))
++        )),
++        Group("Time", listOf(
++            Variable("time", listOf("", ":HH:mm:ss", ":h:mm a")),
++            Variable("date", listOf("", ":dd MMM", ":dd.MM.yyyy", ":yyyy-MM-dd")),
++            Variable("weekday", listOf("", "|short", "|lower", "|short|lower")),
++            Variable("day", listOf("", "|pad:2")),
++            Variable("month", listOf("", "|short", "|lower", "|short|lower"))
++        )),
++        Group("Account", listOf(
++            Variable("name", listOf("", "|short", "|upper")),
++            Variable("username", listOf("", "|upper")),
++            Variable("id", listOf("")),
++            Variable("accounts", listOf(""))
++        )),
++        Group("State", listOf(
++            Variable("unread", listOf("", "|k", "|default:no")),
++            Variable("status", listOf("", "|short", "|upper", "|default:online"))
++        ))
++    )
++
++    private val PRESETS = listOf(
++        "",
++        "tele {build}",
++        "tele #{build}",
++        "{time:HH:mm} \u00B7 {weekday|short}",
++        "{name}[ \u00B7 {unread} unread]",
++        "{weekday|short|lower} {day} {month|short|lower} \u00B7 {time}",
++        "[{status} \u00B7 ]tele {build}",
++        "tele {version|short}[ \u00B7 {unread|k}]"
++    )
++
++    private const val HELP = "Tap a variable to insert it, hold it for other forms. Modifiers go after |, left to right: " +
++        "lower, upper, title, cap, short, first, last, max:20, pad:2, k, default:text. [ \u2026 ] hides its part when a " +
++        "variable inside is empty or 0, doubled brackets are literal. Time and date formats are java patterns, like HH:mm or dd MMM."
++
++    // the spans of the editor are told apart from the ones the keyboard adds
++    private class Mark(color: Int) : ForegroundColorSpan(color)
++    private class Chip(color: Int) : BackgroundColorSpan(color)
++
++    /** The value shown in the settings row. */
++    @JvmStatic
++    fun summary(): String = TeleConfig.TITLE_TEMPLATE.value.ifEmpty { "App name" }
++
++    private fun dp(value: Float) = AndroidUtilities.dp(value)
++
++    @JvmStatic
++    fun show(fragment: BaseFragment, onSaved: Runnable) {
++        val context = fragment.parentActivity ?: return
++        val provider = fragment.resourceProvider
++        val account = UserConfig.selectedAccount
++        fun color(key: Int) = Theme.getColor(key, provider)
++        val accent = color(Theme.key_windowBackgroundWhiteBlueText4)
++        val error = color(Theme.key_text_RedRegular)
++        val gray = color(Theme.key_windowBackgroundWhiteGrayText)
++
++        val content = LinearLayout(context)
++        content.orientation = LinearLayout.VERTICAL
++        content.setPadding(dp(24f), dp(4f), dp(24f), dp(8f))
++
++        val field = EditTextBoldCursor(context)
++        field.setSingleLine(true)
++        field.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
++        field.setTextColor(color(Theme.key_windowBackgroundWhiteBlackText))
++        field.setHintTextColor(color(Theme.key_windowBackgroundWhiteHintText))
++        field.hint = "Template"
++        field.setBackgroundDrawable(null)
++        field.setLineColors(
++            color(Theme.key_windowBackgroundWhiteInputField),
++            color(Theme.key_windowBackgroundWhiteInputFieldActivated),
++            error
++        )
++        field.setCursorColor(color(Theme.key_windowBackgroundWhiteBlackText))
++        field.setCursorSize(dp(20f))
++        content.addView(field, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44f)))
++
++        val preview = TextView(context)
++        preview.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        preview.typeface = AndroidUtilities.bold()
++        preview.setTextColor(color(Theme.key_windowBackgroundWhiteBlackText))
++        content.addView(preview, linear(top = 8f))
++
++        val errors = TextView(context)
++        errors.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        errors.setTextColor(error)
++        errors.visibility = View.GONE
++        content.addView(errors, linear(top = 4f))
++
++        fun refreshPreview() {
++            val text = TeleTitle.preview(account, field.text.toString())
++            preview.text = text.ifEmpty { "App name" }
++            preview.setTextColor(if (text.isEmpty()) gray else color(Theme.key_windowBackgroundWhiteBlackText))
++        }
++
++        fun highlight(editable: Editable) {
++            editable.getSpans(0, editable.length, Mark::class.java).forEach { editable.removeSpan(it) }
++            editable.getSpans(0, editable.length, Chip::class.java).forEach { editable.removeSpan(it) }
++            val template = TeleTitle.parse(editable.toString())
++            for (span in template.spans) {
++                val tint = if (span.type == TeleTitle.SpanType.INVALID) error else accent
++                editable.setSpan(Mark(tint), span.from, span.till, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++                if (span.type != TeleTitle.SpanType.BRACKET) {
++                    editable.setSpan(Chip(ColorUtils.setAlphaComponent(tint, 40)), span.from, span.till, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++                }
++            }
++            errors.text = template.errors.joinToString("\n")
++            errors.visibility = if (template.errors.isEmpty()) View.GONE else View.VISIBLE
++        }
++
++        field.addTextChangedListener(object : TextWatcher {
++            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
++            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
++            override fun afterTextChanged(s: Editable) {
++                highlight(s)
++                refreshPreview()
++            }
++        })
++
++        fun setTemplate(text: String) {
++            field.setText(text)
++            field.setSelection(text.length)
++            field.requestFocus()
++        }
++
++        fun insert(token: String) {
++            val editable = field.text ?: return
++            val start = maxOf(0, minOf(field.selectionStart, field.selectionEnd))
++            val end = maxOf(0, maxOf(field.selectionStart, field.selectionEnd))
++            editable.replace(start, end, token)
++            field.requestFocus()
++        }
++
++        val links = LinearLayout(context)
++        links.orientation = LinearLayout.HORIZONTAL
++        fun link(title: String, action: () -> Unit): TextView {
++            val view = TextView(context)
++            view.text = title
++            view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            view.setTextColor(accent)
++            view.setPadding(0, dp(8f), dp(20f), dp(8f))
++            view.setOnClickListener { action() }
++            links.addView(view)
++            return view
++        }
++        link("Presets") {
++            val labels = PRESETS.map { if (it.isEmpty()) "App name" else it }.toTypedArray()
++            builder(context, provider).setTitle("Presets").setItems(labels) { _, which -> setTemplate(PRESETS[which]) }.show()
++        }
++        link("Reset") { setTemplate(TeleConfig.TITLE_TEMPLATE.default) }
++        content.addView(links, linear(top = 4f))
++
++        for (group in GROUPS) {
++            val caption = TextView(context)
++            caption.text = group.title.lowercase()
++            caption.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            caption.setTextColor(gray)
++            content.addView(caption, linear(top = 8f))
++            val flow = FlowLayout(context, dp(6f))
++            for (variable in group.variables) {
++                val chip = TextView(context)
++                chip.text = variable.name
++                chip.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++                chip.setTextColor(accent)
++                chip.setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
++                chip.background = Theme.createSimpleSelectorRoundRectDrawable(dp(14f), ColorUtils.setAlphaComponent(accent, 26), ColorUtils.setAlphaComponent(accent, 60))
++                chip.setOnClickListener { insert("{${variable.name}}") }
++                chip.setOnLongClickListener {
++                    val tokens = variable.variants.map { "{${variable.name}$it}" }
++                    val labels = tokens.map { token ->
++                        val value = TeleTitle.preview(account, token)
++                        "$token \u2192 ${value.ifEmpty { "empty now" }}"
++                    }.toTypedArray()
++                    builder(context, provider).setTitle(variable.name).setItems(labels) { _, which -> insert(tokens[which]) }.show()
++                    true
++                }
++                flow.addView(chip)
++            }
++            content.addView(flow, linear(top = 4f))
++        }
++
++        val help = TextView(context)
++        help.text = HELP
++        help.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        help.setTextColor(gray)
++        content.addView(help, linear(top = 12f))
++
++        setTemplate(TeleConfig.TITLE_TEMPLATE.value)
++        // the time in the preview stays live while the editor is open
++        val ticker = object : Runnable {
++            override fun run() {
++                if (!content.isAttachedToWindow) return
++                refreshPreview()
++                content.postDelayed(this, 1000)
++            }
++        }
++        content.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
++            override fun onViewAttachedToWindow(v: View) {
++                content.postDelayed(ticker, 1000)
++            }
++
++            override fun onViewDetachedFromWindow(v: View) {
++                content.removeCallbacks(ticker)
++            }
++        })
++
++        val scroll = ScrollView(context)
++        scroll.addView(content)
++        val dialog = builder(context, provider)
++            .setTitle("Chat list title")
++            .setView(scroll)
++            .setPositiveButton(LocaleController.getString(R.string.Save)) { _, _ ->
++                TeleConfig.set(TeleConfig.TITLE_TEMPLATE, field.text.toString())
++                TeleHooks.onConfigChanged(TeleConfig.TITLE_TEMPLATE)
++                onSaved.run()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .create()
++        fragment.showDialog(dialog)
++    }
++
++    private fun builder(context: Context, provider: Theme.ResourcesProvider?) =
++        if (provider != null) AlertDialog.Builder(context, provider) else AlertDialog.Builder(context)
++
++    private fun linear(top: Float) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
++        topMargin = AndroidUtilities.dp(top)
++    }
++
++    /** Lays the chips out in rows that wrap. */
++    private class FlowLayout(context: Context, private val gap: Int) : ViewGroup(context) {
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            val width = MeasureSpec.getSize(widthMeasureSpec)
++            var x = 0
++            var y = 0
++            var rowHeight = 0
++            for (i in 0 until childCount) {
++                val child = getChildAt(i)
++                child.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST), MeasureSpec.UNSPECIFIED)
++                if (x > 0 && x + child.measuredWidth > width) {
++                    x = 0
++                    y += rowHeight + gap
++                    rowHeight = 0
++                }
++                x += child.measuredWidth + gap
++                rowHeight = maxOf(rowHeight, child.measuredHeight)
++            }
++            setMeasuredDimension(width, y + rowHeight)
++        }
++
++        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
++            val width = r - l
++            var x = 0
++            var y = 0
++            var rowHeight = 0
++            for (i in 0 until childCount) {
++                val child = getChildAt(i)
++                if (x > 0 && x + child.measuredWidth > width) {
++                    x = 0
++                    y += rowHeight + gap
++                    rowHeight = 0
++                }
++                child.layout(x, y, x + child.measuredWidth, y + child.measuredHeight)
++                x += child.measuredWidth + gap
++                rowHeight = maxOf(rowHeight, child.measuredHeight)
++            }
++        }
++    }
++}
