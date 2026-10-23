@@ -1,22 +1,23 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Mon, 19 Oct 2026 06:54:33 +0300
-Subject: [PATCH 086/128] feat: attach media above the field
+Subject: [PATCH 086/132] feat: attach media above the field
 
 ---
  .../messenger/MediaDataController.java        |   2 +-
  .../org/telegram/ui/Cells/DialogCell.java     |   6 +
  .../java/org/telegram/ui/ChatActivity.java    |  13 +-
- .../ui/Components/ChatActivityEnterView.java  |  36 +-
+ .../ui/Components/ChatActivityEnterView.java  |  50 +-
+ .../ui/Components/ChatAttachAlert.java        |   7 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
  .../main/java/tele/db/TeleDatabaseHelper.kt   |  29 +-
- .../src/main/java/tele/helpers/DockedMedia.kt | 400 ++++++++++++++++++
- .../src/main/java/tele/helpers/DockedStore.kt | 137 ++++++
- .../src/main/java/tele/ui/TeleDockedStrip.kt  | 177 ++++++++
+ .../src/main/java/tele/helpers/DockedMedia.kt | 498 ++++++++++++++++++
+ .../src/main/java/tele/helpers/DockedStore.kt | 137 +++++
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 184 +++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
- 12 files changed, 802 insertions(+), 5 deletions(-)
+ 13 files changed, 928 insertions(+), 5 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
@@ -132,7 +133,7 @@ index 04a4dbf3f..7ace9b747 100644
              fieldPanelShown = 0;
              if (replyingMessageObject == null && messagePreviewParams == null && foundWebPage == null && editingMessageObject == null && !chatActivityEnterView.isTopViewVisible() && topicsTabs == null) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
-index 92354f091..96cd20280 100644
+index 92354f091..ee6ea07ca 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 @@ -759,6 +759,7 @@ public class ChatActivityEnterView extends FrameLayout implements
@@ -152,7 +153,7 @@ index 92354f091..96cd20280 100644
  
              boolean self = parentFragment != null && UserObject.isUserSelf(parentFragment.getCurrentUser());
  
-@@ -7024,6 +7025,25 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -7024,6 +7025,39 @@ public class ChatActivityEnterView extends FrameLayout implements
          telePendingDraftEntries = entries != null && !entries.isEmpty() ? new ArrayList<>(entries) : null;
      }
  
@@ -175,10 +176,24 @@ index 92354f091..96cd20280 100644
 +        }
 +    }
 +
++    /** The docked media tray is taller than the reply panel it borrows. */
++    public void tele_setTopViewHeight(int height) {
++        if (topView == null || topView.getLayoutParams().height == height) {
++            return;
++        }
++        topView.getLayoutParams().height = height;
++        topView.requestLayout();
++        if (resizeForTopViewLastShow) {
++            resizeForTopViewLastShow = false;
++            resizeForTopView(true);
++        }
++        requestLayout();
++    }
++
      public boolean isMessageWebPageSearchEnabled() {
          if (tele.TeleConfig.NO_LINK_PREVIEWS.getValue()) {
              return false;
-@@ -7530,6 +7550,18 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -7530,6 +7564,18 @@ public class ChatActivityEnterView extends FrameLayout implements
                  return;
              }
              CharSequence message = messageEditText == null ? "" : messageEditText.getTextToUse();
@@ -197,7 +212,7 @@ index 92354f091..96cd20280 100644
              if (message.length() == 0 && parentFragment != null && !isInScheduleMode() && tele.helpers.SendOrder.sendHeldOnDoubleEnter(currentAccount, dialog_id, true)) {
                  return;
              }
-@@ -8273,7 +8305,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -8273,7 +8319,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                      }
                  }
              }
@@ -206,6 +221,24 @@ index 92354f091..96cd20280 100644
              shownSendButton = true;
              final String caption = messageEditText == null ? null : messageEditText.getCaption();
              boolean showBotButton = caption != null && (getSendButtonInternal().getVisibility() == VISIBLE || expandStickersButton != null && expandStickersButton.getVisibility() == VISIBLE);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index ff002fbe0..e7a870a26 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -7008,6 +7008,13 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+         if (baseFragment == null) {
+             baseFragment = LaunchActivity.getLastFragment();
+         }
++        if (!allowPassConfirmationAlert && baseFragment instanceof ChatActivity && !isPhotoPicker && !isStickerMode && getEditingMessageObject() == null && (currentAttachLayout == photoLayout || currentAttachLayout == photoPreviewLayout)
++                && tele.helpers.DockedMedia.dockOnClose((ChatActivity) baseFragment, photoLayout.getSelectedPhotos(), photoLayout.getSelectedPhotosOrder(), commentTextView != null ? commentTextView.getText() : null)) {
++            photoLayout.clearSelectedPhotos();
++            allowPassConfirmationAlert = true;
++            dismiss();
++            return;
++        }
+         if (!allowPassConfirmationAlert && baseFragment != null && currentAttachLayout.getSelectedItemsCount() > 0 && !isPhotoPicker) {
+             if (confirmationAlertShown) {
+                 return;
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 index 7d19b9dc2..19a80c9e6 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
@@ -282,10 +315,10 @@ index 625c52f92..28820e85f 100644
  
 diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
 new file mode 100644
-index 000000000..10f13b53c
+index 000000000..d142d8425
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,498 @@
 +package tele.helpers
 +
 +import android.text.TextUtils
@@ -340,6 +373,8 @@ index 000000000..10f13b53c
 +        var masks: ArrayList<TLRPC.InputDocument>? = null
 +        var original: MediaController.PhotoEntry? = null
 +        var coverPhoto: TLRPC.Photo? = null
++        // the picker entry with its edit state, so the viewer edits it again instead of the baked result; not stored
++        var source: MediaController.PhotoEntry? = null
 +
 +        fun sendPath(): String? = if (!isVideo && imagePath != null) imagePath else path
 +    }
@@ -441,6 +476,7 @@ index 000000000..10f13b53c
 +    }
 +
 +    @JvmStatic
++    @JvmOverloads
 +    fun dock(
 +        fragment: ChatActivity,
 +        enter: ChatActivityEnterView?,
@@ -452,7 +488,8 @@ index 000000000..10f13b53c
 +        notify: Boolean,
 +        scheduleDate: Int,
 +        payStars: Long,
-+        sticker: Boolean
++        sticker: Boolean,
++        keepField: Boolean = false
 +    ): Boolean {
 +        if (!enabled() || enter == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
 +        if (!notify || scheduleDate != 0 || payStars != 0L || sticker) return false
@@ -479,10 +516,23 @@ index 000000000..10f13b53c
 +            tray.items.add(snapshot(entry, asFile))
 +            entry.reset()
 +        }
-+        if (caption != null || tray.items.size == entries.size) {
++        if (caption != null || tray.items.size == entries.size && !keepField) {
 +            enter.setFieldText(caption ?: "")
 +        }
 +        changed(key)
++        return true
++    }
++
++    /**
++     * The picker closes with a selection: it goes to the tray instead of the discard question,
++     * the text of the picker's caption field goes to the chat field.
++     */
++    @JvmStatic
++    fun dockOnClose(fragment: ChatActivity, selected: Map<Any, Any>, order: List<Any>, comment: CharSequence?): Boolean {
++        val enter = fragment.chatActivityEnterView ?: return false
++        if (enter.isEditingMessage || selected.isEmpty()) return false
++        if (!dock(fragment, enter, selected, order, false, true, false, true, 0, 0L, false, true)) return false
++        if (!TextUtils.isEmpty(comment)) enter.setFieldText(comment)
 +        return true
 +    }
 +
@@ -514,7 +564,88 @@ index 000000000..10f13b53c
 +        if (!entry.isVideo && entry.imagePath != null && item.highQuality) {
 +            item.original = entry.clone()
 +        }
++        item.source = entry.clone()
 +        return item
++    }
++
++    private fun entryOf(item: Item, index: Int): MediaController.PhotoEntry {
++        val source = item.source
++        if (source != null) return source.clone()
++        val path = item.path ?: item.sendPath()
++        val entry = MediaController.PhotoEntry(0, if (item.imageId != 0) item.imageId else -(index + 1), 0, path, if (item.isVideo) item.duration else item.orientation, item.isVideo, item.width, item.height, item.size)
++        if (!item.isVideo && item.imagePath != null && item.imagePath != path) entry.imagePath = item.imagePath
++        entry.thumbPath = item.thumbPath
++        entry.hasSpoiler = item.spoiler
++        entry.ttl = item.ttl
++        entry.editedInfo = item.videoInfo
++        return entry
++    }
++
++    /** The stock viewer of the picker over the tray: editing, the checks, the spoiler; unchecked files leave. */
++    @JvmStatic
++    fun openViewer(fragment: ChatActivity, key: Key, index: Int) {
++        val tray = tray(key) ?: return
++        if (index !in tray.items.indices || fragment.parentActivity == null) return
++        val items = ArrayList(tray.items)
++        val entries = items.mapIndexed { i, item -> entryOf(item, i) }
++        val ids = entries.mapIndexed { i, entry -> if (entry.imageId != 0) entry.imageId else -(i + 1) }
++        val selected = HashMap<Any, Any>()
++        val order = ArrayList<Any>()
++        entries.forEachIndexed { i, entry ->
++            selected[ids[i]] = entry
++            order.add(ids[i])
++        }
++        var applied = false
++        fun apply() {
++            if (applied) return
++            applied = true
++            val current = tray(key) ?: return
++            val result = ArrayList<Item>()
++            entries.forEachIndexed { i, entry ->
++                if (!selected.containsKey(ids[i])) return@forEachIndexed
++                result.add(snapshot(entry, items[i].asFile).also { it.stars = items[i].stars })
++            }
++            current.items.clear()
++            current.items.addAll(result)
++            changed(key)
++        }
++        val provider = object : org.telegram.ui.PhotoViewer.EmptyPhotoViewerProvider() {
++            override fun isPhotoChecked(index: Int): Boolean = index in ids.indices && selected.containsKey(ids[index])
++
++            override fun setPhotoChecked(index: Int, videoEditedInfo: VideoEditedInfo?): Int {
++                if (index !in ids.indices) return -1
++                val id = ids[index]
++                if (selected.remove(id) != null) {
++                    order.remove(id)
++                    return -1
++                }
++                selected[id] = entries[index]
++                order.add(id)
++                return order.size - 1
++            }
++
++            override fun getSelectedCount(): Int = selected.size
++            override fun getSelectedPhotos(): HashMap<Any, Any> = selected
++            override fun getSelectedPhotosOrder(): ArrayList<Any> = order
++            override fun canEdit(index: Int): Boolean = true
++            override fun allowCaption(): Boolean = false
++            override fun getDialogId(): Long = key.dialogId
++
++            // the send button of the viewer sends the tray, like the one of the picker sends the selection
++            override fun sendButtonPressed(index: Int, videoEditedInfo: VideoEditedInfo?, notify: Boolean, scheduleDate: Int, scheduleRepeatPeriod: Int, forceDocument: Boolean) {
++                if (selected.isEmpty() && index in ids.indices) {
++                    selected[ids[index]] = entries[index]
++                    order.add(ids[index])
++                }
++                apply()
++                AndroidUtilities.runOnUIThread { fragment.chatActivityEnterView?.sendMessage() }
++            }
++
++            override fun willHidePhotoViewer() = apply()
++            override fun onClose() = apply()
++        }
++        org.telegram.ui.PhotoViewer.getInstance().setParentActivity(fragment)
++        org.telegram.ui.PhotoViewer.getInstance().openPhotoForSelect(ArrayList<Any>(entries), index, 0, false, provider, fragment)
 +    }
 +
 +    private fun toInfo(item: Item): SendMessagesHelper.SendingMediaInfo {
@@ -831,10 +962,10 @@ index 000000000..5dd182279
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
 new file mode 100644
-index 000000000..1ee9564a8
+index 000000000..9edde809d
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,184 @@
 +package tele.ui
 +
 +import android.content.Context
@@ -914,12 +1045,14 @@ index 000000000..1ee9564a8
 +                replyHidden = true
 +            }
 +            forced = true
++            enter.tele_setTopViewHeight(AndroidUtilities.dp(TRAY_HEIGHT))
 +            enter.tele_showTopView(true, animated)
 +        } else {
 +            if (replyHidden) {
 +                replyHidden = false
 +                replyView?.visibility = if (topView.isEditMode) GONE else VISIBLE
 +            }
++            enter.tele_setTopViewHeight(AndroidUtilities.dp(PANEL_HEIGHT))
 +            if (forced) {
 +                forced = false
 +                if (!panelShown) enter.tele_showTopView(false, animated)
@@ -941,16 +1074,16 @@ index 000000000..1ee9564a8
 +        shown = ArrayList(items)
 +        shownSpoilers = spoilers
 +        row.removeAllViews()
-+        for (item in items) {
-+            row.addView(Tile(context, item), LinearLayout.LayoutParams(AndroidUtilities.dp(44f), ViewGroup.LayoutParams.MATCH_PARENT))
++        items.forEachIndexed { index, item ->
++            row.addView(Tile(context, item, index), LinearLayout.LayoutParams(AndroidUtilities.dp(TILE + 8f), ViewGroup.LayoutParams.MATCH_PARENT))
 +        }
 +    }
 +
-+    private inner class Tile(context: Context, private val item: DockedMedia.Item) : FrameLayout(context) {
++    private inner class Tile(context: Context, private val item: DockedMedia.Item, private val index: Int) : FrameLayout(context) {
 +        init {
 +            val image = BackupImageView(context)
-+            image.setRoundRadius(AndroidUtilities.dp(6f))
-+            val filter = if (item.spoiler) "5_5_b" else "64_64"
++            image.setRoundRadius(AndroidUtilities.dp(8f))
++            val filter = if (item.spoiler) "5_5_b" else "${TILE.toInt()}_${TILE.toInt()}"
 +            val placeholder = Theme.chat_attachEmptyDrawable
 +            val cover = item.coverPath
 +            val thumb = item.thumbPath
@@ -967,18 +1100,20 @@ index 000000000..1ee9564a8
 +                image.setOrientation(item.orientation, item.invert, true)
 +                image.setImage("thumb://" + item.imageId + ":" + path, filter, placeholder)
 +            }
-+            addView(image, LayoutHelper.createFrame(36, 36f, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
++            addView(image, LayoutHelper.createFrame(TILE.toInt(), TILE, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
 +            if (item.isVideo) {
 +                val duration = TextView(context)
 +                duration.setTextColor(Color.WHITE)
-+                duration.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 9f)
++                duration.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 11f)
 +                duration.text = AndroidUtilities.formatShortDuration(item.duration)
 +                duration.setShadowLayer(AndroidUtilities.dp(1f).toFloat(), 0f, 0f, Color.BLACK)
-+                addView(duration, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 3f, 0f, 0f, 8f))
++                addView(duration, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 5f, 0f, 0f, 10f))
 +            }
 +            val badge = Badge(context)
 +            badge.setOnClickListener { DockedMedia.remove(key, item) }
-+            addView(badge, LayoutHelper.createFrame(22, 22f, Gravity.RIGHT or Gravity.TOP, 0f, 0f, 0f, 0f))
++            addView(badge, LayoutHelper.createFrame(24, 24f, Gravity.LEFT or Gravity.TOP, TILE - 22f, 4f, 0f, 0f))
++            // like a tile of the picker: a tap opens the viewer with the editor and the checks
++            setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
 +            setOnLongClickListener {
 +                ItemOptions.makeOptions(fragment, this)
 +                    .add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) "remove spoiler" else "hide with spoiler") { DockedMedia.toggleSpoiler(key, item) }
@@ -1010,6 +1145,9 @@ index 000000000..1ee9564a8
 +
 +    companion object {
 +        const val TAG = "tele_docked"
++        private const val TILE = 64f
++        private const val TRAY_HEIGHT = 80f
++        private const val PANEL_HEIGHT = 48f
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
