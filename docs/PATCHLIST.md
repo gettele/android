@@ -409,7 +409,7 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 | 0137 | выключить AI-функции | todo | `AIEditorAlert`, `TranslateController`, `AiTonesController`; M; реш.: 0137 транскрипция остаётся; расшифровка голосовых не гасится |
 | 0262 | тонкая кисть в редакторе | todo | `Paint/RenderView`; S; формула веса кисти |
 | 0222 | журнал звонков: ретрай загрузки | todo | `CallLogActivity`; S; только ретрай |
-| 0070 | аккаунты test-сервера (частично) | todo | нужен нативный per-account флаг `isTestBackend` (JNI tgnet); жест — long-press; M |
+| 0070 | аккаунты test-сервера | built | `0129-feat-always-offer-the-test-backend`; стоковый чекбокс «Test Backend» на экране входа (и при добавлении аккаунта) показывается во всех сборках, а не только в debug/beta; per-account бэкенд уже есть в стоке (`ConnectionsManager.switchBackend`), JNI не нужен; вместо правого клика десктопа — чекбокс |
 
 ## пачка 22 — центр уведомлений
 

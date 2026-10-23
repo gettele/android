@@ -197,6 +197,7 @@ always on, or without a switch of their own.
 | no reply counters on scheduled messages | scheduled messages don't show a reply count | — | always on | [0018](patches/android/0018-fix-ignore-reply-counters-on-scheduled-messages): the reply count is skipped on scheduled messages | [98](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0098-fix-ignore-reply-counters-on-scheduled-messages.patch): the reply count is skipped on scheduled messages |
 | @username becomes a t.me link | typing @username into the link box of the field turns it into a t.me link | link box of the field | always on | [0044](patches/android/0044-feat-turn-username-into-a-t.me-link-in-the-link-box) | [86](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0086-feat-turn-username-into-a-t.me-link-in-the-link-box.patch) |
 | switches apply right away | interface switches take effect without restarting the app | — | always on | [0019](patches/android/0019-fix-apply-interface-toggles-without-restart): the switches are applied right away, without a restart | — |
+| test backend at login | the "Test Backend" checkbox is shown on the login screen in every build, so an added account can live on the telegram test server | login screen | always on | [0129](patches/android/0129-feat-always-offer-the-test-backend) | [70](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0070-feat-add-test-server-accounts-with-a-plain-right-cli.patch): a right click on "add account" |
 
 ## build
 

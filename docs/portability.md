@@ -156,7 +156,7 @@
 | 0067 | отключить rich-paste промпт | ❌ | rich-сообщения — фича tele, на Android промпта нет |
 | 0068 | локальные фоны чатов | ⚠️ | per-chat обои уже в стоке; добавка — форс-локальность и удаление навязанного |
 | 0069 | реплай на удалённое: скип/цитата | ✅ | фильтрация `reply_to` при отправке |
-| 0070 | аккаунты test-сервера | ⚠️ | нужен нативный per-account флаг `isTestBackend` (JNI), жест → long-press |
+| 0070 | аккаунты test-сервера | ✅ | стоковый чекбокс «Test Backend» на экране входа, показывать всегда (android 0129) |
 | 0071 | username-алиасы | ✅ | `inu_kv`-маппинг + `MentionsAdapter` + подстановка при отправке |
 | 0072 | скрыть кнопки упоминаний/реакций | ✅ | гейт `showButton` в `ChatActivitySideControlsButtonsLayout` |
 | 0073 | пикеры для игнора/ghost-чатов | ✅ | стандартный пикер пиров; аналоги `hide-blocked-messages`/`paranoia` |
@@ -775,8 +775,8 @@
 
 #### 0070 — add test server accounts with a plain right click
 - **Суть:** правый клик по «добавить аккаунт» предлагает аккаунт на test-сервере.
-- **Вердикт:** ⚠️ частично — ядро портабельно (`isTestBackend` в tgnet), но установка флага для нового аккаунта требует нативного/JNI-дополнения (Java-сеттера нет); жест — long-press.
-- **Android:** `tgnet/ConnectionsManager` (`isTestBackend`, нативный бэкенд в `jni/tgnet/`), переключатель аккаунтов; аналога нет.
+- **Вердикт:** ✅ — per-account бэкенд уже в стоке (`ConnectionsManager.switchBackend`), чекбокс «Test Backend» на экране входа скрыт вне debug/beta; android 0129 показывает его всегда.
+- **Android:** `LoginActivity` (`testBackendCheckBox`, условие `allowTestBackend`).
 
 #### 0071 — link usernames to profiles locally
 - **Суть:** локальные алиасы «@имя → профиль»: подстановка при отправке, автодополнение упоминаний, переход по клику.
