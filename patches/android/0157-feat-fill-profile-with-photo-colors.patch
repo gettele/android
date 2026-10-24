@@ -4,14 +4,48 @@ Date: Sat, 24 Oct 2026 05:30:16 +0300
 Subject: [PATCH 157/161] feat: fill profile with photo colors
 
 ---
+ .../org/telegram/ui/Cells/AboutLinkCell.java  |   1 +
+ .../telegram/ui/Cells/ProfileChannelCell.java |   9 +-
  .../java/org/telegram/ui/ProfileActivity.java |  12 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
- .../src/main/java/tele/ui/TeleProfilePhoto.kt | 290 +++++++++++++++++-
+ .../src/main/java/tele/ui/TeleProfilePhoto.kt | 428 +++++++++++++++++-
  .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +
- 6 files changed, 309 insertions(+), 4 deletions(-)
+ 8 files changed, 456 insertions(+), 5 deletions(-)
 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/AboutLinkCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/AboutLinkCell.java
+index 465e4b08b..38b5cdbb1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/AboutLinkCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/AboutLinkCell.java
+@@ -295,6 +295,7 @@ public class AboutLinkCell extends FrameLayout {
+         canvas.translate(0, textY = dp(8));
+ 
+         try {
++            tele.ui.TeleProfilePhoto.skinAbout(resourcesProvider);
+             Theme.profile_aboutTextPaint.linkColor = processColor(Theme.getColor(Theme.key_chat_messageLinkIn, resourcesProvider));
+             if (firstThreeLinesLayout == null || !shouldExpand) {
+                 if (textLayout != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ProfileChannelCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ProfileChannelCell.java
+index 2284eed4b..e506aa238 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ProfileChannelCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ProfileChannelCell.java
+@@ -148,7 +148,14 @@ public class ProfileChannelCell extends FrameLayout implements Theme.Colorable {
+ 
+     @Override
+     protected void dispatchDraw(Canvas canvas) {
+-        super.dispatchDraw(canvas);
++        final boolean tele_skin = tele.ui.TeleProfilePhoto.skinDialog(resourcesProvider);
++        try {
++            super.dispatchDraw(canvas);
++        } finally {
++            if (tele_skin) {
++                tele.ui.TeleProfilePhoto.unskinDialog();
++            }
++        }
+ 
+         float loading = loadingAlpha.set(this.loading);
+         if (loading > 0) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
 index fecfefbdd..edb0fc943 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
@@ -69,7 +103,7 @@ index 7c6dd3726..d0ae35590 100644
          }
      }
 diff --git a/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt b/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
-index e79226284..6d08c32c5 100644
+index e79226284..0f347fe17 100644
 --- a/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
 @@ -3,30 +3,38 @@ package tele.ui
@@ -275,18 +309,17 @@ index e79226284..6d08c32c5 100644
          fragment.tele_photoChanged()
      }
  
-@@ -173,6 +266,10 @@ class TeleProfilePhoto private constructor(
+@@ -173,6 +266,9 @@ class TeleProfilePhoto private constructor(
          private const val TARGET_LIGHTNESS = 0.3
          private const val MIN_DARKEN = 0.2
          private const val MAX_DARKEN = 0.7
 +        private const val DARK_LIGHTNESS = 0.55
-+        private const val LABEL_CONTRAST = 4.5
 +        private const val DIM_DARK = 0.25
 +        private const val DIM_LIGHT = 0.4
  
          // the blurred photos of the opened profiles; the key holds the account
          private val cache = LruCache<String, Blurred>(8)
-@@ -226,6 +323,193 @@ class TeleProfilePhoto private constructor(
+@@ -226,6 +322,332 @@ class TeleProfilePhoto private constructor(
              return Color.rgb((r / count).toInt(), (g / count).toInt(), (b / count).toInt())
          }
  
@@ -336,16 +369,26 @@ index e79226284..6d08c32c5 100644
 +            return max(x, y) / min(x, y)
 +        }
 +
-+        /** Moves a label colour towards white or black until it reads on the background. */
-+        private fun readable(label: Int, background: Int, dark: Boolean): Int {
-+            val towards = if (dark) Color.WHITE else Color.BLACK
-+            var result = label
-+            var step = 1
-+            while (step <= 20 && contrast(result, background) < LABEL_CONTRAST) {
-+                result = mix(label, towards, step / 20f)
-+                step++
++        private fun meets(color: Int, backgrounds: IntArray, target: Double): Boolean {
++            for (background in backgrounds) if (contrast(color, background) < target) return false
++            return true
++        }
++
++        /** Moves the lightness of a colour until it reads on every background; hue and saturation stay. */
++        private fun readable(base: Int, backgrounds: IntArray, target: Double): Int {
++            if (meets(base, backgrounds, target)) return base
++            val hsl = FloatArray(3)
++            androidx.core.graphics.ColorUtils.colorToHSL(base, hsl)
++            val lighter = luminance(backgrounds[0]) <= PIVOT_LUMINANCE
++            val alpha = base and (0xFF shl 24)
++            var result = base
++            var lightness = hsl[2]
++            while (true) {
++                lightness = if (lighter) min(lightness + LIGHTNESS_STEP, 1f) else max(lightness - LIGHTNESS_STEP, 0f)
++                hsl[2] = lightness
++                result = alpha or (androidx.core.graphics.ColorUtils.HSLToColor(hsl) and 0xFFFFFF)
++                if (meets(result, backgrounds, target) || lightness <= 0f || lightness >= 1f) return result
 +            }
-+            return (label and (0xFF shl 24)) or (result and 0xFFFFFF)
 +        }
 +
 +        /** The offset of a surface colour from the base one, carried over to the fill. */
@@ -360,18 +403,50 @@ index e79226284..6d08c32c5 100644
 +        }
 +
 +        private const val SURFACE = 1
-+        private const val LABEL = 2
-+        private const val SELECTOR = 3
++        private const val SELECTOR = 2
++        private const val PRIMARY = 3
++        private const val SECONDARY = 4
++        private const val ACCENT = 5
++        private const val ICON = 6
++
++        // contrast the role has to reach on the card and on the gray gaps between the cards
++        private const val PRIMARY_CONTRAST = 10.0
++        private const val SECONDARY_CONTRAST = 6.5
++        private const val ACCENT_CONTRAST = 5.0
++        private const val ICON_CONTRAST = 4.5
++        private const val PIVOT_LUMINANCE = 0.179
++        private const val LIGHTNESS_STEP = 0.02f
 +
 +        private val kinds = SparseIntArray().apply {
-+            for (key in intArrayOf(
++            fun roles(kind: Int, vararg keys: Int) {
++                for (key in keys) put(key, kind)
++            }
++            roles(
++                SURFACE,
 +                Theme.key_windowBackgroundGray,
 +                Theme.key_graySection,
 +                Theme.key_divider,
 +                Theme.key_actionBarActionModeDefault
-+            )) put(key, SURFACE)
-+            for (key in intArrayOf(
++            )
++            roles(
++                SELECTOR,
++                Theme.key_listSelector,
++                Theme.key_actionBarActionModeDefaultSelector,
++                Theme.key_profile_tabSelector,
++                Theme.key_actionBarTabSelector
++            )
++            roles(
++                PRIMARY,
 +                Theme.key_windowBackgroundWhiteBlackText,
++                Theme.key_chats_name,
++                Theme.key_chats_nameArchived,
++                Theme.key_dialogTextBlack,
++                Theme.key_player_actionBarTitle,
++                Theme.key_actionBarActionModeDefaultIcon,
++                Theme.key_actionBarTabActiveText
++            )
++            roles(
++                SECONDARY,
 +                Theme.key_windowBackgroundWhiteGrayText,
 +                Theme.key_windowBackgroundWhiteGrayText2,
 +                Theme.key_windowBackgroundWhiteGrayText3,
@@ -380,6 +455,22 @@ index e79226284..6d08c32c5 100644
 +                Theme.key_windowBackgroundWhiteGrayText6,
 +                Theme.key_windowBackgroundWhiteGrayText7,
 +                Theme.key_windowBackgroundWhiteGrayText8,
++                Theme.key_windowBackgroundWhiteGrayIcon,
++                Theme.key_graySectionText,
++                Theme.key_player_actionBarSubtitle,
++                Theme.key_profile_tabText,
++                Theme.key_actionBarTabUnactiveText,
++                Theme.key_dialogTextGray,
++                Theme.key_dialogIcon,
++                Theme.key_chats_message,
++                Theme.key_chats_message_threeLines,
++                Theme.key_chats_messageArchived,
++                Theme.key_chats_attachMessage,
++                Theme.key_chats_date,
++                Theme.key_chats_date_bold
++            )
++            roles(
++                ACCENT,
 +                Theme.key_windowBackgroundWhiteBlueText,
 +                Theme.key_windowBackgroundWhiteBlueText2,
 +                Theme.key_windowBackgroundWhiteBlueText3,
@@ -389,20 +480,90 @@ index e79226284..6d08c32c5 100644
 +                Theme.key_windowBackgroundWhiteBlueText7,
 +                Theme.key_windowBackgroundWhiteBlueHeader,
 +                Theme.key_windowBackgroundWhiteBlueIcon,
-+                Theme.key_windowBackgroundWhiteGrayIcon,
++                Theme.key_windowBackgroundWhiteBlueButton,
 +                Theme.key_windowBackgroundWhiteValueText,
 +                Theme.key_windowBackgroundWhiteLinkText,
 +                Theme.key_windowBackgroundWhiteGreenText,
 +                Theme.key_windowBackgroundWhiteGreenText2,
 +                Theme.key_text_RedRegular,
 +                Theme.key_text_RedBold,
-+                Theme.key_graySectionText,
-+                Theme.key_player_actionBarTitle,
-+                Theme.key_player_actionBarSubtitle,
-+                Theme.key_actionBarActionModeDefaultIcon
-+            )) put(key, LABEL)
-+            put(Theme.key_listSelector, SELECTOR)
-+            put(Theme.key_actionBarActionModeDefaultSelector, SELECTOR)
++                Theme.key_chat_messageLinkIn,
++                Theme.key_chat_inAdminText,
++                Theme.key_avatar_nameInMessageGreen,
++                Theme.key_telegram_color_text,
++                Theme.key_profile_tabSelectedText,
++                Theme.key_profile_tabSelectedLine,
++                Theme.key_actionBarTabLine,
++                Theme.key_dialogTextBlue2,
++                Theme.key_chats_secretName,
++                Theme.key_chats_nameMessage,
++                Theme.key_chats_nameMessage_threeLines,
++                Theme.key_chats_nameMessageArchived,
++                Theme.key_chats_nameMessageArchived_threeLines,
++                Theme.key_chats_actionMessage,
++                Theme.key_chats_draft,
++                Theme.key_chats_sentCheck,
++                Theme.key_chats_sentReadCheck,
++                Theme.key_chats_verifiedBackground
++            )
++            roles(
++                ICON,
++                Theme.key_chats_secretIcon,
++                Theme.key_chats_pinnedIcon,
++                Theme.key_chats_muteIcon,
++                Theme.key_chats_sentClock
++            )
++        }
++
++        /**
++         * The dialog cell of the personal channel reads the static dialog paints and icons, which
++         * carry the colours of the app theme; this lends them the profile ones for one draw.
++         */
++        @JvmStatic
++        fun skinDialog(provider: Theme.ResourcesProvider?): Boolean {
++            if (provider !is ProfilePhotoTheme || !provider.active) return false
++            paintDialog(provider)
++            return true
++        }
++
++        @JvmStatic
++        fun unskinDialog() = paintDialog(null)
++
++        private var aboutSkinned = false
++
++        /** The bio text paint is a static one coloured by the app theme; the profile fill needs its own colour. */
++        @JvmStatic
++        fun skinAbout(provider: Theme.ResourcesProvider?) {
++            val paint = Theme.profile_aboutTextPaint ?: return
++            if (provider is ProfilePhotoTheme && provider.active) {
++                aboutSkinned = true
++                paint.color = provider.getColor(Theme.key_windowBackgroundWhiteBlackText)
++            } else if (aboutSkinned) {
++                aboutSkinned = false
++                paint.color = Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)
++            }
++        }
++
++        private fun paintDialog(provider: Theme.ResourcesProvider?) {
++            fun color(key: Int) = Theme.getColor(key, provider)
++            Theme.dialogs_timePaint.color = color(Theme.key_chats_date)
++            Theme.dialogs_timePaintBold.color = color(Theme.key_chats_date_bold)
++            Theme.dialogs_timePaintBoldAccent.color = color(Theme.key_telegram_color_text)
++            Theme.dialogs_actionMessagePaint.color = color(Theme.key_chats_actionMessage)
++            Theme.setDrawableColor(Theme.dialogs_lockDrawable, color(Theme.key_chats_secretIcon))
++            Theme.setDrawableColor(Theme.dialogs_lock2Drawable, color(Theme.key_chats_pinnedIcon))
++            Theme.setDrawableColor(Theme.dialogs_checkDrawable, color(Theme.key_chats_sentCheck))
++            Theme.setDrawableColor(Theme.dialogs_checkReadDrawable, color(Theme.key_chats_sentReadCheck))
++            Theme.setDrawableColor(Theme.dialogs_halfCheckDrawable, color(Theme.key_chats_sentReadCheck))
++            Theme.setDrawableColor(Theme.dialogs_clockDrawable, color(Theme.key_chats_sentClock))
++            Theme.setDrawableColor(Theme.dialogs_pinnedDrawable, color(Theme.key_chats_pinnedIcon))
++            Theme.setDrawableColor(Theme.dialogs_pinnedDrawable2, color(Theme.key_chats_pinnedIcon))
++            Theme.setDrawableColor(Theme.dialogs_pinnedDrawable2Accent, color(Theme.key_telegram_color_text))
++            Theme.setDrawableColor(Theme.dialogs_muteDrawable, color(Theme.key_chats_muteIcon))
++            Theme.setDrawableColor(Theme.dialogs_forum_arrowDrawable, color(Theme.key_chats_message))
++            Theme.setDrawableColor(Theme.dialogs_verifiedDrawable, color(Theme.key_chats_verifiedBackground))
++            Theme.setDrawableColor(Theme.dialogs_scamDrawable, color(Theme.key_chats_draft))
++            Theme.setDrawableColor(Theme.dialogs_fakeDrawable, color(Theme.key_chats_draft))
 +        }
 +    }
 +
@@ -445,10 +606,21 @@ index e79226284..6d08c32c5 100644
 +            if (index >= 0) return cache.valueAt(index)
 +            val base = stock(key)
 +            val background = fill or (0xFF shl 24)
++            val white = stock(Theme.key_windowBackgroundWhite)
 +            val result = when (kind) {
-+                SURFACE -> shift(base, stock(Theme.key_windowBackgroundWhite), background)
-+                LABEL -> readable(base, background, isDarkColor(background))
-+                else -> (base and (0xFF shl 24)) or (if (isDarkColor(background)) 0xFFFFFF else 0)
++                SURFACE -> shift(base, white, background)
++                SELECTOR -> (base and (0xFF shl 24)) or (if (luminance(background) <= PIVOT_LUMINANCE) 0xFFFFFF else 0)
++                else -> {
++                    // text sits on the card and on the gray gaps between the cards
++                    val surfaces = intArrayOf(background, shift(stock(Theme.key_windowBackgroundGray), white, background) or (0xFF shl 24))
++                    val target = when (kind) {
++                        PRIMARY -> PRIMARY_CONTRAST
++                        SECONDARY -> SECONDARY_CONTRAST
++                        ACCENT -> ACCENT_CONTRAST
++                        else -> ICON_CONTRAST
++                    }
++                    readable(base, surfaces, target)
++                }
 +            }
 +            cache.put(key, result)
 +            return result
