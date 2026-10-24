@@ -4,13 +4,14 @@ Date: Sat, 24 Oct 2026 15:12:43 +0300
 Subject: [PATCH 167/172] fix: retry failed upload parts
 
 ---
- .../messenger/FileUploadOperation.java        |  37 +++++-
- .../src/main/java/tele/helpers/UploadRetry.kt | 116 ++++++++++++++++++
- 2 files changed, 152 insertions(+), 1 deletion(-)
+ .../messenger/FileUploadOperation.java        |  40 ++++-
+ .../src/main/java/tele/helpers/UploadRetry.kt | 144 ++++++++++++++++++
+ .../src/main/res/values/strings_tele.xml      |   2 +
+ 3 files changed, 185 insertions(+), 1 deletion(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java b/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java
-index b2ebccd72..ed88120a0 100644
+index b2ebccd72..2b23934e8 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java
 @@ -265,11 +265,38 @@ public class FileUploadOperation {
@@ -74,24 +75,32 @@ index b2ebccd72..ed88120a0 100644
          currentUploadRequetsCount++;
          final int requestNumFinal = requestNum++;
          final long currentRequestBytesOffset = currentRequestPartNum + currentRequestBytes;
-@@ -665,7 +700,7 @@ public class FileUploadOperation {
+@@ -665,7 +700,10 @@ public class FileUploadOperation {
                      }
                      startUploadRequest();
                  }
 -            } else {
 +            } else if (!tele_retryPart(currentOperationGuid, currentRequestPartNum, error)) {
++                if (state == 1) {
++                    tele.helpers.UploadRetry.failed(uploadingFilePath, error);
++                }
                  state = 4;
                  delegate.didFailedUploadingFile(FileUploadOperation.this);
                  cleanup();
 diff --git a/TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt b/TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt
 new file mode 100644
-index 000000000..0576b3b61
+index 000000000..1676e9c1f
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,144 @@
 +package tele.helpers
 +
 +import android.util.SparseIntArray
++import android.widget.Toast
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
 +import org.telegram.messenger.BuildVars
 +import org.telegram.messenger.FileLog
 +import org.telegram.messenger.FileUploadOperation
@@ -174,6 +183,29 @@ index 000000000..0576b3b61
 +            return MISSING.matchEntire(text)?.groupValues?.get(1)?.toIntOrNull()
 +        }
 +
++        private var lastToast = ""
++        private var lastToastAt = 0L
++
++        /** The upload gave up: say which file and why, like the desktop client. */
++        @JvmStatic
++        fun failed(path: String?, error: TLRPC.TL_error?) {
++            val name = path?.let { java.io.File(it).name }.orEmpty()
++            val why = error?.text ?: "UNKNOWN"
++            val text = if (name.isEmpty()) {
++                LocaleController.formatString(R.string.TeleUploadFailed, why)
++            } else {
++                LocaleController.formatString(R.string.TeleUploadFailedFile, name, why)
++            }
++            AndroidUtilities.runOnUIThread {
++                // parts in flight fail together, one toast is enough
++                val now = System.currentTimeMillis()
++                if (text == lastToast && now - lastToastAt < 3000) return@runOnUIThread
++                lastToast = text
++                lastToastAt = now
++                Toast.makeText(ApplicationLoader.applicationContext, text, Toast.LENGTH_LONG).show()
++            }
++        }
++
 +        /** Builds the request of a part from the file, null when the file can't give it. */
 +        @JvmStatic
 +        fun request(path: String, big: Boolean, fileId: Long, totalParts: Int, part: Int, offset: Long, size: Int): TLObject? {
@@ -205,3 +237,14 @@ index 000000000..0576b3b61
 +        }
 +    }
 +}
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index b66446da8..77a2d5567 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -131,4 +131,6 @@
+     <string name="TeleSendSilentlyStop">Stop sending silently</string>
+     <string name="TeleSilentMessage">Silent message</string>
+     <string name="TeleConfirmTapAgain">Tap again to send</string>
++    <string name="TeleUploadFailed">Couldn\'t upload the file: %1$s</string>
++    <string name="TeleUploadFailedFile">Couldn\'t upload %1$s: %2$s</string>
+ </resources>
