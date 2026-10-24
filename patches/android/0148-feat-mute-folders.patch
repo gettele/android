@@ -1,0 +1,456 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 04:06:35 +0300
+Subject: [PATCH 148/151] feat: mute folders
+
+---
+ .../messenger/MessagesController.java         |   3 +
+ .../messenger/NotificationsController.java    |   6 +
+ .../ChatNotificationsPopupWrapper.java        |  11 +
+ .../java/org/telegram/ui/DialogsActivity.java |   4 +
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/LocalFolders.kt    |   6 +
+ .../src/main/java/tele/helpers/LocalMute.kt   | 226 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   4 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   7 +-
+ .../src/main/res/values/strings_tele.xml      |   4 +
+ 11 files changed, 277 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/LocalMute.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index d37578e9d..8eaa89079 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -21655,6 +21655,9 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public boolean isDialogMuted(long dialogId, long topicId, TLRPC.Chat chat) {
++        if (tele.helpers.LocalMute.mutedByFolder(currentAccount, dialogId)) {
++            return true;
++        }
+         int mute_type = notificationsPreferences.getInt("notify2_" + NotificationsController.getSharedPrefKey(dialogId, topicId), -1);
+         if (mute_type == -1) {
+             Boolean forceChannel;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+index 5609a4a58..83b955543 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+@@ -1130,6 +1130,9 @@ public class NotificationsController extends BaseController implements Notificat
+                     // the message stays in the history, but it never notifies
+                     continue;
+                 }
++                if (messageObject != null && tele.helpers.LocalMute.isSilenced(currentAccount, messageObject.getDialogId())) {
++                    continue;
++                }
+                 if (messageObject.messageOwner != null && (messageObject.isImportedForward() ||
+                         messageObject.messageOwner.action instanceof TLRPC.TL_messageActionSetMessagesTTL ||
+                         messageObject.messageOwner.silent && (messageObject.messageOwner.action instanceof TLRPC.TL_messageActionContactSignUp || messageObject.messageOwner.action instanceof TLRPC.TL_messageActionUserJoined)) ||
+@@ -3322,6 +3325,9 @@ public class NotificationsController extends BaseController implements Notificat
+         /*if (BuildVars.LOGS_ENABLED && BuildVars.DEBUG_VERSION) {
+             FileLog.d("notify override for " + dialog_id + " = " + notifyOverride);
+         }*/
++        if (notifyOverride != 2 && tele.helpers.LocalMute.mutedByFolder(currentAccount, dialog_id)) {
++            notifyOverride = 2;
++        }
+         return notifyOverride;
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatNotificationsPopupWrapper.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatNotificationsPopupWrapper.java
+index ad886b849..25b643cba 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatNotificationsPopupWrapper.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatNotificationsPopupWrapper.java
+@@ -32,6 +32,8 @@ public class ChatNotificationsPopupWrapper {
+     View backItem;
+     ActionBarMenuSubItem soundToggle;
+     ActionBarMenuSubItem muteUnmuteButton;
++    ActionBarMenuSubItem tele_silence;
++    long tele_dialogId;
+     ActionBarMenuSubItem muteForLastSelected;
+     ActionBarMenuSubItem muteForLastSelected2;
+     public ActionBarPopupWindow.ActionBarPopupWindowLayout windowLayout;
+@@ -133,6 +135,13 @@ public class ChatNotificationsPopupWrapper {
+             });
+         });
+ 
++        tele_silence = ActionBarMenuItem.addItem(windowLayout, R.drawable.msg_block, "", false, resourcesProvider);
++        tele_silence.setVisibility(View.GONE);
++        tele_silence.setOnClickListener(view -> {
++            dismiss();
++            tele.helpers.LocalMute.toggleSilence(currentAccount, tele_dialogId);
++        });
++
+         gap = new FrameLayout(context);
+         gap.setBackgroundColor(Theme.getColor(Theme.key_actionBarDefaultSubmenuSeparator, resourcesProvider));
+         windowLayout.addView(gap, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
+@@ -172,6 +181,8 @@ public class ChatNotificationsPopupWrapper {
+             });
+             return;
+         }
++        tele_dialogId = dialogId;
++        tele.helpers.LocalMute.updateSilenceItem(tele_silence, currentAccount, dialogId, topicId);
+         boolean muted = MessagesController.getInstance(currentAccount).isDialogMuted(dialogId, topicId);
+ 
+         int color;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 432bf2fc3..44d72795e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -3723,6 +3723,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+ 
+                     boolean defaultTab = dialogFilter == null;
+                     final boolean teleUnsorted = dialogFilter != null && tele.helpers.LocalFolders.isUnsorted(dialogFilter.id);
++                    final boolean teleFolderMuted = dialogFilter != null && tele.helpers.LocalMute.isFolderMuted(currentAccount, dialogFilter.id);
+                     boolean hasUnread = false, hasShare = false;
+                     boolean muteAll = false;
+                     boolean[] shareEmpty = new boolean[1];
+@@ -3825,6 +3826,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                                 }
+                                 BulletinFactory.createMuteBulletin(DialogsActivity.this, finalMuteAll, count, null).show();
+                             })
++                            .addIf(tele.helpers.LocalMute.folderMenuVisible(dialogFilter), teleFolderMuted ? R.drawable.msg_unmute : R.drawable.msg_mute, LocaleController.getString(teleFolderMuted ? R.string.TeleFolderUnmute : R.string.TeleFolderMute), () -> {
++                                tele.helpers.LocalMute.toggleFolder(currentAccount, dialogFilter.id);
++                            })
+                             .addIf(hasUnread, R.drawable.msg_markread, LocaleController.getString(R.string.MarkAllAsRead), () -> {
+                                 markDialogsAsRead(dialogs);
+                             })
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 1b3a8acfd..1b72194dc 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -249,6 +249,10 @@ object TeleConfig {
+     @JvmField
+     val UNSORTED_FOLDER = BoolItem("unsorted_folder", false)
+     @JvmField
++    val MUTE_FOLDERS = BoolItem("mute_folders", false)
++    @JvmField
++    val SILENCE_COMPLETELY = BoolItem("silence_completely", false)
++    @JvmField
+     val BOOKMARKS = BoolItem("bookmarks", false)
+     @JvmField
+     val RETURN_POINT = BoolItem("return_point", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index a6d613efa..9cc896a0e 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -141,6 +141,9 @@ object TeleHooks {
+         if (item === TeleConfig.UNSORTED_FOLDER) {
+             tele.helpers.LocalFolders.onUnsortedToggled()
+         }
++        if (item === TeleConfig.MUTE_FOLDERS) {
++            tele.helpers.LocalMute.onToggled()
++        }
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt b/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
+index b5b5a4943..79cd954cb 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
+@@ -312,6 +312,7 @@ object LocalFolders {
+     /** Storage thread: a folder is gone, so are its local parts. */
+     @JvmStatic
+     fun forget(account: Int, id: Int) {
++        LocalMute.forgetFolder(account, id)
+         val state = state(account) ?: return
+         var changed: Boolean
+         synchronized(state) {
+@@ -361,6 +362,11 @@ object LocalFolders {
+                 }
+             }
+         }
++        // the folders that exist: the server ones, the local ones kept here and the synthetic one
++        val valid = HashSet<Int>(ids)
++        synchronized(state) { state.folders.forEach { valid.add(it.id) } }
++        valid.add(UNSORTED_ID)
++        LocalMute.pruneFolders(account, valid)
+         if (changed) persist(state)
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalMute.kt b/TMessagesProj/src/main/java/tele/helpers/LocalMute.kt
+new file mode 100644
+index 000000000..a24f15f00
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalMute.kt
+@@ -0,0 +1,226 @@
++package tele.helpers
++
++import android.util.SparseArray
++import android.view.View
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AccountInstance
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesController.DialogFilter
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.NotificationsController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.ui.ActionBar.ActionBarMenuSubItem
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * Mutes that live only on this device: whole folders (every chat the folder takes counts as muted) and chats
++ * silenced completely (no notification of any kind). The server notify settings are never touched.
++ */
++object LocalMute {
++
++    private const val KEY = "mute_state"
++
++    private class State(val userId: Long) {
++        val folders = HashSet<Int>()
++        val silenced = HashSet<Long>()
++        @Volatile
++        var loaded = false
++    }
++
++    private val states = SparseArray<State>()
++
++    // null until the stored sets are read, which happens off the caller's thread
++    private fun state(account: Int): State? {
++        val userId = UserConfig.getInstance(account).getClientUserId()
++        if (userId == 0L) return null
++        synchronized(states) {
++            val known = states.get(account)
++            if (known != null && known.userId == userId) return if (known.loaded) known else null
++            val fresh = State(userId)
++            states.put(account, fresh)
++            Utilities.globalQueue.postRunnable {
++                load(fresh)
++                fresh.loaded = true
++                if (fresh.folders.isNotEmpty()) AndroidUtilities.runOnUIThread { refresh(account) }
++            }
++            return null
++        }
++    }
++
++    private fun key(userId: Long) = "$KEY:$userId"
++
++    private fun load(state: State) {
++        val raw = runCatching { TeleDatabaseHelper.get(key(state.userId)) }.getOrNull() ?: return
++        runCatching {
++            val json = JSONObject(raw)
++            synchronized(state) {
++                json.optJSONArray("f")?.let { for (i in 0 until it.length()) state.folders.add(it.getInt(i)) }
++                json.optJSONArray("s")?.let { for (i in 0 until it.length()) state.silenced.add(it.getLong(i)) }
++            }
++        }.onFailure { FileLog.e(it) }
++    }
++
++    private fun persist(state: State) {
++        val text = synchronized(state) {
++            JSONObject().put("f", JSONArray(state.folders.toList())).put("s", JSONArray(state.silenced.toList())).toString()
++        }
++        val key = key(state.userId)
++        Utilities.globalQueue.postRunnable { runCatching { TeleDatabaseHelper.put(key, text) }.onFailure { FileLog.e(it) } }
++    }
++
++    // the muted folders are matched with the stock rules, minus "exclude muted": that rule asks if the chat is muted
++    private class Copy(val origin: DialogFilter, val copy: DialogFilter)
++
++    private val copies = HashMap<Long, Copy>()
++
++    private fun copyOf(account: Int, filter: DialogFilter): DialogFilter {
++        val flags = filter.flags and MessagesController.DIALOG_FILTER_FLAG_EXCLUDE_MUTED.inv()
++        val key = (account.toLong() shl 32) or (filter.id.toLong() and 0xFFFFFFFFL)
++        synchronized(copies) {
++            val known = copies[key]
++            if (known != null && known.origin === filter && known.copy.flags == flags &&
++                known.copy.alwaysShow === filter.alwaysShow && known.copy.neverShow === filter.neverShow) {
++                return known.copy
++            }
++            val copy = DialogFilter()
++            copy.id = filter.id
++            copy.name = filter.name
++            copy.flags = flags
++            copy.color = -1
++            copy.alwaysShow = filter.alwaysShow
++            copy.neverShow = filter.neverShow
++            copy.pinnedDialogs = filter.pinnedDialogs
++            copies[key] = Copy(filter, copy)
++            return copy
++        }
++    }
++
++    /** True when a muted folder takes the chat: the chat counts as muted whatever its own setting says. */
++    @JvmStatic
++    fun mutedByFolder(account: Int, dialogId: Long): Boolean {
++        if (!TeleConfig.MUTE_FOLDERS.value) return false
++        val state = state(account) ?: return false
++        val ids = synchronized(state) {
++            if (state.folders.isEmpty()) return false
++            state.folders.toIntArray()
++        }
++        val controller = MessagesController.getInstance(account)
++        val dialog = controller.dialogs_dict.get(dialogId) ?: return false
++        var did = dialogId
++        if (DialogObject.isEncryptedDialog(did)) {
++            did = controller.getEncryptedChat(DialogObject.getEncryptedChatId(did))?.user_id ?: return false
++        }
++        val accountInstance = AccountInstance.getInstance(account)
++        for (id in ids) {
++            val filter = controller.dialogFiltersById.get(id) ?: continue
++            if (copyOf(account, filter).includesDialog(accountInstance, did, dialog)) return true
++        }
++        return false
++    }
++
++    @JvmStatic
++    fun isFolderMuted(account: Int, folderId: Int): Boolean {
++        val state = state(account) ?: return false
++        return synchronized(state) { folderId in state.folders }
++    }
++
++    @JvmStatic
++    fun folderMenuVisible(filter: DialogFilter?): Boolean = filter != null && filter.id != 0 && TeleConfig.MUTE_FOLDERS.value
++
++    /** UI thread: mutes or unmutes a folder; one folder unmuted doesn't unmute a chat another muted folder holds. */
++    @JvmStatic
++    fun toggleFolder(account: Int, folderId: Int) {
++        val state = state(account) ?: return
++        val muted = synchronized(state) {
++            if (!state.folders.remove(folderId)) state.folders.add(folderId)
++            folderId in state.folders
++        }
++        persist(state)
++        if (muted) clearNotifications(account, folderId)
++        refresh(account)
++    }
++
++    private fun clearNotifications(account: Int, folderId: Int) {
++        val controller = MessagesController.getInstance(account)
++        val filter = controller.dialogFiltersById.get(folderId) ?: return
++        val accountInstance = AccountInstance.getInstance(account)
++        val notifications = NotificationsController.getInstance(account)
++        for (d in ArrayList(controller.allDialogs)) {
++            var did = d.id
++            if (DialogObject.isEncryptedDialog(did)) {
++                did = controller.getEncryptedChat(DialogObject.getEncryptedChatId(did))?.user_id ?: continue
++            }
++            if (copyOf(account, filter).includesDialog(accountInstance, did, d)) notifications.removeNotificationsForDialog(d.id)
++        }
++    }
++
++    // the cells and the counters ask isDialogMuted again
++    private fun refresh(account: Int) {
++        MessagesStorage.getInstance(account).updateMutedDialogsFiltersCounters()
++        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload)
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (UserConfig.getInstance(account).isClientActivated) refresh(account)
++        }
++    }
++
++    /** The folder is gone, so is its mute. */
++    @JvmStatic
++    fun forgetFolder(account: Int, folderId: Int) {
++        val state = state(account) ?: return
++        val changed = synchronized(state) { state.folders.remove(folderId) }
++        if (changed) persist(state)
++    }
++
++    /** Storage thread: mutes of folders that don't exist any more are dropped. */
++    @JvmStatic
++    fun pruneFolders(account: Int, valid: Set<Int>) {
++        val state = state(account) ?: return
++        val changed = synchronized(state) { state.folders.retainAll(valid) }
++        if (changed) persist(state)
++    }
++
++    /** True for a chat that must never notify: new messages, mentions and reactions included. */
++    @JvmStatic
++    fun isSilenced(account: Int, dialogId: Long): Boolean {
++        if (!TeleConfig.SILENCE_COMPLETELY.value) return false
++        val state = state(account) ?: return false
++        return synchronized(state) { dialogId in state.silenced }
++    }
++
++    @JvmStatic
++    fun toggleSilence(account: Int, dialogId: Long) {
++        val state = state(account) ?: return
++        val silenced = synchronized(state) {
++            if (!state.silenced.remove(dialogId)) state.silenced.add(dialogId)
++            dialogId in state.silenced
++        }
++        persist(state)
++        if (silenced) NotificationsController.getInstance(account).removeNotificationsForDialog(dialogId)
++    }
++
++    /** The row of the mute popup: a chat is silenced completely or not. */
++    @JvmStatic
++    fun updateSilenceItem(item: ActionBarMenuSubItem, account: Int, dialogId: Long, topicId: Long) {
++        val visible = TeleConfig.SILENCE_COMPLETELY.value && topicId == 0L && dialogId != 0L
++        item.visibility = if (visible) View.VISIBLE else View.GONE
++        if (!visible) return
++        val silenced = isSilenced(account, dialogId)
++        item.setTextAndIcon(
++            LocaleController.getString(if (silenced) R.string.TeleSilenceStop else R.string.TeleSilence),
++            R.drawable.msg_block
++        )
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 6cd20eafd..d3e41591e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -192,6 +192,10 @@ object TeleSearch {
+             section(1246, "Local folders", "chats", TeleSettingsActivity.MODE_CHATS, "Folders past the limit"),
+             section(1247, "Unsorted folder", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1248, "Chats not in any folder", "chats", TeleSettingsActivity.MODE_CHATS, "Unsorted folder"),
++            section(1249, "Mute folders", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            section(1250, "Silence folder notifications", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Mute folders"),
++            section(1251, "Silence chats completely", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            section(1252, "No notifications at all", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Silence chats completely"),
+             section(1230, "Message bookmarks", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1232, "Return to where you were reading", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(1231, "Bookmarks") { TeleBookmarksActivity.of(org.telegram.messenger.UserConfig.selectedAccount) },
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 12590f6bb..c3f52a4c5 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -596,6 +596,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Hide the all chats folder" to "The chat list opens on your first folder.",
+             "Folders past the limit" to "Go past Telegram's folder limits; extras stay on this device.",
+             "Unsorted folder" to "A folder for chats that aren't in any other folder; archived ones stay out.",
++            "Mute folders" to "Mute every chat in a folder from its menu, only on this device.",
++            "Silence chats completely" to "A mute menu switch: no notifications at all, mentions included.",
+             "Hide call buttons" to "No call buttons in private chats and profiles.",
+             "Confirm calls before starting" to "Ask before a call, naming who you're calling.",
+             "Open links without confirmation" to "Skip the link confirmation dialog.",
+@@ -874,7 +876,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             )
+             MODE_NOTIFICATIONS -> listOf(
+                 Row(TYPE_HEADER, "notifications"),
+-                Row(TYPE_SHADOW, "The notification options of the desktop client are not in this build yet. The closest ones live in the privacy page.")
++                Row(TYPE_HEADER, "Muting"),
++                toggle("Mute folders", TeleConfig.MUTE_FOLDERS),
++                toggle("Silence chats completely", TeleConfig.SILENCE_COMPLETELY),
++                Row(TYPE_SHADOW)
+             )
+             MODE_MENUS -> listOf(
+                 Row(TYPE_HEADER, "menus"),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 5e9597a18..943b07a05 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -110,6 +110,10 @@
+     <string name="TeleFolderOverflow">%1$d on this device</string>
+     <string name="TeleFolderUnsorted">Unsorted</string>
+     <string name="TeleFolderUnsortedInfo">Chats that aren\'t in another folder</string>
++    <string name="TeleFolderMute">Mute folder</string>
++    <string name="TeleFolderUnmute">Unmute folder</string>
++    <string name="TeleSilence">Silence completely</string>
++    <string name="TeleSilenceStop">Stop silencing</string>
+     <string name="TeleBookmarkReturn">Jump to where you were reading</string>
+     <string name="TeleNoBookmarks">No bookmarks yet. Bookmark a message from its menu.</string>
+     <string name="TeleBookmarkMessage">Message</string>

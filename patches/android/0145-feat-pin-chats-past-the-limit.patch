@@ -1,0 +1,1356 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 04:02:13 +0300
+Subject: [PATCH 145/151] feat: pin chats past the limit
+
+---
+ .../messenger/MessagesController.java         |  19 +
+ .../telegram/messenger/MessagesStorage.java   |   4 +-
+ .../messenger/SavedMessagesController.java    |  31 +-
+ .../telegram/messenger/TopicsController.java  |  19 +-
+ .../telegram/ui/Adapters/DialogsAdapter.java  |  20 +-
+ .../org/telegram/ui/Cells/DialogCell.java     |   8 +-
+ .../ui/Components/SharedMediaLayout.java      |   1 +
+ .../java/org/telegram/ui/DialogsActivity.java |  26 +-
+ .../java/org/telegram/ui/TopicsFragment.java  |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../src/main/java/tele/helpers/LocalPins.kt   | 801 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ 14 files changed, 919 insertions(+), 23 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index aaefbada7..65ec00385 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -1413,6 +1413,10 @@ public class MessagesController extends BaseController implements NotificationCe
+     private final Comparator<TLRPC.Dialog> dialogDateComparator = (dialog1, dialog2) -> {
+         int pinnedNum1 = sortingDialogFilter == null ? Integer.MIN_VALUE : sortingDialogFilter.pinnedDialogs.get(dialog1.id, Integer.MIN_VALUE);
+         int pinnedNum2 = sortingDialogFilter == null ? Integer.MIN_VALUE : sortingDialogFilter.pinnedDialogs.get(dialog2.id, Integer.MIN_VALUE);
++        int tele_order = tele.helpers.LocalPins.compareFilter(currentAccount, sortingDialogFilter, dialog1, dialog2);
++        if (tele_order != Integer.MIN_VALUE) {
++            return tele_order;
++        }
+         if (dialog1 instanceof TLRPC.TL_dialogFolder && !(dialog2 instanceof TLRPC.TL_dialogFolder)) {
+             return -1;
+         } else if (!(dialog1 instanceof TLRPC.TL_dialogFolder) && dialog2 instanceof TLRPC.TL_dialogFolder) {
+@@ -1458,6 +1462,10 @@ public class MessagesController extends BaseController implements NotificationCe
+         } else if (dialog1.pinned && !dialog2.pinned) {
+             return -1;
+         } else if (dialog1.pinned) {
++            int tele_order = tele.helpers.LocalPins.compareMain(currentAccount, dialog1, dialog2);
++            if (tele_order != 0) {
++                return tele_order;
++            }
+             if (dialog1.pinnedNum < dialog2.pinnedNum) {
+                 return 1;
+             } else if (dialog1.pinnedNum > dialog2.pinnedNum) {
+@@ -6447,6 +6455,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public void cleanup() {
++        tele.helpers.LocalPins.cleanup(currentAccount);
+         getContactsController().cleanup();
+         MediaController.getInstance().cleanup();
+         getNotificationsController().cleanup();
+@@ -17265,6 +17274,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                     }
+                     continue;
+                 }
++                if (tele.helpers.LocalPins.isLocal(dialog)) {
++                    continue;
++                }
+                 dids.add(dialog.id);
+                 pinned.add(dialog.pinnedNum);
+                 if (!DialogObject.isEncryptedDialog(dialog.id)) {
+@@ -17304,6 +17316,9 @@ public class MessagesController extends BaseController implements NotificationCe
+         }
+ 
+         getConnectionsManager().sendRequest(req, (response, error) -> {
++            if (error != null) {
++                tele.helpers.LocalPins.onReorderError(currentAccount, folderId, error.text);
++            }
+             if (newTaskId != 0) {
+                 getMessagesStorage().removePendingTask(newTaskId);
+             }
+@@ -17312,6 +17327,9 @@ public class MessagesController extends BaseController implements NotificationCe
+ 
+     public boolean pinDialog(long dialogId, boolean pin, TLRPC.InputPeer peer, long taskId) {
+         TLRPC.Dialog dialog = dialogs_dict.get(dialogId);
++        if (tele.helpers.LocalPins.onServerPin(currentAccount, dialog, pin)) {
++            return true;
++        }
+         if (dialog == null || dialog.pinned == pin) {
+             return dialog != null;
+         }
+@@ -22414,6 +22432,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         if (chatsDict == null && ApplicationLoader.mainInterfacePaused) {
+             return;
+         }
++        tele.helpers.LocalPins.reconcileDialogs(currentAccount);
+         dialogsServerOnly.clear();
+         dialogsCanAddUsers.clear();
+         dialogsMyGroups.clear();
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index ed4daaa3c..21ae1ba73 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -10676,7 +10676,7 @@ public class MessagesStorage extends BaseController {
+                     state.bindInteger(8, dialog.unread_mentions_count);
+                     state.bindInteger(9, dialog.pts);
+                     state.bindInteger(10, 0);
+-                    state.bindInteger(11, dialog.pinnedNum);
++                    state.bindInteger(11, tele.helpers.LocalPins.dbNum(dialog.pinnedNum));
+                     state.bindInteger(12, dialog.flags);
+                     state.bindInteger(13, dialog.folder_id);
+                     state.bindNull(14);
+@@ -17584,7 +17584,7 @@ public class MessagesStorage extends BaseController {
+                     state_dialogs.bindInteger(8, dialog.unread_mentions_count);
+                     state_dialogs.bindInteger(9, dialog.pts);
+                     state_dialogs.bindInteger(10, 0);
+-                    state_dialogs.bindInteger(11, dialog.pinnedNum);
++                    state_dialogs.bindInteger(11, tele.helpers.LocalPins.dbNum(dialog.pinnedNum));
+                     int flags = 0;
+                     if (dialog.unread_mark) {
+                         flags |= 1;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SavedMessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/SavedMessagesController.java
+index e91bf3dfc..1d1ea420a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SavedMessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SavedMessagesController.java
+@@ -90,6 +90,7 @@ public class SavedMessagesController {
+         }
+         Collections.sort(dialogs, (d1, d2) -> d2.getDate() - d1.getDate());
+         allDialogs.addAll(dialogs);
++        tele.helpers.LocalPins.reconcileSaved(currentAccount, this);
+         if (notify) {
+             NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.savedMessagesDialogsUpdate);
+             if (!hasDialogs() && MessagesController.getInstance(currentAccount).savedViewAsChats) {
+@@ -128,7 +129,7 @@ public class SavedMessagesController {
+     public int getPinnedCount() {
+         int count = 0;
+         for (int i = 0; i < allDialogs.size(); ++i) {
+-            if (allDialogs.get(i).pinned) {
++            if (allDialogs.get(i).pinned && !allDialogs.get(i).tele_isLocalPin()) {
+                 count++;
+             }
+         }
+@@ -618,6 +619,12 @@ public class SavedMessagesController {
+     }
+ 
+     public boolean updatePinned(ArrayList<Long> dialogIds, boolean pin, boolean toServer) {
++        if (toServer) {
++            dialogIds = tele.helpers.LocalPins.savedSplit(currentAccount, this, dialogIds, pin);
++            if (dialogIds.isEmpty()) {
++                return true;
++            }
++        }
+         ArrayList<Long> currentOrder = getCurrentPinnedOrder(allDialogs);
+         ArrayList<Long> newOrder = new ArrayList<>(currentOrder);
+         for (int i = dialogIds.size() - 1; i >= 0; --i) {
+@@ -650,6 +657,7 @@ public class SavedMessagesController {
+     }
+ 
+     public boolean updatePinnedOrder(ArrayList<Long> newOrder) {
++        newOrder = tele.helpers.LocalPins.savedReorder(currentAccount, this, newOrder);
+         ArrayList<Long> currentOrder = getCurrentPinnedOrder(allDialogs);
+         int limit = (
+             UserConfig.getInstance(currentAccount).isPremium() ?
+@@ -719,7 +727,7 @@ public class SavedMessagesController {
+         ArrayList<Long> currentOrder = new ArrayList<>();
+         for (int i = 0; i < dialogs.size(); ++i) {
+             SavedDialog d = dialogs.get(i);
+-            if (d.pinned) currentOrder.add(d.dialogId);
++            if (d.pinned && !d.tele_isLocalPin()) currentOrder.add(d.dialogId);
+         }
+         return currentOrder;
+     }
+@@ -992,7 +1000,7 @@ public class SavedMessagesController {
+                     state.bindLong(1, d.dialogId);
+                     state.bindInteger(2, d.getDate());
+                     state.bindInteger(3, d.top_message_id);
+-                    state.bindInteger(4, d.pinned ? i : 999);
++                    state.bindInteger(4, d.pinned && !d.tele_isLocalPin() ? i : 999);
+                     state.bindInteger(5, d.messagesCountLoaded ? 1 : 0);
+                     state.bindInteger(6, 0);
+                     state.bindInteger(7, 0);
+@@ -1063,6 +1071,23 @@ public class SavedMessagesController {
+ 
+         private int lastDate;
+ 
++        // a negative order marks a pin that stays on this device
++        public boolean tele_isLocalPin() {
++            return pinned && pinnedOrder < 0;
++        }
++
++        public void tele_setLocalPin(int rank) {
++            pinned = true;
++            pinnedOrder = -(rank + 1);
++        }
++
++        public void tele_clearLocalPin() {
++            if (tele_isLocalPin()) {
++                pinned = false;
++                pinnedOrder = 0;
++            }
++        }
++
+         public int getDate() {
+             lastDate = getDateInternal();
+             return lastDate;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java
+index 23ab3bcb1..bd9acad22 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/TopicsController.java
+@@ -314,7 +314,7 @@ public class TopicsController extends BaseController {
+         int pinnedTopics = 0;
+         for (int i = 0; i < topics.size(); ++i) {
+             TLRPC.TL_forumTopic topic = topics.get(i);
+-            if (topic != null && topic.pinned) {
++            if (topic != null && topic.pinned && !tele.helpers.LocalPins.isLocalTopic(topic)) {
+                 int newPinnedOrder = pinnedTopics++;
+                 if (topic.pinnedOrder != newPinnedOrder) {
+                     topic.pinnedOrder = newPinnedOrder;
+@@ -388,6 +388,7 @@ public class TopicsController extends BaseController {
+     }
+ 
+     public void sortTopics(long chatId, boolean notify) {
++        tele.helpers.LocalPins.reconcileTopics(currentAccount, chatId);
+         ArrayList<TLRPC.TL_forumTopic> topics = topicsByChatId.get(chatId);
+         if (topics != null) {
+             if (openedTopicsByChatId.get(chatId, 0) > 0) {
+@@ -399,6 +400,10 @@ public class TopicsController extends BaseController {
+                         return a.pinned ? -1 : 1;
+                     }
+                     if (a.pinned && b.pinned) {
++                        int tele_order = tele.helpers.LocalPins.compareTopics(currentAccount, chatId, a, b);
++                        if (tele_order != 0) {
++                            return tele_order;
++                        }
+                         return a.pinnedOrder - b.pinnedOrder;
+                     }
+                     return (b.topMessage != null ? b.topMessage.date : 0) - (a.topMessage != null ? a.topMessage.date : 0);
+@@ -779,7 +784,7 @@ public class TopicsController extends BaseController {
+                 if (topic == null) {
+                     continue;
+                 }
+-                if (topic.pinned) {
++                if (topic.pinned && !tele.helpers.LocalPins.isLocalTopic(topic)) {
+                     newOrder.add(topic.id);
+                 }
+             }
+@@ -805,6 +810,9 @@ public class TopicsController extends BaseController {
+                     continue;
+                 }
+                 int newPinnedOrder = order.indexOf(topic.id);
++                if (newPinnedOrder < 0 && tele.helpers.LocalPins.isLocalTopic(topic)) {
++                    continue;
++                }
+                 boolean newPinned = newPinnedOrder >= 0;
+                 if (topic.pinned != newPinned || newPinned && topic.pinnedOrder != newPinnedOrder) {
+                     updated = true;
+@@ -863,6 +871,9 @@ public class TopicsController extends BaseController {
+     }
+ 
+     public void pinTopic(long chatId, int topicId, boolean pin, BaseFragment fragment) {
++        if (tele.helpers.LocalPins.topicPin(currentAccount, chatId, topicId, pin)) {
++            return;
++        }
+         TL_forum.TL_messages_updatePinnedForumTopic req = new TL_forum.TL_messages_updatePinnedForumTopic();
+         req.peer = getMessagesController().getInputPeer(-chatId);
+         req.topic_id = topicId;
+@@ -879,6 +890,9 @@ public class TopicsController extends BaseController {
+         ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> {
+             if (error != null) {
+                 if ("PINNED_TOO_MUCH".equals(error.text)) {
++                    if (tele.helpers.LocalPins.topicFallback(currentAccount, chatId, topicId, prevOrder)) {
++                        return;
++                    }
+                     if (fragment == null) {
+                         return;
+                     }
+@@ -900,6 +914,7 @@ public class TopicsController extends BaseController {
+     }
+ 
+     public void reorderPinnedTopics(long chatId, ArrayList<Integer> topics) {
++        topics = tele.helpers.LocalPins.topicsReorder(currentAccount, chatId, topics);
+         TL_forum.TL_messages_reorderPinnedForumTopics req = new TL_forum.TL_messages_reorderPinnedForumTopics();
+         req.peer = getMessagesController().getInputPeer(-chatId);
+         if (topics != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
+index 690be0c3e..dabdc2f31 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
+@@ -365,7 +365,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+             if (dialog != null) {
+                 if (dialogsType == 7 || dialogsType == 8) {
+                     MessagesController.DialogFilter filter = MessagesController.getInstance(currentAccount).selectedDialogFilter[dialogsType == 8 ? 1 : 0];
+-                    pinned = filter != null && filter.pinnedDialogs.indexOfKey(dialog.id) >= 0;
++                    pinned = filter != null && (filter.pinnedDialogs.indexOfKey(dialog.id) >= 0 || tele.helpers.LocalPins.isFilterLocal(currentAccount, filter.id, dialog.id));
+                 } else {
+                     pinned = dialog.pinned;
+                 }
+@@ -1219,14 +1219,18 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+         TLRPC.Dialog toDialog = dialogs.get(toIndex);
+         if (dialogsType == 7 || dialogsType == 8) {
+             MessagesController.DialogFilter filter = MessagesController.getInstance(currentAccount).selectedDialogFilter[dialogsType == 8 ? 1 : 0];
+-            int idx1 = filter.pinnedDialogs.get(fromDialog.id);
+-            int idx2 = filter.pinnedDialogs.get(toDialog.id);
+-            filter.pinnedDialogs.put(fromDialog.id, idx2);
+-            filter.pinnedDialogs.put(toDialog.id, idx1);
++            if (!tele.helpers.LocalPins.swapped(currentAccount, filter, fromDialog, toDialog)) {
++                int idx1 = filter.pinnedDialogs.get(fromDialog.id);
++                int idx2 = filter.pinnedDialogs.get(toDialog.id);
++                filter.pinnedDialogs.put(fromDialog.id, idx2);
++                filter.pinnedDialogs.put(toDialog.id, idx1);
++            }
+         } else {
+-            int oldNum = fromDialog.pinnedNum;
+-            fromDialog.pinnedNum = toDialog.pinnedNum;
+-            toDialog.pinnedNum = oldNum;
++            if (!tele.helpers.LocalPins.swapped(currentAccount, null, fromDialog, toDialog)) {
++                int oldNum = fromDialog.pinnedNum;
++                fromDialog.pinnedNum = toDialog.pinnedNum;
++                toDialog.pinnedNum = oldNum;
++            }
+         }
+         Collections.swap(dialogs, fromIndex, toIndex);
+         updateList(null);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+index 0914bcb35..49acc9e46 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+@@ -599,6 +599,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     private boolean drawReorder;
+     private boolean drawPinBackground;
+     private boolean drawPin;
++    // a pin that stays on this device is drawn dimmed
++    public boolean tele_localPin;
+     private boolean drawPinForced;
+     private int pinTop;
+     private int pinLeft;
+@@ -3340,9 +3342,11 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                         lastMessageDate = dialog.last_message_date;
+                         if (dialogsType == 7 || dialogsType == 8) {
+                             MessagesController.DialogFilter filter = MessagesController.getInstance(currentAccount).selectedDialogFilter[dialogsType == 8 ? 1 : 0];
+-                            drawPin = filter != null && filter.pinnedDialogs.indexOfKey(dialog.id) >= 0;
++                            drawPin = filter != null && (filter.pinnedDialogs.indexOfKey(dialog.id) >= 0 || tele.helpers.LocalPins.isFilterLocal(currentAccount, filter.id, dialog.id));
++                            tele_localPin = drawPin && filter.pinnedDialogs.indexOfKey(dialog.id) < 0;
+                         } else {
+                             drawPin = currentDialogFolderId == 0 && dialog.pinned;
++                            tele_localPin = drawPin && tele.helpers.LocalPins.isLocal(dialog);
+                         }
+                         if (message != null) {
+                             lastSendState = message.messageOwner.send_state;
+@@ -4224,7 +4228,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                     canvas.drawRoundRect(l, y, r, y + dp(17), dp(17 / 2f), dp(17 / 2f), timeTextPaint);
+                     timeTextPaint.setAlpha(a);
+ 
++                    pd.setAlpha(tele_localPin ? 110 : 255);
+                     pd.draw(canvas);
++                    pd.setAlpha(255);
+                 }
+ 
+                 final int tpColor = timeLayout.getPaint().getColor();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+index 66e7d96fe..f3f0e7688 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+@@ -9882,6 +9882,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
+             SavedMessagesController.SavedDialog d = dialogs.get(position);
+             cell.setDialog(d.dialogId, d.message, d.getDate(), false, false);
+             cell.isSavedDialogCell = true;
++            cell.tele_localPin = d.tele_isLocalPin();
+             cell.setChecked(selectedDialogs.contains(d.dialogId), false);
+             cell.useSeparator = position + 1 < getItemCount();
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index ef9efe1ad..a34dd9e6f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -558,6 +558,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     private DialogCell movingView;
+     private boolean allowMoving;
+     private boolean movingWas;
++    private boolean tele_lastPinLocal;
+     private ArrayList<MessagesController.DialogFilter> movingDialogFilters = new ArrayList<>();
+     private boolean waitingForScrollFinished;
+     private boolean allowSwipeDuringCurrentTouch;
+@@ -8694,6 +8695,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     continue;
+                 }
+                 if (isDialogPinned(dialog1)) {
++                    if (tele.helpers.LocalPins.isLocalPinned(currentAccount, dialog1, filter)) {
++                        continue;
++                    }
+                     if (DialogObject.isEncryptedDialog(dialog1.id)) {
+                         pinnedSecretCount++;
+                     } else {
+@@ -8730,7 +8734,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     maxPinnedCount = getMessagesController().maxPinnedDialogsCountDefault;
+                 }
+             }
+-            hasPinAction[0] = !(newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount);
++            hasPinAction[0] = tele.helpers.LocalPins.enabled() || !(newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount);
+         }
+ 
+         if (hasPinAction[0]) {
+@@ -8762,7 +8766,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     if (!isDialogPinned(dialog)) {
+                         pinDialog(dialogId, true, filter, minPinnedNum, true);
+                         undoView.showWithAction(0, UndoView.ACTION_PIN_DIALOGS, 1, 1600, null, null);
+-                        if (filter != null) {
++                        if (filter != null && !tele_lastPinLocal) {
+                             if (encryptedChat != null) {
+                                 if (!filter.alwaysShow.contains(encryptedChat.user_id)) {
+                                     filter.alwaysShow.add(encryptedChat.user_id);
+@@ -9162,7 +9166,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             filter = null;
+         }
+         if (filter != null) {
+-            return filter.pinnedDialogs.indexOfKey(dialog.id) >= 0;
++            return filter.pinnedDialogs.indexOfKey(dialog.id) >= 0 || tele.helpers.LocalPins.isFilterLocal(currentAccount, filter.id, dialog.id);
+         }
+         return dialog.pinned;
+     }
+@@ -9225,6 +9229,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     continue;
+                 }
+                 if (isDialogPinned(dialog)) {
++                    if (tele.helpers.LocalPins.isLocalPinned(currentAccount, dialog, filter)) {
++                        continue;
++                    }
+                     if (DialogObject.isEncryptedDialog(dialog.id)) {
+                         pinnedSecretCount++;
+                     } else {
+@@ -9262,7 +9269,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             } else {
+                 maxPinnedCount = getUserConfig().isPremium() ? getMessagesController().dialogFiltersPinnedLimitPremium : getMessagesController().dialogFiltersPinnedLimitDefault;
+             }
+-            if (newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount) {
++            if (!tele.helpers.LocalPins.enabled() && (newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount)) {
+                 if (folderId != 0 || filter != null) {
+                     AlertsCreator.showSimpleAlert(DialogsActivity.this, LocaleController.formatString("PinFolderLimitReached", R.string.PinFolderLimitReached, LocaleController.formatPluralString("Chats", maxPinnedCount)));
+                 } else {
+@@ -9407,7 +9414,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     }
+                     pinnedActionCount++;
+                     pinDialog(selectedDialog, true, filter, minPinnedNum, count == 1);
+-                    if (filter != null) {
++                    if (filter != null && !tele_lastPinLocal) {
+                         minPinnedNum++;
+                         if (encryptedChat != null) {
+                             if (!filter.alwaysShow.contains(encryptedChat.user_id)) {
+@@ -9655,6 +9662,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     }
+ 
+     private void pinDialog(long selectedDialog, boolean pin, MessagesController.DialogFilter filter, int minPinnedNum, boolean animated) {
++        tele_lastPinLocal = false;
+ 
+         int selectedDialogIndex = -1;
+         int currentDialogIndex = -1;
+@@ -9664,7 +9672,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+ 
+         if (filter != null) {
+             int index = filter.pinnedDialogs.get(selectedDialog, Integer.MIN_VALUE);
+-            if (!pin && index == Integer.MIN_VALUE) {
++            if (!pin && index == Integer.MIN_VALUE && !tele.helpers.LocalPins.isFilterLocal(currentAccount, filter.id, selectedDialog)) {
+                 return;
+             }
+ 
+@@ -9688,7 +9696,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         }
+ 
+         boolean updated;
+-        if (filter != null) {
++        boolean tele_handled = tele.helpers.LocalPins.pin(currentAccount, selectedDialog, pin, filter);
++        tele_lastPinLocal = tele_handled && pin;
++        if (tele_handled) {
++            updated = true;
++        } else if (filter != null) {
+             if (pin) {
+                 filter.pinnedDialogs.put(selectedDialog, minPinnedNum);
+             } else {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java
+index 5b84a29b9..7bb884c1f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/TopicsFragment.java
+@@ -3039,6 +3039,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
+                         dialogCell.drawDivider = position != forumTopics.size() - 1 || recyclerListView.emptyViewIsVisible();
+                         dialogCell.fullSeparator = topic.pinned && (nextTopic == null || !nextTopic.pinned);
+                         dialogCell.setPinForced(topic.pinned && !topic.hidden);
++                        dialogCell.tele_localPin = tele.helpers.LocalPins.isLocalTopic(topic);
+                         dialogCell.position = position;
+                     }
+                 }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 8826449a5..62e85e6f8 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -248,6 +248,8 @@ object TeleConfig {
+     val BOOKMARKS = BoolItem("bookmarks", false)
+     @JvmField
+     val RETURN_POINT = BoolItem("return_point", false)
++    @JvmField
++    val LOCAL_PINS = BoolItem("local_pins", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index a1b560427..e0e463f56 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -138,6 +138,9 @@ object TeleHooks {
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
++        if (item === TeleConfig.LOCAL_PINS) {
++            tele.helpers.LocalPins.onToggled()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt b/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
+new file mode 100644
+index 000000000..32a75c657
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
+@@ -0,0 +1,801 @@
++package tele.helpers
++
++import android.os.SystemClock
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.SavedMessagesController
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * Pins past the Telegram limit. Every scope keeps one mixed order of server and local pins;
++ * only the server subset is ever sent to Telegram.
++ *
++ * The stock lists show a local pin as a normal one: a negative pin number marks it, and no
++ * stock server path produces a negative number, so a server update that overwrites the number
++ * also hands the pin back to the server.
++ */
++object LocalPins {
++
++    private const val NO_OPINION = Int.MIN_VALUE
++
++    class Item(@JvmField val id: Long, @JvmField var local: Boolean)
++
++    private class Snap(val ranks: Map<String, Map<Long, Int>>, val locals: Map<String, Set<Long>>)
++
++    private class State {
++        val lists = HashMap<String, ArrayList<Item>>()
++        @Volatile var snap = Snap(emptyMap(), emptyMap())
++        var loaded = false
++        var loading = false
++        var hasFakes = false
++        val fakeTopicChats = HashSet<Long>()
++        var hasSavedFakes = false
++        val lastPin = HashMap<Int, Pair<Long, Long>>()
++    }
++
++    private val states = arrayOfNulls<State>(UserConfig.MAX_ACCOUNT_COUNT)
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.LOCAL_PINS.value
++
++    @Synchronized
++    private fun state(account: Int): State {
++        var s = states[account]
++        if (s == null) {
++            s = State()
++            states[account] = s
++        }
++        return s
++    }
++
++    private fun snap(account: Int): Snap? {
++        if (!enabled()) return null
++        val s = states[account] ?: return null
++        val snap = s.snap
++        return if (snap.ranks.isEmpty()) null else snap
++    }
++
++    private fun key(account: Int) = "local_pins.v2.$account"
++
++    // a record without the flag is a v1 one and always local
++    private fun decode(raw: String?): HashMap<String, ArrayList<Item>> {
++        val result = HashMap<String, ArrayList<Item>>()
++        if (raw.isNullOrEmpty()) return result
++        runCatching {
++            val json = JSONObject(raw)
++            if (json.optInt("v", 1) > 2) return result
++            val lists = json.getJSONObject("l")
++            for (scope in lists.keys()) {
++                val array = lists.getJSONArray(scope)
++                val items = ArrayList<Item>()
++                val seen = HashSet<Long>()
++                for (i in 0 until array.length()) {
++                    val entry = array.get(i)
++                    val id: Long
++                    val local: Boolean
++                    if (entry is JSONArray) {
++                        id = entry.getLong(0)
++                        local = entry.optInt(1, 1) != 0
++                    } else {
++                        id = (entry as Number).toLong()
++                        local = true
++                    }
++                    if (id != 0L && seen.add(id)) items.add(Item(id, local))
++                }
++                if (items.any { it.local }) result[scope] = items
++            }
++        }.onFailure { FileLog.e(it) }
++        return result
++    }
++
++    private fun encode(s: State): String? {
++        val lists = JSONObject()
++        for ((scope, items) in s.lists) {
++            if (items.none { it.local }) continue
++            val array = JSONArray()
++            for (item in items) array.put(JSONArray().put(item.id).put(if (item.local) 1 else 0))
++            lists.put(scope, array)
++        }
++        if (lists.length() == 0) return null
++        return JSONObject().put("v", 2).put("l", lists).toString()
++    }
++
++    private fun commit(account: Int, s: State) {
++        val it = s.lists.entries.iterator()
++        while (it.hasNext()) {
++            if (it.next().value.none { item -> item.local }) it.remove()
++        }
++        val ranks = HashMap<String, Map<Long, Int>>()
++        val locals = HashMap<String, Set<Long>>()
++        for ((scope, items) in s.lists) {
++            val rank = HashMap<Long, Int>(items.size * 2)
++            val local = HashSet<Long>()
++            for ((index, item) in items.withIndex()) {
++                rank[item.id] = index
++                if (item.local) local.add(item.id)
++            }
++            ranks[scope] = rank
++            locals[scope] = local
++        }
++        s.snap = Snap(ranks, locals)
++        persist(account, s)
++    }
++
++    private fun persist(account: Int, s: State) {
++        val json = encode(s)
++        Utilities.globalQueue.postRunnable {
++            runCatching { TeleDatabaseHelper.put(key(account), json) }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    @JvmStatic
++    fun preload(account: Int) {
++        if (!enabled()) return
++        val s = state(account)
++        synchronized(s) {
++            if (s.loaded || s.loading) return
++            s.loading = true
++        }
++        Utilities.globalQueue.postRunnable {
++            val lists = runCatching { decode(TeleDatabaseHelper.get(key(account))) }.getOrDefault(HashMap())
++            AndroidUtilities.runOnUIThread {
++                synchronized(s) {
++                    for ((scope, items) in lists) s.lists.putIfAbsent(scope, items)
++                    s.loaded = true
++                    s.loading = false
++                }
++                commit(account, s)
++                refresh(account)
++            }
++        }
++    }
++
++    // re-sorts every scope so that the lists follow the current state
++    private fun refresh(account: Int) {
++        val s = states[account] ?: return
++        val mc = MessagesController.getInstance(account)
++        mc.sortDialogs(null)
++        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload)
++        val chats = HashSet<Long>(s.fakeTopicChats)
++        for (scope in s.lists.keys) if (scope.startsWith("t")) chats.add(scope.substring(1).toLong())
++        for (chatId in chats) {
++            if (mc.getTopicsController().getTopics(chatId) != null) mc.getTopicsController().sortTopics(chatId, true)
++        }
++        if (s.hasSavedFakes || s.lists.containsKey("s")) mc.getSavedMessagesController().update()
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            val s = states[account]
++            if (enabled()) {
++                if (s == null || !s.loaded) {
++                    if (UserConfig.getInstance(account).isClientActivated) preload(account)
++                } else {
++                    refresh(account)
++                }
++            } else if (s != null) {
++                refresh(account)
++            }
++        }
++    }
++
++    // keeps the server entries of a mixed list in the server order and the local ones where they are
++    private fun merge(items: ArrayList<Item>, server: List<Long>, known: (Long) -> Boolean): Boolean {
++        var changed = false
++        val serverSet = HashSet(server)
++        // a server pin whose chat is not loaded may still be pinned, so only the known ones can go
++        if (items.removeAll { !it.local && it.id !in serverSet && known(it.id) }) changed = true
++        for (item in items) {
++            if (item.local && item.id in serverSet) {
++                item.local = false
++                changed = true
++            }
++        }
++        for (k in server.indices) {
++            if (items.any { it.id == server[k] }) continue
++            var position = 0
++            if (k > 0) {
++                position = items.indexOfFirst { it.id == server[k - 1] } + 1
++            } else {
++                for (j in 1 until server.size) {
++                    val next = items.indexOfFirst { it.id == server[j] }
++                    if (next >= 0) {
++                        position = next
++                        break
++                    }
++                }
++            }
++            items.add(position, Item(server[k], false))
++            changed = true
++        }
++        val slots = ArrayList<Int>()
++        for (i in items.indices) if (items[i].id in serverSet) slots.add(i)
++        val byId = HashMap<Long, Item>()
++        for (item in items) byId[item.id] = item
++        val ordered = server.mapNotNull { byId[it] }
++        if (slots.size == ordered.size) {
++            for (i in slots.indices) {
++                if (items[slots[i]] !== ordered[i]) {
++                    items[slots[i]] = ordered[i]
++                    changed = true
++                }
++            }
++        }
++        return changed
++    }
++
++    private fun addLocal(s: State, scope: String, id: Long, server: List<Long>) {
++        val items = s.lists.getOrPut(scope) { ArrayList(server.map { Item(it, false) }) }
++        items.removeAll { it.id == id }
++        // like the stock pins, a new one goes on top
++        items.add(0, Item(id, true))
++    }
++
++    private fun removeLocal(s: State, scope: String, id: Long) {
++        s.lists[scope]?.removeAll { it.id == id }
++    }
++
++    private fun isLocalItem(s: State, scope: String, id: Long): Boolean =
++        s.lists[scope]?.any { it.id == id && it.local } == true
++
++    // ---- the chat list and the archive ----
++
++    @JvmStatic
++    fun isLocal(dialog: TLRPC.Dialog?): Boolean = dialog != null && dialog.pinned && dialog.pinnedNum < 0
++
++    // the stock database never gets the marker
++    @JvmStatic
++    fun dbNum(num: Int): Int = if (num < 0) 0 else num
++
++    @JvmStatic
++    fun isFilterLocal(account: Int, filterId: Int, dialogId: Long): Boolean {
++        if (!enabled()) return false
++        val s = states[account] ?: return false
++        return s.snap.locals["f$filterId"]?.contains(dialogId) == true
++    }
++
++    @JvmStatic
++    fun isLocalPinned(account: Int, dialog: TLRPC.Dialog?, filter: MessagesController.DialogFilter?): Boolean {
++        if (dialog == null) return false
++        return if (filter != null) isFilterLocal(account, filter.id, dialog.id) else isLocal(dialog)
++    }
++
++    private fun serverDialogs(mc: MessagesController, folderId: Int): List<TLRPC.Dialog> {
++        val dict = mc.dialogs_dict
++        val result = ArrayList<TLRPC.Dialog>()
++        for (i in 0 until dict.size()) {
++            val d = dict.valueAt(i)
++            if (d is TLRPC.TL_dialog && d.pinned && d.pinnedNum >= 0 && d.folder_id == folderId && !mc.isPromoDialog(d.id, false)) {
++                result.add(d)
++            }
++        }
++        result.sortByDescending { it.pinnedNum }
++        return result
++    }
++
++    private fun filterServer(filter: MessagesController.DialogFilter): List<Long> {
++        val map = filter.pinnedDialogs
++        val ids = ArrayList<Long>(map.size())
++        for (i in 0 until map.size()) ids.add(map.keyAt(i))
++        ids.sortBy { map.get(it) }
++        return ids
++    }
++
++    /** Called when the stock lists are sorted. */
++    @JvmStatic
++    fun reconcileDialogs(account: Int) {
++        val s = states[account]
++        if (!enabled()) {
++            if (s != null && s.hasFakes) unfakeAll(account, s)
++            return
++        }
++        val state = s ?: state(account)
++        if (!state.loaded) {
++            preload(account)
++            return
++        }
++        if (state.lists.isEmpty() && !state.hasFakes) return
++        val mc = MessagesController.getInstance(account)
++        val dict = mc.dialogs_dict
++        var changed = false
++        val fakes = ArrayList<TLRPC.Dialog>()
++        val serverByFolder = arrayOf(ArrayList<TLRPC.Dialog>(), ArrayList<TLRPC.Dialog>())
++        for (i in 0 until dict.size()) {
++            val d = dict.valueAt(i)
++            if (d !is TLRPC.TL_dialog || !d.pinned) continue
++            if (d.pinnedNum < 0) {
++                fakes.add(d)
++            } else if (d.folder_id in 0..1 && !mc.isPromoDialog(d.id, false)) {
++                serverByFolder[d.folder_id].add(d)
++            }
++        }
++        val config = UserConfig.getInstance(account)
++        for (folder in 0..1) {
++            val items = state.lists["d$folder"] ?: continue
++            val server = serverByFolder[folder].sortedByDescending { it.pinnedNum }.map { it.id }
++            val pinsLoaded = config.isPinnedDialogsLoaded(folder)
++            if (merge(items, server) { pinsLoaded && dict.get(it) != null }) changed = true
++        }
++        if (mc.dialogFilters.isNotEmpty()) {
++            val existing = HashSet<String>()
++            for (filter in mc.dialogFilters) {
++                val scope = "f${filter.id}"
++                existing.add(scope)
++                val items = state.lists[scope] ?: continue
++                if (merge(items, filterServer(filter)) { dict.get(it) != null }) changed = true
++            }
++            if (state.lists.keys.removeAll { it.startsWith("f") && it !in existing }) changed = true
++        }
++        val wanted = HashSet<Long>()
++        for (folder in 0..1) {
++            val items = state.lists["d$folder"] ?: continue
++            for ((index, item) in items.withIndex()) {
++                if (!item.local) continue
++                val d = dict.get(item.id)
++                if (d !is TLRPC.TL_dialog || d.folder_id != folder || (d.pinned && d.pinnedNum >= 0)) continue
++                d.pinned = true
++                d.pinnedNum = -(index + 1)
++                wanted.add(d.id)
++            }
++        }
++        for (d in fakes) {
++            if (d.id !in wanted) {
++                d.pinned = false
++                d.pinnedNum = 0
++            }
++        }
++        state.hasFakes = wanted.isNotEmpty()
++        if (changed) commit(account, state)
++    }
++
++    private fun unfakeAll(account: Int, s: State) {
++        val dict = MessagesController.getInstance(account).dialogs_dict
++        for (i in 0 until dict.size()) {
++            val d = dict.valueAt(i)
++            if (isLocal(d)) {
++                d.pinned = false
++                d.pinnedNum = 0
++            }
++        }
++        s.hasFakes = false
++    }
++
++    private fun mainFull(account: Int, mc: MessagesController, dialog: TLRPC.Dialog): Boolean {
++        val premium = UserConfig.getInstance(account).isPremium
++        val limit = if (dialog.folder_id == 0) {
++            if (premium) mc.maxPinnedDialogsCountPremium else mc.maxPinnedDialogsCountDefault
++        } else {
++            if (premium) mc.maxFolderPinnedDialogsCountPremium else mc.maxFolderPinnedDialogsCountDefault
++        }
++        val secret = org.telegram.messenger.DialogObject.isEncryptedDialog(dialog.id)
++        var count = 0
++        for (d in serverDialogs(mc, dialog.folder_id)) {
++            if (org.telegram.messenger.DialogObject.isEncryptedDialog(d.id) == secret) count++
++        }
++        return count >= limit
++    }
++
++    // the stock check of the folder tabs
++    private fun filterFull(filter: MessagesController.DialogFilter, dialogId: Long): Boolean {
++        val added = if (filter.alwaysShow.contains(dialogId)) 1 else 0
++        return filter.pinnedDialogs.size() + 1 - added > 100 - filter.alwaysShow.size
++    }
++
++    /**
++     * A pin the stock code would refuse turns local; an unpin of a local one stays local.
++     * Returns true when the request is handled here.
++     */
++    @JvmStatic
++    fun pin(account: Int, dialogId: Long, pin: Boolean, filter: MessagesController.DialogFilter?): Boolean {
++        if (!enabled()) return false
++        val s = state(account)
++        if (!s.loaded) {
++            preload(account)
++            return false
++        }
++        val mc = MessagesController.getInstance(account)
++        if (filter != null) {
++            val scope = "f${filter.id}"
++            val inMap = filter.pinnedDialogs.indexOfKey(dialogId) >= 0
++            if (pin) {
++                if (inMap || isLocalItem(s, scope, dialogId) || !filterFull(filter, dialogId)) return false
++                addLocal(s, scope, dialogId, filterServer(filter))
++            } else {
++                if (inMap || !isLocalItem(s, scope, dialogId)) return false
++                removeLocal(s, scope, dialogId)
++            }
++            commit(account, s)
++            mc.onFilterUpdate(filter)
++            return true
++        }
++        val dialog = mc.dialogs_dict.get(dialogId) as? TLRPC.TL_dialog ?: return false
++        val scope = "d${dialog.folder_id}"
++        if (pin) {
++            if (dialog.pinned || !mainFull(account, mc, dialog)) return false
++            addLocal(s, scope, dialogId, serverDialogs(mc, dialog.folder_id).map { it.id })
++        } else {
++            if (!isLocal(dialog)) return false
++            removeLocal(s, scope, dialogId)
++            dialog.pinned = false
++            dialog.pinnedNum = 0
++        }
++        commit(account, s)
++        mc.sortDialogs(null)
++        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload)
++        return true
++    }
++
++    /** A stock pin or unpin of a dialog that is a local pin right now. True skips the stock one. */
++    @JvmStatic
++    fun onServerPin(account: Int, dialog: TLRPC.Dialog?, pin: Boolean): Boolean {
++        if (dialog == null) return false
++        if (!isLocal(dialog)) {
++            if (pin && !dialog.pinned && enabled()) {
++                state(account).lastPin[dialog.folder_id] = dialog.id to SystemClock.elapsedRealtime()
++            }
++            return false
++        }
++        if (!pin) return true
++        val s = state(account)
++        val items = s.lists["d${dialog.folder_id}"]
++        items?.firstOrNull { it.id == dialog.id }?.local = false
++        dialog.pinned = false
++        dialog.pinnedNum = 0
++        commit(account, s)
++        return false
++    }
++
++    /** The server refused the pin order of a folder: the pin made a moment ago stays on this device. */
++    @JvmStatic
++    fun onReorderError(account: Int, folderId: Int, error: String?) {
++        if (error == null || !enabled() || !error.startsWith("PINNED_")) return
++        AndroidUtilities.runOnUIThread {
++            val s = states[account] ?: return@runOnUIThread
++            val last = s.lastPin.remove(folderId) ?: return@runOnUIThread
++            if (!s.loaded || SystemClock.elapsedRealtime() - last.second > 30_000) return@runOnUIThread
++            val mc = MessagesController.getInstance(account)
++            val dialog = mc.dialogs_dict.get(last.first) as? TLRPC.TL_dialog ?: return@runOnUIThread
++            if (!dialog.pinned || dialog.pinnedNum < 0 || dialog.folder_id != folderId) return@runOnUIThread
++            dialog.pinned = false
++            dialog.pinnedNum = 0
++            addLocal(s, "d$folderId", dialog.id, serverDialogs(mc, folderId).map { it.id })
++            commit(account, s)
++            mc.sortDialogs(null)
++            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload)
++        }
++    }
++
++    @JvmStatic
++    fun cleanup(account: Int) {
++        synchronized(this) { states[account] = null }
++        Utilities.globalQueue.postRunnable {
++            runCatching { TeleDatabaseHelper.put(key(account), null) }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    /** Called after a drag swapped two dialogs: true when the stock swap of pin numbers must be skipped. */
++    @JvmStatic
++    fun swapped(account: Int, filter: MessagesController.DialogFilter?, first: TLRPC.Dialog, second: TLRPC.Dialog): Boolean {
++        if (!enabled()) return false
++        val s = states[account] ?: return false
++        val scope = if (filter != null) "f${filter.id}" else "d${first.folder_id}"
++        val items = s.lists[scope] ?: return false
++        val i = items.indexOfFirst { it.id == first.id }
++        val j = items.indexOfFirst { it.id == second.id }
++        if (i < 0 || j < 0) return false
++        val mixed = items[i].local || items[j].local
++        java.util.Collections.swap(items, i, j)
++        commit(account, s)
++        return mixed
++    }
++
++    /** The order of the pinned dialogs; 0 leaves the decision to the stock comparator. */
++    @JvmStatic
++    fun compareMain(account: Int, first: TLRPC.Dialog, second: TLRPC.Dialog): Int {
++        val snap = snap(account) ?: return 0
++        if (first.folder_id != second.folder_id) return if (first.folder_id < second.folder_id) -1 else 1
++        val ranks = snap.ranks["d${first.folder_id}"] ?: return 0
++        val a = ranks[first.id]
++        val b = ranks[second.id]
++        return when {
++            a != null && b != null -> a.compareTo(b)
++            a != null -> -1
++            b != null -> 1
++            else -> 0
++        }
++    }
++
++    /** The order inside a folder tab; [Int.MIN_VALUE] leaves the decision to the stock comparator. */
++    @JvmStatic
++    fun compareFilter(account: Int, filter: MessagesController.DialogFilter?, first: TLRPC.Dialog, second: TLRPC.Dialog): Int {
++        if (filter == null || first is TLRPC.TL_dialogFolder || second is TLRPC.TL_dialogFolder) return NO_OPINION
++        val snap = snap(account) ?: return NO_OPINION
++        val scope = "f${filter.id}"
++        val ranks = snap.ranks[scope] ?: return NO_OPINION
++        val locals = snap.locals[scope]
++        val pinnedA = filter.pinnedDialogs.indexOfKey(first.id) >= 0 || locals?.contains(first.id) == true
++        val pinnedB = filter.pinnedDialogs.indexOfKey(second.id) >= 0 || locals?.contains(second.id) == true
++        if (!pinnedA && !pinnedB) return NO_OPINION
++        if (pinnedA != pinnedB) return if (pinnedA) -1 else 1
++        val a = ranks[first.id]
++        val b = ranks[second.id]
++        return when {
++            a != null && b != null -> a.compareTo(b)
++            a != null -> -1
++            b != null -> 1
++            else -> filter.pinnedDialogs.get(first.id).compareTo(filter.pinnedDialogs.get(second.id))
++        }
++    }
++
++    // ---- forum topics ----
++
++    @JvmStatic
++    fun isLocalTopic(topic: TLRPC.TL_forumTopic?): Boolean = topic != null && topic.pinned && topic.pinnedOrder < 0
++
++    /** Called when the topics of a forum are sorted. */
++    @JvmStatic
++    fun reconcileTopics(account: Int, chatId: Long) {
++        val s = states[account]
++        val mc = MessagesController.getInstance(account)
++        val topics = mc.getTopicsController().getTopics(chatId) ?: return
++        val scope = "t$chatId"
++        if (!enabled()) {
++            if (s != null && chatId in s.fakeTopicChats) {
++                for (topic in topics) {
++                    if (isLocalTopic(topic)) {
++                        topic.pinned = false
++                        topic.pinnedOrder = -1
++                    }
++                }
++                s.fakeTopicChats.remove(chatId)
++            }
++            return
++        }
++        val state = s ?: state(account)
++        if (!state.loaded) {
++            preload(account)
++            return
++        }
++        val items = state.lists[scope]
++        var changed = false
++        if (items != null) {
++            val server = topics.filter { it.pinned && it.pinnedOrder >= 0 }.sortedBy { it.pinnedOrder }.map { it.id.toLong() }
++            val present = topics.map { it.id.toLong() }.toHashSet()
++            if (merge(items, server) { it in present }) changed = true
++        }
++        val wanted = HashSet<Int>()
++        if (items != null) {
++            for ((index, item) in items.withIndex()) {
++                if (!item.local) continue
++                val topic = topics.firstOrNull { it.id.toLong() == item.id } ?: continue
++                if (topic.pinned && topic.pinnedOrder >= 0) continue
++                topic.pinned = true
++                topic.pinnedOrder = -(index + 1)
++                wanted.add(topic.id)
++            }
++        }
++        for (topic in topics) {
++            if (isLocalTopic(topic) && topic.id !in wanted) {
++                topic.pinned = false
++                topic.pinnedOrder = -1
++            }
++        }
++        if (wanted.isNotEmpty()) state.fakeTopicChats.add(chatId) else state.fakeTopicChats.remove(chatId)
++        if (changed) commit(account, state)
++    }
++
++    /** A topic pin past the limit turns local, an unpin of a local one stays local. True when handled. */
++    @JvmStatic
++    fun topicPin(account: Int, chatId: Long, topicId: Int, pin: Boolean): Boolean {
++        if (!enabled()) return false
++        val s = state(account)
++        if (!s.loaded) {
++            preload(account)
++            return false
++        }
++        val mc = MessagesController.getInstance(account)
++        val tc = mc.getTopicsController()
++        val topic = tc.findTopic(chatId, topicId.toLong()) ?: return false
++        val scope = "t$chatId"
++        if (pin) {
++            if (topic.pinned) return false
++            val server = tc.getTopics(chatId)?.filter { it.pinned && it.pinnedOrder >= 0 } ?: return false
++            if (server.size < mc.topicsPinnedLimit) return false
++            addLocal(s, scope, topicId.toLong(), server.sortedBy { it.pinnedOrder }.map { it.id.toLong() })
++        } else {
++            if (!isLocalTopic(topic)) return false
++            removeLocal(s, scope, topicId.toLong())
++            topic.pinned = false
++            topic.pinnedOrder = -1
++        }
++        commit(account, s)
++        tc.sortTopics(chatId, true)
++        return true
++    }
++
++    /** The server refused a topic pin: it becomes a local one. */
++    @JvmStatic
++    fun topicFallback(account: Int, chatId: Long, topicId: Int, previous: ArrayList<Int>): Boolean {
++        if (!enabled()) return false
++        AndroidUtilities.runOnUIThread {
++            val s = state(account)
++            if (!s.loaded) return@runOnUIThread
++            val tc = MessagesController.getInstance(account).getTopicsController()
++            tc.applyPinnedOrder(chatId, previous)
++            addLocal(s, "t$chatId", topicId.toLong(), previous.map { it.toLong() })
++            commit(account, s)
++            tc.sortTopics(chatId, true)
++        }
++        return true
++    }
++
++    /** The topic order after a drag, with the local ones in it. Returns the server subset. */
++    @JvmStatic
++    fun topicsReorder(account: Int, chatId: Long, order: ArrayList<Int>?): ArrayList<Int>? {
++        if (order == null || !enabled()) return order
++        val s = states[account] ?: return order
++        val items = s.lists["t$chatId"] ?: return order
++        return reorder(account, s, items, order.map { it.toLong() }) { id -> id.toInt() }
++    }
++
++    @JvmStatic
++    fun compareTopics(account: Int, chatId: Long, first: TLRPC.TL_forumTopic, second: TLRPC.TL_forumTopic): Int {
++        val snap = snap(account) ?: return 0
++        val ranks = snap.ranks["t$chatId"] ?: return 0
++        val a = ranks[first.id.toLong()]
++        val b = ranks[second.id.toLong()]
++        return when {
++            a != null && b != null -> a.compareTo(b)
++            a != null -> -1
++            b != null -> 1
++            else -> 0
++        }
++    }
++
++    // the dragged ids take the places of the pinned items; the others keep theirs
++    private fun <T> reorder(account: Int, s: State, items: ArrayList<Item>, order: List<Long>, convert: (Long) -> T): ArrayList<T> {
++        val set = order.toHashSet()
++        val slots = ArrayList<Int>()
++        for (i in items.indices) if (items[i].id in set) slots.add(i)
++        val byId = HashMap<Long, Item>()
++        for (item in items) byId[item.id] = item
++        val ordered = order.mapNotNull { byId[it] }
++        if (slots.size == ordered.size) {
++            for (i in slots.indices) items[slots[i]] = ordered[i]
++            commit(account, s)
++        }
++        val result = ArrayList<T>()
++        for (id in order) if (byId[id]?.local != true) result.add(convert(id))
++        return result
++    }
++
++    // ---- saved messages dialogs ----
++
++    /** Called when the saved dialogs are rebuilt. */
++    @JvmStatic
++    fun reconcileSaved(account: Int, controller: SavedMessagesController) {
++        val s = states[account]
++        val all = controller.allDialogs
++        if (!enabled()) {
++            if (s != null && s.hasSavedFakes) {
++                for (d in all) d.tele_clearLocalPin()
++                s.hasSavedFakes = false
++                val pinned = all.filter { it.pinned }
++                val rest = all.filter { !it.pinned }.sortedByDescending { it.date }
++                all.clear()
++                all.addAll(pinned)
++                all.addAll(rest)
++            }
++            return
++        }
++        val state = s ?: state(account)
++        if (!state.loaded) {
++            preload(account)
++            return
++        }
++        val items = state.lists["s"]
++        var changed = false
++        if (items != null) {
++            val server = all.filter { it.pinned && !it.tele_isLocalPin() }.map { it.dialogId }
++            val present = all.map { it.dialogId }.toHashSet()
++            if (merge(items, server) { it in present }) changed = true
++        }
++        var wanted = 0
++        for (d in all) {
++            val index = items?.indexOfFirst { it.id == d.dialogId && it.local } ?: -1
++            if (index >= 0 && !(d.pinned && !d.tele_isLocalPin())) {
++                d.tele_setLocalPin(index)
++                wanted++
++            } else {
++                d.tele_clearLocalPin()
++            }
++        }
++        state.hasSavedFakes = wanted > 0
++        if (items != null) {
++            val ranks = HashMap<Long, Int>()
++            for ((index, item) in items.withIndex()) ranks[item.id] = index
++            val pinned = all.filter { it.pinned }
++            val sorted = pinned.sortedWith(Comparator { a, b ->
++                val ra = ranks[a.dialogId]
++                val rb = ranks[b.dialogId]
++                when {
++                    ra != null && rb != null -> ra.compareTo(rb)
++                    ra != null -> -1
++                    rb != null -> 1
++                    else -> 0
++                }
++            })
++            val rest = all.filter { !it.pinned }
++            all.clear()
++            all.addAll(sorted)
++            all.addAll(rest)
++        }
++        if (changed) commit(account, state)
++    }
++
++    /**
++     * A user pin or unpin of saved dialogs: the ones past the limit turn local, the local ones
++     * are unpinned here. Returns what the stock code has to handle.
++     */
++    @JvmStatic
++    fun savedSplit(account: Int, controller: SavedMessagesController, ids: ArrayList<Long>, pin: Boolean): ArrayList<Long> {
++        if (!enabled()) return ids
++        val s = state(account)
++        if (!s.loaded) {
++            preload(account)
++            return ids
++        }
++        val mc = MessagesController.getInstance(account)
++        val limit = if (UserConfig.getInstance(account).isPremium) mc.savedDialogsPinnedLimitPremium else mc.savedDialogsPinnedLimitDefault
++        val all = controller.allDialogs
++        val server = all.filter { it.pinned && !it.tele_isLocalPin() }
++        var room = limit - server.size
++        val rest = ArrayList<Long>()
++        var touched = false
++        for (id in ids) {
++            val dialog = all.firstOrNull { it.dialogId == id }
++            if (pin) {
++                if (dialog == null || dialog.pinned) {
++                    rest.add(id)
++                } else if (room > 0) {
++                    room--
++                    rest.add(id)
++                } else {
++                    addLocal(s, "s", id, server.map { it.dialogId })
++                    touched = true
++                }
++            } else if (dialog != null && dialog.tele_isLocalPin()) {
++                removeLocal(s, "s", id)
++                dialog.tele_clearLocalPin()
++                touched = true
++            } else {
++                rest.add(id)
++            }
++        }
++        if (touched) {
++            commit(account, s)
++            if (rest.isEmpty()) controller.update()
++        }
++        return rest
++    }
++
++    /** The saved dialogs order after a drag, with the local ones in it. Returns the server subset. */
++    @JvmStatic
++    fun savedReorder(account: Int, controller: SavedMessagesController, order: ArrayList<Long>): ArrayList<Long> {
++        if (!enabled()) return order
++        val s = states[account] ?: return order
++        val items = s.lists["s"] ?: return order
++        val result = reorder(account, s, items, order) { it }
++        controller.update()
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 2bdf0c0a3..5b2dcb6c4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -191,6 +191,11 @@ object TeleSearch {
+             section(1230, "Message bookmarks", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1232, "Return to where you were reading", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(1231, "Bookmarks") { TeleBookmarksActivity.of(org.telegram.messenger.UserConfig.selectedAccount) },
++            section(1240, "Pin chats past the limit", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1241, "Pinned chats", "chats", TeleSettingsActivity.MODE_CHATS, "Pin chats past the limit"),
++            section(1242, "Local pins", "chats", TeleSettingsActivity.MODE_CHATS, "Pin chats past the limit"),
++            section(1243, "Pins in folders and the archive", "chats", TeleSettingsActivity.MODE_CHATS, "Pin chats past the limit"),
++            section(1244, "Pins in topics and saved messages", "chats", TeleSettingsActivity.MODE_CHATS, "Pin chats past the limit"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 34f64664c..a64ee3043 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -680,6 +680,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Message bookmarks" to "Bookmark messages and step through them. Stored locally.",
+             "Return to where you were reading" to "After sending while scrolled up, jump back to where you were.",
+             "Keep saved GIFs and favorite stickers past the limit" to "Keep the ones over the server limit on this device.",
++            "Pin chats past the limit" to "Pin more chats than Telegram allows; extras stay on this device.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -772,6 +773,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "chats"),
+                 Row(TYPE_HEADER, "Chat list"),
+                 toggle("Hide the all chats folder", TeleConfig.HIDE_ALL_CHATS_FOLDER),
++                toggle("Pin chats past the limit", TeleConfig.LOCAL_PINS),
+                 toggle("Hide similar channels", TeleConfig.HIDE_SIMILAR_CHANNELS),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Chats and profiles"),

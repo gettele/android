@@ -1,0 +1,903 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 03:53:47 +0300
+Subject: [PATCH 146/151] feat: folders past the limit
+
+---
+ .../messenger/MessagesController.java         |  23 +-
+ .../telegram/messenger/MessagesStorage.java   |  21 +-
+ .../ui/Components/FilterTabsView.java         |   1 +
+ .../ui/Components/ViewPagerFixed.java         |   1 +
+ .../java/org/telegram/ui/DialogsActivity.java |   8 +-
+ .../org/telegram/ui/FilterCreateActivity.java |  11 +-
+ .../org/telegram/ui/FiltersSetupActivity.java |  12 +-
+ .../org/telegram/ui/UsersSelectActivity.java  |   6 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/LocalFolders.kt    | 491 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ .../src/main/res/values/strings_tele.xml      |   2 +
+ 14 files changed, 567 insertions(+), 18 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 65ec00385..c80f0865e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -887,9 +887,10 @@ public class MessagesController extends BaseController implements NotificationCe
+ 
+     public void lockFiltersInternal() {
+         boolean changed = false;
+-        if (!getUserConfig().isPremium() && dialogFilters.size() - 1 > dialogFiltersLimitDefault) {
+-            int n = dialogFilters.size() - 1 - dialogFiltersLimitDefault;
+-            ArrayList<DialogFilter> filtersSortedById = new ArrayList<>(dialogFilters);
++        ArrayList<DialogFilter> lockable = tele.helpers.LocalFolders.lockable(dialogFilters);
++        if (!getUserConfig().isPremium() && lockable.size() - 1 > dialogFiltersLimitDefault) {
++            int n = lockable.size() - 1 - dialogFiltersLimitDefault;
++            ArrayList<DialogFilter> filtersSortedById = new ArrayList<>(lockable);
+             Collections.reverse(filtersSortedById);
+             for (int i = 0; i < filtersSortedById.size(); i++) {
+                 if (i < n) {
+@@ -2628,6 +2629,22 @@ public class MessagesController extends BaseController implements NotificationCe
+         getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated);
+     }
+ 
++    public void tele_applyFilters(ArrayList<DialogFilter> filters) {
++        dialogFilters = filters;
++        dialogFiltersById.clear();
++        for (int a = 0, N = filters.size(); a < N; a++) {
++            dialogFiltersById.put(filters.get(a).id, filters.get(a));
++        }
++        Collections.sort(dialogFilters, (o1, o2) -> Integer.compare(o1.order, o2.order));
++        for (int a = 0; a < selectedDialogFilter.length; a++) {
++            if (selectedDialogFilter[a] != null) {
++                selectedDialogFilter[a] = dialogFiltersById.get(selectedDialogFilter[a].id);
++            }
++        }
++        lockFiltersInternal();
++        getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated);
++    }
++
+     private Runnable loadAppConfigRunnable = this::loadAppConfig;
+ 
+     public void loadAppConfig() {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index 21ae1ba73..e9fea7ba0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -2678,6 +2678,7 @@ public class MessagesStorage extends BaseController {
+                     state = null;
+                     entitiesBuffer.reuse();
+                 }
++                tele.helpers.LocalFolders.sync(currentAccount, dialogFilters, dialogFiltersMap);
+ 
+                 Collections.sort(dialogFilters, (o1, o2) -> {
+                     if (o1.order > o2.order) {
+@@ -3180,6 +3181,9 @@ public class MessagesStorage extends BaseController {
+                 }
+                 dialogFiltersMap.put(filter.id, filter);
+             }
++            if (tele.helpers.LocalFolders.save(currentAccount, filter)) {
++                return;
++            }
+ 
+             state = database.executeFast("REPLACE INTO dialog_filter VALUES(?, ?, ?, ?, ?, ?, ?, ?)");
+             state.bindInteger(1, filter.id);
+@@ -3274,9 +3278,12 @@ public class MessagesStorage extends BaseController {
+         storageQueue.postRunnable(() -> {
+             try {
+                 SparseArray<MessagesController.DialogFilter> filtersToDelete = new SparseArray<>();
++                tele.helpers.LocalFolders.onRemote(currentAccount, vector);
+                 for (int a = 0, N = dialogFilters.size(); a < N; a++) {
+                     MessagesController.DialogFilter filter = dialogFilters.get(a);
+-                    filtersToDelete.put(filter.id, filter);
++                    if (!tele.helpers.LocalFolders.isLocal(filter.id)) {
++                        filtersToDelete.put(filter.id, filter);
++                    }
+                 }
+                 ArrayList<Integer> filtersOrder = new ArrayList<>();
+ 
+@@ -3531,6 +3538,7 @@ public class MessagesStorage extends BaseController {
+                         filtersToSave.add(filter);
+                     }
+                 }
++                tele.helpers.LocalFolders.mergeOrder(currentAccount, filtersOrder);
+ 
+                 TLRPC.messages_Dialogs dialogs;
+                 if (!dialogsToLoad.isEmpty()) {
+@@ -3636,6 +3644,7 @@ public class MessagesStorage extends BaseController {
+             database.executeFast("DELETE FROM dialog_filter WHERE id = " + filter.id).stepThis().dispose();
+             database.executeFast("DELETE FROM dialog_filter_ep WHERE id = " + filter.id).stepThis().dispose();
+             database.executeFast("DELETE FROM dialog_filter_pin_v2 WHERE id = " + filter.id).stepThis().dispose();
++            tele.helpers.LocalFolders.forget(currentAccount, filter.id);
+         } catch (Exception e) {
+             checkSQLException(e);
+         }
+@@ -3663,6 +3672,7 @@ public class MessagesStorage extends BaseController {
+ 
+     public void saveDialogFiltersOrderInternal() {
+         SQLitePreparedStatement state = null;
++        tele.helpers.LocalFolders.saveOrder(currentAccount, dialogFilters);
+         try {
+             state = database.executeFast("UPDATE dialog_filter SET ord = ?, flags = ? WHERE id = ?");
+             for (int a = 0, N = dialogFilters.size(); a < N; a++) {
+@@ -3698,6 +3708,15 @@ public class MessagesStorage extends BaseController {
+         });
+     }
+ 
++    public void tele_syncLocalFilters() {
++        storageQueue.postRunnable(() -> {
++            tele.helpers.LocalFolders.sync(currentAccount, dialogFilters, dialogFiltersMap);
++            calcUnreadCounters(true);
++            ArrayList<MessagesController.DialogFilter> filters = new ArrayList<>(dialogFilters);
++            AndroidUtilities.runOnUIThread(() -> getMessagesController().tele_applyFilters(filters));
++        });
++    }
++
+     protected static void addReplyMessages(TLRPC.Message message, LongSparseArray<SparseArray<ArrayList<TLRPC.Message>>> replyMessageOwners, LongSparseArray<ArrayList<Integer>> dialogReplyMessagesIds) {
+         int messageId = message.reply_to.reply_to_msg_id;
+         long dialogId = (message.flags & 1073741824) != 0 ? message.quick_reply_shortcut_id : MessageObject.getReplyToDialogId(message);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
+index 52238e832..93f5adb41 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
+@@ -1695,6 +1695,7 @@ public class FilterTabsView extends FrameLayout {
+                     req.order.add(filter.id);
+                 }
+             }
++            tele.helpers.LocalFolders.serverOrder(req.order);
+             MessagesController.getInstance(UserConfig.selectedAccount).lockFiltersInternal();
+             ConnectionsManager.getInstance(UserConfig.selectedAccount).sendRequest(req, (response, error) -> {
+             });
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ViewPagerFixed.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ViewPagerFixed.java
+index a038be211..345554520 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ViewPagerFixed.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ViewPagerFixed.java
+@@ -2246,6 +2246,7 @@ public class ViewPagerFixed extends FrameLayout {
+                     MessagesController.DialogFilter filter = filters.get(a);
+                     req.order.add(filters.get(a).id);
+                 }
++                tele.helpers.LocalFolders.serverOrder(req.order);
+                 ConnectionsManager.getInstance(UserConfig.selectedAccount).sendRequest(req, (response, error) -> {
+ 
+                 });
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index a34dd9e6f..bc4f8da6b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -3592,7 +3592,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                         builder.setPositiveButton(LocaleController.getString(R.string.Delete), (dialog2, which2) -> {
+                             TLRPC.TL_messages_updateDialogFilter req = new TLRPC.TL_messages_updateDialogFilter();
+                             req.id = dialogFilter.id;
+-                            getConnectionsManager().sendRequest(req, null);
++                            tele.helpers.LocalFolders.send(getConnectionsManager(), req, null);
+                             getMessagesController().removeFilter(dialogFilter);
+                             getMessagesStorage().deleteDialogFilter(dialogFilter);
+                         });
+@@ -3933,7 +3933,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                                 currentCount = 0;
+                             }
+                             int totalCount = currentCount + alwaysShow.size();
+-                            if ((totalCount > getMessagesController().dialogFiltersChatsLimitDefault && !getUserConfig().isPremium()) || totalCount > getMessagesController().dialogFiltersChatsLimitPremium) {
++                            if (!tele.helpers.LocalFolders.enabled() && ((totalCount > getMessagesController().dialogFiltersChatsLimitDefault && !getUserConfig().isPremium()) || totalCount > getMessagesController().dialogFiltersChatsLimitPremium)) {
+                                 showDialog(new LimitReachedBottomSheet(DialogsActivity.this, fragmentView.getContext(), LimitReachedBottomSheet.TYPE_CHATS_IN_FOLDER, currentAccount, null));
+                                 return;
+                             }
+@@ -3990,7 +3990,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     } else {
+                         currentCount = 0;
+                     }
+-                    if (currentCount + neverShow.size() > 100) {
++                    if (!tele.helpers.LocalFolders.enabled() && currentCount + neverShow.size() > 100) {
+                         showDialog(AlertsCreator.createSimpleAlert(getParentActivity(), LocaleController.getString(R.string.FilterAddToAlertFullTitle), LocaleController.getString(R.string.FilterAddToAlertFullText)).create());
+                         return;
+                     }
+@@ -8565,7 +8565,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 final ArrayList<Long> alwaysShow = FiltersListBottomSheet.getDialogsCount(DialogsActivity.this, folder, dialogIdArray, true, false);
+                 if (!contains) {
+                     int currentCount = folder.alwaysShow.size();
+-                    if (currentCount + alwaysShow.size() > 100) {
++                    if (!tele.helpers.LocalFolders.enabled() && currentCount + alwaysShow.size() > 100) {
+                         continue;
+                     }
+                 }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/FilterCreateActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/FilterCreateActivity.java
+index f7c159292..7d9d49770 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/FilterCreateActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/FilterCreateActivity.java
+@@ -196,6 +196,7 @@ public class FilterCreateActivity extends BaseFragment {
+             while (getMessagesController().dialogFiltersById.get(filter.id) != null) {
+                 filter.id++;
+             }
++            filter.id = tele.helpers.LocalFolders.newId(currentAccount, filter.id);
+             filter.name = "";
+             filter.color = (int) (Math.random() * 8);
+             creatingNew = true;
+@@ -363,7 +364,9 @@ public class FilterCreateActivity extends BaseFragment {
+             items.add(ItemInner.asShadow(LocaleController.getString(R.string.FolderTagColorInfo)));
+         }
+ 
+-        if (invites.isEmpty()) {
++        if (tele.helpers.LocalFolders.isLocal(filter.id)) {
++            // a folder kept on this device can't be shared
++        } else if (invites.isEmpty()) {
+             items.add(ItemInner.asHeader(LocaleController.getString(R.string.FilterShareFolder), true));
+             items.add(ItemInner.asButton(R.drawable.msg2_link2, LocaleController.getString(R.string.FilterShareFolderButton), false));
+             items.add(ItemInner.asShadow(LocaleController.getString(R.string.FilterInviteLinksHintNew)));
+@@ -814,7 +817,7 @@ public class FilterCreateActivity extends BaseFragment {
+                 final AlertDialog progressDialogFinal = progressDialog;
+                 TLRPC.TL_messages_updateDialogFilter req = new TLRPC.TL_messages_updateDialogFilter();
+                 req.id = filter.id;
+-                getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
++                tele.helpers.LocalFolders.send(getConnectionsManager(), req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                     try {
+                         if (progressDialogFinal != null) {
+                             progressDialogFinal.dismiss();
+@@ -1105,6 +1108,7 @@ public class FilterCreateActivity extends BaseFragment {
+             for (int a = 0, N = filters.size(); a < N; a++) {
+                 req.order.add(filters.get(a).id);
+             }
++            tele.helpers.LocalFolders.serverOrder(req.order);
+             fragment.getConnectionsManager().sendRequest(req, null);
+         }
+         if (onFinish != null) {
+@@ -1214,7 +1218,8 @@ public class FilterCreateActivity extends BaseFragment {
+                 }
+             }
+         }
+-        fragment.getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
++        tele.helpers.LocalFolders.trim(fragment.getCurrentAccount(), filter.id, req.filter);
++        tele.helpers.LocalFolders.send(fragment.getConnectionsManager(), req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+             if (progress) {
+                 try {
+                     if (progressDialog != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/FiltersSetupActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/FiltersSetupActivity.java
+index cae3a086d..f614737c4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/FiltersSetupActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/FiltersSetupActivity.java
+@@ -484,7 +484,7 @@ public class FiltersSetupActivity extends BaseFragment implements NotificationCe
+             textView.setEmojiCacheType(filter.title_noanimate ? AnimatedEmojiDrawable.CACHE_TYPE_NOANIMATE_FOLDER : AnimatedEmojiDrawable.CACHE_TYPE_MESSAGES);
+             textView.setText(title);
+ 
+-            valueTextView.setText(info);
++            valueTextView.setText(tele.helpers.LocalFolders.status(currentAccount, filter, info));
+             needDivider = divider;
+ 
+             if (filter.isDefault()) {
+@@ -588,11 +588,11 @@ public class FiltersSetupActivity extends BaseFragment implements NotificationCe
+             }
+             filtersSectionEnd = items.size();
+ 
+-            if (listView != null) listView.forcedSections.add(AndroidUtilities.pack(filtersSectionStart, filtersSectionEnd - 1 + (dialogFilters.size() < getMessagesController().dialogFiltersLimitPremium ? 1 : 0)));
++            if (listView != null) listView.forcedSections.add(AndroidUtilities.pack(filtersSectionStart, filtersSectionEnd - 1 + (dialogFilters.size() < getMessagesController().dialogFiltersLimitPremium || tele.helpers.LocalFolders.enabled() ? 1 : 0)));
+         } else {
+             filtersSectionStart = filtersSectionEnd = -1;
+         }
+-        if (dialogFilters.size() < getMessagesController().dialogFiltersLimitPremium) {
++        if (dialogFilters.size() < getMessagesController().dialogFiltersLimitPremium || tele.helpers.LocalFolders.enabled()) {
+             items.add(ItemInner.asButton(LocaleController.getString(R.string.CreateNewFilter)));
+         }
+         items.add(ItemInner.asShadow(null));
+@@ -625,6 +625,7 @@ public class FiltersSetupActivity extends BaseFragment implements NotificationCe
+                 MessagesController.DialogFilter filter = filters.get(a);
+                 req.order.add(filter.id);
+             }
++            tele.helpers.LocalFolders.serverOrder(req.order);
+             getConnectionsManager().sendRequest(req, (response, error) -> {
+ 
+             });
+@@ -734,8 +735,9 @@ public class FiltersSetupActivity extends BaseFragment implements NotificationCe
+     public void createFolder(INavigationLayout navigationLayout) {
+         final int count = getMessagesController().getDialogFilters().size();
+         if (
++            !tele.helpers.LocalFolders.enabled() && (
+             count - 1 >= getMessagesController().dialogFiltersLimitDefault && !getUserConfig().isPremium() ||
+-            count >= getMessagesController().dialogFiltersLimitPremium
++            count >= getMessagesController().dialogFiltersLimitPremium)
+         ) {
+             showDialog(new LimitReachedBottomSheet(this, getContext(), LimitReachedBottomSheet.TYPE_FOLDERS, currentAccount, null));
+         } else if (navigationLayout != null) {
+@@ -940,7 +942,7 @@ public class FiltersSetupActivity extends BaseFragment implements NotificationCe
+                                 final AlertDialog progressDialogFinal = progressDialog;
+                                 TLRPC.TL_messages_updateDialogFilter req = new TLRPC.TL_messages_updateDialogFilter();
+                                 req.id = filter.id;
+-                                getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
++                                tele.helpers.LocalFolders.send(getConnectionsManager(), req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                                     try {
+                                         if (progressDialogFinal != null) {
+                                             progressDialogFinal.dismiss();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/UsersSelectActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/UsersSelectActivity.java
+index b98c93759..2fc53dccc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/UsersSelectActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/UsersSelectActivity.java
+@@ -781,7 +781,7 @@ public class UsersSelectActivity extends BaseFragment implements NotificationCen
+                     GroupCreateSpan span = selectedContacts.get(id);
+                     spansContainer.removeSpan(span);
+                 } else {
+-                    if (!(object instanceof String) && (!getUserConfig().isPremium() && selectedCount >= MessagesController.getInstance(currentAccount).dialogFiltersChatsLimitDefault) || selectedCount >= MessagesController.getInstance(currentAccount).dialogFiltersChatsLimitPremium) {
++                    if (!tele.helpers.LocalFolders.enabled() && (!(object instanceof String) && (!getUserConfig().isPremium() && selectedCount >= MessagesController.getInstance(currentAccount).dialogFiltersChatsLimitDefault) || selectedCount >= MessagesController.getInstance(currentAccount).dialogFiltersChatsLimitPremium)) {
+                         LimitReachedBottomSheet limitReachedBottomSheet = new LimitReachedBottomSheet(this, context, LimitReachedBottomSheet.TYPE_CHATS_IN_FOLDER, currentAccount, null);
+                         limitReachedBottomSheet.setCurrentValue(selectedCount);
+                         showDialog(limitReachedBottomSheet);
+@@ -1039,7 +1039,9 @@ public class UsersSelectActivity extends BaseFragment implements NotificationCen
+     private void updateHint() {
+         if (type == TYPE_FILTER) {
+             int limit = getUserConfig().isPremium() ? getMessagesController().dialogFiltersChatsLimitPremium : getMessagesController().dialogFiltersChatsLimitDefault;
+-            if (selectedCount == 0) {
++            if (tele.helpers.LocalFolders.unlimitedChats(tele.helpers.LocalFolders.chatsLimit(limit))) {
++                actionBar.setSubtitle(LocaleController.formatPluralString("Chats", selectedCount));
++            } else if (selectedCount == 0) {
+                 actionBar.setSubtitle(formatString("MembersCountZero", R.string.MembersCountZero, LocaleController.formatPluralString("Chats", limit)));
+             } else {
+                 actionBar.setSubtitle(String.format(LocaleController.getPluralString("MembersCountSelected", selectedCount), selectedCount, limit));
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 62e85e6f8..7fd162122 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -245,6 +245,8 @@ object TeleConfig {
+     @JvmField
+     val TITLE_TEMPLATE = StringItem("title_template", "tele {build}")
+     @JvmField
++    val LOCAL_FOLDERS = BoolItem("local_folders", false)
++    @JvmField
+     val BOOKMARKS = BoolItem("bookmarks", false)
+     @JvmField
+     val RETURN_POINT = BoolItem("return_point", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index e0e463f56..5d5418dc1 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -135,6 +135,9 @@ object TeleHooks {
+         if (item === TeleConfig.REDUCE_MOTION) {
+             tele.helpers.TeleReduceMotion.apply()
+         }
++        if (item === TeleConfig.LOCAL_FOLDERS) {
++            tele.helpers.LocalFolders.onToggled()
++        }
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt b/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
+new file mode 100644
+index 000000000..60d60b954
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
+@@ -0,0 +1,491 @@
++package tele.helpers
++
++import android.util.Base64
++import android.util.SparseArray
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesController.DialogFilter
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.RequestDelegate
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.Vector
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * Folders past the Telegram limits. A folder that doesn't fit the server folder count lives only on this device
++ * (local id range, never sent). What doesn't fit the chats limit of a server folder is kept here and merged back
++ * into the folder when it is read, so the server folder stays valid.
++ */
++object LocalFolders {
++
++    const val LOCAL_BASE = 0x40000000
++    private const val NO_LIMIT = 0x00FFFFFF
++    private const val KEY = "local_folders"
++
++    @JvmStatic
++    fun isLocal(id: Int): Boolean = id >= LOCAL_BASE
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.LOCAL_FOLDERS.value
++
++    private class Stored(
++        val id: Int,
++        var name: String,
++        var entities: ByteArray?,
++        var flags: Int,
++        var color: Int,
++        var noAnimate: Boolean,
++        var always: List<Long>,
++        var never: List<Long>,
++        var pinned: List<Pair<Long, Int>>
++    )
++
++    private class Overflow(val always: List<Long>, val never: List<Long>, val pinned: List<Long>) {
++        fun isEmpty() = always.isEmpty() && never.isEmpty()
++        fun same(o: Overflow) = always == o.always && never == o.never && pinned == o.pinned
++    }
++
++    private class ServerPart(val always: Set<Long>, val never: Set<Long>)
++
++    private class State(val userId: Long) {
++        val folders = ArrayList<Stored>()
++        val overflow = HashMap<Int, Overflow>()
++        var order: List<Int> = emptyList()
++        // what the server holds for a folder, known from the last read or write
++        val server = HashMap<Int, ServerPart>()
++        var lastId = LOCAL_BASE - 1
++    }
++
++    private val states = SparseArray<State>()
++
++    private fun state(account: Int): State? {
++        val userId = UserConfig.getInstance(account).getClientUserId()
++        if (userId == 0L) return null
++        synchronized(states) {
++            val known = states.get(account)
++            if (known != null && known.userId == userId) return known
++            val fresh = State(userId)
++            read(fresh)
++            states.put(account, fresh)
++            return fresh
++        }
++    }
++
++    private fun key(userId: Long) = "$KEY:$userId"
++
++    private fun read(state: State) {
++        val raw = runCatching { TeleDatabaseHelper.get(key(state.userId)) }.getOrNull() ?: return
++        runCatching {
++            val json = JSONObject(raw)
++            val folders = json.optJSONArray("folders") ?: JSONArray()
++            for (i in 0 until folders.length()) {
++                val f = folders.getJSONObject(i)
++                val id = f.getInt("id")
++                if (!isLocal(id)) continue
++                val pins = f.optJSONArray("pinned") ?: JSONArray()
++                state.folders.add(Stored(
++                    id, f.optString("name"), f.optString("ent").takeIf { it.isNotEmpty() }?.let { Base64.decode(it, Base64.NO_WRAP) },
++                    f.optInt("flags"), f.optInt("color", -1), f.optInt("na") == 1,
++                    longs(f.optJSONArray("always")), longs(f.optJSONArray("never")),
++                    (0 until pins.length()).map { pins.getJSONArray(it).let { p -> p.getLong(0) to p.getInt(1) } }
++                ))
++                state.lastId = maxOf(state.lastId, id)
++            }
++            val overflow = json.optJSONObject("overflow")
++            if (overflow != null) {
++                for (k in overflow.keys()) {
++                    val o = overflow.getJSONObject(k)
++                    val entry = Overflow(longs(o.optJSONArray("a")), longs(o.optJSONArray("n")), longs(o.optJSONArray("p")))
++                    val id = k.toIntOrNull() ?: continue
++                    if (id > 0 && !isLocal(id) && !entry.isEmpty()) state.overflow[id] = entry
++                }
++            }
++            val order = json.optJSONArray("order") ?: JSONArray()
++            state.order = (0 until order.length()).map { order.getInt(it) }
++        }.onFailure { FileLog.e(it) }
++    }
++
++    private fun longs(array: JSONArray?): List<Long> =
++        if (array == null) emptyList() else (0 until array.length()).map { array.getLong(it) }
++
++    private fun persist(state: State) {
++        val json = JSONObject()
++        json.put("v", 1)
++        val folders = JSONArray()
++        for (f in state.folders) {
++            folders.put(JSONObject().apply {
++                put("id", f.id)
++                put("name", f.name)
++                f.entities?.let { put("ent", Base64.encodeToString(it, Base64.NO_WRAP)) }
++                put("flags", f.flags)
++                put("color", f.color)
++                put("na", if (f.noAnimate) 1 else 0)
++                put("always", JSONArray(f.always))
++                put("never", JSONArray(f.never))
++                put("pinned", JSONArray().apply { f.pinned.forEach { put(JSONArray().put(it.first).put(it.second)) } })
++            })
++        }
++        json.put("folders", folders)
++        val overflow = JSONObject()
++        for ((id, o) in state.overflow) {
++            overflow.put(id.toString(), JSONObject().put("a", JSONArray(o.always)).put("n", JSONArray(o.never)).put("p", JSONArray(o.pinned)))
++        }
++        json.put("overflow", overflow)
++        json.put("order", JSONArray(state.order))
++        val text = json.toString()
++        val key = key(state.userId)
++        Utilities.globalQueue.postRunnable { runCatching { TeleDatabaseHelper.put(key, text) }.onFailure { FileLog.e(it) } }
++    }
++
++    private fun entitiesBytes(entities: ArrayList<TLRPC.MessageEntity>?): ByteArray? {
++        if (entities.isNullOrEmpty()) return null
++        return runCatching {
++            val stream = SerializedData()
++            Vector.serialize(stream, entities)
++            stream.toByteArray()
++        }.getOrNull()
++    }
++
++    private fun entitiesFrom(bytes: ByteArray?): ArrayList<TLRPC.MessageEntity> {
++        if (bytes == null) return ArrayList()
++        return runCatching {
++            Vector.deserialize(SerializedData(bytes), TLRPC.MessageEntity::TLdeserialize, false)
++        }.getOrNull() ?: ArrayList()
++    }
++
++    private fun build(stored: Stored): DialogFilter {
++        val filter = DialogFilter()
++        filter.id = stored.id
++        filter.name = stored.name
++        filter.entities = entitiesFrom(stored.entities)
++        filter.flags = stored.flags
++        filter.color = stored.color
++        filter.title_noanimate = stored.noAnimate
++        filter.alwaysShow = ArrayList(stored.always)
++        filter.neverShow = ArrayList(stored.never)
++        stored.pinned.forEach { filter.pinnedDialogs.put(it.first, it.second) }
++        filter.pendingUnreadCount = -1
++        filter.unreadCount = -1
++        return filter
++    }
++
++    private fun snapshot(filter: DialogFilter): Stored {
++        val pins = ArrayList<Pair<Long, Int>>()
++        for (i in 0 until filter.pinnedDialogs.size()) pins.add(filter.pinnedDialogs.keyAt(i) to filter.pinnedDialogs.valueAt(i))
++        return Stored(
++            filter.id, filter.name ?: "", entitiesBytes(filter.entities), filter.flags, filter.color, filter.title_noanimate,
++            ArrayList(filter.alwaysShow), ArrayList(filter.neverShow), pins
++        )
++    }
++
++    // the folders of the server in their order, the local ones slotted behind what preceded them last time
++    private fun mergedOrder(server: List<Int>, locals: List<Int>, stored: List<Int>): ArrayList<Int> {
++        val result = ArrayList(server.filter { !isLocal(it) || it in locals })
++        val pending = ArrayList(stored.filter { it in locals })
++        for (id in locals) if (id !in pending) pending.add(id)
++        for (id in pending) {
++            if (id in result) continue
++            var position = result.size
++            val at = stored.indexOf(id)
++            if (at >= 0) {
++                position = 0
++                for (k in at - 1 downTo 0) {
++                    val found = result.indexOf(stored[k])
++                    if (found >= 0) {
++                        position = found + 1
++                        break
++                    }
++                }
++            }
++            result.add(position, id)
++        }
++        return result
++    }
++
++    private fun localIds(state: State): List<Int> = state.folders.map { it.id }
++
++    /** Storage thread: drops the local folders from the list and puts them back when the option is on. */
++    @JvmStatic
++    fun sync(account: Int, list: ArrayList<DialogFilter>, map: SparseArray<DialogFilter>) {
++        for (i in list.indices.reversed()) {
++            val id = list[i].id
++            if (isLocal(id)) {
++                list.removeAt(i)
++                map.remove(id)
++            }
++        }
++        if (!enabled()) return
++        val state = state(account) ?: return
++        for (stored in state.folders) {
++            val filter = build(stored)
++            list.add(filter)
++            map.put(filter.id, filter)
++        }
++        reorder(state, list)
++    }
++
++    private fun reorder(state: State, list: ArrayList<DialogFilter>) {
++        val server = list.filter { !isLocal(it.id) }.sortedBy { it.order }.map { it.id }
++        val order = mergedOrder(server, localIds(state), state.order)
++        for (filter in list) filter.order = order.indexOf(filter.id)
++        list.sortBy { it.order }
++    }
++
++    /** UI thread: the server list stays as it is, only the local folders change. */
++    @JvmStatic
++    fun onToggled() {
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (!UserConfig.getInstance(account).isClientActivated) continue
++            MessagesStorage.getInstance(account).tele_syncLocalFilters()
++            // the lists of the server folders drop or regain what was kept here
++            MessagesController.getInstance(account).loadRemoteFilters(true)
++        }
++    }
++
++    /** Storage thread: true when the folder is local and was kept here instead of in the database. */
++    @JvmStatic
++    fun save(account: Int, filter: DialogFilter): Boolean {
++        if (!isLocal(filter.id)) return false
++        val state = state(account) ?: return true
++        val stored = snapshot(filter)
++        synchronized(state) {
++            val i = state.folders.indexOfFirst { it.id == filter.id }
++            if (i < 0) state.folders.add(stored) else state.folders[i] = stored
++            state.lastId = maxOf(state.lastId, filter.id)
++        }
++        persist(state)
++        return true
++    }
++
++    /** Storage thread: a folder is gone, so are its local parts. */
++    @JvmStatic
++    fun forget(account: Int, id: Int) {
++        val state = state(account) ?: return
++        var changed: Boolean
++        synchronized(state) {
++            state.server.remove(id)
++            changed = state.folders.removeAll { it.id == id }
++            if (state.overflow.remove(id) != null) changed = true
++            if (changed) state.order = state.order.filter { it != id }
++        }
++        if (changed) persist(state)
++    }
++
++    /** Storage thread: remembers the order of every folder, the local ones included. */
++    @JvmStatic
++    fun saveOrder(account: Int, list: List<DialogFilter>) {
++        if (!enabled()) return
++        val state = state(account) ?: return
++        if (state.folders.isEmpty()) return
++        val order = list.sortedBy { it.order }.map { it.id }
++        if (order == state.order) return
++        state.order = order
++        persist(state)
++    }
++
++    /** Storage thread: a server list arrived; the parts kept here are merged back into its folders. */
++    @JvmStatic
++    fun onRemote(account: Int, vector: List<TLRPC.DialogFilter>) {
++        val state = state(account) ?: return
++        val ids = HashSet<Int>()
++        var changed = false
++        synchronized(state) {
++            for (remote in vector) {
++                if (remote.id == 0) continue
++                ids.add(remote.id)
++                state.server[remote.id] = ServerPart(
++                    (remote.pinned_peers + remote.include_peers).mapNotNull { dialogId(it) }.toSet(),
++                    remote.exclude_peers.mapNotNull { dialogId(it) }.toSet()
++                )
++            }
++            state.server.keys.retainAll(ids)
++            if (state.overflow.keys.retainAll(ids)) changed = true
++            if (enabled()) {
++                for (remote in vector) {
++                    val o = state.overflow[remote.id] ?: continue
++                    merge(account, remote, o)
++                }
++            }
++        }
++        if (changed) persist(state)
++    }
++
++    private fun merge(account: Int, remote: TLRPC.DialogFilter, o: Overflow) {
++        val pinned = remote.pinned_peers.mapNotNull { dialogId(it) }
++        val included = (pinned + remote.include_peers.mapNotNull { dialogId(it) }).toHashSet()
++        for (did in o.always) if (included.add(did)) remote.include_peers.add(inputPeer(account, did))
++        val excluded = remote.exclude_peers.mapNotNull { dialogId(it) }.toHashSet()
++        for (did in o.never) if (excluded.add(did)) remote.exclude_peers.add(inputPeer(account, did))
++        if (o.pinned.isNotEmpty()) {
++            val merged = ArrayList<Long>()
++            for (did in o.pinned) if ((did in pinned || did in o.always) && did !in merged) merged.add(did)
++            for (did in pinned) if (did !in merged) merged.add(did)
++            remote.pinned_peers = ArrayList(merged.map { inputPeer(account, it) })
++        }
++    }
++
++    /** Storage thread: slots the local folders into the order the server sent. */
++    @JvmStatic
++    fun mergeOrder(account: Int, order: ArrayList<Int>) {
++        if (!enabled()) return
++        val state = state(account) ?: return
++        val locals = localIds(state)
++        if (locals.isEmpty()) return
++        val merged = mergedOrder(order, locals, state.order)
++        order.clear()
++        order.addAll(merged)
++    }
++
++    private fun dialogId(peer: TLRPC.InputPeer): Long? = when {
++        peer.user_id != 0L -> peer.user_id
++        peer.chat_id != 0L -> -peer.chat_id
++        peer.channel_id != 0L -> -peer.channel_id
++        else -> null
++    }
++
++    private fun inputPeer(account: Int, did: Long): TLRPC.InputPeer {
++        val controller = MessagesController.getInstance(account)
++        if (did > 0) {
++            return TLRPC.TL_inputPeerUser().apply {
++                user_id = did
++                access_hash = controller.getUser(did)?.access_hash ?: 0L
++            }
++        }
++        val chat = controller.getChat(-did)
++        if (chat != null && org.telegram.messenger.ChatObject.isChannel(chat)) {
++            return TLRPC.TL_inputPeerChannel().apply {
++                channel_id = -did
++                access_hash = chat.access_hash
++            }
++        }
++        return TLRPC.TL_inputPeerChat().apply { chat_id = -did }
++    }
++
++    private fun serverChatsLimit(account: Int): Int {
++        val controller = MessagesController.getInstance(account)
++        return if (UserConfig.getInstance(account).isPremium) controller.dialogFiltersChatsLimitPremium else controller.dialogFiltersChatsLimitDefault
++    }
++
++    /** UI thread: cuts what doesn't fit the server limits off the request and keeps it here. */
++    @JvmStatic
++    fun trim(account: Int, id: Int, tl: TLRPC.DialogFilter) {
++        if (!enabled() || id == 0 || isLocal(id)) return
++        val state = state(account) ?: return
++        val limit = serverChatsLimit(account)
++        val pinned = tl.pinned_peers.mapNotNull { dialogId(it) }
++        val include = tl.include_peers.mapNotNull { dialogId(it) }
++        val always = pinned + include.filter { it !in pinned }
++        val never = tl.exclude_peers.mapNotNull { dialogId(it) }
++        val known = synchronized(state) { state.server[id] }
++        val stored = synchronized(state) { state.overflow[id] }
++
++        // ones the server already holds go first, then the ones kept here, then the new ones
++        fun pick(list: List<Long>, onServer: Set<Long>?, local: List<Long>?): Pair<List<Long>, List<Long>> {
++            fun rank(did: Long): Int {
++                val server = onServer?.contains(did) ?: (local?.contains(did) != true)
++                return if (server) 0 else if (local?.contains(did) == true) 1 else 2
++            }
++            fun position(did: Long): Int = pinned.indexOf(did).let { if (it < 0) pinned.size else it }
++            val sorted = list.sortedWith(compareBy({ rank(it) }, { position(it) }))
++            val count = minOf(sorted.size, limit)
++            return sorted.subList(0, count) to sorted.subList(count, sorted.size)
++        }
++
++        val (serverAlways, localAlways) = pick(always, known?.always, stored?.always)
++        val (serverNever, localNever) = pick(never, known?.never, stored?.never)
++        val serverPinned = pinned.filter { it in serverAlways }
++        val overflow = Overflow(localAlways, localNever, if (serverPinned.size != pinned.size) pinned else emptyList())
++
++        val keepAlways = serverAlways.toHashSet()
++        val keepNever = serverNever.toHashSet()
++        tl.pinned_peers.removeAll { dialogId(it) !in serverPinned }
++        tl.include_peers.removeAll { dialogId(it) !in keepAlways }
++        tl.exclude_peers.removeAll { dialogId(it) !in keepNever }
++
++        var changed = false
++        synchronized(state) {
++            state.server[id] = ServerPart(keepAlways, keepNever)
++            val was = state.overflow[id]
++            if (overflow.isEmpty()) {
++                changed = state.overflow.remove(id) != null
++            } else if (was == null || !was.same(overflow)) {
++                state.overflow[id] = overflow
++                changed = true
++            }
++        }
++        if (changed) persist(state)
++    }
++
++    /** What a request does for a folder that stays here: nothing to the server, the callback still runs. */
++    @JvmStatic
++    fun send(connections: ConnectionsManager, req: TLObject, delegate: RequestDelegate?): Int {
++        val id = when (req) {
++            is TLRPC.TL_messages_updateDialogFilter -> req.id
++            else -> 0
++        }
++        if (isLocal(id)) {
++            delegate?.run(null, null)
++            return 0
++        }
++        return connections.sendRequest(req, delegate)
++    }
++
++    /** The folders a server order may mention; the local ones are only known here. */
++    @JvmStatic
++    fun serverOrder(order: ArrayList<Int>) {
++        order.removeAll { isLocal(it) }
++    }
++
++    /** A free id for a new folder: the stock one while the server has room, a local one past its limit. */
++    @JvmStatic
++    fun newId(account: Int, stockId: Int): Int {
++        if (!enabled()) return stockId
++        val controller = MessagesController.getInstance(account)
++        val server = controller.dialogFilters.count { it.id != 0 && !isLocal(it.id) }
++        val limit = if (UserConfig.getInstance(account).isPremium) controller.dialogFiltersLimitPremium else controller.dialogFiltersLimitDefault
++        if (server < limit) return stockId
++        val state = state(account) ?: return stockId
++        var id = synchronized(state) { state.lastId } + 1
++        while (controller.dialogFiltersById.get(id) != null) id++
++        synchronized(state) { state.lastId = id }
++        return id
++    }
++
++    /** The folder limits the options lift: a chat in a folder has no cap here. */
++    @JvmStatic
++    fun chatsLimit(stock: Int): Int = if (enabled()) NO_LIMIT else stock
++
++    @JvmStatic
++    fun unlimitedChats(limit: Int): Boolean = limit >= NO_LIMIT
++
++    /** The folders the premium lock may touch: only the ones the server holds. */
++    @JvmStatic
++    fun lockable(list: ArrayList<DialogFilter>): ArrayList<DialogFilter> {
++        if (!enabled()) return list
++        val result = ArrayList<DialogFilter>(list.size)
++        for (filter in list) {
++            if (isLocal(filter.id)) filter.locked = false else result.add(filter)
++        }
++        return result
++    }
++
++    /** The line under a folder in the folder list: where its chats live. */
++    @JvmStatic
++    fun status(account: Int, filter: DialogFilter, info: CharSequence): CharSequence {
++        if (isLocal(filter.id)) return "$info · " + LocaleController.getString(R.string.TeleFolderLocal)
++        if (!enabled() || filter.id == 0) return info
++        val state = state(account) ?: return info
++        val count = synchronized(state) { state.overflow[filter.id]?.let { it.always.size + it.never.size } ?: 0 }
++        return if (count > 0) "$info · " + LocaleController.formatString(R.string.TeleFolderOverflow, count) else info
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 5b2dcb6c4..72afa1e15 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -188,6 +188,8 @@ object TeleSearch {
+             section(1125, "No edited mark on bot messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1126, "Show the start parameter", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1124, "Hide phone numbers in profiles", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(1245, "Folders past the limit", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1246, "Local folders", "chats", TeleSettingsActivity.MODE_CHATS, "Folders past the limit"),
+             section(1230, "Message bookmarks", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1232, "Return to where you were reading", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             screen(1231, "Bookmarks") { TeleBookmarksActivity.of(org.telegram.messenger.UserConfig.selectedAccount) },
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index a64ee3043..b19b0e8f0 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -594,6 +594,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Remove my messages" to "Adds it to chat menus: deletes all your messages there for everyone.",
+             "Show seconds in message times" to "Times read 14:03:21, and service messages show their time too.",
+             "Hide the all chats folder" to "The chat list opens on your first folder.",
++            "Folders past the limit" to "Go past Telegram's folder limits; extras stay on this device.",
+             "Hide call buttons" to "No call buttons in private chats and profiles.",
+             "Confirm calls before starting" to "Ask before a call, naming who you're calling.",
+             "Open links without confirmation" to "Skip the link confirmation dialog.",
+@@ -774,6 +775,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Chat list"),
+                 toggle("Hide the all chats folder", TeleConfig.HIDE_ALL_CHATS_FOLDER),
+                 toggle("Pin chats past the limit", TeleConfig.LOCAL_PINS),
++                toggle("Folders past the limit", TeleConfig.LOCAL_FOLDERS),
+                 toggle("Hide similar channels", TeleConfig.HIDE_SIMILAR_CHANNELS),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Chats and profiles"),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index ff65f2f2b..e3cbd7452 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -106,6 +106,8 @@
+     <string name="TeleBookmarkRename">Rename bookmark</string>
+     <string name="TeleBookmarkName">Name</string>
+     <string name="TeleBookmarks">Bookmarks</string>
++    <string name="TeleFolderLocal">on this device</string>
++    <string name="TeleFolderOverflow">%1$d on this device</string>
+     <string name="TeleBookmarkReturn">Jump to where you were reading</string>
+     <string name="TeleNoBookmarks">No bookmarks yet. Bookmark a message from its menu.</string>
+     <string name="TeleBookmarkMessage">Message</string>
