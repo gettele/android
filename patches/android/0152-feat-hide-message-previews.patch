@@ -1,0 +1,651 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 05:25:27 +0300
+Subject: [PATCH 152/161] feat: hide message previews
+
+---
+ .../telegram/ui/Adapters/DialogsAdapter.java  |  10 +-
+ .../org/telegram/ui/Cells/DialogCell.java     | 198 +++++++++++++++---
+ .../java/org/telegram/ui/DialogsActivity.java |  16 +-
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/TeleCompactRows.kt |  39 ++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ 8 files changed, 236 insertions(+), 38 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleCompactRows.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
+index dabdc2f31..ecee26d02 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
+@@ -247,7 +247,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+ 
+     public int fixScrollGap(RecyclerListView animationSupportListView, int p, int offset, boolean hasHiddenArchive, boolean hasStories, boolean hasTabs, boolean oppened) {
+ //        int itemsToEnd = getItemCount() - p;
+-        int cellHeight = AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 76 : 70);
++        int cellHeight = tele.helpers.TeleCompactRows.height(dialogsType, AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 76 : 70));
+ //        int bottom = offset + animationSupportListView.getPaddingTop() + itemsToEnd * cellHeight + itemsToEnd - 1;
+         //fix height changed
+         int top = offset + animationSupportListView.getPaddingTop() - p * cellHeight - p;
+@@ -1507,12 +1507,12 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+                     height = AndroidUtilities.displaySize.y - ActionBar.getCurrentActionBarHeight() - AndroidUtilities.statusBarHeight;
+                 }
+                 height -= blurOffset;
+-                int cellHeight = AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 76 : 70);
++                int cellHeight = tele.helpers.TeleCompactRows.height(dialogsType, AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 76 : 70));
+                 int dialogsHeight = 0;
+                 for (int i = 0; i < size; i++) {
+                     if (itemInternals.get(i).viewType == VIEW_TYPE_DIALOG) {
+                         if (itemInternals.get(i).isForumCell && !collapsedView) {
+-                            dialogsHeight += AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 86 : 91);
++                            dialogsHeight += tele.helpers.TeleCompactRows.height(dialogsType, AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 86 : 91));
+                         } else {
+                             dialogsHeight += cellHeight;
+                         }
+@@ -1844,9 +1844,9 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+     public int getItemHeight(int position) {
+         if (itemInternals.get(position).viewType == VIEW_TYPE_DIALOG) {
+             if (itemInternals.get(position).isForumCell && !collapsedView) {
+-                return AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 86 : 91) + 1;
++                return tele.helpers.TeleCompactRows.height(dialogsType, AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 86 : 91)) + 1;
+             } else {
+-                return AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 76 : 70) + 1;
++                return tele.helpers.TeleCompactRows.height(dialogsType, AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 76 : 70)) + 1;
+             }
+         }
+         return 0;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+index 968f5613a..cff46f8d1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+@@ -523,6 +523,11 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     protected CheckBox2 checkBox;
+ 
+     public boolean useForceThreeLines;
++    // compact rows: the state the layout was built for, and the shift of the text block
++    private boolean tele_compactBuilt;
++    private int tele_dy;
++    private StaticLayout tele_draftLayout;
++    private int tele_draftLeft, tele_draftTop;
+     public boolean useSeparator;
+     public boolean fullSeparator;
+     public boolean fullSeparator2;
+@@ -1010,6 +1015,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     }
+ 
+     private int computeHeight() {
++        if (tele_isCompact()) {
++            return dp(tele.helpers.TeleCompactRows.HEIGHT_DP) + 1;
++        }
+         int height;
+         if (isForumCell() && !isTransitionSupport && !collapsed) {
+             height = dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 86 : 91);
+@@ -1026,6 +1034,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     }
+ 
+     private int getCollapsedHeight() {
++        if (tele_isCompact()) {
++            return dp(tele.helpers.TeleCompactRows.HEIGHT_DP) + 1;
++        }
+         int height = dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? heightThreeLines : heightDefault);
+         if (useSeparator || true) {
+             height += 1;
+@@ -1069,6 +1080,11 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 x = LocaleController.isRTL ? (right - left) - paddingStart : paddingStart;
+                 y = dp(chekBoxPaddingTop + (useForceThreeLines || SharedConfig.useThreeLinesLayout ? 6 : 0));
+             }
++            if (tele_isCompact() && !inPreviewMode) {
++                final int boxStart = dp(avatarStart + tele.helpers.TeleCompactRows.AVATAR_DP - 22);
++                x = LocaleController.isRTL ? (right - left) - boxStart - checkBox.getMeasuredWidth() : boxStart;
++                y = dp(tele.helpers.TeleCompactRows.SKIP_DP + tele.helpers.TeleCompactRows.AVATAR_DP - 20);
++            }
+             checkBox.layout(x, y, x + checkBox.getMeasuredWidth(), y + checkBox.getMeasuredHeight());
+         }
+         int size = getMeasuredHeight() + getMeasuredWidth() << 16;
+@@ -1220,7 +1236,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     }
+ 
+     public boolean hasTags() {
+-        return tags != null && !tags.isEmpty();
++        return tags != null && !tags.isEmpty() && !tele_isCompact();
+     }
+ 
+     public boolean separateMessageNameLine() {
+@@ -1241,16 +1257,93 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+     private static final float BADGE_DRAWABLE_SIZE = 16;
+     private static final float BADGE_DRAWABLE_OFFSET = (BADGE_SIZE - BADGE_DRAWABLE_SIZE) / 2f;
+ 
++    private boolean tele_isCompact() {
++        return (isDialogCell || customDialog instanceof tele.helpers.TeleChat.Row)
++            && !isShareToStoryCell && !isTopic
++            && tele.helpers.TeleCompactRows.applies(dialogsType);
++    }
++
++    // the overlays on the avatar shrink with it
++    private float tele_f() {
++        return tele_compactBuilt ? 0.5f : 1f;
++    }
++
++    private int tele_radius(int stock) {
++        return stock > 1 && tele_isCompact() ? stock / 2 : stock;
++    }
++
++    // the badges move onto the name row, left of the date
++    private int tele_badgesWidth(String countString, String mentionString) {
++        int w = 0;
++        if (drawError) {
++            w += dp(21 + 8);
++        } else {
++            if (countString != null) {
++                w += Math.max(dp(BADGE_TEXT_MIN_WIDTH), (int) Math.ceil(Theme.dialogs_countTextPaint2.measureText(countString))) + dp(BADGE_GAP);
++            }
++            if (mentionString != null) {
++                w += (currentDialogFolderId != 0 ? Math.max(dp(BADGE_TEXT_MIN_WIDTH), (int) Math.ceil(Theme.dialogs_countTextPaint2.measureText(mentionString))) : dp(BADGE_TEXT_MIN_WIDTH)) + dp(BADGE_GAP);
++            }
++            if (drawReactionMention) {
++                w += dp(25);
++            }
++            if (drawPollVotesMention) {
++                w += dp(25);
++            }
++        }
++        return w > 0 ? w + dp(3) : 0;
++    }
++
++    // a draft shows as a label by the date, not as the message
++    private int tele_draftWidth() {
++        if (customDialog != null || !(draftVoice || draftMessage != null)) {
++            return 0;
++        }
++        final String label = getString(R.string.Draft);
++        final int w = Math.max(1, (int) Math.ceil(Theme.dialogs_messageNamePaint.measureText(label)));
++        tele_draftLayout = new StaticLayout(label, Theme.dialogs_messageNamePaint, w, Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
++        return w + dp(6);
++    }
++
++    // drops the message part and centers the text block on the small avatar
++    private void tele_applyCompact(int timeWidth, int timeLeftOffset, int draftW) {
++        messageLayout = null;
++        messageNameLayout = null;
++        typingLayout = null;
++        buttonLayout = null;
++        thumbsCount = 0;
++        spoilersPool.addAll(spoilers);
++        spoilers.clear();
++        spoilersPool2.addAll(spoilers2);
++        spoilers2.clear();
++        animatedEmojiStack = AnimatedEmojiSpan.update(AnimatedEmojiDrawable.CACHE_TYPE_MESSAGES, this, animatedEmojiStack, (Layout) null);
++        animatedEmojiStack2 = AnimatedEmojiSpan.update(AnimatedEmojiDrawable.CACHE_TYPE_MESSAGES, this, animatedEmojiStack2, (Layout) null);
++        animatedEmojiStack3 = AnimatedEmojiSpan.update(AnimatedEmojiDrawable.CACHE_TYPE_MESSAGES, this, animatedEmojiStack3, (Layout) null);
++        final int nameH = nameLayout != null ? nameLayout.getHeight() : dp(19);
++        final int center = dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 14) + nameH / 2;
++        tele_dy = dp(tele.helpers.TeleCompactRows.HEIGHT_DP) / 2 - center;
++        countTop = errorTop = center - dp(BADGE_SIZE) / 2;
++        pinTop = center - dp(12);
++        if (tele_draftLayout != null) {
++            final int w = draftW - dp(6);
++            tele_draftLeft = LocaleController.isRTL ? timeLeft + timeWidth + dp(6) : timeLeft - timeLeftOffset - dp(6) - w;
++            tele_draftTop = center - tele_draftLayout.getHeight() / 2;
++        }
++    }
++
+     public void buildLayout() {
+         if (isTransitionSupport) {
+             return;
+         }
++        final boolean compact = tele_isCompact();
+         if (isDialogCell) {
+-            boolean needUpdate = updateHelper.update();
++            boolean needUpdate = updateHelper.update() || compact != tele_compactBuilt;
+             if (!needUpdate && currentDialogFolderId == 0 && currentDialogCommunityId == 0 && encryptedChat == null) {
+                 return;
+             }
+         }
++        tele_compactBuilt = compact;
++        tele_dy = 0;
+ 
+         if (useForceThreeLines || SharedConfig.useThreeLinesLayout || true) {
+             Theme.dialogs_namePaint[0].setTextSize(dp(17));
+@@ -2284,6 +2377,14 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+             }
+         }
+ 
++        int compactShift = 0;
++        int compactDraftW = 0;
++        final int compactCut = compact ? dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 28 : 24) : 0;
++        tele_draftLayout = null;
++        if (compact) {
++            compactShift = tele_badgesWidth(countString, mentionString);
++            compactDraftW = tele_draftWidth();
++        }
+         int timeWidth;
+         if (drawTime) {
+             final TextPaint tp = getTimeTextPaint();
+@@ -2291,9 +2392,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+             timeLayout = new StaticLayout(timeString, tp, timeWidth, Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
+             timeWidth += dp(getIsPinned() ? 24 : 0);
+             if (!LocaleController.isRTL) {
+-                timeLeft = getMeasuredWidth() - dp(15) - timeWidth;
++                timeLeft = getMeasuredWidth() - dp(15) - timeWidth - compactShift;
+             } else {
+-                timeLeft = dp(15);
++                timeLeft = dp(15) + compactShift;
+             }
+         } else {
+             timeWidth = 0;
+@@ -2312,11 +2413,19 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+             timeWidth += timeLeftOffset;
+         }
+ 
++        if (compact) {
++            if (!LocaleController.isRTL) {
++                nameLeft -= compactCut;
++                nameLockLeft -= compactCut;
++            } else {
++                nameLockLeft += compactCut;
++            }
++        }
+         if (!LocaleController.isRTL) {
+-            nameWidth = getMeasuredWidth() - nameLeft - dp(14 + 8) - timeWidth;
++            nameWidth = getMeasuredWidth() - nameLeft - dp(14 + 8) - timeWidth - compactShift - compactDraftW;
+         } else {
+-            nameWidth = getMeasuredWidth() - nameLeft - dp(messagePaddingStart + 5 + 8) - timeWidth;
+-            nameLeft += timeWidth;
++            nameWidth = getMeasuredWidth() - nameLeft - dp(messagePaddingStart + 5 + 8) + compactCut - timeWidth - compactShift - compactDraftW;
++            nameLeft += timeWidth + compactShift + compactDraftW;
+         }
+         if (drawNameLock) {
+             nameWidth -= dp(LocaleController.isRTL ? 8 : 4) + Theme.dialogs_lockDrawable.getIntrinsicWidth();
+@@ -2498,6 +2607,13 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 thumbImage[i].setImageCoords(thumbLeft + (thumbSize + 2) * i, avatarTop + dp(30) + (twoLinesForName ? dp(20) : 0) - (!(useForceThreeLines || SharedConfig.useThreeLinesLayout) && tags != null && !tags.isEmpty() ? dp(9) : 0), dp(thumbSize), dp(thumbSize));
+             }
+         }
++        if (compact) {
++            avatarTop = dp(tele.helpers.TeleCompactRows.SKIP_DP);
++            if (LocaleController.isRTL) {
++                avatarLeft = getMeasuredWidth() - dp(tele.helpers.TeleCompactRows.AVATAR_DP + avatarStart);
++            }
++            storyParams.originalAvatarRect.set(avatarLeft, avatarTop, avatarLeft + dp(tele.helpers.TeleCompactRows.AVATAR_DP), avatarTop + dp(tele.helpers.TeleCompactRows.AVATAR_DP));
++        }
+         if (LocaleController.isRTL) {
+             tagsRight = getMeasuredWidth() - dp(messagePaddingStart);
+             tagsLeft = dp(64);
+@@ -2508,7 +2624,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+         if (twoLinesForName) {
+             messageNameTop += dp(20);
+         }
+-        if ((!(useForceThreeLines || SharedConfig.useThreeLinesLayout) || isForumCell()) && tags != null && !tags.isEmpty()) {
++        if ((!(useForceThreeLines || SharedConfig.useThreeLinesLayout) || isForumCell()) && hasTags()) {
+             timeTop -= dp(6);
+             checkDrawTop -= dp(6);
+         }
+@@ -2628,7 +2744,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                     messageNameLeft += w;
+                 }
+             }
+-        } else if (allowBotOpenButton && !isFolderCell() && !isForumCell() && !isDialogFolder() && UserObject.isBot(user) && user.bot_has_main_app) {
++        } else if (!compact && allowBotOpenButton && !isFolderCell() && !isForumCell() && !isDialogFolder() && UserObject.isBot(user) && user.bot_has_main_app) {
+             setOpenBotButton(true);
+             int buttonWidth = (int) (dp(2 * 13) + openButtonText.getCurrentWidth()), p = dp(13);
+             messageWidth -= buttonWidth;
+@@ -3001,6 +3117,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 statusDrawableLeft = (int) (typingLeft + x2 + dp(3));
+             }
+         }
++        if (compact) {
++            tele_applyCompact(timeWidth, timeLeftOffset, compactDraftW);
++        }
+         updateThumbsPosition();
+     }
+ 
+@@ -3281,7 +3400,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+             }
+             drawMonoforumAvatar = false;
+             drawCommunityAvatar = false;
+-            avatarImage.setRoundRadius(dp(26));
++            avatarImage.setRoundRadius(tele_radius(dp(26)));
+             drawUnmute = false;
+         } else {
+             int oldUnreadCount = unreadCount;
+@@ -3745,7 +3864,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 avatarRadius = dp(28);
+             }
+ 
+-            avatarImage.setRoundRadius(avatarRadius);
++            avatarImage.setRoundRadius(tele_radius(avatarRadius));
+         }
+         if (!isTopic && (getMeasuredWidth() != 0 || getMeasuredHeight() != 0)) {
+             rebuildLayout = true;
+@@ -3994,7 +4113,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 }
+             }
+             int drawableX = getMeasuredWidth() - dp(43) - translationDrawable.getIntrinsicWidth() / 2;
+-            int drawableY = (getMeasuredHeight() - dp(52)) / 2;
++            int drawableY = tele_compactBuilt ? (getMeasuredHeight() - translationDrawable.getIntrinsicHeight()) / 2 : (getMeasuredHeight() - dp(52)) / 2;
+             int drawableCx = drawableX + translationDrawable.getIntrinsicWidth() / 2;
+             int drawableCy = drawableY + translationDrawable.getIntrinsicHeight() / 2;
+ 
+@@ -4045,7 +4164,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 }
+             }
+ 
+-            if (swipeMessageTextLayout != null) {
++            if (swipeMessageTextLayout != null && !tele_compactBuilt) {
+                 canvas.save();
+                 float yOffset = swipeMessageTextLayout.getLineCount() > 1 ? -dp(4) : 0;
+                 canvas.translate(getMeasuredWidth() - dp(43) - swipeMessageTextLayout.getWidth() / 2f, drawableY + dp(52 - 16) + yOffset);
+@@ -4150,6 +4269,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+             }
+ 
+ 
++            canvas.save();
++            canvas.translate(0, tele_dy);
+             if (drawNameLock) {
+                 setDrawableBounds(Theme.dialogs_lockDrawable, nameLockLeft, nameLockTop);
+                 Theme.dialogs_lockDrawable.draw(canvas);
+@@ -4255,6 +4376,14 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 Theme.dialogs_lock2Drawable.draw(canvas);
+             }
+ 
++            if (tele_draftLayout != null) {
++                Theme.dialogs_messageNamePaint.setColor(Theme.dialogs_messageNamePaint.linkColor = Theme.getColor(Theme.key_chats_draft, resourcesProvider));
++                canvas.save();
++                canvas.translate(tele_draftLeft, tele_draftTop);
++                tele_draftLayout.draw(canvas);
++                canvas.restore();
++            }
++
+             if (messageNameLayout != null && !isForumCell()) {
+                 if (currentDialogFolderId != 0) {
+                     Theme.dialogs_messageNamePaint.setColor(Theme.dialogs_messageNamePaint.linkColor = Theme.getColor(Theme.key_chats_nameMessageArchived_threeLines, resourcesProvider));
+@@ -4558,7 +4687,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 }
+                 if (emojiStatus != null) {
+                     emojiStatusView.setTranslationX(gtx + nameMuteLeft - dp(2));
+-                    emojiStatusView.setTranslationY(gty + y - dp(4));
++                    emojiStatusView.setTranslationY(gty + y - dp(4) + tele_dy);
+                     if (rightFragmentOpenedProgress > 0) {
+                         emojiStatus.setBounds(
+                             nameMuteLeft - dp(2),
+@@ -4765,13 +4894,14 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 }
+             }
+ 
+-            if (tags != null && !tags.isEmpty()) {
++            if (hasTags()) {
+                 canvas.save();
+                 canvas.translate(tagsLeft, getMeasuredHeight() - dp(21.66f) - (useSeparator ? 1 : 0));
+                 tags.draw(canvas, tagsRight - tagsLeft);
+                 canvas.restore();
+             }
+ 
++            canvas.restore();
+             if (restoreToCount != -1) {
+                 canvas.restoreToCount(restoreToCount);
+             }
+@@ -4798,9 +4928,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 DrawableUtils.setBounds(avatarImage,
+                     storyParams.originalAvatarRect.centerX() + dpf2(1),
+                     storyParams.originalAvatarRect.centerY(),
+-                    dp(48), dp(48), Gravity.CENTER);
++                    dp(48 * tele_f()), dp(48 * tele_f()), Gravity.CENTER);
+                 DrawableUtils.drawCommunityCardDrawable(canvas, Theme.dialogs_communityCardsDrawable,
+-                    avatarImage.getCenterX(), avatarImage.getCenterY(), dp(48));
++                    avatarImage.getCenterX(), avatarImage.getCenterY(), dp(48 * tele_f()));
+                 avatarImage.draw(canvas);
+             } else {
+                 storyParams.drawHiddenStoriesAsSegments = isShareToStoryCell || currentDialogFolderId != 0;
+@@ -4816,12 +4946,14 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+             }
+ 
+             if (!insideCommunityList && (chat != null && tele.helpers.TeleCommunities.linked(chat.linked_community_id) != 0 || user != null && tele.helpers.TeleCommunities.linked(user.linked_community_id) != 0) && !drawCommunityAvatar && isDialogCell && !isDialogFolder()) {
+-                final float ccx = storyParams.originalAvatarRect.centerX() + dp(20.33f);
+-                final float ccy = storyParams.originalAvatarRect.centerY() + dp(19);
++                final float ccx = storyParams.originalAvatarRect.centerX() + dp(20.33f * tele_f());
++                final float ccy = storyParams.originalAvatarRect.centerY() + dp(19 * tele_f());
+                 if (communityArrowDrawable == null) {
+                     communityArrowDrawable = new CommunityArrowDrawable();
+                 }
+ 
++                canvas.save();
++                canvas.scale(tele_f(), tele_f(), ccx, ccy);
+                 DrawableUtils.setBounds(communityArrowDrawable, ccx, ccy, Gravity.CENTER);
+                 canvas.drawCircle(
+                     communityArrowDrawable.getBounds().exactCenterX(),
+@@ -4829,6 +4961,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                     dp(8), Theme.fillingPaint(Theme.getColor(Theme.key_windowBackgroundWhite, resourcesProvider)));
+ 
+                 communityArrowDrawable.draw(canvas);
++                canvas.restore();
+             }
+         }
+ 
+@@ -5115,12 +5248,12 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                     timerPaint2 = new Paint(Paint.ANTI_ALIAS_FLAG);
+                     timerPaint2.setColor(0x32000000);
+                 }
+-                int top = (int) (avatarImage.getImageY2() - dp(9));
++                int top = (int) (avatarImage.getImageY2() - dp(9 * tele_f()));
+                 int left;
+                 if (LocaleController.isRTL) {
+-                    left = (int) (storyParams.originalAvatarRect.left + dp(9));
++                    left = (int) (storyParams.originalAvatarRect.left + dp(9 * tele_f()));
+                 } else {
+-                    left = (int) (storyParams.originalAvatarRect.right - dp(9));
++                    left = (int) (storyParams.originalAvatarRect.right - dp(9 * tele_f()));
+                 }
+                 timerDrawable.setBounds(
+                         0, 0, dp(22), dp(22)
+@@ -5145,7 +5278,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                     }
+                 }
+                 canvas.save();
+-                float s = ttlProgress * (1f - rightFragmentOpenedProgress);
++                float s = ttlProgress * (1f - rightFragmentOpenedProgress) * tele_f();
+                 if (checkBox != null) {
+                     s *= 1f - checkBox.getProgress();
+                 }
+@@ -5162,18 +5295,18 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 boolean isOnline = isOnline();
+                 wasDrawnOnline = isOnline;
+                 if (isOnline || onlineProgress != 0) {
+-                    int top = (int) (storyParams.originalAvatarRect.bottom - dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 6 : 8));
++                    int top = (int) (storyParams.originalAvatarRect.bottom - dp((useForceThreeLines || SharedConfig.useThreeLinesLayout ? 6 : 8) * tele_f()));
+                     int left;
+                     if (LocaleController.isRTL) {
+-                        left = (int) (storyParams.originalAvatarRect.left + dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6));
++                        left = (int) (storyParams.originalAvatarRect.left + dp((useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6) * tele_f()));
+                     } else {
+-                        left = (int) (storyParams.originalAvatarRect.right - dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6));
++                        left = (int) (storyParams.originalAvatarRect.right - dp((useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6) * tele_f()));
+                     }
+ 
+                     Theme.dialogs_onlineCirclePaint.setColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourcesProvider));
+-                    canvas.drawCircle(left, top, dp(7) * onlineProgress, Theme.dialogs_onlineCirclePaint);
++                    canvas.drawCircle(left, top, dp(7 * tele_f()) * onlineProgress, Theme.dialogs_onlineCirclePaint);
+                     Theme.dialogs_onlineCirclePaint.setColor(Theme.getColor(Theme.key_chats_onlineCircle, resourcesProvider));
+-                    canvas.drawCircle(left, top, dp(5) * onlineProgress, Theme.dialogs_onlineCirclePaint);
++                    canvas.drawCircle(left, top, dp(5 * tele_f()) * onlineProgress, Theme.dialogs_onlineCirclePaint);
+                     if (isOnline) {
+                         if (onlineProgress < 1.0f) {
+                             onlineProgress += 16f / 150.0f;
+@@ -5196,14 +5329,16 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 hasCall = chat.call_active && chat.call_not_empty;
+                 if ((hasCall || chatCallProgress != 0) && rightFragmentOpenedProgress < 1f) {
+                     float checkProgress = checkBox != null && checkBox.isChecked() ? 1.0f - checkBox.getProgress() : 1.0f;
+-                    int top = (int) (storyParams.originalAvatarRect.bottom - dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 6 : 8));
++                    int top = (int) (storyParams.originalAvatarRect.bottom - dp((useForceThreeLines || SharedConfig.useThreeLinesLayout ? 6 : 8) * tele_f()));
+                     int left;
+                     if (LocaleController.isRTL) {
+-                        left = (int) (storyParams.originalAvatarRect.left + dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6));
++                        left = (int) (storyParams.originalAvatarRect.left + dp((useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6) * tele_f()));
+                     } else {
+-                        left = (int) (storyParams.originalAvatarRect.right - dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6));
++                        left = (int) (storyParams.originalAvatarRect.right - dp((useForceThreeLines || SharedConfig.useThreeLinesLayout ? 10 : 6) * tele_f()));
+                     }
+ 
++                    canvas.save();
++                    canvas.scale(tele_f(), tele_f(), left, top);
+                     if (rightFragmentOpenedProgress != 0) {
+                         canvas.save();
+                         float scale = 1f - rightFragmentOpenedProgress;
+@@ -5274,6 +5409,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                         needInvalidate = true;
+                     }
+ 
++                    canvas.restore();
+                     if (hasCall) {
+                         if (chatCallProgress < 1.0f) {
+                             chatCallProgress += 16f / 150.0f;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 44d72795e..304453310 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -2253,7 +2253,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     int pTop = getPaddingTop();
+                     DialogCell view = findArchiveDialogCell(parentPage);
+                     if (view != null) {
+-                        int height = (int) (dp(SharedConfig.useThreeLinesLayout ? 76 : 70) * PullForegroundDrawable.SNAP_HEIGHT);
++                        int height = (int) (tele.helpers.TeleCompactRows.height(parentPage.dialogsType, dp(SharedConfig.useThreeLinesLayout ? 76 : 70)) * PullForegroundDrawable.SNAP_HEIGHT);
+                         int diff = (view.getTop() - pTop) + view.getMeasuredHeight();
+ 
+                         long pullingTime = System.currentTimeMillis() - startArchivePullingTime;
+@@ -2582,7 +2582,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                                     parentPage.updateList(true);
+                                     if (!SharedConfig.archiveHidden && parentPage.layoutManager.findFirstVisibleItemPosition() == 0) {
+                                         disableActionBarScrolling = true;
+-                                        parentPage.listView.smoothScrollBy(0, -dp(SharedConfig.useThreeLinesLayout ? 76 : 70));
++                                        parentPage.listView.smoothScrollBy(0, -tele.helpers.TeleCompactRows.height(parentPage.dialogsType, dp(SharedConfig.useThreeLinesLayout ? 76 : 70)));
+                                     }
+                                 }
+                                 ArrayList<TLRPC.Dialog> dialogs = getDialogsArray(currentAccount, parentPage.dialogsType, folderId, false);
+@@ -2838,9 +2838,21 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+ 
+     private NotificationCenter.ObserversGroup observersGroup;
+ 
++    public void tele_refreshRows() {
++        if (viewPages == null) {
++            return;
++        }
++        for (ViewPage page : viewPages) {
++            if (page != null && page.dialogsAdapter != null) {
++                page.dialogsAdapter.notifyDataSetChanged();
++            }
++        }
++    }
++
+     @Override
+     public boolean onFragmentCreate() {
+         super.onFragmentCreate();
++        tele.helpers.TeleCompactRows.track(this);
+ 
+         if (arguments != null) {
+             onlySelect = arguments.getBoolean("onlySelect", false);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index e16b2ac5b..f7f479f15 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -264,6 +264,10 @@ object TeleConfig {
+     val JUMP_TO_FIRST = BoolItem("jump_to_first", false)
+     @JvmField
+     val INSTANT_CHAT_MOVE = BoolItem("instant_chat_move", false)
++    @JvmField
++    val HIDE_LIST_PREVIEWS = BoolItem("hide_list_previews", false)
++    @JvmField
++    val HIDE_BIRTHDAYS = BoolItem("hide_birthdays", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index f030a2ec4..0f0d39b83 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -147,6 +147,9 @@ object TeleHooks {
+         if (item === TeleConfig.HIDE_COMMUNITIES) {
+             tele.helpers.TeleCommunities.onToggled()
+         }
++        if (item === TeleConfig.HIDE_LIST_PREVIEWS) {
++            tele.helpers.TeleCompactRows.onToggled()
++        }
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCompactRows.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCompactRows.kt
+new file mode 100644
+index 000000000..005b6c8dc
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleCompactRows.kt
+@@ -0,0 +1,39 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.ui.DialogsActivity
++import tele.TeleConfig
++import java.util.Collections
++import java.util.WeakHashMap
++
++// Compact chat list rows: a small avatar and one line, no message preview.
++object TeleCompactRows {
++    const val HEIGHT_DP = 40
++    const val AVATAR_DP = 28
++    const val SKIP_DP = 6
++
++    private val screens: MutableSet<DialogsActivity> = Collections.newSetFromMap(WeakHashMap())
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.HIDE_LIST_PREVIEWS.value
++
++    // only the chat list and its folders, not the pickers
++    @JvmStatic
++    fun applies(dialogsType: Int): Boolean = enabled() && (dialogsType == 0 || dialogsType == 7 || dialogsType == 8)
++
++    @JvmStatic
++    fun height(dialogsType: Int, stock: Int): Int = if (applies(dialogsType)) AndroidUtilities.dp(HEIGHT_DP.toFloat()) else stock
++
++    @JvmStatic
++    fun track(screen: DialogsActivity) {
++        synchronized(screens) { screens.add(screen) }
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        AndroidUtilities.runOnUIThread {
++            val open = synchronized(screens) { screens.toList() }
++            open.forEach { it.tele_refreshRows() }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index bdb5156fe..13662adea 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -207,6 +207,8 @@ object TeleSearch {
+             section(1255, "Hide communities", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1256, "Jump to the first message", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1257, "Move chats instantly", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1260, "Hide message previews", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1261, "Compact chat list", "chats", TeleSettingsActivity.MODE_CHATS, "Hide message previews"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 3d20517f3..e854c1d00 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -594,6 +594,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Remove my messages" to "Adds it to chat menus: deletes all your messages there for everyone.",
+             "Show seconds in message times" to "Times read 14:03:21, and service messages show their time too.",
+             "Move chats instantly" to "Chats jump to their new place in the list without sliding.",
++            "Hide message previews" to "Compact rows: small avatars, one line.",
+             "Jump to the first message" to "Adds it to the chat menu: opens the very start of the chat or topic.",
+             "Hide communities" to "Their chats show up as regular chats.",
+             "Hide the all chats folder" to "The chat list opens on your first folder.",
+@@ -787,6 +788,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Hide communities", TeleConfig.HIDE_COMMUNITIES),
+                 toggle("Jump to the first message", TeleConfig.JUMP_TO_FIRST),
+                 toggle("Move chats instantly", TeleConfig.INSTANT_CHAT_MOVE),
++                toggle("Hide message previews", TeleConfig.HIDE_LIST_PREVIEWS),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Chats and profiles"),
+                 toggle("Show names instead of phone numbers in chat headers", TeleConfig.NAME_INSTEAD_OF_PHONE),

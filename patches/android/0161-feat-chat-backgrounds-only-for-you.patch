@@ -1,0 +1,857 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 05:25:55 +0300
+Subject: [PATCH 161/161] feat: chat backgrounds only for you
+
+---
+ .../messenger/ChatThemeController.java        |   5 +-
+ .../java/org/telegram/ui/ChatActivity.java    |  23 ++
+ .../org/telegram/ui/ThemePreviewActivity.java |  30 +-
+ .../telegram/ui/WallpapersListActivity.java   |  14 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../java/tele/helpers/LocalBackgrounds.kt     | 358 ++++++++++++++++++
+ .../settings/TeleChatBackgroundsActivity.kt   | 156 ++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  10 +
+ .../src/main/res/values/strings_tele.xml      |   5 +
+ 11 files changed, 605 insertions(+), 6 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleChatBackgroundsActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ChatThemeController.java b/TMessagesProj/src/main/java/org/telegram/messenger/ChatThemeController.java
+index da6d72fac..0be17d12a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ChatThemeController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ChatThemeController.java
+@@ -332,7 +332,7 @@ public class ChatThemeController extends BaseController {
+             themeKey = ThemeKey.fromSavedString(getEmojiSharedPreferences().getString("chatTheme_" + currentAccount + "_" + dialogId, null));
+             dialogEmoticonsMap.put(dialogId, themeKey);
+         }
+-        return getTheme(themeKey);
++        return tele.helpers.LocalBackgrounds.has(currentAccount, dialogId) ? null : getTheme(themeKey);
+     }
+ 
+     public EmojiThemes getTheme(ThemeKey themeKey) {
+@@ -369,6 +369,9 @@ public class ChatThemeController extends BaseController {
+     }
+ 
+     public TLRPC.WallPaper getDialogWallpaper(long dialogId) {
++        if (tele.helpers.LocalBackgrounds.has(currentAccount, dialogId)) {
++            return tele.helpers.LocalBackgrounds.wallpaper(currentAccount, dialogId);
++        }
+         if (dialogId >= 0) {
+             TLRPC.UserFull userFull = getMessagesController().getUserFull(dialogId);
+             if (userFull != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 2a860a851..39905f46e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1734,6 +1734,7 @@ public class ChatActivity extends BaseFragment implements
+     private final static int tele_action_remove_mine = 190;
+     private final static int tele_action_bookmarks = 134;
+     private final static int tele_action_jump_first = 320;
++    private final static int tele_action_chat_background = 355;
+ 
+     private final static int id_chat_compose_panel = 1000;
+ 
+@@ -3896,6 +3897,8 @@ public class ChatActivity extends BaseFragment implements
+                 } else if (id == tele_action_jump_first) {
+                     // a date before any message makes the stock date jump land on the oldest one
+                     jumpToDate(86400);
++                } else if (id == tele_action_chat_background) {
++                    tele.helpers.LocalBackgrounds.showMenu(ChatActivity.this, dialog_id);
+                 } else if (id == copy) {
+                     SpannableStringBuilder str = new SpannableStringBuilder();
+                     long previousUid = 0;
+@@ -4653,6 +4656,9 @@ public class ChatActivity extends BaseFragment implements
+             if (tele.TeleConfig.JUMP_TO_FIRST.getValue() && chatMode == 0 && currentEncryptedChat == null && (isTopic || threadMessageId == 0)) {
+                 headerItem.lazilyAddSubItem(tele_action_jump_first, R.drawable.msg_go_up, getString(R.string.TeleJumpToFirst));
+             }
++            if (tele.TeleConfig.LOCAL_CHAT_BACKGROUNDS.getValue() && chatMode == 0 && themeDelegate.isThemeChangeAvailable(false) && (isTopic || threadMessageId == 0)) {
++                headerItem.lazilyAddSubItem(tele_action_chat_background, R.drawable.msg_background, getString(R.string.TeleBackgroundForMe));
++            }
+             if (tele.TeleConfig.BOOKMARKS.getValue() && currentEncryptedChat == null) {
+                 headerItem.lazilyAddSubItem(tele_action_bookmarks, R.drawable.msg_saved, getString(R.string.TeleBookmarks));
+                 headerItem.hideSubItem(tele_action_bookmarks);
+@@ -44455,10 +44461,27 @@ public class ChatActivity extends BaseFragment implements
+         });
+     }
+ 
++    public void tele_refreshBackground() {
++        if (themeDelegate == null || parentThemeDelegate != null) {
++            return;
++        }
++        if (tele.helpers.LocalBackgrounds.has(currentAccount, dialog_id)) {
++            setChatThemeEmoticon(null);
++            return;
++        }
++        setChatThemeEmoticon(userInfo != null ? userInfo.theme : null);
++        final ChatThemeController controller = ChatThemeController.getInstance(currentAccount);
++        themeDelegate.setCurrentTheme(controller.getDialogTheme(dialog_id), controller.getDialogWallpaper(dialog_id), true, null);
++    }
++
+     private void setChatThemeEmoticon(final TLRPC.ChatTheme theme) {
+         if (themeDelegate == null || parentThemeDelegate != null) {
+             return;
+         }
++        if (tele.helpers.LocalBackgrounds.has(currentAccount, dialog_id)) {
++            themeDelegate.setCurrentTheme(null, ChatThemeController.getInstance(currentAccount).getDialogWallpaper(dialog_id), openAnimationStartTime != 0, null);
++            return;
++        }
+         ThemeKey key = ThemeKey.of(theme);
+         ChatThemeController chatThemeController = ChatThemeController.getInstance(currentAccount);
+         chatThemeController.setDialogTheme(dialog_id, theme, false);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ThemePreviewActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ThemePreviewActivity.java
+index ef0c26480..76194e0f4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ThemePreviewActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ThemePreviewActivity.java
+@@ -344,6 +344,7 @@ public class ThemePreviewActivity extends BaseFragment implements DownloadContro
+ 
+     private WallpaperActivityDelegate delegate;
+     long dialogId;
++    private boolean tele_local;
+     boolean self = true;
+     private boolean shouldShowDayNightIcon;
+     private boolean shouldShowBrightnessControll;
+@@ -407,7 +408,7 @@ public class ThemePreviewActivity extends BaseFragment implements DownloadContro
+     private boolean checkingBoostsLevel = false, checkedBoostsLevel = false;
+     public TL_stories.TL_premium_boostsStatus boostsStatus;
+     private void checkBoostsLevel() {
+-        if (dialogId >= 0 || checkingBoostsLevel || checkedBoostsLevel || boostsStatus != null) {
++        if (dialogId >= 0 || tele_local || checkingBoostsLevel || checkedBoostsLevel || boostsStatus != null) {
+             return;
+         }
+         checkingBoostsLevel = true;
+@@ -510,6 +511,10 @@ public class ThemePreviewActivity extends BaseFragment implements DownloadContro
+         this.self = dialogId == 0 || dialogId == getUserConfig().getClientUserId();
+     }
+ 
++    public void tele_setLocal(boolean local) {
++        tele_local = local;
++    }
++
+     public void setOnSwitchDayNightDelegate(DayNightSwitchDelegate delegate) {
+         this.onSwitchDayNightDelegate = delegate;
+     }
+@@ -1459,7 +1464,7 @@ public class ThemePreviewActivity extends BaseFragment implements DownloadContro
+                 updateApplyButton1(false);
+                 applyButton1.setOnClickListener(view -> applyWallpaperBackground(false));
+ 
+-                if (dialogId > 0 && !self && serverWallpaper == null) {
++                if (dialogId > 0 && !self && serverWallpaper == null && !tele_local) {
+                     applyButton2 = new BlurButton(context);
+                     ScaleStateListAnimator.apply(applyButton2, 0.033f, 1.2f);
+                     TLRPC.User user = getMessagesController().getUser(dialogId);
+@@ -2397,7 +2402,7 @@ public class ThemePreviewActivity extends BaseFragment implements DownloadContro
+     }
+ 
+     private void updateApplyButton1(boolean animated) {
+-        if (dialogId > 0) {
++        if (dialogId > 0 || tele_local && dialogId != 0) {
+             applyButton1.setText(LocaleController.getString(R.string.ApplyWallpaperForMe));
+         } else if (dialogId < 0) {
+             TLRPC.Chat chat = getMessagesController().getChat(-dialogId);
+@@ -2433,7 +2438,7 @@ public class ThemePreviewActivity extends BaseFragment implements DownloadContro
+     }
+ 
+     private void applyWallpaperBackground(boolean forBoth) {
+-        if (dialogId < 0) {
++        if (dialogId < 0 && !tele_local) {
+             if (boostsStatus != null && boostsStatus.level < getCustomWallpaperLevelMin()) {
+                 getMessagesController().getBoostsController().userCanBoostChannel(dialogId, boostsStatus, canApplyBoost -> {
+                     if (getContext() == null) {
+@@ -2697,6 +2702,23 @@ public class ThemePreviewActivity extends BaseFragment implements DownloadContro
+                 wallpaperInfo.accessHash = colorWallpaper.parentWallpaper.access_hash;
+             }
+         }
++        if (tele_local) {
++            final boolean tele_wantsImage = currentWallpaper instanceof TLRPC.TL_wallPaper
++                    || currentWallpaper instanceof MediaController.SearchImage
++                    || currentWallpaper instanceof WallpapersListActivity.ColorWallpaper && selectedPattern != null
++                    || currentWallpaper instanceof WallpapersListActivity.FileWallpaper && ((WallpapersListActivity.FileWallpaper) currentWallpaper).resId == 0 && !Theme.THEME_BACKGROUND_SLUG.equals(slug);
++            if (tele_wantsImage && !done) {
++                tele.helpers.LocalBackgrounds.failed();
++                return;
++            }
++            tele.helpers.LocalBackgrounds.save(this, dialogId, wallpaperInfo, tele_wantsImage ? new File(ApplicationLoader.getFilesDirFixed(), fileName) : null, selectedPattern != null, !sameFile);
++            setupFinished = true;
++            if (delegate != null) {
++                delegate.didSetNewBackground(null);
++            }
++            finishFragment();
++            return;
++        }
+         wallpaperInfo.dialogId = dialogId;
+         if (dialogId != 0) {
+             TLRPC.UserFull userFull = getMessagesController().getUserFull(dialogId);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/WallpapersListActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/WallpapersListActivity.java
+index 0eab55e2d..bc66bb353 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/WallpapersListActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/WallpapersListActivity.java
+@@ -101,6 +101,7 @@ public class WallpapersListActivity extends BaseFragment implements Notification
+ 
+     private int currentType;
+     private final long dialogId;
++    private boolean tele_local;
+ 
+     private Paint colorPaint;
+     private Paint colorFramePaint;
+@@ -427,6 +428,14 @@ public class WallpapersListActivity extends BaseFragment implements Notification
+         this.dialogId = dialogId;
+     }
+ 
++    public void tele_setLocal(boolean local) {
++        tele_local = local;
++    }
++
++    public boolean tele_isLocal() {
++        return tele_local;
++    }
++
+     @Override
+     public boolean onFragmentCreate() {
+         if (currentType == TYPE_ALL || currentType == TYPE_CHANNEL_PATTERNS) {
+@@ -483,6 +492,7 @@ public class WallpapersListActivity extends BaseFragment implements Notification
+             public void didSelectWallpaper(File file, Bitmap bitmap, boolean gallery) {
+                 ThemePreviewActivity themePreviewActivity = new ThemePreviewActivity(new FileWallpaper("", file, file), bitmap);
+                 themePreviewActivity.setDialogId(dialogId);
++                themePreviewActivity.tele_setLocal(tele_local);
+                 if (dialogId != 0) {
+                     themePreviewActivity.setDelegate(wallPaper -> WallpapersListActivity.this.removeSelfFromStack());
+                 }
+@@ -737,7 +747,8 @@ public class WallpapersListActivity extends BaseFragment implements Notification
+             if (position == uploadImageRow) {
+                 updater.openGallery();
+             } else if (position == setColorRow) {
+-                WallpapersListActivity activity = new WallpapersListActivity(TYPE_COLOR);
++                WallpapersListActivity activity = new WallpapersListActivity(TYPE_COLOR, tele_local ? dialogId : 0);
++                activity.tele_setLocal(tele_local);
+                 activity.patterns = patterns;
+                 presentFragment(activity);
+             } else if (position == resetRow) {
+@@ -961,6 +972,7 @@ public class WallpapersListActivity extends BaseFragment implements Notification
+             }
+             wallpaperActivity.setPatterns(patterns);
+             wallpaperActivity.setDialogId(dialogId);
++            wallpaperActivity.tele_setLocal(tele_local);
+             showAsSheet(wallpaperActivity);
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 0c865c87d..3d6c3b7bb 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -286,6 +286,8 @@ object TeleConfig {
+     val PROFILE_PHOTO_BACKGROUND = BoolItem("profile_photo_background", false)
+     @JvmField
+     val PROFILE_PHOTO_BACKGROUND_COLOR = BoolItem("profile_photo_background_color", false)
++    @JvmField
++    val LOCAL_CHAT_BACKGROUNDS = BoolItem("local_chat_backgrounds", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index caadb9026..207d300d2 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -180,6 +180,9 @@ object TeleHooks {
+         if (item === TeleConfig.LOWERCASE_INTERFACE) {
+             tele.helpers.TeleLowercase.onToggled()
+         }
++        if (item === TeleConfig.LOCAL_CHAT_BACKGROUNDS) {
++            tele.helpers.LocalBackgrounds.onToggled()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt b/TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt
+new file mode 100644
+index 000000000..9b26ca9bf
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt
+@@ -0,0 +1,358 @@
++package tele.helpers
++
++import android.graphics.Bitmap
++import android.graphics.BitmapFactory
++import android.graphics.Canvas
++import android.graphics.drawable.BitmapDrawable
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.BottomSheet
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.MotionBackgroundDrawable
++import org.telegram.ui.LaunchActivity
++import org.telegram.ui.WallpapersListActivity
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.io.File
++import java.io.FileOutputStream
++
++/**
++ * Chat backgrounds that only this device shows. They never go to Telegram: a stored entry
++ * replaces the chat's own theme and wallpaper, an entry without a picture means "use my own
++ * default background" and hides the one the other side set.
++ */
++object LocalBackgrounds {
++
++    private const val FOLDER = "tele_backgrounds"
++    private const val JPEG_QUALITY = 90
++
++    class Entry(
++        @JvmField val none: Boolean,
++        val file: String?,
++        val colors: IntArray,
++        val rotation: Int,
++        val intensity: Int,
++        val motion: Boolean,
++        val average: Int
++    ) {
++        // built once: the chat compares wallpapers by path or id, a new object per call would restart the load
++        @Volatile
++        var wallpaper: TLRPC.WallPaper? = null
++    }
++
++    private class State {
++        val map = HashMap<Long, Entry>()
++        var loaded = false
++    }
++
++    private val states = arrayOfNulls<State>(UserConfig.MAX_ACCOUNT_COUNT)
++
++    private fun key(account: Int) = "local_backgrounds.$account"
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.LOCAL_CHAT_BACKGROUNDS.value
++
++    @Synchronized
++    private fun state(account: Int): State {
++        var s = states[account]
++        if (s == null) {
++            s = State()
++            states[account] = s
++        }
++        if (!s.loaded) {
++            s.loaded = true
++            decode(TeleDatabaseHelper.get(key(account)), s.map)
++        }
++        return s
++    }
++
++    private fun decode(raw: String?, into: HashMap<Long, Entry>) {
++        if (raw.isNullOrEmpty()) return
++        runCatching {
++            val data = JSONObject(raw).getJSONObject("d")
++            for (dialog in data.keys()) {
++                val o = data.getJSONObject(dialog)
++                val colors = IntArray(4)
++                val array = o.optJSONArray("c")
++                if (array != null) for (i in 0 until minOf(4, array.length())) colors[i] = array.getInt(i)
++                into[dialog.toLong()] = Entry(
++                    o.optInt("n", 0) != 0,
++                    o.optString("f").ifEmpty { null },
++                    colors,
++                    o.optInt("r", 45),
++                    o.optInt("i", 0),
++                    o.optInt("m", 0) != 0,
++                    o.optInt("a", 0)
++                )
++            }
++        }.onFailure { FileLog.e(it) }
++    }
++
++    private fun encode(map: Map<Long, Entry>): String? {
++        if (map.isEmpty()) return null
++        val data = JSONObject()
++        for ((dialog, e) in map) {
++            val o = JSONObject()
++            if (e.none) {
++                o.put("n", 1)
++            } else {
++                if (e.file != null) o.put("f", e.file)
++                o.put("c", JSONArray().apply { e.colors.forEach { put(it) } })
++                o.put("r", e.rotation)
++                o.put("i", e.intensity)
++                o.put("m", if (e.motion) 1 else 0)
++                o.put("a", e.average)
++            }
++            data.put(dialog.toString(), o)
++        }
++        return JSONObject().put("v", 1).put("d", data).toString()
++    }
++
++    private fun folder(): File = ApplicationLoader.getFilesDirFixed(FOLDER)
++
++    @Synchronized
++    private fun entry(account: Int, dialogId: Long): Entry? {
++        if (account !in states.indices) return null
++        return state(account).map[dialogId]
++    }
++
++    /** Whether the chat shows a background of this device instead of its own. */
++    @JvmStatic
++    fun has(account: Int, dialogId: Long): Boolean = enabled() && entry(account, dialogId) != null
++
++    /** The wallpaper the chat draws; null for "my default background". */
++    @JvmStatic
++    fun wallpaper(account: Int, dialogId: Long): TLRPC.WallPaper? {
++        if (!enabled()) return null
++        val e = entry(account, dialogId) ?: return null
++        if (e.none) return null
++        e.wallpaper?.let { return it }
++        synchronized(e) {
++            e.wallpaper?.let { return it }
++            val built = build(e)
++            e.wallpaper = built
++            return built
++        }
++    }
++
++    private fun build(e: Entry): TLRPC.WallPaper {
++        val paper = TLRPC.TL_wallPaperNoFile()
++        val settings = TLRPC.TL_wallPaperSettings()
++        settings.motion = e.motion
++        settings.intensity = e.intensity
++        settings.background_color = e.colors[0]
++        settings.second_background_color = e.colors[1]
++        settings.third_background_color = e.colors[2]
++        settings.fourth_background_color = e.colors[3]
++        settings.rotation = e.rotation
++        paper.settings = settings
++        val path = e.file?.let { File(folder(), it).absolutePath }
++        paper.id = (path ?: e.colors.joinToString()).hashCode().toLong()
++        if (path != null) {
++            paper.uploadingImage = path
++            // a flat placeholder instead of the black one while the picture loads
++            val placeholder = Bitmap.createBitmap(20, 20, Bitmap.Config.ARGB_8888)
++            placeholder.eraseColor(e.average or (0xff shl 24))
++            paper.thumbDrawable = BitmapDrawable(ApplicationLoader.applicationContext.resources, placeholder)
++        }
++        return paper
++    }
++
++    @JvmStatic
++    fun all(account: Int): List<Pair<Long, Boolean>> = synchronized(this) {
++        state(account).map.entries.map { it.key to it.value.none }
++    }
++
++    @JvmStatic
++    fun count(account: Int): Int = synchronized(this) { state(account).map.size }
++
++    /** Puts the entry into memory at once and the storage off the main thread. */
++    private fun commit(account: Int, dialogId: Long, entry: Entry?, oldFile: String?) {
++        val json: String?
++        synchronized(this) {
++            val map = state(account).map
++            if (entry == null) map.remove(dialogId) else map[dialogId] = entry
++            json = encode(map)
++        }
++        Utilities.globalQueue.postRunnable {
++            TeleDatabaseHelper.put(key(account), json)
++            if (oldFile != null && oldFile != entry?.file) File(folder(), oldFile).delete()
++        }
++        AndroidUtilities.runOnUIThread { refreshChats(account, dialogId) }
++    }
++
++    @JvmStatic
++    fun reset(account: Int, dialogId: Long) {
++        val old = entry(account, dialogId) ?: return
++        commit(account, dialogId, null, old.file)
++    }
++
++    @JvmStatic
++    fun setDefault(account: Int, dialogId: Long) {
++        val old = entry(account, dialogId)
++        commit(account, dialogId, Entry(true, null, IntArray(4), 45, 0, false, 0), old?.file)
++    }
++
++    /** The toggle or a stored entry changed: the open chats redraw their background. */
++    @JvmStatic
++    fun onToggled() = refreshChats(-1, 0L)
++
++    // account -1 means every one, dialog 0 means every chat
++    private fun refreshChats(account: Int, dialogId: Long) {
++        val launch = LaunchActivity.instance ?: return
++        val layouts = listOfNotNull(launch.actionBarLayout, launch.rightActionBarLayout, launch.layersActionBarLayout)
++        for (layout in layouts) {
++            for (fragment in ArrayList(layout.fragmentStack)) {
++                if (fragment !is ChatActivity) continue
++                if (account >= 0 && fragment.currentAccount != account) continue
++                if (dialogId != 0L && fragment.dialogId != dialogId) continue
++                fragment.tele_refreshBackground()
++            }
++        }
++    }
++
++    /** The chat menu: pick between the chat's own background, the app one and a picture of your own. */
++    @JvmStatic
++    fun showMenu(fragment: BaseFragment, dialogId: Long) {
++        val activity = fragment.parentActivity ?: return
++        if (!enabled()) return
++        val account = fragment.currentAccount
++        val now = entry(account, dialogId)
++        val mark = " \u2713"
++        val items = arrayOf<CharSequence>(
++            LocaleController.getString(R.string.TeleBackgroundOwn) + if (now == null) mark else "",
++            LocaleController.getString(R.string.TeleBackgroundDefault) + if (now?.none == true) mark else "",
++            LocaleController.getString(R.string.TeleBackgroundChoose) + if (now != null && !now.none) mark else ""
++        )
++        val icons = intArrayOf(R.drawable.msg_reset, R.drawable.msg_clear, R.drawable.msg_background)
++        val builder = BottomSheet.Builder(activity)
++        builder.setTitle(LocaleController.getString(R.string.TeleBackgroundForMe), true)
++        builder.setItems(items, icons) { _, which ->
++            when (which) {
++                0 -> reset(account, dialogId)
++                1 -> setDefault(account, dialogId)
++                else -> choose(fragment, dialogId)
++            }
++        }
++        fragment.showDialog(builder.create())
++    }
++
++    private fun choose(fragment: BaseFragment, dialogId: Long) {
++        val list = WallpapersListActivity(WallpapersListActivity.TYPE_ALL, dialogId)
++        list.tele_setLocal(true)
++        fragment.presentFragment(list)
++    }
++
++    /**
++     * Keeps what the wallpaper preview built for a chat. The picture is copied off the main thread;
++     * [image] is the file the preview wrote, [pattern] tells that it is a pattern over the colors.
++     */
++    @JvmStatic
++    fun save(
++        fragment: BaseFragment,
++        dialogId: Long,
++        info: Theme.OverrideWallpaperInfo,
++        image: File?,
++        pattern: Boolean,
++        cleanup: Boolean
++    ) {
++        val account = fragment.currentAccount
++        closePickers()
++        val old = entry(account, dialogId)?.file
++        val colors = intArrayOf(info.color, info.gradientColor1, info.gradientColor2, info.gradientColor3)
++        val builtIn = Theme.DEFAULT_BACKGROUND_SLUG == info.slug || Theme.THEME_BACKGROUND_SLUG == info.slug
++        val noPicture = image == null && colors.all { it == 0 }
++        if (builtIn || noPicture) {
++            commit(account, dialogId, Entry(true, null, IntArray(4), 45, 0, false, 0), old)
++            if (cleanup) image?.let { Utilities.globalQueue.postRunnable { it.delete() } }
++            return
++        }
++        val rotation = info.rotation
++        val motion = info.isMotion
++        val dim = (info.intensity * 100).toInt().coerceIn(0, 100)
++        Utilities.globalQueue.postRunnable {
++            var name: String? = null
++            var average = 0
++            var intensity = 0
++            var keptColors = colors
++            if (image != null) {
++                val target = "${account}_${Math.abs(dialogId)}_${System.currentTimeMillis()}.jpg"
++                val file = File(folder(), target)
++                val ok = runCatching {
++                    if (pattern && colors[2] != 0) flatten(image, file, colors) else image.copyTo(file, true)
++                    average = averageColor(file)
++                    true
++                }.getOrElse { FileLog.e(it); false }
++                if (cleanup) image.delete()
++                if (!ok) {
++                    file.delete()
++                    AndroidUtilities.runOnUIThread { failed() }
++                    return@postRunnable
++                }
++                name = target
++                // a pattern carries its colors in the picture
++                if (pattern) keptColors = IntArray(4)
++                intensity = if (pattern) 0 else dim
++            }
++            val entry = Entry(false, name, keptColors, rotation, intensity, motion, average)
++            commit(account, dialogId, entry, old)
++        }
++    }
++
++    // a pattern over a moving gradient: the preview file only holds the pattern, so the colors go under it
++    private fun flatten(source: File, target: File, colors: IntArray) {
++        val pattern = BitmapFactory.decodeFile(source.absolutePath) ?: error("pattern")
++        val result = Bitmap.createBitmap(pattern.width, pattern.height, Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(result)
++        val gradient = MotionBackgroundDrawable()
++        gradient.setColors(colors[0], colors[1], colors[2], colors[3])
++        gradient.setBounds(0, 0, result.width, result.height)
++        gradient.draw(canvas)
++        canvas.drawBitmap(pattern, 0f, 0f, null)
++        FileOutputStream(target).use { result.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
++        pattern.recycle()
++        result.recycle()
++    }
++
++    private fun averageColor(file: File): Int {
++        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++        BitmapFactory.decodeFile(file.absolutePath, bounds)
++        val options = BitmapFactory.Options().apply {
++            inSampleSize = maxOf(1, minOf(bounds.outWidth, bounds.outHeight) / 32)
++        }
++        val bitmap = BitmapFactory.decodeFile(file.absolutePath, options) ?: return 0
++        val one = Bitmap.createScaledBitmap(bitmap, 1, 1, true)
++        val color = one.getPixel(0, 0)
++        if (one !== bitmap) one.recycle()
++        bitmap.recycle()
++        return color
++    }
++
++    // the picker lists are of no use after a save: leave them so the chat shows again
++    private fun closePickers() {
++        AndroidUtilities.runOnUIThread {
++            val launch = LaunchActivity.instance ?: return@runOnUIThread
++            val layouts = listOfNotNull(launch.actionBarLayout, launch.rightActionBarLayout, launch.layersActionBarLayout)
++            for (layout in layouts) {
++                for (f in ArrayList(layout.fragmentStack)) {
++                    if (f is WallpapersListActivity && f.tele_isLocal()) f.removeSelfFromStack()
++                }
++            }
++        }
++    }
++
++    @JvmStatic
++    fun failed() {
++        android.widget.Toast.makeText(ApplicationLoader.applicationContext, R.string.TeleBackgroundFailed, android.widget.Toast.LENGTH_SHORT).show()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatBackgroundsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatBackgroundsActivity.kt
+new file mode 100644
+index 000000000..54b1931ff
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatBackgroundsActivity.kt
+@@ -0,0 +1,156 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.os.Bundle
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.ContactsController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.TextInfoPrivacyCell
++import org.telegram.ui.Cells.TextSettingsCell
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.helpers.LocalBackgrounds
++
++/** The chats that show a background only this device sees, with a way to drop each one. */
++class TeleChatBackgroundsActivity : BaseFragment() {
++
++    private class Entry(val dialogId: Long, val title: String, val none: Boolean)
++
++    private val account get() = UserConfig.selectedAccount
++
++    private var entries: List<Entry> = emptyList()
++    private var adapter: Adapter? = null
++
++    private fun peerTitle(dialogId: Long): String {
++        val controller = MessagesController.getInstance(account)
++        if (dialogId > 0) {
++            val user = controller.getUser(dialogId)
++            if (user != null) {
++                return ContactsController.formatName(user.first_name, user.last_name)
++            }
++        } else {
++            val chat = controller.getChat(-dialogId)
++            if (chat != null) {
++                return chat.title
++            }
++        }
++        return "Id $dialogId"
++    }
++
++    private fun reload() {
++        entries = LocalBackgrounds.all(account).map { Entry(it.first, peerTitle(it.first), it.second) }
++        adapter?.notifyDataSetChanged()
++    }
++
++    private fun showEntry(entry: Entry) {
++        val activity = parentActivity ?: return
++        val items = arrayOf<CharSequence>("Open the chat", "Reset the background")
++        AlertDialog.Builder(activity)
++            .setTitle(entry.title)
++            .setItems(items) { _, which ->
++                if (which == 0) {
++                    val args = Bundle()
++                    if (entry.dialogId > 0) args.putLong("user_id", entry.dialogId) else args.putLong("chat_id", -entry.dialogId)
++                    presentFragment(ChatActivity(args))
++                } else {
++                    LocalBackgrounds.reset(account, entry.dialogId)
++                    reload()
++                }
++            }
++            .show()
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle("Chat backgrounds")
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) {
++                    finishFragment()
++                }
++            }
++        })
++
++        reload()
++
++        val frameLayout = FrameLayout(context)
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = frameLayout
++
++        val listView = RecyclerListView(context)
++        listView.setLayoutManager(LinearLayoutManager(context))
++        listView.setVerticalScrollBarEnabled(false)
++        adapter = Adapter(context)
++        listView.setAdapter(adapter)
++        listView.setOnItemClickListener { _, position ->
++            val entry = entries.getOrNull(position - 1) ?: return@setOnItemClickListener
++            showEntry(entry)
++        }
++        frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        return fragmentView
++    }
++
++    override fun onResume() {
++        super.onResume()
++        reload()
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++
++        override fun getItemCount(): Int = entries.size + 2
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean =
++            holder.adapterPosition in 1..entries.size
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_HEADER -> HeaderCell(context)
++                TYPE_SHADOW -> TextInfoPrivacyCell(context)
++                else -> TextSettingsCell(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            when (val cell = holder.itemView) {
++                is HeaderCell -> cell.setText("Chat backgrounds")
++                is TextInfoPrivacyCell -> cell.setText(
++                    if (entries.isEmpty()) "No chats yet. Pick Background for me in a chat's menu."
++                    else "Tap a chat to open it or to bring back its own background"
++                )
++                else -> {
++                    val entry = entries[position - 1]
++                    val value = if (entry.none) "My default background" else "Chosen background"
++                    (cell as TextSettingsCell).setTextAndValue(entry.title, value, false)
++                }
++            }
++        }
++
++        override fun getItemViewType(position: Int): Int = when (position) {
++            0 -> TYPE_HEADER
++            entries.size + 1 -> TYPE_SHADOW
++            else -> TYPE_ENTRY
++        }
++    }
++
++    companion object {
++        const val MODE_CHAT_BACKGROUNDS = "chat_backgrounds"
++        private const val TYPE_HEADER = 0
++        private const val TYPE_ENTRY = 1
++        private const val TYPE_SHADOW = 2
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 8e32b0dc9..584a6154c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -229,6 +229,11 @@ object TeleSearch {
+             section(1278, "Badges in forwarded and reply headers", "chats", TeleSettingsActivity.MODE_CHATS, "Badges next to names in messages"),
+             section(1279, "Checkmarks on forwards and replies", "chats", TeleSettingsActivity.MODE_CHATS, "Badges next to names in messages"),
+             section(GUID_LOWERCASE, "Lowercase everything", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            section(1285, "Backgrounds only for you", "chats", TeleSettingsActivity.MODE_CHATS),
++            screen(1286, "Chat backgrounds") { TeleChatBackgroundsActivity() },
++            section(1287, "Background for me", "chats", TeleSettingsActivity.MODE_CHATS, "Backgrounds only for you"),
++            section(1288, "My default background", "chats", TeleSettingsActivity.MODE_CHATS, "Backgrounds only for you"),
++            section(1289, "Remove a chat background for me", "chats", TeleSettingsActivity.MODE_CHATS, "Backgrounds only for you"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index ef99fa76e..5e5fcf7b9 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -434,6 +434,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             row.type == TYPE_LINK || row.type == TYPE_LINK_ICON -> when (row.mode) {
+                 TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+                 TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
++                TeleChatBackgroundsActivity.MODE_CHAT_BACKGROUNDS -> presentFragment(TeleChatBackgroundsActivity())
+                 MODE_MENU -> if (row.type == TYPE_LINK) {
+                     presentFragment(TeleMenuActivity(tele.helpers.TeleMenuKind.MESSAGE))
+                 } else {
+@@ -618,6 +619,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Hide message previews" to "Compact rows: small avatars, one line.",
+             "Hide birthdays" to "No birthday banners, hints or effects.",
+             "Jump to the first message" to "Adds it to the chat menu: opens the very start of the chat or topic.",
++            "Backgrounds only for you" to "Adds it to chat menus: pick a background only you see.",
+             "Hide communities" to "Their chats show up as regular chats.",
+             "Hide the all chats folder" to "The chat list opens on your first folder.",
+             "Hide unread counters" to "Numbers only; chats stay unread. Long-press an account to leave it out.",
+@@ -850,6 +852,14 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Saved GIFs and stickers"),
+                 toggle("Keep saved GIFs and favorite stickers past the limit", TeleConfig.KEEP_MEDIA_PAST_LIMIT),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Backgrounds"),
++                toggle("Backgrounds only for you", TeleConfig.LOCAL_CHAT_BACKGROUNDS),
++                link(
++                    "Chat backgrounds",
++                    TeleChatBackgroundsActivity.MODE_CHAT_BACKGROUNDS,
++                    tele.helpers.LocalBackgrounds.count(UserConfig.selectedAccount).let { if (it == 0) "none" else it.toString() }
++                ),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Sponsored"),
+                 toggle("Hide sponsored messages", TeleConfig.HIDE_SPONSORED),
+                 toggle("Hide the proxy sponsor channel", TeleConfig.HIDE_PROXY_SPONSOR),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index d645335f7..c20c4de58 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -120,4 +120,9 @@
+     <string name="TeleNoBookmarks">No bookmarks yet. Bookmark a message from its menu.</string>
+     <string name="TeleBookmarkMessage">Message</string>
+     <string name="TeleBookmarkRemoveAsk">Remove this bookmark?</string>
++    <string name="TeleBackgroundForMe">Background for me</string>
++    <string name="TeleBackgroundOwn">Chat\'s own background</string>
++    <string name="TeleBackgroundDefault">My default background</string>
++    <string name="TeleBackgroundChoose">Choose a background\u2026</string>
++    <string name="TeleBackgroundFailed">Couldn\'t save the background</string>
+ </resources>

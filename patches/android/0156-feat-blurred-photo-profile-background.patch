@@ -1,0 +1,407 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 05:28:17 +0300
+Subject: [PATCH 156/161] feat: blurred photo profile background
+
+---
+ .../java/org/telegram/ui/ProfileActivity.java |  32 ++-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../src/main/java/tele/ui/TeleProfilePhoto.kt | 231 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ 6 files changed, 272 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 3132be856..fecfefbdd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -461,6 +461,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     protected float headerShadowAlpha = 1.0f;
+     private int actionBarBackgroundColor;
+     private TopView topView;
++    private tele.ui.TeleProfilePhoto tele_photo;
+     private long userId;
+     private long chatId;
+     private long topicId;
+@@ -1376,9 +1377,11 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 }
+                 if (progressToGradient > 0) {
+                     backgroundPaint.setAlpha((int) (0xFF * progressToGradient));
+-                    canvas.drawRect(0, 0, getMeasuredWidth(), y1, backgroundPaint);
++                    if (tele_photo == null || !tele_photo.draw(canvas, getMeasuredWidth(), y1, height + getHeaderExtraHeight(), (int) (0xFF * progressToGradient))) {
++                        canvas.drawRect(0, 0, getMeasuredWidth(), y1, backgroundPaint);
++                    }
+                 }
+-                if (hasEmoji) {
++                if (hasEmoji && (tele_photo == null || !tele_photo.isActive())) {
+                     final float loadedScale = emojiLoadedT.set(isEmojiLoaded());
+                     boolean shoudIgnore = openAnimationInProgress && playProfileAnimation == 2;
+                     if (!shoudIgnore && loadedScale > 0 && avatarContainer != null) {
+@@ -2369,6 +2372,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     @Override
+     public void onFragmentDestroy() {
+         super.onFragmentDestroy();
++        if (tele_photo != null) {
++            tele_photo.detach();
++            tele_photo = null;
++        }
+         if (sharedMediaLayout != null) {
+             sharedMediaLayout.onDestroy();
+         }
+@@ -2483,6 +2490,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         if (lastFragment instanceof ChatActivity && ((ChatActivity) lastFragment).themeDelegate != null && ((ChatActivity) lastFragment).themeDelegate.getCurrentTheme() != null && !((ChatActivity) lastFragment).themeDelegate.isGiftTheme()) {
+             resourcesProvider = lastFragment.getResourceProvider();
+         }
++        tele_installPhotoProfile();
+         ActionBar actionBar = new ActionBar(context, resourcesProvider) {
+             @Override
+             public boolean onTouchEvent(MotionEvent event) {
+@@ -2575,6 +2583,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         if (lastFragment instanceof ChatActivity && ((ChatActivity) lastFragment).themeDelegate != null && ((ChatActivity) lastFragment).themeDelegate.getCurrentTheme() != null && !((ChatActivity) lastFragment).themeDelegate.isGiftTheme()) {
+             resourcesProvider = lastFragment.getResourceProvider();
+         }
++        tele_installPhotoProfile();
+         searchTransitionOffset = 0;
+         searchTransitionProgress = 1f;
+         searchMode = false;
+@@ -11482,6 +11491,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 final MessagesController.PeerColors peerColors = MessagesController.getInstance(currentAccount).profilePeerColors;
+                 peerColor = peerColors == null ? null : peerColors.getColor(colorId);
+             }
++            if (tele_photo != null) {
++                peerColor = tele_photo.peerColor(peerColor, user, saved || isTopic);
++            }
+             if (wasPeerColor != peerColor) {
+                 updatedPeerColor();
+             }
+@@ -11800,6 +11812,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 MessagesController.PeerColors peerColors = MessagesController.getInstance(currentAccount).profilePeerColors;
+                 peerColor = peerColors == null ? null : peerColors.getColor(colorId);
+             }
++            if (tele_photo != null) {
++                peerColor = tele_photo.peerColor(peerColor, chat, saved || isTopic);
++            }
+             if (wasPeerColor != peerColor) {
+                 updatedPeerColor();
+             }
+@@ -12681,6 +12696,19 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         updateAutoDeleteItem();
+     }
+ 
++    private void tele_installPhotoProfile() {
++        if (tele_photo == null) {
++            tele_photo = tele.ui.TeleProfilePhoto.create(this, currentAccount);
++        }
++    }
++
++    public void tele_photoChanged() {
++        updateProfileData(false);
++        if (topView != null) {
++            topView.invalidate();
++        }
++    }
++
+     @Override
+     public Theme.ResourcesProvider getResourceProvider() {
+         return resourcesProvider;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 47b946f99..a6da58635 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -278,6 +278,8 @@ object TeleConfig {
+     val HIDE_LIST_PREVIEWS = BoolItem("hide_list_previews", false)
+     @JvmField
+     val HIDE_BIRTHDAYS = BoolItem("hide_birthdays", false)
++    @JvmField
++    val PROFILE_PHOTO_BACKGROUND = BoolItem("profile_photo_background", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index ab447b688..7c6dd3726 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -167,6 +167,9 @@ object TeleHooks {
+         if (item === TeleConfig.LOCAL_PINS) {
+             tele.helpers.LocalPins.onToggled()
+         }
++        if (item === TeleConfig.PROFILE_PHOTO_BACKGROUND) {
++            tele.ui.TeleProfilePhoto.onConfigChanged()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt b/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
+new file mode 100644
+index 000000000..e79226284
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
+@@ -0,0 +1,231 @@
++package tele.ui
++
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.graphics.Rect
++import android.graphics.drawable.Drawable
++import android.util.LruCache
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ImageLocation
++import org.telegram.messenger.ImageReceiver
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ProfileActivity
++import tele.TeleConfig
++import kotlin.math.max
++import kotlin.math.min
++
++/**
++ * The blurred profile photo as the header background of one [ProfileActivity].
++ * Every instance belongs to one account and one fragment.
++ */
++class TeleProfilePhoto private constructor(
++    private val fragment: ProfileActivity,
++    private val account: Int
++) {
++
++    private class Blurred(val bitmap: Bitmap, val edge: Int)
++
++    private var key: String? = null
++    private var blurred: Blurred? = null
++    private var synthetic: MessagesController.PeerColor? = null
++    private var receiver: ImageReceiver? = null
++    private var destroyed = false
++    private var blurringKey: String? = null
++
++    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
++    private val srcRect = Rect()
++    private val dstRect = Rect()
++
++    init {
++        live.add(this)
++    }
++
++    /** The header takes the photo, the pattern emoji of the stock header is dropped. */
++    fun isActive(): Boolean = blurred != null && enabled()
++
++    /** The colour the stock profile should use: a colour of the photo while it is ready, else the stock one. */
++    fun peerColor(stock: MessagesController.PeerColor?, source: TLObject?, excluded: Boolean): MessagesController.PeerColor? {
++        if (destroyed || excluded || !enabled()) {
++            release()
++            return stock
++        }
++        val location = ImageLocation.getForUserOrChat(account, source, ImageLocation.TYPE_BIG)
++        if (location == null || source == null) {
++            release()
++            return stock
++        }
++        val newKey = "$account:${location.getKey(source, null, false)}"
++        if (newKey != key) {
++            release()
++            key = newKey
++            cache.get(newKey)?.let { publish(it, silent = true) } ?: load(location, source, newKey)
++        }
++        return synthetic ?: stock
++    }
++
++    /** Draws the photo over the header; false means the stock background has to be drawn. */
++    fun draw(canvas: Canvas, width: Int, visibleHeight: Int, fullHeight: Int, alpha: Int): Boolean {
++        val photo = blurred ?: return false
++        if (!enabled() || width <= 0 || visibleHeight <= 0) return false
++        val height = max(visibleHeight, fullHeight)
++        val side = photo.bitmap.width
++        if (width >= height) {
++            val part = (side.toLong() * height / width).toInt().coerceIn(1, side)
++            srcRect.set(0, (side - part) / 2, side, (side - part) / 2 + part)
++        } else {
++            val part = (side.toLong() * width / height).toInt().coerceIn(1, side)
++            srcRect.set((side - part) / 2, 0, (side - part) / 2 + part, side)
++        }
++        dstRect.set(0, 0, width, height)
++        paint.alpha = alpha
++        canvas.save()
++        canvas.clipRect(0, 0, width, visibleHeight)
++        canvas.drawBitmap(photo.bitmap, srcRect, dstRect, paint)
++        canvas.restore()
++        return true
++    }
++
++    fun detach() {
++        destroyed = true
++        live.remove(this)
++        release()
++    }
++
++    private fun enabled(): Boolean = TeleConfig.PROFILE_PHOTO_BACKGROUND.value
++
++    private fun release() {
++        key = null
++        blurringKey = null
++        blurred = null
++        synthetic = null
++        receiver?.let {
++            it.setDelegate(null)
++            it.onDetachedFromWindow()
++            it.clearImage()
++        }
++        receiver = null
++    }
++
++    private fun load(location: ImageLocation, source: TLObject, loadKey: String) {
++        val imageReceiver = ImageReceiver()
++        imageReceiver.setCurrentAccount(account)
++        imageReceiver.setDelegate { r, set, thumb, _ ->
++            if (!set || thumb || destroyed || key != loadKey || receiver !== r || blurringKey == loadKey) return@setDelegate
++            val bitmap = r.bitmap ?: return@setDelegate
++            val square = squareOf(bitmap) ?: return@setDelegate
++            blurringKey = loadKey
++            // the receiver stays attached only until the first full image
++            Utilities.globalQueue.postRunnable {
++                val result = blur(square)
++                AndroidUtilities.runOnUIThread {
++                    if (destroyed || key != loadKey) return@runOnUIThread
++                    cache.put(loadKey, result)
++                    publish(result, silent = false)
++                }
++            }
++        }
++        receiver = imageReceiver
++        imageReceiver.onAttachedToWindow()
++        imageReceiver.setImage(location, "${SIDE}_$SIDE", null as Drawable?, null, source, 0)
++    }
++
++    private fun publish(result: Blurred, silent: Boolean) {
++        blurred = result
++        synthetic = peerColorOf(result.edge)
++        receiver?.let {
++            it.setDelegate(null)
++            it.onDetachedFromWindow()
++            it.clearImage()
++        }
++        receiver = null
++        if (!silent) {
++            fragment.tele_photoChanged()
++        }
++    }
++
++    private fun onConfig() {
++        if (destroyed) return
++        if (!enabled()) {
++            release()
++        }
++        fragment.tele_photoChanged()
++    }
++
++    private fun peerColorOf(edge: Int): MessagesController.PeerColor? {
++        val status = TLRPC.TL_emojiStatusCollectible()
++        val opaque = edge or (0xFF shl 24)
++        status.edge_color = opaque
++        status.center_color = opaque
++        status.text_color = Color.WHITE
++        // light enough to lift the action buttons off the photo, not to wash them out
++        status.pattern_color = mix(opaque, Color.WHITE, 0.35f)
++        return MessagesController.PeerColor.fromCollectible(status)
++    }
++
++    companion object {
++        private const val SIDE = 96
++        private const val RADIUS = 16
++        private const val TARGET_LIGHTNESS = 0.3
++        private const val MIN_DARKEN = 0.2
++        private const val MAX_DARKEN = 0.7
++
++        // the blurred photos of the opened profiles; the key holds the account
++        private val cache = LruCache<String, Blurred>(8)
++        private val live = ArrayList<TeleProfilePhoto>()
++
++        @JvmStatic
++        fun create(fragment: ProfileActivity, account: Int): TeleProfilePhoto = TeleProfilePhoto(fragment, account)
++
++        @JvmStatic
++        fun onConfigChanged() {
++            if (!TeleConfig.PROFILE_PHOTO_BACKGROUND.value) cache.evictAll()
++            for (photo in ArrayList(live)) photo.onConfig()
++        }
++
++        private fun squareOf(source: Bitmap): Bitmap? {
++            if (source.isRecycled || source.width <= 0 || source.height <= 0) return null
++            val side = min(source.width, source.height)
++            val result = Bitmap.createBitmap(SIDE, SIDE, Bitmap.Config.ARGB_8888)
++            val canvas = Canvas(result)
++            canvas.drawColor(Color.BLACK)
++            val from = Rect((source.width - side) / 2, (source.height - side) / 2, (source.width - side) / 2 + side, (source.height - side) / 2 + side)
++            canvas.drawBitmap(source, from, Rect(0, 0, SIDE, SIDE), Paint(Paint.FILTER_BITMAP_FLAG))
++            return result
++        }
++
++        private fun blur(square: Bitmap): Blurred {
++            Utilities.stackBlurBitmap(square, RADIUS)
++            Utilities.stackBlurBitmap(square, RADIUS)
++            val average = average(square, 0, SIDE)
++            val lightness = 0.299 * Color.red(average) / 255.0 + 0.587 * Color.green(average) / 255.0 + 0.114 * Color.blue(average) / 255.0
++            val darken = if (lightness > 0.0) (1.0 - TARGET_LIGHTNESS / lightness).coerceIn(MIN_DARKEN, MAX_DARKEN) else MIN_DARKEN
++            Canvas(square).drawColor(Color.argb((darken * 255.0 + 0.5).toInt(), 0, 0, 0))
++            return Blurred(square, average(square, 0, SIDE))
++        }
++
++        /** The mean colour of the rows [from, to) of a square bitmap. */
++        private fun average(bitmap: Bitmap, from: Int, to: Int): Int {
++            val width = bitmap.width
++            val rows = max(to - from, 1)
++            val pixels = IntArray(width * rows)
++            bitmap.getPixels(pixels, 0, width, 0, from, width, rows)
++            var r = 0L
++            var g = 0L
++            var b = 0L
++            for (pixel in pixels) {
++                r += Color.red(pixel)
++                g += Color.green(pixel)
++                b += Color.blue(pixel)
++            }
++            val count = pixels.size.toLong()
++            return Color.rgb((r / count).toInt(), (g / count).toInt(), (b / count).toInt())
++        }
++
++        private fun mix(from: Int, to: Int, amount: Float): Int = androidx.core.graphics.ColorUtils.blendARGB(from, to, amount)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index d160b10af..75cee21e8 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -188,6 +188,8 @@ object TeleSearch {
+             section(1125, "No edited mark on bot messages", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1126, "Show the start parameter", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1124, "Hide phone numbers in profiles", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(1270, "Blurred photo as profile background", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1271, "Profile cover from the avatar", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Blurred photo as profile background"),
+             section(1245, "Folders past the limit", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1246, "Local folders", "chats", TeleSettingsActivity.MODE_CHATS, "Folders past the limit"),
+             section(1247, "Unsorted folder", "chats", TeleSettingsActivity.MODE_CHATS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 937299078..f1d650048 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -700,6 +700,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Return to where you were reading" to "After sending while scrolled up, jump back to where you were.",
+             "Keep saved GIFs and favorite stickers past the limit" to "Keep the ones over the server limit on this device.",
+             "Pin chats past the limit" to "Pin more chats than Telegram allows; extras stay on this device.",
++            "Blurred photo as profile background" to "The header shows the blurred profile photo.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -945,6 +946,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),
+                 toggle("Open collectible gifts in see.tg", TeleConfig.SEETG_BUTTON),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Appearance"),
++                toggle("Blurred photo as profile background", TeleConfig.PROFILE_PHOTO_BACKGROUND),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Local names"),
+                 toggle("Local names for people", TeleConfig.LOCAL_NAMES),
+                 link("Local names", TeleNamesActivity.MODE_LOCAL),

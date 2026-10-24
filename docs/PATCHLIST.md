@@ -306,17 +306,17 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0129 | компактный список чатов | todo | `DialogCell`, `DialogsAdapter`; L; реш.: 0129 compact L; малые аватары, одна строка |
-| 0133 | скрыть счётчики непрочитанного | todo | `FilterTabsView`, `NotificationsController`, `Drawer*Cell`; M; четыре под-тумблера |
-| 0300 | компактные папки «только иконки» (частично) | todo | `FilterTabsView`, `DialogsActivity`; L; по умолч.: новая фича; нет режима иконок в стоке |
-| 0279 | скрыть дни рождения | todo | `BirthdayController`, `DialogsActivity`, `ProfileBirthdayEffect`; S; зависит от 0125; без рестарта через onConfigChanged |
-| 0299 | размытое фото как фон шапки профиля | todo | `ProfileActivity.TopView`; M; MODE_IDS или interface |
-| 0304 | залить профиль цветом фото (частично) | todo | `ProfileActivity`, `ResourcesProvider`; L; зависит от 0299; реш.: 0304 полный override; регрессионно хрупко |
-| 0267 | убрать хвостики пузырей | todo | `ChatMessageCell`, `Theme.MessageDrawable`; M; форсировать drawPinnedBottom; проверка на устройстве |
-| 0276 | бейджи в «Переслано» и reply | todo | `ChatMessageCell`, `TeleNameBadges`; M; зависит от 0012, android 0069, android 0073; горячий файл, проверка на устройстве |
-| 0022, 0035 | lowercase всего интерфейса | todo | перехват `LocaleController.getString` (+ строки `strings_tele.xml`); тумблер выкл.; M |
+| 0129 | компактный список чатов | built | `0152-feat-hide-message-previews`; `DialogCell`, `DialogsAdapter`; L; реш.: 0129 compact L; малые аватары, одна строка |
+| 0133 | скрыть счётчики непрочитанного | built | `0154-feat-hide-unread-counters`; `FilterTabsView`, `NotificationsController`, `Drawer*Cell`; M; четыре под-тумблера |
+| 0300 | компактные папки «только иконки» (частично) | built | `0155-feat-compact-icon-only-folders`; `FilterTabsView`, `DialogsActivity`; L; по умолч.: новая фича; нет режима иконок в стоке |
+| 0279 | скрыть дни рождения | built | `0153-feat-hide-birthdays`; `BirthdayController`, `DialogsActivity`, `ProfileBirthdayEffect`; S; зависит от 0125; без рестарта через onConfigChanged |
+| 0299 | размытое фото как фон шапки профиля | built | `0156-feat-blurred-photo-profile-background`; `ProfileActivity.TopView`; M; MODE_IDS или interface |
+| 0304 | залить профиль цветом фото (частично) | built | `0157-feat-fill-profile-with-photo-colors`; `ProfileActivity`, `ResourcesProvider`; L; зависит от 0299; реш.: 0304 полный override; регрессионно хрупко |
+| 0267 | убрать хвостики пузырей | built | `0158-feat-hide-bubble-tails`; `ChatMessageCell`, `Theme.MessageDrawable`; M; форсировать drawPinnedBottom; проверка на устройстве |
+| 0276 | бейджи в «Переслано» и reply | built | `0159-feat-badges-on-forwarded-and-reply-headers`; `ChatMessageCell`, `TeleNameBadges`; M; зависит от 0012, android 0069, android 0073; горячий файл, проверка на устройстве |
+| 0022, 0035 | lowercase всего интерфейса | built | `0160-feat-lowercase-the-interface`; перехват `LocaleController.getString` (+ строки `strings_tele.xml`); тумблер выкл.; M |
 | 0010, 0041, 0097, 0150 | шаблон заголовка списка чатов | built | `0130-feat-live-chat-list-title`; движок `TeleTitle`: переменные `{build}` (голое число или `dev`), `{version}`, `{time}`, `{date}`, `{weekday}`, `{day}`, `{month}`, `{name}`, `{username}`, `{id}`, `{accounts}`, `{unread}`, `{status}`, модификаторы после `\|`, группы `[ … ]` прячутся при пустой переменной или 0; заголовок обновляется сам (тики раз в секунду/минуту, счётчики, имя, соединение); редактор `TeleTitleEditor` (tele → interface → chat list title): подсветка, живое превью, ошибки, чипы, пресеты, сброс; пустой шаблон — имя приложения; дефолт `tele {build}` = прежняя метка; нет заголовка окна, `{label}`, `{chat}`, `{chat_unread}` |
-| 0068 | локальные фоны чатов (частично) | todo | per-chat обои уже в стоке; добавить форс-локальность (не отправлять `setChatWallPaper` на сервер) и удаление навязанного; M |
+| 0068 | локальные фоны чатов (частично) | built | `0161-feat-chat-backgrounds-only-for-you`; per-chat обои уже в стоке; добавить форс-локальность (не отправлять `setChatWallPaper` на сервер) и удаление навязанного; M |
 
 ## пачка 17 — отправка
 

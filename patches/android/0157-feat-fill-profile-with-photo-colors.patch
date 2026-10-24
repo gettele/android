@@ -1,0 +1,525 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 05:30:16 +0300
+Subject: [PATCH 157/161] feat: fill profile with photo colors
+
+---
+ .../java/org/telegram/ui/ProfileActivity.java |  12 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
+ .../src/main/java/tele/ui/TeleProfilePhoto.kt | 290 +++++++++++++++++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +
+ 6 files changed, 309 insertions(+), 4 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index fecfefbdd..edb0fc943 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -12700,6 +12700,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         if (tele_photo == null) {
+             tele_photo = tele.ui.TeleProfilePhoto.create(this, currentAccount);
+         }
++        resourcesProvider = tele_photo.provide(resourcesProvider);
+     }
+ 
+     public void tele_photoChanged() {
+@@ -12709,6 +12710,17 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         }
+     }
+ 
++    public void tele_skinChanged() {
++        if (listView == null || listAdapter == null) {
++            return;
++        }
++        listView.setBackgroundColor(getThemedColor(Theme.key_windowBackgroundGray));
++        listView.setAdapter(listAdapter);
++        if (fragmentView != null) {
++            fragmentView.invalidate();
++        }
++    }
++
+     @Override
+     public Theme.ResourcesProvider getResourceProvider() {
+         return resourcesProvider;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index a6da58635..fd0228f8b 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -280,6 +280,8 @@ object TeleConfig {
+     val HIDE_BIRTHDAYS = BoolItem("hide_birthdays", false)
+     @JvmField
+     val PROFILE_PHOTO_BACKGROUND = BoolItem("profile_photo_background", false)
++    @JvmField
++    val PROFILE_PHOTO_BACKGROUND_COLOR = BoolItem("profile_photo_background_color", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 7c6dd3726..d0ae35590 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -167,7 +167,7 @@ object TeleHooks {
+         if (item === TeleConfig.LOCAL_PINS) {
+             tele.helpers.LocalPins.onToggled()
+         }
+-        if (item === TeleConfig.PROFILE_PHOTO_BACKGROUND) {
++        if (item === TeleConfig.PROFILE_PHOTO_BACKGROUND || item === TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR) {
+             tele.ui.TeleProfilePhoto.onConfigChanged()
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt b/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
+index e79226284..6d08c32c5 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleProfilePhoto.kt
+@@ -3,30 +3,38 @@ package tele.ui
+ import android.graphics.Bitmap
+ import android.graphics.Canvas
+ import android.graphics.Color
++import android.graphics.ColorFilter
++import android.graphics.LinearGradient
+ import android.graphics.Paint
+ import android.graphics.Rect
++import android.graphics.Shader
+ import android.graphics.drawable.Drawable
+ import android.util.LruCache
++import android.util.SparseIntArray
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.ImageLocation
+ import org.telegram.messenger.ImageReceiver
+ import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
+ import org.telegram.messenger.Utilities
+ import org.telegram.tgnet.TLObject
+ import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.ProfileActivity
+ import tele.TeleConfig
++import kotlin.math.cbrt
+ import kotlin.math.max
+ import kotlin.math.min
++import kotlin.math.pow
+ 
+ /**
+- * The blurred profile photo as the header background of one [ProfileActivity].
+- * Every instance belongs to one account and one fragment.
++ * The blurred profile photo as the header background of one [ProfileActivity], and, optionally,
++ * the colour of the whole profile. Every instance belongs to one account and one fragment.
+  */
+ class TeleProfilePhoto private constructor(
+     private val fragment: ProfileActivity,
+     private val account: Int
+-) {
++) : NotificationCenter.NotificationCenterDelegate {
+ 
+     private class Blurred(val bitmap: Bitmap, val edge: Int)
+ 
+@@ -34,29 +42,53 @@ class TeleProfilePhoto private constructor(
+     private var blurred: Blurred? = null
+     private var synthetic: MessagesController.PeerColor? = null
+     private var receiver: ImageReceiver? = null
++    private var theme: ProfilePhotoTheme? = null
+     private var destroyed = false
+     private var blurringKey: String? = null
++    private var skinPosted = false
++
++    private var fillWidth = 0
++    private var fillHeight = 0
++    private var fillColor = 0
+ 
+     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
++    private val seamPaint = Paint()
+     private val srcRect = Rect()
+     private val dstRect = Rect()
++    private var seamTop = 0
++    private var seamBottom = 0
++    private var seamColor = 0
+ 
+     init {
+         live.add(this)
++        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.didSetNewTheme)
++        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.needSetDayNightTheme)
+     }
+ 
+     /** The header takes the photo, the pattern emoji of the stock header is dropped. */
+     fun isActive(): Boolean = blurred != null && enabled()
+ 
++    /** The provider of the profile: the fill override is only wired in while the photo option was on. */
++    fun provide(inner: Theme.ResourcesProvider?): Theme.ResourcesProvider? {
++        val current = theme
++        if (inner != null && inner === current) return current
++        if (current != null && inner === current.inner) return current
++        // the override replaces the provider of the whole fragment, so it is only wired in on request
++        if (!enabled() || !TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.value) return inner
++        return ProfilePhotoTheme(inner).also { theme = it }
++    }
++
+     /** The colour the stock profile should use: a colour of the photo while it is ready, else the stock one. */
+     fun peerColor(stock: MessagesController.PeerColor?, source: TLObject?, excluded: Boolean): MessagesController.PeerColor? {
+         if (destroyed || excluded || !enabled()) {
+             release()
++            updateFill()
+             return stock
+         }
+         val location = ImageLocation.getForUserOrChat(account, source, ImageLocation.TYPE_BIG)
+         if (location == null || source == null) {
+             release()
++            updateFill()
+             return stock
+         }
+         val newKey = "$account:${location.getKey(source, null, false)}"
+@@ -65,6 +97,7 @@ class TeleProfilePhoto private constructor(
+             key = newKey
+             cache.get(newKey)?.let { publish(it, silent = true) } ?: load(location, source, newKey)
+         }
++        updateFill()
+         return synthetic ?: stock
+     }
+ 
+@@ -86,14 +119,41 @@ class TeleProfilePhoto private constructor(
+         canvas.save()
+         canvas.clipRect(0, 0, width, visibleHeight)
+         canvas.drawBitmap(photo.bitmap, srcRect, dstRect, paint)
++        drawSeam(canvas, width, visibleHeight, alpha)
+         canvas.restore()
+         return true
+     }
+ 
++    private fun drawSeam(canvas: Canvas, width: Int, bottom: Int, alpha: Int) {
++        val fill = theme?.takeIf { it.active }?.fill ?: return
++        val seam = min(AndroidUtilities.dp(48f), bottom / 2)
++        if (seam <= 0) return
++        if (seamTop != bottom - seam || seamBottom != bottom || seamColor != fill) {
++            seamTop = bottom - seam
++            seamBottom = bottom
++            seamColor = fill
++            seamPaint.shader = LinearGradient(0f, seamTop.toFloat(), 0f, bottom.toFloat(), fill and 0xFFFFFF, fill or (0xFF shl 24), Shader.TileMode.CLAMP)
++        }
++        seamPaint.alpha = alpha
++        canvas.drawRect(0f, seamTop.toFloat(), width.toFloat(), bottom.toFloat(), seamPaint)
++    }
++
+     fun detach() {
+         destroyed = true
+         live.remove(this)
++        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didSetNewTheme)
++        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.needSetDayNightTheme)
+         release()
++        theme?.deactivate()
++        theme = null
++    }
++
++    override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++        if (destroyed) return
++        theme?.let {
++            it.reset()
++            if (it.active) fragment.tele_skinChanged()
++        }
+     }
+ 
+     private fun enabled(): Boolean = TeleConfig.PROFILE_PHOTO_BACKGROUND.value
+@@ -136,6 +196,7 @@ class TeleProfilePhoto private constructor(
+ 
+     private fun publish(result: Blurred, silent: Boolean) {
+         blurred = result
++        fillWidth = 0
+         synthetic = peerColorOf(result.edge)
+         receiver?.let {
+             it.setDelegate(null)
+@@ -143,16 +204,48 @@ class TeleProfilePhoto private constructor(
+             it.clearImage()
+         }
+         receiver = null
++        updateFill()
+         if (!silent) {
+             fragment.tele_photoChanged()
+         }
+     }
+ 
++    /** The fill follows the bottom of the header image; it is off while the child option is off. */
++    private fun updateFill() {
++        val provider = theme ?: return
++        val photo = blurred
++        val on = photo != null && enabled() && TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.value
++        if (!on) {
++            if (provider.deactivate()) scheduleSkin()
++            return
++        }
++        val display = AndroidUtilities.displaySize
++        val width = display.x
++        val height = AndroidUtilities.statusBarHeight + org.telegram.ui.ActionBar.ActionBar.getCurrentActionBarHeight() + AndroidUtilities.dp(226f)
++        if (fillWidth != width || fillHeight != height || provider.fill == 0) {
++            fillWidth = width
++            fillHeight = height
++            fillColor = fillOf(photo!!.bitmap, width, height)
++        }
++        if (provider.applyFill(fillColor)) scheduleSkin()
++    }
++
++    // the cells of the list are rebuilt once, outside of the profile update that changed the colours
++    private fun scheduleSkin() {
++        if (skinPosted || destroyed) return
++        skinPosted = true
++        AndroidUtilities.runOnUIThread {
++            skinPosted = false
++            if (!destroyed) fragment.tele_skinChanged()
++        }
++    }
++
+     private fun onConfig() {
+         if (destroyed) return
+         if (!enabled()) {
+             release()
+         }
++        updateFill()
+         fragment.tele_photoChanged()
+     }
+ 
+@@ -173,6 +266,10 @@ class TeleProfilePhoto private constructor(
+         private const val TARGET_LIGHTNESS = 0.3
+         private const val MIN_DARKEN = 0.2
+         private const val MAX_DARKEN = 0.7
++        private const val DARK_LIGHTNESS = 0.55
++        private const val LABEL_CONTRAST = 4.5
++        private const val DIM_DARK = 0.25
++        private const val DIM_LIGHT = 0.4
+ 
+         // the blurred photos of the opened profiles; the key holds the account
+         private val cache = LruCache<String, Blurred>(8)
+@@ -226,6 +323,193 @@ class TeleProfilePhoto private constructor(
+             return Color.rgb((r / count).toInt(), (g / count).toInt(), (b / count).toInt())
+         }
+ 
++        /** The colour of the bottom rows of the photo as the header shows it, dimmed. */
++        private fun fillOf(photo: Bitmap, width: Int, height: Int): Int {
++            val side = photo.width
++            val bottom = if (width >= height) {
++                val part = (side.toLong() * height / max(width, 1)).toInt().coerceIn(1, side)
++                (side - part) / 2 + part
++            } else {
++                side
++            }
++            val color = average(photo, max(bottom - 2, 0), bottom)
++            val factor = 1.0 - (if (isDarkColor(color)) DIM_DARK else DIM_LIGHT)
++            fun dim(channel: Int) = (channel * factor + 0.5).toInt().coerceIn(0, 255)
++            return Color.rgb(dim(Color.red(color)), dim(Color.green(color)), dim(Color.blue(color)))
++        }
++
+         private fun mix(from: Int, to: Int, amount: Float): Int = androidx.core.graphics.ColorUtils.blendARGB(from, to, amount)
++        private fun oklabLightness(color: Int): Double {
++            fun linear(value: Int): Double {
++                val v = value / 255.0
++                return if (v <= 0.04045) v / 12.92 else ((v + 0.055) / 1.055).pow(2.4)
++            }
++            val r = linear(Color.red(color))
++            val g = linear(Color.green(color))
++            val b = linear(Color.blue(color))
++            val l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
++            val m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
++            val s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
++            return 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s
++        }
++
++        private fun isDarkColor(color: Int): Boolean = oklabLightness(color) < DARK_LIGHTNESS
++
++        private fun luminance(color: Int): Double {
++            fun linear(value: Int): Double {
++                val v = value / 255.0
++                return if (v <= 0.04045) v / 12.92 else ((v + 0.055) / 1.055).pow(2.4)
++            }
++            return 0.2126 * linear(Color.red(color)) + 0.7152 * linear(Color.green(color)) + 0.0722 * linear(Color.blue(color))
++        }
++
++        private fun contrast(a: Int, b: Int): Double {
++            val x = luminance(a) + 0.05
++            val y = luminance(b) + 0.05
++            return max(x, y) / min(x, y)
++        }
++
++        /** Moves a label colour towards white or black until it reads on the background. */
++        private fun readable(label: Int, background: Int, dark: Boolean): Int {
++            val towards = if (dark) Color.WHITE else Color.BLACK
++            var result = label
++            var step = 1
++            while (step <= 20 && contrast(result, background) < LABEL_CONTRAST) {
++                result = mix(label, towards, step / 20f)
++                step++
++            }
++            return (label and (0xFF shl 24)) or (result and 0xFFFFFF)
++        }
++
++        /** The offset of a surface colour from the base one, carried over to the fill. */
++        private fun shift(value: Int, base: Int, fill: Int): Int {
++            val r = Color.red(value) - Color.red(base)
++            val g = Color.green(value) - Color.green(base)
++            val b = Color.blue(value) - Color.blue(base)
++            fun fits(channel: Int) = channel in 0..255
++            val sign = if (fits(Color.red(fill) + r) && fits(Color.green(fill) + g) && fits(Color.blue(fill) + b)) 1 else -1
++            fun at(channel: Int, delta: Int) = (channel + sign * delta).coerceIn(0, 255)
++            return Color.argb(Color.alpha(value), at(Color.red(fill), r), at(Color.green(fill), g), at(Color.blue(fill), b))
++        }
++
++        private const val SURFACE = 1
++        private const val LABEL = 2
++        private const val SELECTOR = 3
++
++        private val kinds = SparseIntArray().apply {
++            for (key in intArrayOf(
++                Theme.key_windowBackgroundGray,
++                Theme.key_graySection,
++                Theme.key_divider,
++                Theme.key_actionBarActionModeDefault
++            )) put(key, SURFACE)
++            for (key in intArrayOf(
++                Theme.key_windowBackgroundWhiteBlackText,
++                Theme.key_windowBackgroundWhiteGrayText,
++                Theme.key_windowBackgroundWhiteGrayText2,
++                Theme.key_windowBackgroundWhiteGrayText3,
++                Theme.key_windowBackgroundWhiteGrayText4,
++                Theme.key_windowBackgroundWhiteGrayText5,
++                Theme.key_windowBackgroundWhiteGrayText6,
++                Theme.key_windowBackgroundWhiteGrayText7,
++                Theme.key_windowBackgroundWhiteGrayText8,
++                Theme.key_windowBackgroundWhiteBlueText,
++                Theme.key_windowBackgroundWhiteBlueText2,
++                Theme.key_windowBackgroundWhiteBlueText3,
++                Theme.key_windowBackgroundWhiteBlueText4,
++                Theme.key_windowBackgroundWhiteBlueText5,
++                Theme.key_windowBackgroundWhiteBlueText6,
++                Theme.key_windowBackgroundWhiteBlueText7,
++                Theme.key_windowBackgroundWhiteBlueHeader,
++                Theme.key_windowBackgroundWhiteBlueIcon,
++                Theme.key_windowBackgroundWhiteGrayIcon,
++                Theme.key_windowBackgroundWhiteValueText,
++                Theme.key_windowBackgroundWhiteLinkText,
++                Theme.key_windowBackgroundWhiteGreenText,
++                Theme.key_windowBackgroundWhiteGreenText2,
++                Theme.key_text_RedRegular,
++                Theme.key_text_RedBold,
++                Theme.key_graySectionText,
++                Theme.key_player_actionBarTitle,
++                Theme.key_player_actionBarSubtitle,
++                Theme.key_actionBarActionModeDefaultIcon
++            )) put(key, LABEL)
++            put(Theme.key_listSelector, SELECTOR)
++            put(Theme.key_actionBarActionModeDefaultSelector, SELECTOR)
++        }
++    }
++
++    /**
++     * The profile-scoped colours: every key goes to the original provider, but the surfaces,
++     * dividers and labels of the profile body while the fill is on.
++     */
++    class ProfilePhotoTheme(val inner: Theme.ResourcesProvider?) : Theme.ResourcesProvider {
++        var active = false
++            private set
++        var fill = 0
++            private set
++        private val cache = SparseIntArray()
++
++        fun applyFill(color: Int): Boolean {
++            if (active && fill == color) return false
++            active = true
++            fill = color
++            cache.clear()
++            return true
++        }
++
++        fun deactivate(): Boolean {
++            if (!active) return false
++            active = false
++            cache.clear()
++            return true
++        }
++
++        fun reset() = cache.clear()
++
++        private fun stock(key: Int): Int = inner?.getColor(key) ?: Theme.getColor(key)
++
++        override fun getColor(key: Int): Int {
++            if (!active) return stock(key)
++            if (key == Theme.key_windowBackgroundWhite) return fill or (0xFF shl 24)
++            val kind = kinds.get(key, 0)
++            if (kind == 0) return stock(key)
++            val index = cache.indexOfKey(key)
++            if (index >= 0) return cache.valueAt(index)
++            val base = stock(key)
++            val background = fill or (0xFF shl 24)
++            val result = when (kind) {
++                SURFACE -> shift(base, stock(Theme.key_windowBackgroundWhite), background)
++                LABEL -> readable(base, background, isDarkColor(background))
++                else -> (base and (0xFF shl 24)) or (if (isDarkColor(background)) 0xFFFFFF else 0)
++            }
++            cache.put(key, result)
++            return result
++        }
++
++        override fun getColorOrDefault(key: Int): Int = if (active && overrides(key)) getColor(key) else inner?.getColorOrDefault(key) ?: stock(key)
++
++        override fun getCurrentColor(key: Int): Int = if (active && overrides(key)) getColor(key) else inner?.getCurrentColor(key) ?: stock(key)
++
++        private fun overrides(key: Int) = key == Theme.key_windowBackgroundWhite || kinds.get(key, 0) != 0
++
++        override fun setAnimatedColor(key: Int, color: Int) {
++            inner?.setAnimatedColor(key, color)
++        }
++
++        override fun getDrawable(drawableKey: String?): Drawable? = inner?.getDrawable(drawableKey)
++
++        override fun getPaint(paintKey: String?): Paint? = inner?.getPaint(paintKey) ?: Theme.getThemePaint(paintKey)
++
++        override fun hasGradientService(): Boolean = inner?.hasGradientService() ?: false
++
++        override fun isDark(): Boolean = inner?.isDark() ?: Theme.isCurrentThemeDark()
++
++        override fun applyServiceShaderMatrix(w: Int, h: Int, translationX: Float, translationY: Float) {
++            if (inner != null) inner.applyServiceShaderMatrix(w, h, translationX, translationY)
++            else Theme.applyServiceShaderMatrix(w, h, translationX, translationY)
++        }
++
++        override fun getAnimatedEmojiColorFilter(): ColorFilter? = inner?.animatedEmojiColorFilter ?: Theme.chat_animatedEmojiTextColorFilter
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 75cee21e8..ed59def47 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -190,6 +190,8 @@ object TeleSearch {
+             section(1124, "Hide phone numbers in profiles", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(1270, "Blurred photo as profile background", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1271, "Profile cover from the avatar", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Blurred photo as profile background"),
++            section(1272, "Fill the whole profile", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1273, "Profile colors from the photo", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Fill the whole profile"),
+             section(1245, "Folders past the limit", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1246, "Local folders", "chats", TeleSettingsActivity.MODE_CHATS, "Folders past the limit"),
+             section(1247, "Unsorted folder", "chats", TeleSettingsActivity.MODE_CHATS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index f1d650048..c3d30f06c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -542,6 +542,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             ),
+             TeleConfig.CALCMULA.key to listOf(
+                 TeleConfig.CALCMULA_PREVIEW.key
++            ),
++            TeleConfig.PROFILE_PHOTO_BACKGROUND.key to listOf(
++                TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.key
+             )
+         )
+ 
+@@ -701,6 +704,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Keep saved GIFs and favorite stickers past the limit" to "Keep the ones over the server limit on this device.",
+             "Pin chats past the limit" to "Pin more chats than Telegram allows; extras stay on this device.",
+             "Blurred photo as profile background" to "The header shows the blurred profile photo.",
++            "Fill the whole profile" to "The whole profile takes the color of the photo.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -948,6 +952,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Appearance"),
+                 toggle("Blurred photo as profile background", TeleConfig.PROFILE_PHOTO_BACKGROUND),
++                toggle("Fill the whole profile", TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Local names"),
+                 toggle("Local names for people", TeleConfig.LOCAL_NAMES),

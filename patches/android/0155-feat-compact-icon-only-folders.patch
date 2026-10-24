@@ -1,0 +1,272 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 05:23:01 +0300
+Subject: [PATCH 155/161] feat: compact icon-only folders
+
+---
+ .../telegram/messenger/MessagesStorage.java   |   1 +
+ .../ui/Components/FilterTabsView.java         |  22 +++-
+ .../java/org/telegram/ui/DialogsActivity.java |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   4 +
+ .../src/main/java/tele/helpers/FolderIcons.kt | 101 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ 8 files changed, 130 insertions(+), 4 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index 335ebbaae..ff39a9f74 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -3279,6 +3279,7 @@ public class MessagesStorage extends BaseController {
+             try {
+                 SparseArray<MessagesController.DialogFilter> filtersToDelete = new SparseArray<>();
+                 tele.helpers.LocalFolders.onRemote(currentAccount, vector);
++                tele.helpers.FolderIcons.onRemote(currentAccount, vector);
+                 for (int a = 0, N = dialogFilters.size(); a < N; a++) {
+                     MessagesController.DialogFilter filter = dialogFilters.get(a);
+                     if (!tele.helpers.LocalFolders.isLocal(filter.id)) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
+index 93f5adb41..f54523dfc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
+@@ -157,11 +157,11 @@ public class FilterTabsView extends FrameLayout {
+             }
+             width += counterResultWidth;
+ 
+-            return Math.max(dp(16), width);
++            return Math.max(tele_label != null ? dp(24) : dp(16), width);
+         }
+ 
+         public boolean setTitle(String newTitle, ArrayList<TLRPC.MessageEntity> newEntities, boolean noanimate) {
+-            if (TextUtils.equals(title, newTitle)) {
++            if (tele_label != null || TextUtils.equals(title, newTitle)) {
+                 return false;
+             }
+             title = new SpannableStringBuilder(newTitle);
+@@ -171,6 +171,20 @@ public class FilterTabsView extends FrameLayout {
+             this.noanimate = noanimate;
+             return true;
+         }
++
++        // icon-only folders: the icon is the title, the real title stays for accessibility
++        public CharSequence tele_label;
++
++        public void tele_setIcon(String emoji) {
++            allTabsWidth -= getWidth(false) + dp(TAB_PADDING_WIDTH);
++            tele_label = title;
++            title = Emoji.replaceEmoji(emoji, textPaint.getFontMetricsInt(), false);
++            allTabsWidth += getWidth(false) + dp(TAB_PADDING_WIDTH);
++        }
++
++        public CharSequence tele_label() {
++            return tele_label != null ? tele_label : title;
++        }
+     }
+ 
+     private static final float TAB_PADDING_WIDTH = 24;
+@@ -242,7 +256,7 @@ public class FilterTabsView extends FrameLayout {
+         public void setTab(Tab tab, int position) {
+             currentTab = tab;
+             currentPosition = position;
+-            setContentDescription(tab.title);
++            setContentDescription(tab.tele_label());
+             requestLayout();
+ 
+             if (currentNoanimate != (currentTab != null && currentTab.noanimate)) {
+@@ -733,7 +747,7 @@ public class FilterTabsView extends FrameLayout {
+             info.addAction(new AccessibilityNodeInfo.AccessibilityAction(AccessibilityNodeInfo.ACTION_LONG_CLICK, LocaleController.getString(R.string.AccDescrOpenMenu2)));
+             if (currentTab != null) {
+                 StringBuilder sb = new StringBuilder();
+-                sb.append(currentTab.title);
++                sb.append(currentTab.tele_label());
+                 int unread = currentTab != null ? currentTab.counter : 0;
+                 if (unread > 0) {
+                     sb.append("\n");
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index b8652268e..363293c38 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -6927,6 +6927,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                         final MessagesController.DialogFilter filter = filters.get(a);
+                         filterTabsView.addTab(a, filter.localId, filter.name, filter.entities, filter.title_noanimate, false, filters.get(a).locked);
+                     }
++                    tele.helpers.FolderIcons.apply(filterTabsView.getTab(a), currentAccount, filters.get(a));
+                 }
+                 if (stableId >= 0) {
+                     if (selectWithStableId) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 3fc344784..47b946f99 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -249,6 +249,8 @@ object TeleConfig {
+     @JvmField
+     val UNSORTED_FOLDER = BoolItem("unsorted_folder", false)
+     @JvmField
++    val COMPACT_FOLDERS = BoolItem("compact_folders", false)
++    @JvmField
+     val HIDE_COUNTERS = BoolItem("hide_counters", false)
+     @JvmField
+     val HIDE_FOLDER_COUNTERS = BoolItem("hide_folder_counters", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 5cd7b6880..ab447b688 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -35,6 +35,7 @@ object TeleHooks {
+         TeleCrash.install(context)
+         TeleServer.start()
+         tele.helpers.TeleCounters.preload()
++        tele.helpers.FolderIcons.preload()
+         tele.helpers.TeleUpdater.start()
+         tele.helpers.PrivacyRules.init()
+         tele.helpers.LastSeenPeek.restorePending()
+@@ -108,6 +109,9 @@ object TeleHooks {
+         if (item === TeleConfig.HIDE_ALL_CHATS_FOLDER) {
+             AccountInstance.getInstance(UserConfig.selectedAccount).getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated)
+         }
++        if (item === TeleConfig.COMPACT_FOLDERS) {
++            AccountInstance.getInstance(UserConfig.selectedAccount).getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated)
++        }
+         if (item === TeleConfig.HIDE_COUNTERS || item === TeleConfig.HIDE_FOLDER_COUNTERS || item === TeleConfig.HIDE_APP_COUNTER || item === TeleConfig.COUNTER_SKIP_ARCHIVE) {
+             tele.helpers.TeleCounters.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt b/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
+new file mode 100644
+index 000000000..33c2feefb
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
+@@ -0,0 +1,101 @@
++package tele.helpers
++
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.Components.FilterTabsView
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.ConcurrentHashMap
++
++// Icon-only folder tabs. Stock keeps no folder icon, so the server emoticon is remembered here.
++object FolderIcons {
++
++    private const val ALL_CHATS = "\uD83D\uDCAC"
++    private const val FALLBACK = "\uD83D\uDCC1"
++    private const val PRIVATE = "\uD83D\uDC64"
++    private const val GROUPS = "\uD83D\uDC65"
++    private const val CHANNELS = "\uD83D\uDCE2"
++    private const val BOTS = "\uD83E\uDD16"
++    private const val UNREAD = "\u2705"
++    private const val UNMUTED = "\uD83D\uDD14"
++
++    private val emoticons = Array(UserConfig.MAX_ACCOUNT_COUNT) { ConcurrentHashMap<Int, String>() }
++
++    private fun key(account: Int) = "folder_icons.$account"
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.COMPACT_FOLDERS.value
++
++    @JvmStatic
++    fun preload() {
++        Utilities.globalQueue.postRunnable {
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                val raw = TeleDatabaseHelper.get(key(account)) ?: continue
++                runCatching {
++                    val json = JSONObject(raw)
++                    for (id in json.keys()) {
++                        emoticons[account][id.toInt()] = json.getString(id)
++                    }
++                }
++            }
++            if (enabled()) notifyTabs()
++        }
++    }
++
++    // runs on the storage queue with every folder the server just sent
++    @JvmStatic
++    fun onRemote(account: Int, filters: List<TLRPC.DialogFilter>) {
++        val next = HashMap<Int, String>()
++        for (filter in filters) {
++            val emoticon = filter.emoticon
++            if (!emoticon.isNullOrEmpty()) next[filter.id] = emoticon
++        }
++        val known = emoticons[account]
++        if (next == HashMap(known)) return
++        known.clear()
++        known.putAll(next)
++        val json = JSONObject()
++        for ((id, emoticon) in next) json.put(id.toString(), emoticon)
++        TeleDatabaseHelper.put(key(account), if (next.isEmpty()) null else json.toString())
++        if (enabled()) notifyTabs()
++    }
++
++    private fun notifyTabs() {
++        AndroidUtilities.runOnUIThread {
++            val account = UserConfig.selectedAccount
++            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogFiltersUpdated)
++        }
++    }
++
++    // a folder without its own icon shows the one its kind implies, like desktop does
++    private fun emojiOf(account: Int, filter: MessagesController.DialogFilter): String {
++        if (filter.isDefault) return ALL_CHATS
++        emoticons[account][filter.id]?.let { return it }
++        if (filter.alwaysShow.isNotEmpty()) return FALLBACK
++        val types = filter.flags and MessagesController.DIALOG_FILTER_FLAG_ALL_CHATS
++        val people = MessagesController.DIALOG_FILTER_FLAG_CONTACTS or MessagesController.DIALOG_FILTER_FLAG_NON_CONTACTS
++        return when {
++            types == MessagesController.DIALOG_FILTER_FLAG_ALL_CHATS ->
++                if (filter.flags and MessagesController.DIALOG_FILTER_FLAG_EXCLUDE_READ != 0) UNREAD
++                else if (filter.flags and MessagesController.DIALOG_FILTER_FLAG_EXCLUDE_MUTED != 0) UNMUTED
++                else FALLBACK
++            types != 0 && types and people.inv() == 0 -> PRIVATE
++            types == MessagesController.DIALOG_FILTER_FLAG_GROUPS -> GROUPS
++            types == MessagesController.DIALOG_FILTER_FLAG_CHANNELS -> CHANNELS
++            types == MessagesController.DIALOG_FILTER_FLAG_BOTS -> BOTS
++            else -> FALLBACK
++        }
++    }
++
++    // the tab shows the icon and keeps its title for accessibility
++    @JvmStatic
++    fun apply(tab: FilterTabsView.Tab?, account: Int, filter: MessagesController.DialogFilter?) {
++        if (tab == null || filter == null || !enabled()) return
++        tab.tele_setIcon(emojiOf(account, filter))
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 65d6a6f96..d160b10af 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -208,6 +208,7 @@ object TeleSearch {
+             section(1266, "Folder tab counters", "chats", TeleSettingsActivity.MODE_CHATS, "Folder tabs"),
+             section(1267, "App icon counter", "chats", TeleSettingsActivity.MODE_CHATS, "App icon"),
+             section(1268, "Leave the archive out of the count", "chats", TeleSettingsActivity.MODE_CHATS, "Leave out the archive"),
++            section(1269, "Compact icon folders", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1255, "Hide communities", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1256, "Jump to the first message", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1257, "Move chats instantly", "chats", TeleSettingsActivity.MODE_CHATS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5784478ca..937299078 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -608,6 +608,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Folder tabs" to "No counters on folder tabs and the Chats tab.",
+             "App icon" to "No unread count on the app icon.",
+             "Leave out the archive" to "Archived chats don't add to the app icon count.",
++            "Compact icon folders" to "Folder tabs show only their icons.",
+             "Folders past the limit" to "Go past Telegram's folder limits; extras stay on this device.",
+             "Unsorted folder" to "A folder for chats that aren't in any other folder; archived ones stay out.",
+             "Mute folders" to "Mute every chat in a folder from its menu, only on this device.",
+@@ -794,6 +795,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Pin chats past the limit", TeleConfig.LOCAL_PINS),
+                 toggle("Folders past the limit", TeleConfig.LOCAL_FOLDERS),
+                 toggle("Unsorted folder", TeleConfig.UNSORTED_FOLDER),
++                toggle("Compact icon folders", TeleConfig.COMPACT_FOLDERS),
+                 toggle("Hide similar channels", TeleConfig.HIDE_SIMILAR_CHANNELS),
+                 toggle("Hide communities", TeleConfig.HIDE_COMMUNITIES),
+                 toggle("Jump to the first message", TeleConfig.JUMP_TO_FIRST),
