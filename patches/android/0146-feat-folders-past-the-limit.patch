@@ -14,11 +14,11 @@ Subject: [PATCH 146/151] feat: folders past the limit
  .../org/telegram/ui/UsersSelectActivity.java  |   6 +-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
- .../main/java/tele/helpers/LocalFolders.kt    | 491 ++++++++++++++++++
+ .../main/java/tele/helpers/LocalFolders.kt    | 544 ++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
  .../src/main/res/values/strings_tele.xml      |   2 +
- 14 files changed, 567 insertions(+), 18 deletions(-)
+ 14 files changed, 620 insertions(+), 18 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
@@ -360,10 +360,10 @@ index e0e463f56..5d5418dc1 100644
          }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt b/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
 new file mode 100644
-index 000000000..60d60b954
+index 000000000..fa1ec4dd7
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/LocalFolders.kt
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,544 @@
 +package tele.helpers
 +
 +import android.util.Base64
@@ -429,6 +429,8 @@ index 000000000..60d60b954
 +        var order: List<Int> = emptyList()
 +        // what the server holds for a folder, known from the last read or write
 +        val server = HashMap<Int, ServerPart>()
++        // edits of a server folder the server refused, e.g. a folder past the free limit after premium ends
++        val pending = HashMap<Int, ByteArray>()
 +        var lastId = LOCAL_BASE - 1
 +    }
 +
@@ -476,6 +478,13 @@ index 000000000..60d60b954
 +                    if (id > 0 && !isLocal(id) && !entry.isEmpty()) state.overflow[id] = entry
 +                }
 +            }
++            val pending = json.optJSONObject("pending")
++            if (pending != null) {
++                for (k in pending.keys()) {
++                    val id = k.toIntOrNull() ?: continue
++                    if (id > 0 && !isLocal(id)) state.pending[id] = Base64.decode(pending.getString(k), Base64.NO_WRAP)
++                }
++            }
 +            val order = json.optJSONArray("order") ?: JSONArray()
 +            state.order = (0 until order.length()).map { order.getInt(it) }
 +        }.onFailure { FileLog.e(it) }
@@ -507,6 +516,9 @@ index 000000000..60d60b954
 +            overflow.put(id.toString(), JSONObject().put("a", JSONArray(o.always)).put("n", JSONArray(o.never)).put("p", JSONArray(o.pinned)))
 +        }
 +        json.put("overflow", overflow)
++        val pending = JSONObject()
++        for ((id, data) in state.pending) pending.put(id.toString(), Base64.encodeToString(data, Base64.NO_WRAP))
++        json.put("pending", pending)
 +        json.put("order", JSONArray(state.order))
 +        val text = json.toString()
 +        val key = key(state.userId)
@@ -661,7 +673,7 @@ index 000000000..60d60b954
 +
 +    /** Storage thread: a server list arrived; the parts kept here are merged back into its folders. */
 +    @JvmStatic
-+    fun onRemote(account: Int, vector: List<TLRPC.DialogFilter>) {
++    fun onRemote(account: Int, vector: MutableList<TLRPC.DialogFilter>) {
 +        val state = state(account) ?: return
 +        val ids = HashSet<Int>()
 +        var changed = false
@@ -676,7 +688,13 @@ index 000000000..60d60b954
 +            }
 +            state.server.keys.retainAll(ids)
 +            if (state.overflow.keys.retainAll(ids)) changed = true
++            if (state.pending.keys.retainAll(ids)) changed = true
 +            if (enabled()) {
++                for (i in vector.indices) {
++                    // the server still has the old version of a folder it refused to update
++                    val edit = state.pending[vector[i].id]?.let { filterOf(it) }
++                    if (edit != null) vector[i] = edit
++                }
 +                for (remote in vector) {
 +                    val o = state.overflow[remote.id] ?: continue
 +                    merge(account, remote, o)
@@ -803,8 +821,43 @@ index 000000000..60d60b954
 +            delegate?.run(null, null)
 +            return 0
 +        }
-+        return connections.sendRequest(req, delegate)
++        val edit = (req as? TLRPC.TL_messages_updateDialogFilter)?.filter
++        if (id == 0 || edit == null || !enabled()) return connections.sendRequest(req, delegate)
++        val account = (0 until UserConfig.MAX_ACCOUNT_COUNT).firstOrNull { ConnectionsManager.getInstance(it) === connections }
++            ?: return connections.sendRequest(req, delegate)
++        val data = serialize(edit)
++        return connections.sendRequest(req) { response, error ->
++            notePending(account, id, if (error == null) null else data)
++            delegate?.run(response, error)
++        }
 +    }
++
++    private fun notePending(account: Int, id: Int, data: ByteArray?) {
++        val state = state(account) ?: return
++        val changed = synchronized(state) {
++            if (data == null) state.pending.remove(id) != null else { state.pending[id] = data; true }
++        }
++        if (changed) persist(state)
++    }
++
++    private fun serialize(obj: TLObject): ByteArray {
++        val stream = SerializedData(obj.getObjectSize())
++        try {
++            obj.serializeToStream(stream)
++            return stream.toByteArray()
++        } finally {
++            stream.cleanup()
++        }
++    }
++
++    private fun filterOf(data: ByteArray): TLRPC.DialogFilter? = runCatching {
++        val stream = SerializedData(data)
++        try {
++            TLRPC.DialogFilter.TLdeserialize(stream, stream.readInt32(false), false)
++        } finally {
++            stream.cleanup()
++        }
++    }.getOrNull()
 +
 +    /** The folders a server order may mention; the local ones are only known here. */
 +    @JvmStatic
@@ -834,15 +887,15 @@ index 000000000..60d60b954
 +    @JvmStatic
 +    fun unlimitedChats(limit: Int): Boolean = limit >= NO_LIMIT
 +
-+    /** The folders the premium lock may touch: only the ones the server holds. */
++    /** The folders the premium lock may touch: none with the option on, else only the ones the server holds. */
 +    @JvmStatic
 +    fun lockable(list: ArrayList<DialogFilter>): ArrayList<DialogFilter> {
-+        if (!enabled()) return list
-+        val result = ArrayList<DialogFilter>(list.size)
-+        for (filter in list) {
-+            if (isLocal(filter.id)) filter.locked = false else result.add(filter)
++        if (enabled()) {
++            // the server keeps every folder after premium ends, the lock is only the client's
++            for (filter in list) filter.locked = false
++            return ArrayList()
 +        }
-+        return result
++        return list
 +    }
 +
 +    /** The line under a folder in the folder list: where its chats live. */
