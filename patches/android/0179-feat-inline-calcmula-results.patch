@@ -1,0 +1,281 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:24:34 +0300
+Subject: [PATCH 179/183] feat: inline calcmula results
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    |   3 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/ui/CalcmulaPreview.kt  | 143 +++++++++++++++++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +-
+ 5 files changed, 150 insertions(+), 5 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index d98c50268..b7e87940c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -2277,6 +2277,9 @@ public class ChatActivity extends BaseFragment implements
+ 
+         @Override
+         public void onTextSelectionChanged(int start, int end) {
++            if (tele_calcmulaPreview != null) {
++                tele_calcmulaPreview.onSelectionChanged();
++            }
+             if (editTextItem == null) {
+                 return;
+             }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 58b83d785..015b51bf1 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -259,6 +259,8 @@ object TeleConfig {
+     @JvmField
+     val CALCMULA_SUGGESTIONS = BoolItem("calcmula_suggestions", false)
+     @JvmField
++    val CALCMULA_INLINE_RESULT = BoolItem("calcmula_inline_result", false)
++    @JvmField
+     val SHOT = BoolItem("shot", false)
+     @JvmField
+     val COPY_SERVICE_TEXT = BoolItem("copy_service_text", false)
+diff --git a/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt b/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
+index 9f6b50c01..6437aad7d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
++++ b/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
+@@ -21,6 +21,7 @@ import org.telegram.messenger.LiteMode
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.ChatActivity
+ import org.telegram.ui.Components.ChatActivityEnterView
++import org.telegram.ui.Components.TextStyleSpan
+ import org.telegram.ui.Components.LayoutHelper
+ import tele.TeleConfig
+ import tele.helpers.Calcmula
+@@ -44,12 +45,24 @@ class CalcmulaPreview private constructor(
+     private var requestId = 0
+     private val debounce = Runnable { request() }
+ 
++    // the chip after a typed "=": the anchor is the cursor position right behind it
++    private var inlineShown = false
++    private var inlineId = 0
++    private var inlineAnchor = -1
++    private var inlineText = ""
++    private var inlineToken = ""
++    private var inlineValue = ""
++    private var typedAt = -1
++    private val inlineRequest = Runnable { requestInline() }
++
+     init {
+         visibility = GONE
+         elevation = dp(2f).toFloat()
+         background = Theme.createRoundRectDrawable(dp(12f), fragment.getThemedColor(Theme.key_chat_messagePanelBackground))
+         isClickable = true
+-        mainRow.setOnClickListener { if (allowed()) enterView.sendMessage() }
++        mainRow.setOnClickListener {
++            if (inlineShown) insertInline() else if (allowed()) enterView.sendMessage()
++        }
+ 
+         val badge = TextView(context)
+         badge.text = "="
+@@ -109,8 +122,16 @@ class CalcmulaPreview private constructor(
+ 
+         enterView.addTextChangedListener(object : TextWatcher {
+             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+-            override fun afterTextChanged(s: Editable?) = refresh(s)
++            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
++                typedAt = if (count == 1 && before == 0 && s != null && start < s.length && s[start] == '=' && TeleConfig.CALCMULA_INLINE_RESULT.value) start + 1 else -1
++            }
++            override fun afterTextChanged(s: Editable?) {
++                dismissInline()
++                refresh(s)
++                val typed = typedAt
++                typedAt = -1
++                if (typed >= 0 && s != null) triggerInline(s, typed)
++            }
+         })
+     }
+ 
+@@ -166,6 +187,89 @@ class CalcmulaPreview private constructor(
+         showSuggestion(result.suggestion?.takeIf { suggestions }, result.suggestionValue)
+     }
+ 
++    private fun inlineAllowed(): Boolean =
++        TeleConfig.CALCMULA.value && TeleConfig.CALCMULA_INLINE_RESULT.value &&
++            enterView.visibility == VISIBLE && !enterView.isRecordingAudioVideo
++
++    private fun triggerInline(s: Editable, at: Int) {
++        if (!inlineAllowed()) return
++        val text = s.toString()
++        // the whole message is a calculation already
++        if (text.startsWith("= ") || (at < text.length && text[at] != '\n')) return
++        var start = at - 1
++        while (start > 0 && !Character.isWhitespace(text[start - 1])) start--
++        val token = text.substring(start, at - 1)
++        if (!evaluable(token) || inCode(s, start, at)) return
++        inlineAnchor = at
++        inlineText = text
++        inlineToken = token
++        inlineId++
++        // the cursor settles after the change, so even a cached result waits a tick
++        AndroidUtilities.runOnUIThread(inlineRequest, if (Calcmula.cached(token)?.value != null) 0 else INLINE_DELAY)
++    }
++
++    private fun requestInline() {
++        val id = inlineId
++        if (inlineAnchor < 0 || !inlineAllowed()) {
++            dismissInline()
++            return
++        }
++        Calcmula.compute(inlineToken) { result ->
++            if (id == inlineId && isAttachedToWindow) applyInline(result)
++        }
++    }
++
++    private fun applyInline(result: Calcmula.Result) {
++        val value = result.value?.replace('\n', ' ')?.trim().orEmpty()
++        if (value.isEmpty() || value == inlineToken || !inlineAllowed() || !inlineValid()) {
++            dismissInline()
++            return
++        }
++        inlineValue = value
++        inlineShown = true
++        showSuggestion(null)
++        mainRow.foreground = Theme.createSelectorDrawable(fragment.getThemedColor(Theme.key_listSelector), Theme.RIPPLE_MASK_ALL)
++        description.text = "$inlineToken ="
++        apply(value, State.VALUE)
++    }
++
++    private fun inlineValid(): Boolean {
++        val field = enterView.editField ?: return false
++        return inlineAnchor >= 0 && field.selectionStart == inlineAnchor && field.selectionEnd == inlineAnchor &&
++            field.text?.toString() == inlineText
++    }
++
++    private fun insertInline() {
++        val field = enterView.editField
++        val value = inlineValue
++        val at = inlineAnchor
++        val valid = inlineValid()
++        dismissInline()
++        if (!valid || field == null || value.isEmpty()) return
++        field.text?.insert(at, value)
++        field.setSelection(at + value.length)
++    }
++
++    private fun dismissInline() {
++        AndroidUtilities.cancelRunOnUIThread(inlineRequest)
++        inlineId++
++        inlineAnchor = -1
++        if (inlineShown) {
++            inlineShown = false
++            mainRow.foreground = null
++            show(false)
++        }
++    }
++
++    // called by the chat when the cursor or the selection moves
++    fun onSelectionChanged() {
++        if (inlineAnchor < 0) return
++        // the cursor of a typed character settles right after the change
++        AndroidUtilities.runOnUIThread {
++            if (inlineAnchor >= 0 && !inlineValid()) dismissInline()
++        }
++    }
++
+     private fun suggestionShown(): Boolean = suggestionRow.visibility == VISIBLE
+ 
+     private fun showSuggestion(expression: String?, value: String? = null) {
+@@ -200,6 +304,7 @@ class CalcmulaPreview private constructor(
+     }
+ 
+     private fun cancel() {
++        dismissInline()
+         AndroidUtilities.cancelRunOnUIThread(debounce)
+         requestId++
+         currentQuery = ""
+@@ -219,11 +324,41 @@ class CalcmulaPreview private constructor(
+     companion object {
+         @JvmStatic
+         fun attach(fragment: ChatActivity, content: ViewGroup, enterView: ChatActivityEnterView, below: View?): CalcmulaPreview? {
+-            if (!TeleConfig.CALCMULA.value || !TeleConfig.CALCMULA_PREVIEW.value) return null
++            if (!TeleConfig.CALCMULA.value || !(TeleConfig.CALCMULA_PREVIEW.value || TeleConfig.CALCMULA_INLINE_RESULT.value)) return null
+             val view = CalcmulaPreview(content.context, fragment, enterView)
+             val index = below?.let { content.indexOfChild(it) } ?: -1
+             content.addView(view, index, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.BOTTOM or Gravity.LEFT, 10f, 0f, 10f, 0f))
+             return view
+         }
++
++        private const val INLINE_DELAY = 250L
++        private const val MAX_TOKEN = 100
++        private const val OPERATORS = "+-*/^%()!\u00D7\u00F7\u2212"
++
++        private fun plainNumber(token: String): Boolean {
++            val from = if (token.isNotEmpty() && (token[0] == '-' || token[0] == '+')) 1 else 0
++            for (i in from until token.length) {
++                val ch = token[i]
++                if (!Character.isDigit(ch) && ch != '.' && ch != ',') return false
++            }
++            return true
++        }
++
++        // a calculation has a word or number and an operator, a bare number or a link is not one
++        private fun evaluable(token: String): Boolean {
++            if (token.isEmpty() || token.length > MAX_TOKEN || token.contains("://") || plainNumber(token)) return false
++            var word = false
++            var operation = false
++            for (ch in token) {
++                if (ch == '=' || ch == '@' || ch == '\uFFFC') return false
++                if (Character.isLetterOrDigit(ch)) word = true else if (OPERATORS.indexOf(ch) >= 0) operation = true
++            }
++            return word && operation
++        }
++
++        private fun inCode(text: Editable, from: Int, till: Int): Boolean {
++            val mask = TextStyleSpan.FLAG_STYLE_MONO or TextStyleSpan.FLAG_STYLE_CODE
++            return text.getSpans(from, till, TextStyleSpan::class.java).any { it.styleFlags and mask != 0 }
++        }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index d8c300237..a3451d9a7 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -183,6 +183,8 @@ object TeleSearch {
+             section(1330, "Calcmula suggestions and sending without calculating", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1331, "Send without calculating", "sending", TeleSettingsActivity.MODE_SENDING, "Calcmula suggestions and sending without calculating"),
+             section(1332, "Calcmula suggestions", "sending", TeleSettingsActivity.MODE_SENDING, "Calcmula suggestions and sending without calculating"),
++            section(1333, "Inline calcmula results after =", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1334, "Calculation result chip", "sending", TeleSettingsActivity.MODE_SENDING, "Inline calcmula results after ="),
+             section(1102, "Save messages as a picture", "menus", TeleSettingsActivity.MODE_MENUS),
+             section(1103, "shot", "menus", TeleSettingsActivity.MODE_MENUS, "Save messages as a picture"),
+             section(1104, "Messages as an image", "menus", TeleSettingsActivity.MODE_MENUS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index a361f509a..0674b0084 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -561,7 +561,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             ),
+             TeleConfig.CALCMULA.key to listOf(
+                 TeleConfig.CALCMULA_PREVIEW.key,
+-                TeleConfig.CALCMULA_SUGGESTIONS.key
++                TeleConfig.CALCMULA_SUGGESTIONS.key,
++                TeleConfig.CALCMULA_INLINE_RESULT.key
+             ),
+             TeleConfig.LIVE_MARKDOWN.key to listOf(
+                 TeleConfig.LIVE_MARKDOWN_QUOTES.key
+@@ -712,6 +713,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Render markdown as you type" to "Markers are dimmed and the text between them is styled.",
+             "Send > lines as quotes" to "\"> \" starts a quote, \">! \" an expandable one.",
+             "Calcmula suggestions and sending without calculating" to "Suggest fixes in the preview and add send without calculating to the send menu.",
++            "Inline calcmula results after =" to "Typing = after an expression shows a chip; tap it to insert the result.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
+             "Local names for people" to "Names for people that only you see.",
+             "Keep deleted messages" to "Messages deleted for everyone stay in the chat.",
+@@ -979,6 +981,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+                 toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
+                 toggle("Calcmula suggestions and sending without calculating", TeleConfig.CALCMULA_SUGGESTIONS),
++                toggle("Inline calcmula results after =", TeleConfig.CALCMULA_INLINE_RESULT),
+                 toggle("Hide the gift button in the message field", TeleConfig.HIDE_GIFT_BUTTON),
+                 toggle("Send stickers with captions", TeleConfig.STICKER_CAPTIONS_SEND),
+                 Row(TYPE_SHADOW),

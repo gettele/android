@@ -1,0 +1,666 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:27:05 +0300
+Subject: [PATCH 175/183] feat: sticker captions
+
+---
+ .../org/telegram/messenger/MessageObject.java |   6 +-
+ .../messenger/NotificationsController.java    |  18 +-
+ .../messenger/SendMessagesHelper.java         |   3 +
+ .../telegram/ui/Cells/ChatMessageCell.java    |  61 ++++-
+ .../org/telegram/ui/Cells/DialogCell.java     |   4 +
+ .../ui/Components/ChatActivityEnterView.java  |   8 +-
+ .../org/telegram/ui/ContentPreviewViewer.java |  14 ++
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/StickerCaptions.kt | 238 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ .../src/main/res/values/strings_tele.xml      |   3 +
+ 13 files changed, 360 insertions(+), 11 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/StickerCaptions.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+index 5445826b8..8d69b111f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+@@ -11717,7 +11717,7 @@ public class MessageObject {
+             return false;
+         }
+         final TLRPC.MessageMedia media = getMedia(message);
+-        if (media != null && message.rich_message == null && (isRoundVideoDocument(media.document) || isStickerDocument(media.document) || isAnimatedStickerDocument(media.document, true) || isLocationMessage(message))) {
++        if (media != null && message.rich_message == null && (isRoundVideoDocument(media.document) || (isStickerDocument(media.document) || isAnimatedStickerDocument(media.document, true)) && !tele.helpers.StickerCaptions.sendEnabled() || isLocationMessage(message))) {
+             return false;
+         }
+         if (message.paid_suggested_post_stars || message.paid_suggested_post_ton) {
+@@ -11757,7 +11757,7 @@ public class MessageObject {
+             return (message.out || message.from_id instanceof TLRPC.TL_peerUser && message.from_id.user_id == UserConfig.getInstance(currentAccount).getClientUserId()) && (
+                     message.rich_message != null ||
+                     media instanceof TLRPC.TL_messageMediaPhoto ||
+-                    media instanceof TLRPC.TL_messageMediaDocument && !isStickerMessage(message) && !isAnimatedStickerMessage(message) ||
++                    media instanceof TLRPC.TL_messageMediaDocument && (!isStickerMessage(message) && !isAnimatedStickerMessage(message) || tele.helpers.StickerCaptions.sendEnabled()) ||
+                     media instanceof TLRPC.TL_messageMediaEmpty ||
+                     media instanceof TLRPC.TL_messageMediaWebPage ||
+                     media instanceof TLRPC.TL_messageMediaPaidMedia ||
+@@ -11767,7 +11767,7 @@ public class MessageObject {
+         if (chat != null && chat.megagroup && message.out || chat != null && !chat.megagroup && (chat.creator || chat.admin_rights != null && (chat.admin_rights.edit_messages || message.out && chat.admin_rights.post_messages)) && message.post) {
+             if (message.rich_message != null ||
+                 media instanceof TLRPC.TL_messageMediaPhoto ||
+-                media instanceof TLRPC.TL_messageMediaDocument && !isStickerMessage(message) && !isAnimatedStickerMessage(message) ||
++                media instanceof TLRPC.TL_messageMediaDocument && (!isStickerMessage(message) && !isAnimatedStickerMessage(message) || tele.helpers.StickerCaptions.sendEnabled()) ||
+                 media instanceof TLRPC.TL_messageMediaEmpty ||
+                 media instanceof TLRPC.TL_messageMediaWebPage ||
+                 media instanceof TLRPC.TL_messageMediaPaidMedia ||
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+index 5751bebee..e13d24fde 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+@@ -2488,7 +2488,9 @@ public class NotificationsController extends BaseController implements Notificat
+                     } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaGeoLive) {
+                         return LocaleController.getString(R.string.AttachLiveLocation);
+                     } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument) {
+-                        if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
++                        if (tele.helpers.StickerCaptions.notifyText(messageObject) != null) {
++                            return tele.helpers.StickerCaptions.notifyText(messageObject);
++                        } else if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
+                             String emoji = messageObject.getStickerEmoji();
+                             if (emoji != null) {
+                                 return emoji + " " + LocaleController.getString(R.string.AttachSticker);
+@@ -2781,7 +2783,10 @@ public class NotificationsController extends BaseController implements Notificat
+                         } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaGeoLive) {
+                             msg = LocaleController.formatString(R.string.NotificationMessageLiveLocation, name);
+                         } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument) {
+-                            if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
++                            if (!shortMessage && tele.helpers.StickerCaptions.notifyText(messageObject) != null) {
++                                msg = LocaleController.formatString(R.string.NotificationMessageText, name, tele.helpers.StickerCaptions.notifyText(messageObject));
++                                text[0] = true;
++                            } else if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
+                                 String emoji = messageObject.getStickerEmoji();
+                                 if (emoji != null) {
+                                     msg = LocaleController.formatString(R.string.NotificationMessageStickerEmoji, name, emoji);
+@@ -3173,7 +3178,10 @@ public class NotificationsController extends BaseController implements Notificat
+                         } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaGeoLive) {
+                             msg = LocaleController.formatString(R.string.ChannelMessageLiveLocation, name);
+                         } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument) {
+-                            if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
++                            if (!shortMessage && tele.helpers.StickerCaptions.notifyText(messageObject) != null) {
++                                msg = LocaleController.formatString(R.string.NotificationMessageText, name, tele.helpers.StickerCaptions.notifyText(messageObject));
++                                text[0] = true;
++                            } else if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
+                                 String emoji = messageObject.getStickerEmoji();
+                                 if (emoji != null) {
+                                     msg = LocaleController.formatString(R.string.ChannelMessageStickerEmoji, name, emoji);
+@@ -3256,7 +3264,9 @@ public class NotificationsController extends BaseController implements Notificat
+                         } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaGeoLive) {
+                             msg = LocaleController.formatString(R.string.NotificationMessageGroupLiveLocation, name, getTitle(chat));
+                         } else if (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument) {
+-                            if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
++                            if (!shortMessage && tele.helpers.StickerCaptions.notifyText(messageObject) != null) {
++                                msg = LocaleController.formatString(R.string.NotificationMessageGroupText, name, getTitle(chat), tele.helpers.StickerCaptions.notifyText(messageObject));
++                            } else if (messageObject.isSticker() || messageObject.isAnimatedSticker()) {
+                                 String emoji = messageObject.getStickerEmoji();
+                                 if (emoji != null) {
+                                     msg = LocaleController.formatString(R.string.NotificationMessageGroupStickerEmoji, name, getTitle(chat), emoji);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 43d4c5967..24b187b0b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -2279,6 +2279,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             sendMessageParams.monoForumPeer = monoForumPeerId;
+             sendMessageParams.suggestionParams = suggestionParams;
+             sendMessageParams.invert_media = invertMedia;
++            if (caption != null && !DialogObject.isEncryptedDialog(peer) && tele.helpers.StickerCaptions.sendEnabled()) {
++                tele.helpers.StickerCaptions.apply(sendMessageParams, caption, currentAccount);
++            }
+             sendMessage(sendMessageParams);
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index 061a4355b..d7a988f83 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -1802,6 +1802,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     private long currentNameBotVerificationId;
+     private long tele_bubbleKey;
+     private long tele_headerKey;
++    private boolean tele_stickerCaption;
++    private final Rect tele_captionBubble = new Rect();
+     private String nameStatusSlug;
+     public AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable currentNameStatusDrawable;
+     public AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable currentNameEmojiStatusDrawable;
+@@ -6253,6 +6255,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         if (currentMessageObject != null && (!hasLinkPreview && MessageObject.getMedia(currentMessageObject.messageOwner) != null && MessageObject.getMedia(currentMessageObject.messageOwner).webpage instanceof TLRPC.TL_webPage)) {
+             return true;
+         }
++        if (currentMessageObject != null && tele_stickerCaption != tele.helpers.StickerCaptions.shows(currentMessageObject)) {
++            return true;
++        }
+         if (currentMessageObject == null || currentUser == null && currentChat == null) {
+             return false;
+         }
+@@ -7125,6 +7130,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             captionFullWidth = 0;
+             prevCaptionLayout = captionLayout;
+             captionLayout = null;
++            tele_stickerCaption = false;
+             captionWidth = 0;
+             captionHeight = 0;
+             captionOffsetX = 0;
+@@ -10609,6 +10615,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                 invalidate();
+             }
+ 
++            if (tele.helpers.StickerCaptions.shows(messageObject)) {
++                totalHeight += tele_layoutStickerCaption(messageObject);
++            }
++
+             if ((currentPosition == null || currentMessageObject.isMusic() || currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA || currentMessageObject.isDocument()) && !messageObject.isSponsored() && !messageObject.isAnyKindOfSticker() && addedCaptionHeight == 0 && !messageObject.isExpiredStory() && !messageObject.isUnsupported()) {
+                 int addCaptionLayoutWidth = 0;
+                 int width = backgroundWidth;
+@@ -13791,7 +13801,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     private int getExtraTimeX() {
+-        if (!currentMessageObject.isOutOwner() && (!mediaBackground || captionLayout != null) && SharedConfig.bubbleRadius > 11) {
++        if (!currentMessageObject.isOutOwner() && (!mediaBackground || captionLayout != null && !tele_stickerCaption) && SharedConfig.bubbleRadius > 11) {
+             return dp((SharedConfig.bubbleRadius - 11) / 1.5f);
+         }
+         if (!currentMessageObject.isOutOwner() && isPlayingRound && isAvatarVisible && currentMessageObject.type == MessageObject.TYPE_ROUND_VIDEO) {
+@@ -14992,6 +15002,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         }
+         updateReactionLayoutPosition();
+         if (shouldDrawCaptionLayout() && !currentMessageObject.preview) {
++            if (tele_stickerCaption) {
++                tele_drawStickerCaptionBubble(canvas, 1f);
++            }
+             drawCaptionLayout(canvas, false, 1f);
+             // drawCommentLayout(canvas, 1f); // not needed because it is already called by drawCaptionLayout
+             drawReactionsLayout(canvas, 1f, null);
+@@ -15363,6 +15376,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             if (currentMessageObject.type != MessageObject.TYPE_FILE && (captionLayout != null && ((currentMessageObject.type != MessageObject.TYPE_VOICE && currentMessageObject.type != MessageObject.TYPE_POLL && !(currentMessageObject.isOut() && drawForwardedName && !drawPhotoImage)) || (currentPosition != null && currentMessagesGroup != null) || currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA))) {
+                 reactionsLayoutInBubble.y -= dp(14);
+             }
++            if (tele_stickerCaption) {
++                reactionsLayoutInBubble.y += dp(14);
++            }
+             reactionsLayoutInBubble.y += reactionsLayoutInBubble.positionOffsetY;
+         }
+         if (reactionsLayoutInBubble.isSmall && !reactionsLayoutInBubble.isEmpty) {
+@@ -17190,7 +17206,48 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         return array;
+     }
+ 
++    private int tele_layoutStickerCaption(MessageObject messageObject) {
++        try {
++            currentCaption = messageObject.caption;
++            captionFullWidth = messageObject.getMaxMessageTextWidth();
++            captionLayout = new MessageObject.TextLayoutBlocks(getPrimaryMessageObject(), currentCaption, Theme.chat_msgTextPaint, captionFullWidth);
++            captionLayout.bounceFrom(prevCaptionLayout);
++        } catch (Exception e) {
++            FileLog.e(e);
++            captionLayout = null;
++            return 0;
++        }
++        captionWidth = captionLayout.textWidth;
++        captionHeight = captionLayout.textHeight();
++        tele_stickerCaption = true;
++        return tele.helpers.StickerCaptions.extraHeight(captionHeight);
++    }
++
++    private void tele_drawStickerCaptionBubble(Canvas canvas, float alpha) {
++        final boolean out = currentMessageObject.isOutOwner();
++        final boolean selected = isDrawSelectionBackground();
++        final MessageDrawable bubble = (MessageDrawable) getThemedDrawable(out ? (selected ? Theme.key_drawable_msgOutSelected : Theme.key_drawable_msgOut) : (selected ? Theme.key_drawable_msgInSelected : Theme.key_drawable_msgIn));
++        int w = parentWidth;
++        int h = parentHeight;
++        if (h == 0) {
++            w = getParentWidth();
++            h = AndroidUtilities.displaySize.y;
++            if (getParent() instanceof View) {
++                View view = (View) getParent();
++                w = view.getMeasuredWidth();
++                h = view.getMeasuredHeight();
++            }
++        }
++        tele.helpers.StickerCaptions.drawBubble(canvas, bubble, tele_captionBubble, (int) (getY() + parentViewTopOffset), w, h, (int) parentViewTopOffset, blurredViewTopOffset, blurredViewBottomOffset, pinnedTop, pinnedBottom, alpha);
++    }
++
+     public void updateCaptionLayout() {
++        if (tele_stickerCaption && captionLayout != null) {
++            tele.helpers.StickerCaptions.place(tele_captionBubble, photoImage.getImageX(), photoImage.getImageX2(), photoImage.getImageY2(), captionLayout.textWidth, captionLayout.textHeight(), currentMessageObject.isOutOwner());
++            captionX = tele_captionBubble.left + tele.helpers.StickerCaptions.textInsetX(currentMessageObject.isOutOwner());
++            captionY = tele_captionBubble.top + tele.helpers.StickerCaptions.textInsetY();
++            return;
++        }
+         float captionYBelow;
+         boolean asBottom = false;
+         if (
+@@ -23963,7 +24020,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         if (overideShouldDrawTimeOnMedia != 0) {
+             return overideShouldDrawTimeOnMedia == 1;
+         }
+-        return mediaBackground && (captionLayout == null || captionAbove) && (reactionsLayoutInBubble.isEmpty || reactionsLayoutInBubble.isSmall || currentMessageObject != null && (currentMessageObject.isAnyKindOfSticker() || currentMessageObject.isRoundVideo())) || currentMessageObject != null && currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA/* || isMedia && drawCommentButton && !isRepliesChat*/;
++        return mediaBackground && (captionLayout == null || captionAbove || tele_stickerCaption) && (reactionsLayoutInBubble.isEmpty || reactionsLayoutInBubble.isSmall || currentMessageObject != null && (currentMessageObject.isAnyKindOfSticker() || currentMessageObject.isRoundVideo())) || currentMessageObject != null && currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA/* || isMedia && drawCommentButton && !isRepliesChat*/;
+     }
+ 
+     public void drawTime(Canvas canvas, float alpha, boolean fromParent) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+index cff46f8d1..58be8d09b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+@@ -1991,6 +1991,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                                         emoji = "\uD83C\uDFA7 ";
+                                     } else if (message.isPhoto()) {
+                                         emoji = "\uD83D\uDDBC ";
++                                    } else if (tele.helpers.StickerCaptions.dialogPrefix(message) != null) {
++                                        emoji = tele.helpers.StickerCaptions.dialogPrefix(message);
+                                     } else {
+                                         emoji = "\uD83D\uDCCE ";
+                                     }
+@@ -6139,6 +6141,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+                 emoji = "\uD83C\uDFA7 ";
+             } else if (message.isPhoto()) {
+                 emoji = "\uD83D\uDDBC ";
++            } else if (tele.helpers.StickerCaptions.dialogPrefix(message) != null) {
++                emoji = tele.helpers.StickerCaptions.dialogPrefix(message);
+             } else {
+                 emoji = "\uD83D\uDCCE ";
+             }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 1b99c2862..7d1190740 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -13038,6 +13038,10 @@ public class ChatActivityEnterView extends FrameLayout implements
+                         }
+                         return;
+                     }
++                    final tele.helpers.StickerCaptions.Taken tele_caption = DialogObject.isEncryptedDialog(dialog_id) ? null : tele.helpers.StickerCaptions.take(parentFragment, currentAccount, sticker, clearsInputField, editingMessageObject == null && messageEditText != null ? messageEditText.getTextToUse() : null);
++                    if (tele_caption == tele.helpers.StickerCaptions.TOO_LONG) {
++                        return;
++                    }
+                     if (searchingType != 0) {
+                         setSearchingTypeInternal(0, true);
+                         emojiView.closeSearch(true);
+@@ -13045,11 +13049,11 @@ public class ChatActivityEnterView extends FrameLayout implements
+                     }
+                     setStickersExpanded(false, true, false);
+                     final TL_stories.StoryItem storyItem = delegate != null ? delegate.getReplyToStory() : null;
+-                    SendMessagesHelper.getInstance(currentAccount).sendSticker(sticker, query, dialog_id, replyingMessageObject, getThreadMessage(), storyItem, replyingQuote, sendAnimationData, notify, scheduleDate, scheduleRepeatPeriod, parent instanceof TLRPC.TL_messages_stickerSet, parent, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId(), getSendMessageSuggestionParams());
++                    SendMessagesHelper.getInstance(currentAccount).sendSticker(sticker, query, dialog_id, tele_caption != null ? tele_caption.text : null, null, replyingMessageObject, getThreadMessage(), storyItem, replyingQuote, sendAnimationData, notify, scheduleDate, scheduleRepeatPeriod, parent instanceof TLRPC.TL_messages_stickerSet, parent, parentFragment != null ? parentFragment.getMessageChatSendParams() : null, stars, getSendMonoForumPeerId(), getSendMessageSuggestionParams());
+                     if (delegate != null) {
+                         delegate.onMessageSend(null, true, scheduleDate, 0, 0);
+                     }
+-                    if (clearsInputField) {
++                    if (clearsInputField || tele_caption != null && tele_caption.fromField) {
+                         setFieldText("");
+                     }
+                     MediaDataController.getInstance(currentAccount).addRecentSticker(MediaDataController.TYPE_IMAGE, parent, sticker, (int) (System.currentTimeMillis() / 1000), false);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
+index 2f55e5580..07a8a5057 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
+@@ -115,6 +115,7 @@ import java.util.List;
+ import me.vkryl.core.reference.ReferenceList;
+ 
+ public class ContentPreviewViewer {
++    private static final int tele_action_send_caption = 390;
+ 
+     private class FrameLayoutDrawer extends FrameLayout {
+         public FrameLayoutDrawer(Context context) {
+@@ -735,6 +736,11 @@ public class ContentPreviewViewer {
+                         icons.add(R.drawable.input_notify_off);
+                         actions.add(6);
+                     }
++                    if (tele.helpers.StickerCaptions.sendEnabled() && delegate.needSend(currentContentType) && !delegate.isInScheduleMode() && tele.helpers.StickerCaptions.canCaption(currentDocument) && !org.telegram.messenger.DialogObject.isEncryptedDialog(delegate.getDialogId())) {
++                        items.add(LocaleController.getString(R.string.TeleStickerCaptionSend));
++                        icons.add(R.drawable.msg_edit);
++                        actions.add(tele_action_send_caption);
++                    }
+                     if (delegate.canSchedule()) {
+                         items.add(LocaleController.getString(R.string.Schedule));
+                         icons.add(R.drawable.msg_autodelete);
+@@ -800,6 +806,14 @@ public class ContentPreviewViewer {
+                             if (delegate != null) {
+                                 delegate.sendSticker(currentDocument, currentQuery, parentObject, actions.get(which) == 0, 0, 0);
+                             }
++                        } else if (actions.get(which) == tele_action_send_caption) {
++                            final TLRPC.Document tele_sticker = currentDocument;
++                            final String tele_query = currentQuery;
++                            final Object tele_parent = parentObject;
++                            final ContentPreviewViewerDelegate tele_delegate = delegate;
++                            if (tele_delegate != null) {
++                                tele.helpers.StickerCaptions.ask(parentActivity, resourcesProvider, tele_sticker, () -> tele_delegate.sendSticker(tele_sticker, tele_query, tele_parent, true, 0, 0));
++                            }
+                         } else if (actions.get(which) == 1) {
+                             if (delegate != null) {
+                                 delegate.openSet(currentStickerSet, clearsInputField);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index a9d3f85a8..0226af49f 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -205,6 +205,10 @@ object TeleConfig {
+     @JvmField
+     val AUDIO_AS_VOICE = BoolItem("audio_as_voice", false)
+     @JvmField
++    val STICKER_CAPTIONS_SHOW = BoolItem("sticker_captions_show", false)
++    @JvmField
++    val STICKER_CAPTIONS_SEND = BoolItem("sticker_captions_send", false)
++    @JvmField
+     val DOCKED_MEDIA = BoolItem("docked_media", false)
+     @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index c731cb11a..ec9169c26 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -190,6 +190,9 @@ object TeleHooks {
+         if (item === TeleConfig.LOCAL_CHAT_BACKGROUNDS) {
+             tele.helpers.LocalBackgrounds.onToggled()
+         }
++        if (item === TeleConfig.STICKER_CAPTIONS_SHOW) {
++            tele.helpers.StickerCaptions.onToggled()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/StickerCaptions.kt b/TMessagesProj/src/main/java/tele/helpers/StickerCaptions.kt
+new file mode 100644
+index 000000000..9429da4ba
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/StickerCaptions.kt
+@@ -0,0 +1,238 @@
++package tele.helpers
++
++import android.app.Activity
++import android.graphics.Canvas
++import android.graphics.Rect
++import android.text.InputType
++import android.view.Gravity
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.Emoji
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.MessageDrawable
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.LayoutHelper
++import tele.TeleConfig
++import tele.TeleHooks
++import kotlin.math.max
++
++// desktop 0175: captions on stickers, sent from the field or typed in a dialog, shown everywhere
++object StickerCaptions {
++
++    /** The caption a sticker goes out with; [fromField] tells the field to be cleared after the send. */
++    class Taken(@JvmField val text: CharSequence, @JvmField val fromField: Boolean)
++
++    @JvmField
++    val TOO_LONG = Taken("", false)
++
++    private const val ARM_TTL_MS = 120_000L
++    private const val SPOILER_MASK = '\u2588'
++
++    private var armedId = 0L
++    private var armedText: CharSequence? = null
++    private var armedAt = 0L
++
++    @JvmStatic
++    fun sendEnabled(): Boolean = TeleConfig.STICKER_CAPTIONS_SEND.value
++
++    @JvmStatic
++    fun showEnabled(): Boolean = TeleConfig.STICKER_CAPTIONS_SHOW.value
++
++    private fun isSticker(document: TLRPC.Document?): Boolean {
++        if (document == null || MessageObject.isGifDocument(document) || MessageObject.isMaskDocument(document)) return false
++        var sticker = false
++        for (attribute in document.attributes) {
++            if (attribute is TLRPC.TL_documentAttributeCustomEmoji) return false
++            if (attribute is TLRPC.TL_documentAttributeSticker) sticker = true
++        }
++        return sticker
++    }
++
++    /** Whether this document can go out with a caption: stickers only, no emoji, masks or GIFs. */
++    @JvmStatic
++    fun canCaption(document: TLRPC.Document?): Boolean = isSticker(document)
++
++    private fun isCaptioned(message: MessageObject?): Boolean {
++        if (message == null || message.isRestrictedMessage || message.caption.isNullOrEmpty()) return false
++        if (message.type != MessageObject.TYPE_STICKER && message.type != MessageObject.TYPE_ANIMATED_STICKER) return false
++        return !message.isAnimatedEmoji && message.messageOwner?.media is TLRPC.TL_messageMediaDocument
++    }
++
++    /** Whether the chat cell draws the caption of this sticker message. */
++    @JvmStatic
++    fun shows(message: MessageObject?): Boolean = showEnabled() && isCaptioned(message)
++
++    // a caption typed in the dialog waits for the send, which may go through a schedule or confirm step first
++    @JvmStatic
++    fun arm(document: TLRPC.Document?, caption: CharSequence) {
++        armedId = document?.id ?: 0L
++        armedText = caption
++        armedAt = System.currentTimeMillis()
++    }
++
++    /**
++     * The caption for the sticker about to go out: the armed one, else the text of the field.
++     * Null sends a plain sticker; [TOO_LONG] cancels the send.
++     */
++    @JvmStatic
++    fun take(fragment: BaseFragment?, account: Int, sticker: TLRPC.Document?, clearsField: Boolean, field: CharSequence?): Taken? {
++        if (!sendEnabled() || !isSticker(sticker)) return null
++        val armed = armedText
++        val text: CharSequence
++        val fromField: Boolean
++        if (armed != null && sticker!!.id == armedId && System.currentTimeMillis() - armedAt < ARM_TTL_MS) {
++            armedText = null
++            text = armed
++            fromField = false
++        } else {
++            armedText = null
++            // the field of a suggestion search holds the emoji, not a caption
++            if (clearsField || field == null) return null
++            text = AndroidUtilities.getTrimmedString(field)
++            if (text.isEmpty() || Emoji.fullyConsistsOfEmojis(text)) return null
++            fromField = true
++        }
++        val over = text.length - MessagesController.getInstance(account).captionMaxLengthLimit
++        if (over > 0) {
++            if (fragment != null) {
++                BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, LocaleController.formatString(R.string.TeleStickerCaptionTooLong, over)).show()
++            }
++            return TOO_LONG
++        }
++        return Taken(text, fromField)
++    }
++
++    /** Puts the caption and its entities on the sticker about to go out. */
++    @JvmStatic
++    fun apply(params: SendMessagesHelper.SendMessageParams, caption: CharSequence, account: Int) {
++        val message = arrayOf(caption)
++        val entities = MediaDataController.getInstance(account).getEntities(message, true)
++        params.caption = message[0].toString()
++        params.entities = entities
++    }
++
++    private fun label(message: MessageObject): String {
++        val sticker = LocaleController.getString(R.string.AttachSticker)
++        val emoji = message.stickerEmoji
++        return if (emoji.isNullOrEmpty()) sticker else "$emoji $sticker"
++    }
++
++    /** The label ahead of the caption in the chat list, null when the stock preview stays. */
++    @JvmStatic
++    fun dialogPrefix(message: MessageObject?): String? =
++        if (shows(message)) "${label(message!!)}, " else null
++
++    /** The notification text of a captioned sticker, null when the stock text stays. */
++    @JvmStatic
++    fun notifyText(message: MessageObject?): String? {
++        if (!shows(message)) return null
++        val owner = message!!.messageOwner
++        val raw = owner.message
++        if (raw.isNullOrEmpty()) return null
++        val builder = StringBuilder(raw)
++        if (!message.didSpoilLoginCode()) {
++            for (entity in owner.entities) {
++                if (entity !is TLRPC.TL_messageEntitySpoiler) continue
++                val end = minOf(entity.offset + entity.length, builder.length)
++                for (i in max(entity.offset, 0) until end) builder.setCharAt(i, SPOILER_MASK)
++            }
++        }
++        return "${label(message)}, $builder"
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        TeleHooks.bumpUiRevision()
++        for (account in 0 until org.telegram.messenger.UserConfig.MAX_ACCOUNT_COUNT) {
++            org.telegram.messenger.NotificationCenter.getInstance(account).postNotificationName(org.telegram.messenger.NotificationCenter.dialogsNeedReload)
++        }
++    }
++
++    /** Extra height under the sticker for a caption bubble of the given text height. */
++    @JvmStatic
++    fun extraHeight(textHeight: Int): Int = GAP_DP.dp() + textHeight + PAD_V_DP.dp() * 2
++
++    /** The caption bubble under the sticker, on the side the message sits. */
++    @JvmStatic
++    fun place(out: Rect, imageLeft: Float, imageRight: Float, imageBottom: Float, textWidth: Int, textHeight: Int, outgoing: Boolean) {
++        val width = textWidth + 28.dp()
++        val top = (imageBottom + GAP_DP.dp()).toInt()
++        val left = if (outgoing) (imageRight - width).toInt() else imageLeft.toInt()
++        out.set(left, top, left + width, top + textHeight + PAD_V_DP.dp() * 2)
++    }
++
++    @JvmStatic
++    fun textInsetX(outgoing: Boolean): Int = (if (outgoing) 11 else 17).dp()
++
++    @JvmStatic
++    fun textInsetY(): Int = PAD_V_DP.dp()
++
++    @JvmStatic
++    fun drawBubble(
++        canvas: Canvas,
++        bubble: MessageDrawable,
++        bounds: Rect,
++        top: Int,
++        parentWidth: Int,
++        parentHeight: Int,
++        parentViewTopOffset: Int,
++        blurTop: Int,
++        blurBottom: Int,
++        pinnedTop: Boolean,
++        pinnedBottom: Boolean,
++        alpha: Float
++    ) {
++        bubble.setTop(top, parentWidth, parentHeight, parentViewTopOffset, blurTop, blurBottom, pinnedTop, pinnedBottom)
++        bubble.setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
++        val shadow = bubble.shadowDrawable
++        if (shadow != null) {
++            shadow.setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
++            shadow.alpha = (255 * alpha).toInt()
++            shadow.draw(canvas)
++        }
++        bubble.alpha = (255 * alpha).toInt()
++        bubble.draw(canvas)
++        bubble.alpha = 255
++    }
++
++    /** The "Send with caption…" step of the sticker preview menu. */
++    @JvmStatic
++    fun ask(activity: Activity, provider: Theme.ResourcesProvider?, document: TLRPC.Document?, send: Runnable) {
++        val field = TeleHooks.themedField(activity, provider)
++        field.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
++        field.gravity = Gravity.LEFT or Gravity.TOP
++        field.setSingleLine(false)
++        field.maxLines = 6
++        field.hint = LocaleController.getString(R.string.Caption)
++        val container = android.widget.FrameLayout(activity)
++        container.addView(field, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.TOP, 24f, 0f, 24f, 0f))
++        val builder = AlertDialog.Builder(activity, provider)
++        builder.setTitle(LocaleController.getString(R.string.TeleStickerCaptionTitle))
++        builder.setView(container)
++        builder.setPositiveButton(LocaleController.getString(R.string.Send)) { _, _ ->
++            val text = field.text?.toString()?.trim().orEmpty()
++            if (text.isNotEmpty()) arm(document, text)
++            send.run()
++        }
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        val dialog = builder.create()
++        dialog.setOnShowListener {
++            field.requestFocus()
++            AndroidUtilities.showKeyboard(field)
++        }
++        dialog.show()
++    }
++
++    private fun Int.dp(): Int = AndroidUtilities.dp(this.toFloat())
++
++    private const val GAP_DP = 3
++    private const val PAD_V_DP = 7
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 10a87dc90..5b6d4c3aa 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -238,6 +238,11 @@ object TeleSearch {
+             section(1318, "Markdown quotes", "sending", TeleSettingsActivity.MODE_SENDING, "Send > lines as quotes"),
+             section(1319, "Bold italic code markdown", "sending", TeleSettingsActivity.MODE_SENDING, "Render markdown as you type"),
+             section(1312, "Queued messages marker", "sending", TeleSettingsActivity.MODE_SENDING, "Queue messages behind uploading media"),
++            section(1320, "Show sticker captions", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1321, "Send stickers with captions", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1322, "Captions under stickers", "chats", TeleSettingsActivity.MODE_CHATS, "Show sticker captions"),
++            section(1323, "Edit sticker captions", "sending", TeleSettingsActivity.MODE_SENDING, "Send stickers with captions"),
++            section(1324, "Send a sticker with a caption", "sending", TeleSettingsActivity.MODE_SENDING, "Send stickers with captions"),
+             section(GUID_LOWERCASE, "Lowercase everything", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1285, "Backgrounds only for you", "chats", TeleSettingsActivity.MODE_CHATS),
+             screen(1286, "Chat backgrounds") { TeleChatBackgroundsActivity() },
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5f2646bfe..8577ce875 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -744,6 +744,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Blurred photo as profile background" to "The header shows the blurred profile photo.",
+             "Fill the whole profile" to "The whole profile takes the color of the photo.",
+             "Lowercase everything" to "Interface text in lowercase; messages and names stay as they are.",
++            "Show sticker captions" to "Captions show under stickers and in previews.",
++            "Send stickers with captions" to "Text in the field goes out as the caption of a sticker.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -872,6 +874,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
+                 toggle("Send quick replies by name", TeleConfig.QUICK_REPLIES_BY_NAME),
+                 toggle("Select more than 100 messages", TeleConfig.SELECT_MANY),
++                toggle("Show sticker captions", TeleConfig.STICKER_CAPTIONS_SHOW),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Saved GIFs and stickers"),
+                 toggle("Keep saved GIFs and favorite stickers past the limit", TeleConfig.KEEP_MEDIA_PAST_LIMIT),
+@@ -970,6 +973,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+                 toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
+                 toggle("Hide the gift button in the message field", TeleConfig.HIDE_GIFT_BUTTON),
++                toggle("Send stickers with captions", TeleConfig.STICKER_CAPTIONS_SEND),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Markdown"),
+                 toggle("Render markdown as you type", TeleConfig.LIVE_MARKDOWN),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 20e0155b3..dec23b739 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -141,4 +141,7 @@
+     <string name="TeleStopUpload">Stop upload</string>
+     <string name="TeleQueuedSentOnStop_one">%1$d queued message waits for this upload. It will be sent right away if you stop it.</string>
+     <string name="TeleQueuedSentOnStop_other">%1$d queued messages wait for this upload. They will be sent right away if you stop it.</string>
++    <string name="TeleStickerCaptionSend">Send with caption…</string>
++    <string name="TeleStickerCaptionTitle">Send with caption</string>
++    <string name="TeleStickerCaptionTooLong">The caption is %1$d characters over the limit.</string>
+ </resources>

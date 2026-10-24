@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:24:13 +0300
+Subject: [PATCH 177/183] feat: quote voice transcriptions
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  4 +-
+ .../src/main/java/tele/helpers/MultiQuote.kt  | 65 ++++++++++++++++---
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +-
+ 4 files changed, 62 insertions(+), 10 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 2089f9a70..d98c50268 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -810,6 +810,7 @@ public class ChatActivity extends BaseFragment implements
+     private MessageObject.GroupedMessages replyingQuoteGroup;
+     public MessageObject replyingTopMessage;
+     private ReplyQuote replyingQuote;
++    public int tele_quoteReplyId;
+     private boolean ignoreDraft;
+     private MessageObject replyingMessageObject;
+     private int editingMessageObjectReqId;
+@@ -3673,7 +3674,7 @@ public class ChatActivity extends BaseFragment implements
+                 chatActivity != null && chatActivity.getCurrentEncryptedChat() == null &&
+                 (selectedView == null ||
+                     selectedView.getMessageObject() != null && selectedView.getMessageObject().type != MessageObject.TYPE_STORY &&
+-                    !selectedView.getMessageObject().isVoiceTranscriptionOpen() && !selectedView.getMessageObject().isInvoice() &&
++                    (!selectedView.getMessageObject().isVoiceTranscriptionOpen() || tele.helpers.MultiQuote.canQuoteTranscription(chatActivity, chatActivity.chatActivityEnterView, selectedView.getMessageObject())) && !selectedView.getMessageObject().isInvoice() &&
+                     selectedView.getMessageObject().richLayout == null &&
+                     !chatActivity.textSelectionHelper.isDescription
+                 ) &&
+@@ -15737,6 +15738,7 @@ public class ChatActivity extends BaseFragment implements
+ 
+                 replyingMessageObject = messageObjectToReply;
+                 replyingQuote = quote;
++                tele_quoteReplyId = 0;
+                 if (replyingQuote != null && !replyingQuote.isValid()) {
+                     replyingQuote = null;
+                 }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MultiQuote.kt b/TMessagesProj/src/main/java/tele/helpers/MultiQuote.kt
+index dea082d52..9b6ae5fba 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MultiQuote.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MultiQuote.kt
+@@ -16,11 +16,27 @@ import org.telegram.ui.Components.BulletinFactory
+ import org.telegram.ui.Components.ChatActivityEnterView
+ import org.telegram.ui.Components.QuoteSpan
+ import org.telegram.ui.Components.TextStyleSpan
++import org.telegram.ui.Components.TranscribeButton
+ import tele.TeleConfig
+ 
+ // A reply keeps one server quote; more quotes go into the field as blockquotes (desktop 0210, 0211)
+ object MultiQuote {
+ 
++    /** Transcription text is not part of the message, so it can only be quoted into the field. */
++    @JvmStatic
++    fun canQuoteTranscription(activity: ChatActivity?, enter: ChatActivityEnterView?, mo: MessageObject?): Boolean {
++        if (!TeleConfig.MULTI_QUOTE.value || activity == null || enter == null || mo == null) {
++            return false
++        }
++        val owner = mo.messageOwner ?: return false
++        return enter.visibility == View.VISIBLE &&
++            activity.editingMessageObject == null &&
++            mo.isVoiceTranscriptionOpen &&
++            owner.voiceTranscriptionFinal &&
++            !owner.voiceTranscription.isNullOrEmpty() &&
++            !TranscribeButton.isTranscribing(mo)
++    }
++
+     /** True when the quote was handled here; false leaves the stock reply-with-quote path. */
+     @JvmStatic
+     fun onQuote(activity: ChatActivity?, enter: ChatActivityEnterView?, mo: MessageObject?, start: Int, end: Int, text: CharSequence?): Boolean {
+@@ -31,17 +47,33 @@ object MultiQuote {
+             return false
+         }
+         val replying = enter.replyingMessageObject
+-        if (replying == null || activity.replyQuote == null) {
+-            return false
+-        }
+-        val quote = ChatActivity.ReplyQuote.from(mo, start, end)
+-        if (quote?.text == null) {
+-            return false
++        val active = replying != null && (activity.replyQuote != null || activity.tele_quoteReplyId == replying.id)
++        val body: CharSequence
++        if (mo.isVoiceTranscriptionOpen) {
++            if (!canQuoteTranscription(activity, enter, mo)) {
++                return true
++            }
++            body = transcriptionBody(activity, text) ?: return true
++        } else {
++            if (!active) {
++                return false
++            }
++            val quote = ChatActivity.ReplyQuote.from(mo, start, end)
++            if (quote?.text == null) {
++                return false
++            }
++            body = quoteBody(activity, enter, quote)
+         }
+-        val credit = if (replying.id != mo.id) senderName(activity, mo) else null
+-        if (!append(activity, enter, quoteBody(activity, enter, quote), credit)) {
++        val sameTarget = replying != null && replying.id == mo.id
++        val credit = if (active && !sameTarget) senderName(activity, mo) else null
++        if (!append(activity, enter, body, credit)) {
+             return true
+         }
++        if (!active) {
++            // the reply moves to the quoted message, later quotes then append
++            activity.showFieldPanelForReply(mo)
++            activity.tele_quoteReplyId = mo.id
++        }
+         if (activity.actionBar != null && activity.actionBar.isActionModeShowed) {
+             activity.clearSelectionMode()
+         }
+@@ -49,6 +81,23 @@ object MultiQuote {
+         return true
+     }
+ 
++    private fun transcriptionBody(activity: ChatActivity, text: CharSequence?): CharSequence? {
++        var plain = text?.toString() ?: return null
++        val max = MessagesController.getInstance(activity.currentAccount).quoteLengthMax
++        if (plain.length > max) {
++            plain = plain.substring(0, max)
++        }
++        // a selection can cut a surrogate pair at its edges
++        if (plain.isNotEmpty() && Character.isLowSurrogate(plain[0])) {
++            plain = plain.substring(1)
++        }
++        if (plain.isNotEmpty() && Character.isHighSurrogate(plain[plain.length - 1])) {
++            plain = plain.substring(0, plain.length - 1)
++        }
++        plain = plain.trim()
++        return if (plain.isEmpty()) null else plain
++    }
++
+     private fun quoteBody(activity: ChatActivity, enter: ChatActivityEnterView, quote: ChatActivity.ReplyQuote): CharSequence {
+         val result = SpannableStringBuilder(quote.text)
+         val entities = quote.entities
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index acc3b3b91..05c1f596c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -261,6 +261,7 @@ object TeleSearch {
+             section(1299, "Matroska video", "sending", TeleSettingsActivity.MODE_SENDING, "Send MKV files as videos"),
+             section(1300, "Forward messages one by one", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1325, "Multiple quotes in one reply", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1326, "Quote voice transcriptions", "messages", TeleSettingsActivity.MODE_MESSAGES, "Multiple quotes in one reply"),
+             section(1301, "Select more than 100 messages", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1302, "Send quick replies by name", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 129631d4a..914c1e722 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -703,7 +703,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Offer quick replies in groups" to "Suggest quick replies after / in groups.",
+             "Forward protected messages as copies" to "Forward protected messages as fresh copies.",
+             "Forward messages one by one" to "Albums stay together; many at once can hit rate limits.",
+-            "Multiple quotes in one reply" to "Quoting again adds a blockquote to the message instead of replacing the quote.",
++            "Multiple quotes in one reply" to "Quoting again adds a blockquote to the message; voice transcripts can be quoted.",
+             "Select more than 100 messages" to "Up to 10000; deleting and forwarding go out in parts of 100.",
+             "Send quick replies by name" to "A message that is exactly /name sends that quick reply.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",

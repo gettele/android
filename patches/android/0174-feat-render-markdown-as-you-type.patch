@@ -1,0 +1,572 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:18:11 +0300
+Subject: [PATCH 174/183] feat: render markdown as you type
+
+---
+ .../messenger/MediaDataController.java        |   4 +
+ .../ui/Components/ChatActivityEnterView.java  |   1 +
+ .../ui/Components/ChatAttachAlert.java        |   2 +
+ .../PhotoViewerCaptionEnterView.java          |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/LiveMarkdown.kt    | 410 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   9 +
+ 9 files changed, 439 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/LiveMarkdown.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+index f785c019e..496cf9bca 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+@@ -7688,6 +7688,10 @@ public class MediaDataController extends BaseController {
+             }
+         }
+ 
++        if (parseMarkdown && allowStrike && tele.TeleConfig.LIVE_MARKDOWN.getValue() && tele.TeleConfig.LIVE_MARKDOWN_QUOTES.getValue()) {
++            cs = tele.helpers.LiveMarkdown.applyQuotes(cs, entities);
++        }
++
+         // trim again in case some whitespace inside tags
+         while (cs.length() > 0 && (cs.charAt(0) == '\n' || cs.charAt(0) == ' ')) {
+             cs = cs.subSequence(1, cs.length());
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 7d0987b50..1b99c2862 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -6202,6 +6202,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+             }
+         });
+         messageEditText.addTextChangedListener(new EditTextSuggestionsFix());
++        tele.helpers.LiveMarkdown.attach(messageEditText, resourcesProvider);
+         messageEditText.setEnabled(messageEditTextEnabled);
+         if (messageEditTextWatchers != null) {
+             for (TextWatcher textWatcher : messageEditTextWatchers) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index a7ec27257..990c4be5a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -3247,6 +3247,7 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+         commentTextView.includeNavigationBar = true;
+         commentTextView.setHint(getString("AddCaption", R.string.AddCaption));
+         commentTextView.onResume();
++        tele.helpers.LiveMarkdown.attach(commentTextView.getEditText(), resourcesProvider);
+         commentTextView.getEditText().setLayoutParams(LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.LEFT | Gravity.CENTER_VERTICAL, 48, 0, 36, 0));
+         commentTextView.getEditText().addTextChangedListener(new TextWatcher() {
+ 
+@@ -3485,6 +3486,7 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+             }
+         });
+         topCommentTextView.getEditText().setPadding(0, dp(9), 0, dp(9));
++        tele.helpers.LiveMarkdown.attach(topCommentTextView.getEditText(), resourcesProvider);
+         topCommentTextView.getEditText().setLayoutParams(LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.LEFT | Gravity.CENTER_VERTICAL, 48, 0, 96, 0));
+         topCommentTextView.getEditText().setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
+         topCommentTextView.getEmojiButton().setLayoutParams(LayoutHelper.createFrame(40, 40, Gravity.BOTTOM | Gravity.LEFT, 0, 0, 0, 0));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/PhotoViewerCaptionEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/PhotoViewerCaptionEnterView.java
+index dd918bf34..0cfe76003 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/PhotoViewerCaptionEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/PhotoViewerCaptionEnterView.java
+@@ -264,6 +264,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
+                 showPopup(AndroidUtilities.isInMultiwindow || AndroidUtilities.usingHardwareInput ? 0 : 2, false);
+             }
+         });
++        tele.helpers.LiveMarkdown.attach(messageEditText, null);
+         messageEditText.addTextChangedListener(new TextWatcher() {
+             boolean processChange = false;
+             boolean heightShouldBeChanged;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 4616cdd5c..a9d3f85a8 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -247,6 +247,10 @@ object TeleConfig {
+     @JvmField
+     val CALCMULA_PREVIEW = BoolItem("calcmula_preview", false)
+     @JvmField
++    val LIVE_MARKDOWN = BoolItem("live_markdown", false)
++    @JvmField
++    val LIVE_MARKDOWN_QUOTES = BoolItem("live_markdown_quotes", false)
++    @JvmField
+     val SHOT = BoolItem("shot", false)
+     @JvmField
+     val COPY_SERVICE_TEXT = BoolItem("copy_service_text", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index a96414f28..c731cb11a 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -140,6 +140,9 @@ object TeleHooks {
+                     .postNotificationName(NotificationCenter.didUpdatePremiumGiftFieldIcon)
+             }
+         }
++        if (item === TeleConfig.LIVE_MARKDOWN || item === TeleConfig.LIVE_MARKDOWN_QUOTES) {
++            tele.helpers.LiveMarkdown.onToggled()
++        }
+         if (item === TeleConfig.REDUCE_MOTION) {
+             tele.helpers.TeleReduceMotion.apply()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LiveMarkdown.kt b/TMessagesProj/src/main/java/tele/helpers/LiveMarkdown.kt
+new file mode 100644
+index 000000000..ed9fa4d45
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/LiveMarkdown.kt
+@@ -0,0 +1,410 @@
++package tele.helpers
++
++import android.graphics.Canvas
++import android.graphics.Paint
++import android.text.Editable
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.TextPaint
++import android.text.TextWatcher
++import android.text.style.LineBackgroundSpan
++import android.text.style.MetricAffectingSpan
++import android.text.style.URLSpan
++import android.widget.EditText
++import androidx.core.graphics.ColorUtils
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.QuoteSpan
++import org.telegram.ui.Components.TextStyleSpan
++import org.telegram.utils.code.highlight.CodeHighlighting
++import tele.TeleConfig
++import java.lang.ref.WeakReference
++import java.util.regex.Pattern
++
++/**
++ * Message markdown shown as you type: the markers stay in the text, dimmed, and the text between them is styled.
++ * The stock parser still turns the markers into entities on send; the quote lines are handled by [applyQuotes].
++ */
++object LiveMarkdown {
++    // past this length the field is left alone, only the decoration is skipped
++    private const val LIMIT = 4096
++
++    internal const val DIM = 1 shl 24
++    private const val STYLE_MASK = TextStyleSpan.FLAG_STYLE_BOLD or TextStyleSpan.FLAG_STYLE_ITALIC or
++        TextStyleSpan.FLAG_STYLE_MONO or TextStyleSpan.FLAG_STYLE_STRIKE or TextStyleSpan.FLAG_STYLE_SPOILER
++
++    private const val BLOCK_QUOTE = 0
++    internal const val BLOCK_COLLAPSED = 1
++    internal const val BLOCK_PRE = 2
++
++    // the same patterns and order as MediaDataController.getEntities
++    private val PASSES = listOf(
++        Pattern.compile("\\*\\*(.+?)\\*\\*") to TextStyleSpan.FLAG_STYLE_BOLD,
++        Pattern.compile("__(.+?)__") to TextStyleSpan.FLAG_STYLE_ITALIC,
++        Pattern.compile("\\|\\|(.+?)\\|\\|") to TextStyleSpan.FLAG_STYLE_SPOILER,
++        Pattern.compile("~~(.+?)~~") to TextStyleSpan.FLAG_STYLE_STRIKE
++    )
++
++    private class Block(val start: Int, val end: Int, val kind: Int)
++
++    private class Plan(val flags: IntArray, val blocks: List<Block>)
++
++    private data class Key(val start: Int, val end: Int, val flags: Int)
++
++    private class Line(val from: Int, val till: Int, val prefix: Int)
++
++    private class Entry(field: EditText, provider: Theme.ResourcesProvider?) {
++        val field = WeakReference(field)
++        val provider = WeakReference(provider)
++        var watcher: TextWatcher? = null
++    }
++
++    // UI thread only
++    private val entries = ArrayList<Entry>()
++
++    private fun enabled(): Boolean = TeleConfig.LIVE_MARKDOWN.value
++
++    private fun quotesEnabled(): Boolean = TeleConfig.LIVE_MARKDOWN.value && TeleConfig.LIVE_MARKDOWN_QUOTES.value
++
++    @JvmStatic
++    fun attach(field: EditText, provider: Theme.ResourcesProvider?) {
++        entries.removeAll { it.field.get() == null }
++        if (entries.any { it.field.get() === field }) return
++        val entry = Entry(field, provider)
++        entries.add(entry)
++        if (enabled()) install(entry)
++    }
++
++    /** The toggles changed: fields start, stop or redo the decoration right away. */
++    @JvmStatic
++    fun onToggled() {
++        AndroidUtilities.runOnUIThread {
++            entries.removeAll { it.field.get() == null }
++            for (entry in entries) {
++                if (enabled()) {
++                    if (entry.watcher == null) install(entry) else decorate(entry)
++                } else {
++                    uninstall(entry)
++                }
++            }
++        }
++    }
++
++    private fun install(entry: Entry) {
++        val field = entry.field.get() ?: return
++        val watcher = object : TextWatcher {
++            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
++            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
++            override fun afterTextChanged(s: Editable?) = decorate(entry)
++        }
++        entry.watcher = watcher
++        field.addTextChangedListener(watcher)
++        decorate(entry)
++    }
++
++    private fun uninstall(entry: Entry) {
++        val watcher = entry.watcher ?: return
++        entry.watcher = null
++        val field = entry.field.get() ?: return
++        field.removeTextChangedListener(watcher)
++        field.text?.let { strip(it) }
++    }
++
++    private fun strip(text: Editable) {
++        for (span in text.getSpans(0, text.length, TeleLiveMarkdownSpan::class.java)) text.removeSpan(span)
++        for (span in text.getSpans(0, text.length, TeleLiveMarkdownBlock::class.java)) text.removeSpan(span)
++    }
++
++    private fun decorate(entry: Entry) {
++        val field = entry.field.get() ?: return
++        val text = field.text ?: return
++        val provider = entry.provider.get()
++        val plan = plan(text, quotesEnabled())
++        val wanted = HashSet<Key>()
++        val styled = ArrayList<IntArray>()
++        val blocks = ArrayList<Block>()
++        if (plan != null) {
++            var i = 0
++            val flags = plan.flags
++            while (i < flags.size) {
++                if (flags[i] == 0) {
++                    i++
++                    continue
++                }
++                var j = i + 1
++                while (j < flags.size && flags[j] == flags[i]) j++
++                styled.add(intArrayOf(i, j, flags[i]))
++                wanted.add(Key(i, j, flags[i]))
++                i = j
++            }
++            for (block in plan.blocks) {
++                blocks.add(block)
++                wanted.add(Key(block.start, block.end, -1 - block.kind))
++            }
++        }
++        val spans = text.getSpans(0, text.length, TeleLiveMarkdownSpan::class.java)
++        val existingBlocks = text.getSpans(0, text.length, TeleLiveMarkdownBlock::class.java)
++        if (spans.size + existingBlocks.size == wanted.size) {
++            val current = HashSet<Key>()
++            for (span in spans) current.add(Key(text.getSpanStart(span), text.getSpanEnd(span), span.flags))
++            for (span in existingBlocks) current.add(Key(text.getSpanStart(span), text.getSpanEnd(span), -1 - span.kind))
++            if (current == wanted) return
++        }
++        strip(text)
++        for (run in styled) {
++            text.setSpan(TeleLiveMarkdownSpan(run[2], provider), run[0], run[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        }
++        for (block in blocks) {
++            text.setSpan(TeleLiveMarkdownBlock(block.kind, provider), block.start, block.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        }
++    }
++
++    private fun hasStockSpan(text: Spanned, from: Int, till: Int): Boolean =
++        text.getSpans(from, till, Any::class.java).any {
++            it is TextStyleSpan || it is QuoteSpan || it is CodeHighlighting.Span || it is URLSpan
++        }
++
++    private fun overlaps(ranges: List<IntArray>, from: Int, till: Int): Boolean =
++        ranges.any { from < it[1] && till > it[0] }
++
++    private fun plan(text: CharSequence, quotes: Boolean): Plan? {
++        val n = text.length
++        if (n == 0 || n > LIMIT) return null
++        val string = text.toString()
++        if (!string.any { it == '*' || it == '_' || it == '|' || it == '~' || it == '`' || it == '>' }) return null
++        val spanned = text as? Spanned
++        val flags = IntArray(n)
++        val alive = BooleanArray(n) { true }
++        val blocks = ArrayList<Block>()
++        // the code content and the links: the markers inside are plain text
++        val shielded = ArrayList<IntArray>()
++        spanned?.getSpans(0, n, URLSpan::class.java)?.forEach {
++            shielded.add(intArrayOf(spanned.getSpanStart(it), spanned.getSpanEnd(it)))
++        }
++
++        fun kill(from: Int, till: Int) {
++            for (i in from until till) {
++                alive[i] = false
++                flags[i] = DIM
++            }
++        }
++
++        var i = 0
++        while (i < n) {
++            val open = string.indexOf('`', i)
++            if (open < 0) break
++            val pre = string.startsWith("```", open)
++            if (pre) {
++                var close = string.indexOf("```", open + 3)
++                if (close < 0) break
++                while (close + 3 < n && string[close + 3] == '`') close++
++                val newLine = string.indexOf('\n', open + 3)
++                val language = if (newLine >= 0 && newLine - (open + 3) > 0) string.substring(open + 3, newLine) else ""
++                var from = open + 3 + language.length + (if (language.isEmpty()) 0 else 1)
++                i = close + 3
++                if (from >= n || from > close) continue
++                var till = close
++                if (till > from && string[till - 1] == '\n') till--
++                if (till <= from) continue
++                if (string[from] == '\n' && till - from > 1) {
++                    kill(open, from + 1)
++                    from++
++                } else {
++                    kill(open, from)
++                }
++                kill(till, close + 3)
++                for (k in from until till) flags[k] = flags[k] or TextStyleSpan.FLAG_STYLE_MONO
++                shielded.add(intArrayOf(from, till))
++                blocks.add(Block(open, close + 3, BLOCK_PRE))
++            } else {
++                var close = string.indexOf('`', open + 1)
++                if (close < 0) break
++                while (close + 1 < n && string[close + 1] == '`') close++
++                i = close + 1
++                if (open + 1 == close) continue
++                if (spanned != null && spanned.getSpans(open, open + 1, CodeHighlighting.Span::class.java).isNotEmpty()) continue
++                kill(open, open + 1)
++                kill(close, close + 1)
++                for (k in open + 1 until close) flags[k] = flags[k] or TextStyleSpan.FLAG_STYLE_MONO
++                shielded.add(intArrayOf(open + 1, close))
++            }
++        }
++
++        val chars = StringBuilder(n)
++        val index = IntArray(n)
++        fun rebuild() {
++            chars.setLength(0)
++            var size = 0
++            for (k in 0 until n) {
++                if (alive[k]) {
++                    chars.append(string[k])
++                    index[size++] = k
++                }
++            }
++        }
++
++        for ((pattern, style) in PASSES) {
++            rebuild()
++            val matcher = pattern.matcher(chars)
++            while (matcher.find()) {
++                val s = matcher.start()
++                val e = matcher.end()
++                val first = index[s]
++                val last = index[e - 1] + 1
++                if (overlaps(shielded, first, last)) continue
++                kill(first, first + 1)
++                kill(index[s + 1], index[s + 1] + 1)
++                kill(index[e - 2], index[e - 2] + 1)
++                kill(last - 1, last)
++                for (k in index[s + 2]..index[e - 3]) {
++                    if (alive[k]) flags[k] = flags[k] or style
++                }
++            }
++        }
++
++        if (quotes) {
++            rebuild()
++            val size = chars.length
++            val lines = ArrayList<Line>()
++            var from = 0
++            while (from <= size) {
++                var till = chars.indexOf("\n", from)
++                if (till < 0) till = size
++                val prefix = quotePrefix(chars, from, till)
++                if (prefix > 0) {
++                    val a = index[from]
++                    val b = index[from + prefix - 1] + 1
++                    val styled = (a until b).any { flags[it] and STYLE_MASK != 0 }
++                    if (!styled && (spanned == null || !hasStockSpan(spanned, a, b))) lines.add(Line(from, till, prefix))
++                }
++                from = till + 1
++            }
++            var l = 0
++            while (l < lines.size) {
++                val collapsed = lines[l].prefix == 3
++                var m = l
++                while (m + 1 < lines.size && lines[m + 1].from == lines[m].till + 1 && (lines[m + 1].prefix == 3) == collapsed) m++
++                for (k in l..m) {
++                    val line = lines[k]
++                    for (c in line.from until line.from + line.prefix) flags[index[c]] = DIM
++                }
++                blocks.add(Block(index[lines[l].from], index[lines[m].till - 1] + 1, if (collapsed) BLOCK_COLLAPSED else BLOCK_QUOTE))
++                l = m + 1
++            }
++        }
++        return Plan(flags, blocks)
++    }
++
++    private fun quotePrefix(text: CharSequence, from: Int, till: Int): Int {
++        fun at(i: Int, c: Char) = i < till && text[i] == c
++        val size = when {
++            at(from, '>') && at(from + 1, '!') && at(from + 2, ' ') -> 3
++            at(from, '>') && at(from + 1, ' ') -> 2
++            else -> 0
++        }
++        return if (till - from > size) size else 0
++    }
++
++    /**
++     * Lines starting with "> " or ">! " become blockquote entities, the prefix leaves the text.
++     * Called by the stock entity parser after the markdown markers are gone, so [entities] match [text].
++     */
++    @JvmStatic
++    fun applyQuotes(text: CharSequence, entities: ArrayList<TLRPC.MessageEntity>): CharSequence {
++        if (text.indexOf('>') < 0) return text
++        val string = text.toString()
++        val size = string.length
++        val lines = ArrayList<Line>()
++        var from = 0
++        while (from <= size) {
++            var till = string.indexOf('\n', from)
++            if (till < 0) till = size
++            val prefix = quotePrefix(string, from, till)
++            if (prefix > 0 && entities.none { it.offset < from + prefix && it.offset + it.length > from }) {
++                lines.add(Line(from, till, prefix))
++            }
++            from = till + 1
++        }
++        if (lines.isEmpty()) return text
++
++        fun shifted(position: Int): Int {
++            var result = position
++            for (line in lines) {
++                if (line.from >= position) break
++                result -= line.prefix
++            }
++            return result
++        }
++
++        for (entity in entities) {
++            val start = shifted(entity.offset)
++            val end = shifted(entity.offset + entity.length)
++            entity.offset = start
++            entity.length = end - start
++        }
++        var l = 0
++        while (l < lines.size) {
++            val collapsed = lines[l].prefix == 3
++            var m = l
++            while (m + 1 < lines.size && lines[m + 1].from == lines[m].till + 1 && (lines[m + 1].prefix == 3) == collapsed) m++
++            val entity = TLRPC.TL_messageEntityBlockquote()
++            entity.offset = shifted(lines[l].from + lines[l].prefix)
++            entity.length = shifted(lines[m].till) - entity.offset
++            entity.collapsed = collapsed
++            entities.add(entity)
++            l = m + 1
++        }
++
++        if (text is Spanned) {
++            val result = SpannableStringBuilder(text)
++            for (k in lines.indices.reversed()) result.delete(lines[k].from, lines[k].from + lines[k].prefix)
++            return result
++        }
++        val result = StringBuilder(size)
++        var copied = 0
++        for (line in lines) {
++            result.append(string, copied, line.from)
++            copied = line.from + line.prefix
++        }
++        result.append(string, copied, size)
++        return result.toString()
++    }
++}
++
++/** Decoration only: not an entity, the stock entity parser doesn't know it. */
++class TeleLiveMarkdownSpan(val flags: Int, private val provider: Theme.ResourcesProvider?) : MetricAffectingSpan() {
++    private val run = TextStyleSpan.TextStyleRun().also { it.flags = flags }
++
++    override fun updateMeasureState(paint: TextPaint) {
++        run.typeface?.let { paint.typeface = it }
++    }
++
++    override fun updateDrawState(paint: TextPaint) {
++        run.typeface?.let { paint.typeface = it }
++        if (flags and TextStyleSpan.FLAG_STYLE_STRIKE != 0) paint.isStrikeThruText = true
++        if (flags and TextStyleSpan.FLAG_STYLE_SPOILER != 0) paint.bgColor = ColorUtils.setAlphaComponent(paint.color, 0x30)
++        if (flags and LiveMarkdown.DIM != 0) paint.color = Theme.getColor(Theme.key_chat_messagePanelHint, provider)
++    }
++}
++
++/** The quote bar and the code block fill behind whole lines. */
++class TeleLiveMarkdownBlock(val kind: Int, private val provider: Theme.ResourcesProvider?) : LineBackgroundSpan {
++    override fun drawBackground(
++        canvas: Canvas, paint: Paint, left: Int, right: Int, top: Int, baseline: Int, bottom: Int,
++        text: CharSequence, start: Int, end: Int, lineNumber: Int
++    ) {
++        val color = paint.color
++        val style = paint.style
++        val base = Theme.getColor(Theme.key_chat_messagePanelHint, provider)
++        paint.style = Paint.Style.FILL
++        paint.color = ColorUtils.setAlphaComponent(base, 0x22)
++        canvas.drawRect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), paint)
++        if (kind != LiveMarkdown.BLOCK_PRE) {
++            paint.color = ColorUtils.setAlphaComponent(base, if (kind == LiveMarkdown.BLOCK_COLLAPSED) 0x80 else 0xFF)
++            canvas.drawRect(left.toFloat(), top.toFloat(), (left + AndroidUtilities.dp(2f)).toFloat(), bottom.toFloat(), paint)
++        }
++        paint.color = color
++        paint.style = style
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 609065385..10a87dc90 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -232,6 +232,11 @@ object TeleSearch {
+             section(1279, "Checkmarks on forwards and replies", "chats", TeleSettingsActivity.MODE_CHATS, "Badges next to names in messages"),
+             section(1310, "Send a queued message now", "sending", TeleSettingsActivity.MODE_SENDING, "Queue messages behind uploading media"),
+             section(1311, "Release queued messages", "sending", TeleSettingsActivity.MODE_SENDING, "Queue messages behind uploading media"),
++            section(1315, "Render markdown as you type", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1316, "Send > lines as quotes", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1317, "Live markdown", "sending", TeleSettingsActivity.MODE_SENDING, "Render markdown as you type"),
++            section(1318, "Markdown quotes", "sending", TeleSettingsActivity.MODE_SENDING, "Send > lines as quotes"),
++            section(1319, "Bold italic code markdown", "sending", TeleSettingsActivity.MODE_SENDING, "Render markdown as you type"),
+             section(1312, "Queued messages marker", "sending", TeleSettingsActivity.MODE_SENDING, "Queue messages behind uploading media"),
+             section(GUID_LOWERCASE, "Lowercase everything", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1285, "Backgrounds only for you", "chats", TeleSettingsActivity.MODE_CHATS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5f7a24b3f..5f2646bfe 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -562,6 +562,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             TeleConfig.CALCMULA.key to listOf(
+                 TeleConfig.CALCMULA_PREVIEW.key
+             ),
++            TeleConfig.LIVE_MARKDOWN.key to listOf(
++                TeleConfig.LIVE_MARKDOWN_QUOTES.key
++            ),
+             TeleConfig.PROFILE_PHOTO_BACKGROUND.key to listOf(
+                 TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.key
+             )
+@@ -704,6 +707,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Send quick replies by name" to "A message that is exactly /name sends that quick reply.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",
+             "Preview calcmula results while typing" to "Show the result above the field as you type.",
++            "Render markdown as you type" to "Markers are dimmed and the text between them is styled.",
++            "Send > lines as quotes" to "\"> \" starts a quote, \">! \" an expandable one.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
+             "Local names for people" to "Names for people that only you see.",
+             "Keep deleted messages" to "Messages deleted for everyone stay in the chat.",
+@@ -966,6 +971,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
+                 toggle("Hide the gift button in the message field", TeleConfig.HIDE_GIFT_BUTTON),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Markdown"),
++                toggle("Render markdown as you type", TeleConfig.LIVE_MARKDOWN),
++                toggle("Send > lines as quotes", TeleConfig.LIVE_MARKDOWN_QUOTES),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Forwarding"),
+                 toggle("Forward protected messages as copies", TeleConfig.COPY_PROTECTED),
+                 toggle("Forward messages one by one", TeleConfig.FORWARD_ONE_BY_ONE),

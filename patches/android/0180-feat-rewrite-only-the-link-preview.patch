@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:03:21 +0300
+Subject: [PATCH 180/183] feat: rewrite only the link preview
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  7 +++++-
+ .../src/main/java/tele/TeleConfig.kt          |  2 ++
+ .../main/java/tele/helpers/LinkRewrites.kt    | 22 ++++++++++++++++++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 ++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  4 ++++
+ 5 files changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index b7e87940c..ca08b11ef 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -14759,6 +14759,11 @@ public class ChatActivity extends BaseFragment implements
+             } else {
+                 req.message = textToCheck.toString();
+             }
++            final String teleSentText = req.message;
++            final String teleRewritten = editingMessageObject == null ? tele.helpers.LinkRewrites.previewText(teleSentText) : null;
++            if (teleRewritten != null) {
++                req.message = teleRewritten;
++            }
+             if (foundWebPage != null && req.message.equals(foundWebPage.displayedText)) {
+                 return;
+             }
+@@ -14769,7 +14774,7 @@ public class ChatActivity extends BaseFragment implements
+                 }
+                 if (success) {
+                     foundWebPage = webpage;
+-                    foundWebPage.display_url = req.message;
++                    foundWebPage.display_url = teleRewritten != null ? teleSentText : req.message;
+                     if (foundWebPage instanceof TLRPC.TL_webPage || foundWebPage instanceof TLRPC.TL_webPagePending) {
+                         if (foundWebPage instanceof TLRPC.TL_webPagePending) {
+                             pendingLinkSearchString = req.message;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 015b51bf1..20157fbf6 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -195,6 +195,8 @@ object TeleConfig {
+     @JvmField
+     val REWRITE_PASTED_LINKS = BoolItem("rewrite_pasted_links", false)
+     @JvmField
++    val REWRITE_PREVIEW_ONLY = BoolItem("rewrite_preview_only", false)
++    @JvmField
+     val NO_LINK_PREVIEWS = BoolItem("no_link_previews", false)
+     @JvmField
+     val LINK_PREVIEW_MODE = StringItem("link_preview_mode", "all")
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
+index 0bcd9cf20..70fab9e8e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LinkRewrites.kt
+@@ -148,10 +148,30 @@ object LinkRewrites {
+     @JvmStatic
+     fun rewritePastedLinksEnabled(): Boolean = TeleConfig.REWRITE_PASTED_LINKS.value
+ 
++    // pasted text stays as typed and only the link preview asks for the rewritten url; idle while previews are off
++    @JvmStatic
++    fun previewOnly(): Boolean =
++        TeleConfig.REWRITE_PASTED_LINKS.value && TeleConfig.REWRITE_PREVIEW_ONLY.value && !TeleConfig.NO_LINK_PREVIEWS.value
++
++    // the preview request text with the rules applied, or null when nothing changes; off the main thread
++    @JvmStatic
++    fun previewText(text: String): String? {
++        if (!previewOnly()) return null
++        val rules = rules()
++        if (rules.isEmpty()) return null
++        var changed = false
++        val memo = HashMap<String, String>()
++        val result = URL_REGEX.replace(text) { match ->
++            val url = match.value
++            memo.getOrPut(url) { applyRules(url, rules)?.first?.also { changed = true } ?: url }
++        }
++        return if (changed) result else null
++    }
++
+     // returns the rewritten text and up to three change notes, or null when nothing matched
+     @JvmStatic
+     fun applyToText(text: String): android.util.Pair<String, java.util.ArrayList<String>>? {
+-        if (!TeleConfig.REWRITE_PASTED_LINKS.value) return null
++        if (!TeleConfig.REWRITE_PASTED_LINKS.value || previewOnly()) return null
+         val rules = rules()
+         if (rules.isEmpty()) return null
+         val notes = ArrayList<String>()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index a3451d9a7..59ef01273 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -269,6 +269,8 @@ object TeleSearch {
+             section(1326, "Quote voice transcriptions", "messages", TeleSettingsActivity.MODE_MESSAGES, "Multiple quotes in one reply"),
+             section(1301, "Select more than 100 messages", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1302, "Send quick replies by name", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1335, "Rewrite only the link preview", "privacy", TeleSettingsActivity.MODE_PRIVACY),
++            section(1336, "Rewrite links in the preview only", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Rewrite only the link preview"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 0674b0084..c492d509d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -678,6 +678,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Clean tracking parameters from opened links" to "Strip tracking parameters from links you open.",
+             "Clean tracking parameters from sent links" to "Strip tracking parameters from links you send.",
+             "Rewrite pasted links by rules" to "Apply your rules to pasted links.",
++            "Rewrite only the link preview" to "Pasted links stay as typed; only the preview uses the rewritten link.",
+             "Disable link previews" to "No automatic previews for typed or pasted links.",
+             "Show peer id in profile" to "Show the numeric ID in profiles.",
+             "Ids without spaces" to "Show IDs without spaces.",
+@@ -1097,6 +1098,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(toggle("Clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
+                 rows.add(toggle("Clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS))
+                 rows.add(toggle("Rewrite pasted links by rules", TeleConfig.REWRITE_PASTED_LINKS))
++                if (TeleConfig.REWRITE_PASTED_LINKS.value) {
++                    rows.add(toggle("Rewrite only the link preview", TeleConfig.REWRITE_PREVIEW_ONLY))
++                }
+                 rows.add(sectionLink("Rewrite rules", MODE_RULES, R.drawable.msg2_link2))
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "ghost"))

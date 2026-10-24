@@ -1,0 +1,485 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:15:10 +0300
+Subject: [PATCH 178/183] feat: calcmula suggestions
+
+---
+ .../messenger/SendMessagesHelper.java         |   2 +-
+ .../ui/Components/ChatActivityEnterView.java  |  16 +++
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/Calcmula.kt    | 114 +++++++++++++++---
+ .../src/main/java/tele/ui/CalcmulaPreview.kt  |  95 +++++++++++++--
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +-
+ .../src/main/res/values/strings_tele.xml      |   1 +
+ 8 files changed, 211 insertions(+), 27 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 24b187b0b..2133be239 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -10956,7 +10956,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         final long forcedPollGroupId = pollSendParams != null ? pollSendParams.groupId : 0;
+         final boolean forceDisableCheckSentMedia = forcedPollGroupId != 0;
+         final boolean groupMediaFinal = groupMedia;
+-        tele.helpers.Calcmula.postMedia(mediaSendQueue, media, editingMessageObject, () -> {
++        tele.helpers.Calcmula.postMedia(accountInstance.getCurrentAccount(), mediaSendQueue, media, editingMessageObject, () -> {
+             long beginTime = System.currentTimeMillis();
+             HashMap<SendingMediaInfo, MediaSendPrepareWorker> workers;
+             int count = media.size();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 7d1190740..c12e066c3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -5231,6 +5231,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+             ;*/
+         }
+ 
++        tele_addCalcmulaRaw(options, containsSendMessage);
+         if (sendWithoutSoundButtonValue) {
+             options.add(teleSoundIcon(), teleSoundText(), () -> {
+                 sentFromPreview = System.currentTimeMillis();
+@@ -7172,6 +7173,21 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+     }
+ 
++    /** Calcmula: sends a "= ..." message as typed, without calculating it. */
++    private void tele_addCalcmulaRaw(ItemOptions options, boolean containsSendMessage) {
++        if (!containsSendMessage || messageEditText == null || !tele.helpers.Calcmula.rawAvailable(messageEditText.getText())) {
++            return;
++        }
++        options.add(R.drawable.msg_send, getString(R.string.TeleCalcmulaSendRaw), () -> {
++            tele.helpers.Calcmula.armRaw(currentAccount, messageEditText.getText());
++            sentFromPreview = System.currentTimeMillis();
++            final boolean shownDialog = sendMessage();
++            dismissSendPreviewSent = !shownDialog;
++            AndroidUtilities.cancelRunOnUIThread(dismissSendPreview);
++            AndroidUtilities.runOnUIThread(dismissSendPreview, 500);
++        });
++    }
++
+     /** Confirm mode: a recording stops in the paused preview instead of being sent. */
+     private boolean teleConfirmVoicePreview() {
+         if (!tele.helpers.TeleSendConfirm.voice() || !recordingAudioVideo) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 0d41a647a..58b83d785 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -257,6 +257,8 @@ object TeleConfig {
+     @JvmField
+     val LIVE_MARKDOWN_QUOTES = BoolItem("live_markdown_quotes", false)
+     @JvmField
++    val CALCMULA_SUGGESTIONS = BoolItem("calcmula_suggestions", false)
++    @JvmField
+     val SHOT = BoolItem("shot", false)
+     @JvmField
+     val COPY_SERVICE_TEXT = BoolItem("copy_service_text", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt b/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
+index 9c29c0a61..a4fcb4cf4 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
+@@ -31,10 +31,20 @@ object Calcmula {
+     private const val MAX_BODY = 64 * 1024
+     private const val CACHE_SIZE = 32
+     private const val CACHE_LIFETIME = 5 * 60 * 1000L
++    private const val PENDING_LIFETIME = 60 * 1000L
+ 
+-    class Result(@JvmField val value: String?, @JvmField val error: String?)
++    class Result(
++        @JvmField val value: String?,
++        @JvmField val error: String?,
++        @JvmField val warning: String? = null,
++        @JvmField val suggestion: String? = null,
++        @JvmField val suggestionValue: String? = null
++    )
+ 
+-    private class Entry(val value: String, val time: Long)
++    private class Entry(val result: Result, val time: Long)
++
++    // an armed one-shot choice for the next send, see armRaw and armSuggestion
++    private class Pending(val account: Int, val query: String, val replacement: String?, val time: Long)
+ 
+     private val cache = LinkedHashMap<String, Entry>()
+ 
+@@ -55,6 +65,9 @@ object Calcmula {
+         return if (trimmed.startsWith("= ")) trimmed.substring(2).trim() else ""
+     }
+ 
++    @JvmStatic
++    fun suggestionsEnabled(): Boolean = enabled() && TeleConfig.CALCMULA_SUGGESTIONS.value
++
+     // the single network choke point: gate any future offline switch here
+     private fun fetch(query: String): Result {
+         var connection: HttpURLConnection? = null
+@@ -100,7 +113,26 @@ object Calcmula {
+         val result = json.optJSONObject("result")
+         val value = result?.optString("formatted", "")?.trim().orEmpty()
+             .ifEmpty { result?.optJSONObject("doc")?.optString("summary", "")?.trim().orEmpty() }
+-        return if (value.isEmpty()) fail("Empty result") else Result(value, null)
++        if (value.isEmpty()) return fail("Empty result")
++        var warning: String? = null
++        var suggestion: String? = null
++        var suggestionValue: String? = null
++        val warnings = json.optJSONArray("warnings")
++        if (warnings != null) {
++            for (i in 0 until warnings.length()) {
++                val entry = warnings.optJSONObject(i) ?: continue
++                val hint = entry.optJSONObject("suggestion")
++                val expression = hint?.optString("expression", "")?.trim().orEmpty()
++                if (expression.isNotEmpty()) {
++                    suggestion = expression
++                    suggestionValue = hint?.optString("display", "")?.trim().orEmpty().ifEmpty { null }
++                    break
++                } else if (warning == null) {
++                    warning = entry.optString("message", "").trim().ifEmpty { null }
++                }
++            }
++        }
++        return Result(value, null, warning, suggestion, suggestionValue)
+     }
+ 
+     private fun fail(error: String): Result {
+@@ -109,34 +141,34 @@ object Calcmula {
+     }
+ 
+     @JvmStatic
+-    fun cached(query: String): String? {
++    fun cached(query: String): Result? {
+         val entry = cache[query] ?: return null
+         if (System.currentTimeMillis() - entry.time > CACHE_LIFETIME) {
+             cache.remove(query)
+             return null
+         }
+-        return entry.value
++        return entry.result
+     }
+ 
+     @JvmStatic
+     fun compute(query: String, done: (Result) -> Unit) {
+         val hit = cached(query)
+         if (hit != null) {
+-            AndroidUtilities.runOnUIThread { done(Result(hit, null)) }
++            AndroidUtilities.runOnUIThread { done(hit) }
+             return
+         }
+         pool.execute {
+             val result = fetch(query)
+             AndroidUtilities.runOnUIThread {
+-                if (result.value != null) remember(query, result.value)
++                if (result.value != null) remember(query, result)
+                 done(result)
+             }
+         }
+     }
+ 
+-    private fun remember(query: String, value: String) {
++    private fun remember(query: String, result: Result) {
+         cache.remove(query)
+-        cache[query] = Entry(value, System.currentTimeMillis())
++        cache[query] = Entry(result, System.currentTimeMillis())
+         if (cache.size > CACHE_SIZE) cache.remove(cache.keys.first())
+     }
+ 
+@@ -160,15 +192,55 @@ object Calcmula {
+         return true
+     }
+ 
++    @Volatile
++    private var armed: Pending? = null
++
++    // the next send of this exact text goes out as typed
++    @JvmStatic
++    fun armRaw(account: Int, text: CharSequence?) {
++        val query = query(text)
++        armed = if (suggestionsEnabled() && query.isNotEmpty()) Pending(account, query, null, System.currentTimeMillis()) else null
++    }
++
++    // the next send of this exact text is calculated from the suggested expression
++    @JvmStatic
++    fun armSuggestion(account: Int, text: CharSequence?, expression: String) {
++        val query = query(text)
++        armed = if (suggestionsEnabled() && query.isNotEmpty() && expression.isNotBlank()) Pending(account, query, expression.trim(), System.currentTimeMillis()) else null
++    }
++
++    @JvmStatic
++    fun rawAvailable(text: CharSequence?): Boolean =
++        suggestionsEnabled() && query(text).isNotEmpty()
++
++    // a choice is single-use and short-lived, so it can't leak into a later send
++    private fun takeArmed(account: Int, matches: (String) -> Boolean): Pending? {
++        val pending = armed ?: return null
++        if (System.currentTimeMillis() - pending.time > PENDING_LIFETIME) {
++            armed = null
++            return null
++        }
++        if (pending.account != account || !matches(pending.query)) return null
++        armed = null
++        return pending
++    }
++
+     @JvmStatic
+     fun interceptText(account: Int, p: SendMessagesHelper.SendMessageParams): Boolean {
+         if (!enabled() || !isTextMessage(p) || p in processed) return false
+-        val query = query(p.message)
+-        if (query.isEmpty()) return false
++        val typed = query(p.message)
++        if (typed.isEmpty()) return false
++        val choice = if (suggestionsEnabled()) takeArmed(account) { it == typed } else null
++        if (choice != null && choice.replacement == null) {
++            // the paid-confirmation re-entry must not calculate it either
++            processed.add(p)
++            return false
++        }
++        val target = choice?.replacement ?: typed
+         if (Looper.myLooper() == Looper.getMainLooper()) {
+-            computeAndSend(account, p, query)
++            computeAndSend(account, p, target)
+         } else {
+-            AndroidUtilities.runOnUIThread { computeAndSend(account, p, query) }
++            AndroidUtilities.runOnUIThread { computeAndSend(account, p, target) }
+         }
+         return true
+     }
+@@ -191,16 +263,24 @@ object Calcmula {
+     }
+ 
+     @JvmStatic
+-    fun postMedia(queue: DispatchQueue, media: ArrayList<SendMessagesHelper.SendingMediaInfo>, editing: MessageObject?, body: Runnable) {
++    fun postMedia(account: Int, queue: DispatchQueue, media: ArrayList<SendMessagesHelper.SendingMediaInfo>, editing: MessageObject?, body: Runnable) {
+         val pending = if (!enabled() || editing != null) emptyList() else media.filter { query(it.caption).isNotEmpty() }
+         if (pending.isEmpty()) {
+             queue.postRunnable(body)
+             return
+         }
+-        var left = pending.size
++        // one choice per post: only the caption it was armed for is touched
++        val choice = if (suggestionsEnabled()) takeArmed(account) { armed -> pending.any { query(it.caption) == armed } } else null
++        val todo = if (choice != null && choice.replacement == null) pending.filter { query(it.caption) != choice.query } else pending
++        if (todo.isEmpty()) {
++            queue.postRunnable(body)
++            return
++        }
++        var left = todo.size
+         var lastError: String? = null
+-        for (info in pending) {
+-            val query = query(info.caption)
++        for (info in todo) {
++            val typed = query(info.caption)
++            val query = if (choice?.replacement != null && typed == choice.query) choice.replacement else typed
+             compute(query) { result ->
+                 if (result.value != null) {
+                     val composed = compose(query, result.value)
+diff --git a/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt b/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
+index 395f2fae6..9f6b50c01 100644
+--- a/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
++++ b/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
+@@ -3,7 +3,10 @@ package tele.ui
+ import android.content.Context
+ import android.graphics.Typeface
+ import android.text.Editable
++import android.text.SpannableStringBuilder
++import android.text.Spanned
+ import android.text.TextUtils
++import android.text.style.ForegroundColorSpan
+ import android.text.TextWatcher
+ import android.util.TypedValue
+ import android.view.Gravity
+@@ -32,6 +35,11 @@ class CalcmulaPreview private constructor(
+ 
+     private val title = TextView(context)
+     private val description = TextView(context)
++    private val mainRow = FrameLayout(context)
++    private val suggestionRow = FrameLayout(context)
++    private val suggestionTitle = TextView(context)
++    private val suggestionDescription = TextView(context)
++    private var suggestion: String? = null
+     private var currentQuery = ""
+     private var requestId = 0
+     private val debounce = Runnable { request() }
+@@ -41,7 +49,7 @@ class CalcmulaPreview private constructor(
+         elevation = dp(2f).toFloat()
+         background = Theme.createRoundRectDrawable(dp(12f), fragment.getThemedColor(Theme.key_chat_messagePanelBackground))
+         isClickable = true
+-        setOnClickListener { if (allowed()) enterView.sendMessage() }
++        mainRow.setOnClickListener { if (allowed()) enterView.sendMessage() }
+ 
+         val badge = TextView(context)
+         badge.text = "="
+@@ -50,7 +58,7 @@ class CalcmulaPreview private constructor(
+         badge.typeface = AndroidUtilities.bold()
+         badge.setTextColor(fragment.getThemedColor(Theme.key_featuredStickers_buttonText))
+         badge.background = Theme.createRoundRectDrawable(dp(8f), fragment.getThemedColor(Theme.key_featuredStickers_addButton))
+-        addView(badge, LayoutHelper.createFrame(36, 36f, Gravity.LEFT or Gravity.CENTER_VERTICAL, 12f, 0f, 0f, 0f))
++        mainRow.addView(badge, LayoutHelper.createFrame(36, 36f, Gravity.LEFT or Gravity.CENTER_VERTICAL, 12f, 0f, 0f, 0f))
+ 
+         val texts = LinearLayout(context)
+         texts.orientation = LinearLayout.VERTICAL
+@@ -64,7 +72,40 @@ class CalcmulaPreview private constructor(
+         description.ellipsize = TextUtils.TruncateAt.END
+         texts.addView(title, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
+         texts.addView(description, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
+-        addView(texts, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER_VERTICAL, 60f, 12f, 12f, 12f))
++        mainRow.addView(texts, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER_VERTICAL, 60f, 12f, 12f, 12f))
++
++        // the suggested expression: sending it calculates that instead of what was typed
++        suggestionTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        suggestionTitle.typeface = AndroidUtilities.bold()
++        suggestionTitle.setTextColor(fragment.getThemedColor(Theme.key_chat_messagePanelText))
++        suggestionTitle.isSingleLine = true
++        suggestionTitle.ellipsize = TextUtils.TruncateAt.END
++        suggestionDescription.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        suggestionDescription.setTextColor(fragment.getThemedColor(Theme.key_chat_messagePanelHint))
++        suggestionDescription.isSingleLine = true
++        suggestionDescription.ellipsize = TextUtils.TruncateAt.END
++        val suggestionTexts = LinearLayout(context)
++        suggestionTexts.orientation = LinearLayout.VERTICAL
++        suggestionTexts.addView(suggestionTitle, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        suggestionTexts.addView(suggestionDescription, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        suggestionRow.addView(suggestionTexts, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER_VERTICAL, 60f, 12f, 12f, 12f))
++        val divider = View(context)
++        divider.setBackgroundColor(fragment.getThemedColor(Theme.key_divider))
++        suggestionRow.addView(divider, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 1f, Gravity.TOP, 60f, 0f, 0f, 0f))
++        suggestionRow.setOnClickListener {
++            val expression = suggestion
++            if (allowed() && expression != null && suggestionShown()) {
++                Calcmula.armSuggestion(fragment.currentAccount, enterView.fieldText, expression)
++                enterView.sendMessage()
++            }
++        }
++        suggestionRow.visibility = GONE
++
++        val rows = LinearLayout(context)
++        rows.orientation = LinearLayout.VERTICAL
++        rows.addView(mainRow, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        rows.addView(suggestionRow, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        addView(rows, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
+ 
+         enterView.addTextChangedListener(object : TextWatcher {
+             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+@@ -88,9 +129,10 @@ class CalcmulaPreview private constructor(
+         requestId++
+         AndroidUtilities.cancelRunOnUIThread(debounce)
+         description.text = query.replace('\n', ' ')
++        showSuggestion(null)
+         val cached = Calcmula.cached(query)
+-        if (cached != null) {
+-            apply(cached, State.VALUE)
++        if (cached?.value != null) {
++            applyResult(cached)
+             return
+         }
+         AndroidUtilities.runOnUIThread(debounce, 350)
+@@ -101,12 +143,48 @@ class CalcmulaPreview private constructor(
+         val id = requestId
+         Calcmula.compute(currentQuery) { result ->
+             if (id != requestId || !isAttachedToWindow) return@compute
+-            if (result.value != null) apply(result.value, State.VALUE)
+-            else apply((result.error ?: "Unknown error").lowercase(), State.ERROR)
++            applyResult(result)
++        }
++    }
++
++    private fun applyResult(result: Calcmula.Result) {
++        if (result.value == null) {
++            showSuggestion(null)
++            apply((result.error ?: "Unknown error").lowercase(), State.ERROR)
++            return
++        }
++        val suggestions = Calcmula.suggestionsEnabled()
++        val hint = result.warning?.takeIf { suggestions && result.suggestion == null }?.lowercase()
++        if (hint != null) {
++            val text = SpannableStringBuilder(result.value).append(" \u00B7 ").append(hint.replace('\n', ' '))
++            val from = result.value.length
++            text.setSpan(ForegroundColorSpan(fragment.getThemedColor(Theme.key_chat_messagePanelHint)), from, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++            apply(text, State.VALUE)
++        } else {
++            apply(result.value, State.VALUE)
++        }
++        showSuggestion(result.suggestion?.takeIf { suggestions }, result.suggestionValue)
++    }
++
++    private fun suggestionShown(): Boolean = suggestionRow.visibility == VISIBLE
++
++    private fun showSuggestion(expression: String?, value: String? = null) {
++        suggestion = expression
++        if (expression == null) {
++            suggestionRow.visibility = GONE
++            mainRow.foreground = null
++            return
+         }
++        val line = expression.replace('\n', ' ')
++        suggestionTitle.text = value?.replace('\n', ' ') ?: line
++        suggestionDescription.text = line
++        suggestionRow.visibility = VISIBLE
++        val selector = { Theme.createSelectorDrawable(fragment.getThemedColor(Theme.key_listSelector), Theme.RIPPLE_MASK_ALL) }
++        mainRow.foreground = selector()
++        suggestionRow.foreground = selector()
+     }
+ 
+-    private fun apply(text: String, state: State) {
++    private fun apply(text: CharSequence, state: State) {
+         title.text = text
+         paint(state)
+         show(true)
+@@ -125,6 +203,7 @@ class CalcmulaPreview private constructor(
+         AndroidUtilities.cancelRunOnUIThread(debounce)
+         requestId++
+         currentQuery = ""
++        showSuggestion(null)
+         if (visibility == VISIBLE) show(false)
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 05c1f596c..d8c300237 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -180,6 +180,9 @@ object TeleSearch {
+             section(1108, "Open collectible gifts in see.tg", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1101, "Preview calcmula results while typing", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1330, "Calcmula suggestions and sending without calculating", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1331, "Send without calculating", "sending", TeleSettingsActivity.MODE_SENDING, "Calcmula suggestions and sending without calculating"),
++            section(1332, "Calcmula suggestions", "sending", TeleSettingsActivity.MODE_SENDING, "Calcmula suggestions and sending without calculating"),
+             section(1102, "Save messages as a picture", "menus", TeleSettingsActivity.MODE_MENUS),
+             section(1103, "shot", "menus", TeleSettingsActivity.MODE_MENUS, "Save messages as a picture"),
+             section(1104, "Messages as an image", "menus", TeleSettingsActivity.MODE_MENUS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 914c1e722..a361f509a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -560,7 +560,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.COUNTER_SKIP_ARCHIVE.key
+             ),
+             TeleConfig.CALCMULA.key to listOf(
+-                TeleConfig.CALCMULA_PREVIEW.key
++                TeleConfig.CALCMULA_PREVIEW.key,
++                TeleConfig.CALCMULA_SUGGESTIONS.key
+             ),
+             TeleConfig.LIVE_MARKDOWN.key to listOf(
+                 TeleConfig.LIVE_MARKDOWN_QUOTES.key
+@@ -710,6 +711,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Preview calcmula results while typing" to "Show the result above the field as you type.",
+             "Render markdown as you type" to "Markers are dimmed and the text between them is styled.",
+             "Send > lines as quotes" to "\"> \" starts a quote, \">! \" an expandable one.",
++            "Calcmula suggestions and sending without calculating" to "Suggest fixes in the preview and add send without calculating to the send menu.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
+             "Local names for people" to "Names for people that only you see.",
+             "Keep deleted messages" to "Messages deleted for everyone stay in the chat.",
+@@ -976,6 +978,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Message field"),
+                 toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+                 toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
++                toggle("Calcmula suggestions and sending without calculating", TeleConfig.CALCMULA_SUGGESTIONS),
+                 toggle("Hide the gift button in the message field", TeleConfig.HIDE_GIFT_BUTTON),
+                 toggle("Send stickers with captions", TeleConfig.STICKER_CAPTIONS_SEND),
+                 Row(TYPE_SHADOW),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index dec23b739..405f1e7ad 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -144,4 +144,5 @@
+     <string name="TeleStickerCaptionSend">Send with caption…</string>
+     <string name="TeleStickerCaptionTitle">Send with caption</string>
+     <string name="TeleStickerCaptionTooLong">The caption is %1$d characters over the limit.</string>
++    <string name="TeleCalcmulaSendRaw">Send without calculating</string>
+ </resources>

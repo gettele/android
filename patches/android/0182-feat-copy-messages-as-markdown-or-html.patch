@@ -1,0 +1,666 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:27:46 +0300
+Subject: [PATCH 182/183] feat: copy messages as markdown or html
+
+---
+ .../ui/Cells/TextSelectionHelper.java         |  25 +
+ .../java/org/telegram/ui/ChatActivity.java    |   8 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/CopyMarkup.kt  | 453 ++++++++++++++++++
+ .../src/main/java/tele/helpers/MessageMenu.kt |   8 +-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ .../src/main/res/values/strings_tele.xml      |   4 +
+ 8 files changed, 503 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
+index 5d4d97c4a..e0b8a7dfd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
+@@ -1539,11 +1539,14 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+     }
+ 
+     private static final int TRANSLATE = 3;
++    public static final int TELE_COPY_MARKDOWN = 407;
++    public static final int TELE_COPY_HTML = 408;
+     private ActionMode.Callback createActionCallback() {
+         final ActionMode.Callback callback = new ActionMode.Callback() {
+             @Override
+             public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                 menu.add(Menu.NONE, android.R.id.copy, 0, android.R.string.copy);
++                tele.helpers.CopyMarkup.addSelectionItems(menu, TELE_COPY_MARKDOWN, TELE_COPY_HTML);
+                 menu.add(Menu.NONE, R.id.menu_quote, 1, LocaleController.getString(R.string.Quote));
+                 menu.add(Menu.NONE, TRANSLATE, 2, LocaleController.getString(R.string.TranslateMessage));
+                 menu.add(Menu.NONE, android.R.id.cut, 3, android.R.string.cut);
+@@ -1562,6 +1565,7 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+                 if (copyItem != null) {
+                     copyItem.setVisible(canCopy());
+                 }
++                tele.helpers.CopyMarkup.prepareSelectionItems(menu, TELE_COPY_MARKDOWN, TELE_COPY_HTML, canCopy() && tele_canCopyMarkup());
+                 MenuItem selectAllItem = menu.findItem(android.R.id.selectAll);
+                 if (selectAllItem != null && selectedView != null) {
+                     CharSequence charSequence = getText(selectedView, false);
+@@ -1623,6 +1627,10 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+                     return true;
+                 }
+                 int itemId = item.getItemId();
++                if (itemId == TELE_COPY_MARKDOWN || itemId == TELE_COPY_HTML) {
++                    tele_copyMarkup(itemId == TELE_COPY_HTML);
++                    return true;
++                }
+                 if (itemId == android.R.id.copy) {
+                     copyText();
+                     return true;
+@@ -1751,6 +1759,18 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+     protected boolean canCut() { return false; }
+     protected boolean canPaste() { return false; }
+     protected boolean onCopyOverride() { return false; }
++    protected boolean tele_canCopyMarkup() { return false; }
++
++    private void tele_copyMarkup(boolean html) {
++        if (!isInSelectionMode() || !tele.helpers.CopyMarkup.copySelection(getSelectedText(), html)) {
++            return;
++        }
++        hideActions();
++        clear(true);
++        if (TextSelectionHelper.this.callback != null) {
++            TextSelectionHelper.this.callback.onTextCopied();
++        }
++    }
+     protected void onCutAction() {}
+     protected void onPasteAction() {}
+ 
+@@ -2247,6 +2267,11 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+             return true;
+         }
+ 
++        @Override
++        protected boolean tele_canCopyMarkup() {
++            return !isRich && !isDescription && !isFactCheck;
++        }
++
+         @Override
+         protected void onTextSelected(ChatMessageCell newView, ChatMessageCell oldView) {
+             boolean idChanged = oldView == null || (oldView.getMessageObject() != null && oldView.getMessageObject().getId() != newView.getMessageObject().getId());
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index ca08b11ef..373a5a210 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1268,6 +1268,8 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_audio_voice = 365;
+     public final static int tele_option_retry_all = 375;
+     public final static int tele_option_send_held_now = 380;
++    public final static int tele_option_copy_markdown = 405;
++    public final static int tele_option_copy_html = 406;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -34506,6 +34508,11 @@ public class ChatActivity extends BaseFragment implements
+                 tele.helpers.TeleShot.open(this, java.util.Collections.singletonList(tele_object), tele_group);
+                 break;
+             }
++            case tele_option_copy_markdown:
++            case tele_option_copy_html: {
++                tele.helpers.CopyMarkup.copyMessage(this, selectedObject, selectedObjectGroup, option == tele_option_copy_html);
++                break;
++            }
+             case tele_option_copy_emoji_id: {
+                 AndroidUtilities.addToClipboard(String.valueOf(tele_menuEmojiId));
+                 BulletinFactory.of(this).createCopyBulletin(getString(R.string.TeleEmojiIdCopied)).show();
+@@ -47812,6 +47819,7 @@ public class ChatActivity extends BaseFragment implements
+         tele.helpers.Bookmarks.fillMenu(this, message, items, icons, options);
+         tele.helpers.AudioVoice.fillMenu(this, message, items, icons, options);
+         tele.helpers.RetryFailed.fillMenu(type, messages, items, icons, options);
++        tele.helpers.CopyMarkup.fillMenu(message, groupedMessages, items, icons, options);
+         if (teleKeptMessage) {
+             if (!tele.helpers.DeletedReply.quoteMode()) {
+                 for (int i = options.size() - 1; i >= 0; i--) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index d0f1815a9..63a93c9b0 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -275,6 +275,8 @@ object TeleConfig {
+     @JvmField
+     val RECENT_TYPED_EMOJI = BoolItem("recent_typed_emoji", false)
+     @JvmField
++    val COPY_MARKDOWN_HTML = BoolItem("copy_markdown", false)
++    @JvmField
+     val HIDE_SIMILAR_CHANNELS = BoolItem("hide_similar_channels", false)
+     @JvmField
+     val HIDE_COLLECTIBLE_HINT = BoolItem("hide_collectible_hint", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt b/TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt
+new file mode 100644
+index 000000000..2903980db
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt
+@@ -0,0 +1,453 @@
++package tele.helpers
++
++import android.text.Spanned
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.R
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.QuoteSpan
++import org.telegram.ui.Components.TextStyleSpan
++import org.telegram.ui.Components.URLSpanReplacement
++import org.telegram.ui.Components.URLSpanUserMention
++import org.telegram.utils.code.highlight.CodeHighlighting
++import tele.TeleConfig
++
++// copies a message as Markdown or HTML source (tele 0139); the text and the entities are read, never changed
++object CopyMarkup {
++
++    // the order decides which of equal ranges opens first
++    private enum class Kind { QUOTE, PRE, INLINE, CODE }
++
++    private enum class Type { BOLD, ITALIC, UNDERLINE, STRIKE, SPOILER, CODE, PRE, QUOTE, LINK }
++
++    private class Span(val type: Type, val kind: Kind, var from: Int, var till: Int, val data: String) {
++        var open = ""
++        var close = ""
++
++        fun piece(from: Int, till: Int) = Span(type, kind, from, till, data)
++    }
++
++    private class Writer(private val html: Boolean) {
++        private val result = StringBuilder()
++        private var quote = 0
++        private var lineStart = true
++        private var breakPending = false
++
++        fun text(ch: Char) {
++            if (html) {
++                result.append(escape(ch, false))
++                return
++            }
++            flushBreak(ch)
++            put(ch)
++        }
++
++        fun markup(value: String) {
++            if (value.isEmpty()) return
++            if (html) {
++                result.append(value)
++                return
++            }
++            flushBreak(value[0])
++            value.forEach(::put)
++        }
++
++        fun ensureLine() {
++            breakPending = false
++            if (result.isNotEmpty() && !lineStart) put('\n')
++        }
++
++        fun requestBreak() {
++            breakPending = true
++        }
++
++        fun enterQuote() {
++            quote++
++        }
++
++        fun leaveQuote() {
++            quote--
++        }
++
++        fun result(): String = result.toString()
++
++        private fun flushBreak(next: Char) {
++            if (!breakPending) return
++            breakPending = false
++            if (next != '\n' && !lineStart) put('\n')
++        }
++
++        private fun put(ch: Char) {
++            if (lineStart && quote > 0) result.append(if (ch == '\n') ">" else "> ")
++            result.append(ch)
++            lineStart = ch == '\n'
++        }
++    }
++
++    private fun escape(ch: Char, attribute: Boolean): String = when {
++        ch == '&' -> "&amp;"
++        ch == '<' -> "&lt;"
++        ch == '>' -> "&gt;"
++        attribute && ch == '"' -> "&quot;"
++        else -> ch.toString()
++    }
++
++    private fun escape(text: String, attribute: Boolean): String {
++        val out = StringBuilder(text.length)
++        text.forEach { out.append(escape(it, attribute)) }
++        return out.toString()
++    }
++
++    private fun kindOf(type: Type) = when (type) {
++        Type.QUOTE -> Kind.QUOTE
++        Type.PRE -> Kind.PRE
++        Type.CODE -> Kind.CODE
++        else -> Kind.INLINE
++    }
++
++    private fun block(kind: Kind) = kind == Kind.QUOTE || kind == Kind.PRE
++
++    // anything but the listed entities stays plain text
++    private fun collect(text: String, entities: List<TLRPC.MessageEntity>): MutableList<Span> {
++        val size = text.length
++        val result = ArrayList<Span>()
++        for (entity in entities) {
++            var data = ""
++            val type = when (entity) {
++                is TLRPC.TL_messageEntityBold -> Type.BOLD
++                is TLRPC.TL_messageEntityItalic -> Type.ITALIC
++                is TLRPC.TL_messageEntityUnderline -> Type.UNDERLINE
++                is TLRPC.TL_messageEntityStrike -> Type.STRIKE
++                is TLRPC.TL_messageEntitySpoiler -> Type.SPOILER
++                is TLRPC.TL_messageEntityCode -> Type.CODE
++                is TLRPC.TL_messageEntityPre -> Type.PRE.also { data = entity.language ?: "" }
++                is TLRPC.TL_messageEntityBlockquote -> Type.QUOTE.also { data = if (entity.collapsed) "expandable" else "" }
++                is TLRPC.TL_messageEntityTextUrl -> Type.LINK.also { data = entity.url ?: "" }
++                is TLRPC.TL_messageEntityMentionName -> Type.LINK.also { data = if (entity.user_id != 0L) "tg://user?id=" + entity.user_id else "" }
++                is TLRPC.TL_inputMessageEntityMentionName -> Type.LINK.also {
++                    val id = entity.user_id?.user_id ?: 0L
++                    data = if (id != 0L) "tg://user?id=$id" else ""
++                }
++                else -> continue
++            }
++            if (type == Type.LINK && data.isEmpty()) continue
++            val from = entity.offset.coerceIn(0, size)
++            val till = (entity.offset + entity.length).coerceIn(0, size)
++            if (till > from) result.add(Span(type, kindOf(type), from, till, data))
++        }
++        return result
++    }
++
++    // cuts the inline ranges at the block edges, and at every line break for Markdown, which has no multi-line inline marks
++    private fun split(spans: List<Span>, text: String, html: Boolean): MutableList<Span> {
++        val cuts = sortedSetOf<Int>()
++        spans.forEach {
++            if (it.kind != Kind.INLINE) {
++                cuts.add(it.from)
++                cuts.add(it.till)
++            }
++        }
++        if (!html) {
++            text.forEachIndexed { i, ch ->
++                if (ch == '\n') {
++                    cuts.add(i)
++                    cuts.add(i + 1)
++                }
++            }
++        }
++        val result = ArrayList<Span>()
++        fun push(span: Span, start: Int, end: Int) {
++            var from = start
++            var till = end
++            if (!html) {
++                if (till - from == 1 && text[from] == '\n') return
++                if (span.kind == Kind.INLINE) {
++                    while (from < till && text[from].isWhitespace()) from++
++                    while (till > from && text[till - 1].isWhitespace()) till--
++                }
++            }
++            if (till > from) result.add(span.piece(from, till))
++        }
++        for (span in spans) {
++            if (block(span.kind)) {
++                result.add(span)
++                continue
++            }
++            var from = span.from
++            for (cut in cuts) {
++                if (cut > from && cut < span.till) {
++                    push(span, from, cut)
++                    from = cut
++                }
++            }
++            push(span, from, span.till)
++        }
++        return result
++    }
++
++    // marks inside code are text
++    private fun dropInsideCode(spans: List<Span>): MutableList<Span> {
++        val result = ArrayList<Span>(spans.size)
++        for (i in spans.indices) {
++            val span = spans[i]
++            if (span.kind == Kind.QUOTE) {
++                result.add(span)
++                continue
++            }
++            var inside = false
++            for (j in spans.indices) {
++                val code = spans[j]
++                if (j == i || (code.kind != Kind.CODE && code.kind != Kind.PRE) || code.from > span.from || code.till < span.till) continue
++                val same = code.from == span.from && code.till == span.till
++                if (same && ((span.kind == Kind.INLINE && code.kind == Kind.CODE) || (span.kind != Kind.INLINE && j > i))) continue
++                inside = true
++                break
++            }
++            if (!inside) result.add(span)
++        }
++        return result
++    }
++
++    private fun longestRun(text: String, from: Int, till: Int, ch: Char): Int {
++        var result = 0
++        var current = 0
++        for (i in from until till) {
++            current = if (text[i] == ch) current + 1 else 0
++            if (current > result) result = current
++        }
++        return result
++    }
++
++    private fun markdownUrl(url: String) = url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
++
++    private fun decorate(span: Span, text: String, html: Boolean) {
++        fun both(value: String) {
++            span.open = value
++            span.close = value
++        }
++        fun tag(name: String) {
++            span.open = "<$name>"
++            span.close = "</$name>"
++        }
++        fun simple(mark: String, name: String) = if (html) tag(name) else both(mark)
++        when (span.type) {
++            Type.BOLD -> simple("**", "b")
++            Type.ITALIC -> simple("_", "i")
++            Type.UNDERLINE -> simple("__", "u")
++            Type.STRIKE -> simple("~~", "s")
++            Type.SPOILER -> if (html) {
++                span.open = "<span class=\"tg-spoiler\">"
++                span.close = "</span>"
++            } else {
++                both("||")
++            }
++            Type.LINK -> if (html) {
++                span.open = "<a href=\"" + escape(span.data, true) + "\">"
++                span.close = "</a>"
++            } else {
++                span.open = "["
++                span.close = "](" + markdownUrl(span.data) + ")"
++            }
++            Type.CODE -> if (html) {
++                tag("code")
++            } else {
++                val fence = "`".repeat(longestRun(text, span.from, span.till, '`') + 1)
++                val pad = if (text[span.from] == '`' || text[span.till - 1] == '`') " " else ""
++                span.open = fence + pad
++                span.close = pad + fence
++            }
++            Type.PRE -> {
++                val language = span.data.trim()
++                if (html) {
++                    if (language.isEmpty()) {
++                        tag("pre")
++                    } else {
++                        span.open = "<pre><code class=\"language-" + escape(language, true) + "\">"
++                        span.close = "</code></pre>"
++                    }
++                } else {
++                    val fence = "`".repeat(maxOf(3, longestRun(text, span.from, span.till, '`') + 1))
++                    span.open = fence + language + "\n"
++                    span.close = fence
++                }
++            }
++            Type.QUOTE -> if (html) {
++                span.open = if (span.data.isEmpty()) "<blockquote>" else "<blockquote expandable>"
++                span.close = "</blockquote>"
++            }
++        }
++    }
++
++    private fun open(writer: Writer, span: Span, html: Boolean) {
++        if (!html) {
++            if (span.kind == Kind.QUOTE) {
++                writer.ensureLine()
++                writer.enterQuote()
++                return
++            } else if (span.kind == Kind.PRE) {
++                writer.ensureLine()
++            }
++        }
++        writer.markup(span.open)
++    }
++
++    private fun close(writer: Writer, span: Span, html: Boolean) {
++        if (!html) {
++            if (span.kind == Kind.QUOTE) {
++                writer.leaveQuote()
++                writer.requestBreak()
++                return
++            } else if (span.kind == Kind.PRE) {
++                writer.ensureLine()
++                writer.markup(span.close)
++                writer.requestBreak()
++                return
++            }
++        }
++        writer.markup(span.close)
++    }
++
++    private fun convert(text: String, entities: List<TLRPC.MessageEntity>?, html: Boolean): String {
++        val spans = dropInsideCode(split(collect(text, entities ?: emptyList()), text, html))
++            .sortedWith(compareBy<Span> { it.from }.thenByDescending { it.till }.thenBy { it.kind.ordinal })
++        spans.forEach { decorate(it, text, html) }
++
++        val writer = Writer(html)
++        val stack = ArrayList<Int>()
++        var next = 0
++        val size = text.length
++        for (position in 0..size) {
++            val ending = stack.indexOfFirst { spans[it].till == position }
++            if (ending >= 0) {
++                val reopen = ArrayList<Int>()
++                while (stack.size > ending) {
++                    val index = stack.removeAt(stack.size - 1)
++                    close(writer, spans[index], html)
++                    if (spans[index].till != position) reopen.add(index)
++                }
++                for (index in reopen.asReversed()) {
++                    open(writer, spans[index], html)
++                    stack.add(index)
++                }
++            }
++            while (next != spans.size && spans[next].from == position) {
++                open(writer, spans[next], html)
++                stack.add(next++)
++            }
++            if (position < size) writer.text(text[position])
++        }
++        return writer.result()
++    }
++
++    @JvmStatic
++    fun toMarkdown(text: String, entities: List<TLRPC.MessageEntity>?): String = convert(text, entities, false)
++
++    @JvmStatic
++    fun toHtml(text: String, entities: List<TLRPC.MessageEntity>?): String = convert(text, entities, true)
++
++    // the message, or the one message of an album that has the text
++    private fun source(message: MessageObject?, group: MessageObject.GroupedMessages?): MessageObject? {
++        if (message?.messageOwner == null || message.messageOwner.rich_message != null || message.isDice) return null
++        if (!message.messageOwner.message.isNullOrEmpty()) return message
++        val captions = group?.messages?.filter { !it.messageOwner?.message.isNullOrEmpty() && it.messageOwner.rich_message == null }
++        return captions?.singleOrNull()
++    }
++
++    // the copy item is only there when the stock one is, so protected messages stay protected
++    @JvmStatic
++    fun fillMenu(message: MessageObject?, group: MessageObject.GroupedMessages?, items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
++        if (!TeleConfig.COPY_MARKDOWN_HTML.value) return
++        val copy = options.indexOf(ChatActivity.OPTION_COPY)
++        if (copy < 0 || source(message, group) == null) return
++        val at = copy + 1
++        items.add(at, TeleLowercase.lc(LocaleController.getString(R.string.TeleCopyMarkdown)))
++        icons.add(at, R.drawable.msg_copy)
++        options.add(at, ChatActivity.tele_option_copy_markdown)
++        items.add(at + 1, TeleLowercase.lc(LocaleController.getString(R.string.TeleCopyHtml)))
++        icons.add(at + 1, R.drawable.msg_copy)
++        options.add(at + 1, ChatActivity.tele_option_copy_html)
++    }
++
++    @JvmStatic
++    fun copyMessage(chat: ChatActivity, message: MessageObject?, group: MessageObject.GroupedMessages?, html: Boolean) {
++        val owner = source(message, group)?.messageOwner ?: return
++        val text = owner.message ?: return
++        done(chat, if (html) toHtml(text, owner.entities) else toMarkdown(text, owner.entities), html)
++    }
++
++    // the items stay in the menu and are hidden unless the feature is on, so toggling needs no restart
++    @JvmStatic
++    fun addSelectionItems(menu: android.view.Menu, markdownId: Int, htmlId: Int) {
++        menu.add(android.view.Menu.NONE, markdownId, 1, TeleLowercase.lc(LocaleController.getString(R.string.TeleCopyMarkdown)))
++        menu.add(android.view.Menu.NONE, htmlId, 1, TeleLowercase.lc(LocaleController.getString(R.string.TeleCopyHtml)))
++    }
++
++    @JvmStatic
++    fun prepareSelectionItems(menu: android.view.Menu, markdownId: Int, htmlId: Int, allowed: Boolean) {
++        val visible = allowed && TeleConfig.COPY_MARKDOWN_HTML.value
++        menu.findItem(markdownId)?.isVisible = visible
++        menu.findItem(htmlId)?.isVisible = visible
++    }
++
++    // a text selection in a message: the marks come from its spans
++    @JvmStatic
++    fun copySelection(selected: CharSequence?, html: Boolean): Boolean {
++        if (selected.isNullOrEmpty()) return false
++        val text = selected.toString()
++        val entities = if (selected is Spanned) entitiesOf(selected) else null
++        AndroidUtilities.addToClipboard(if (html) toHtml(text, entities) else toMarkdown(text, entities))
++        return true
++    }
++
++    private fun done(chat: ChatActivity, result: String, html: Boolean) {
++        AndroidUtilities.addToClipboard(result)
++        BulletinFactory.of(chat).createCopyBulletin(LocaleController.getString(if (html) R.string.TeleHtmlCopied else R.string.TeleMarkdownCopied)).show()
++    }
++
++    private fun entitiesOf(spanned: Spanned): List<TLRPC.MessageEntity> {
++        val size = spanned.length
++        val result = ArrayList<TLRPC.MessageEntity>()
++        fun add(entity: TLRPC.MessageEntity, span: Any) {
++            entity.offset = spanned.getSpanStart(span)
++            entity.length = minOf(spanned.getSpanEnd(span), size) - entity.offset
++            if (entity.offset >= 0 && entity.length > 0) result.add(entity)
++        }
++        fun styled(flags: Int, span: Any) {
++            if ((flags and (TextStyleSpan.FLAG_STYLE_SPOILER or TextStyleSpan.FLAG_STYLE_SPOILER_REVEALED)) != 0) add(TLRPC.TL_messageEntitySpoiler(), span)
++            if ((flags and TextStyleSpan.FLAG_STYLE_BOLD) != 0) add(TLRPC.TL_messageEntityBold(), span)
++            if ((flags and TextStyleSpan.FLAG_STYLE_ITALIC) != 0) add(TLRPC.TL_messageEntityItalic(), span)
++            if ((flags and TextStyleSpan.FLAG_STYLE_MONO) != 0) add(TLRPC.TL_messageEntityCode(), span)
++            if ((flags and TextStyleSpan.FLAG_STYLE_STRIKE) != 0) add(TLRPC.TL_messageEntityStrike(), span)
++            if ((flags and TextStyleSpan.FLAG_STYLE_UNDERLINE) != 0) add(TLRPC.TL_messageEntityUnderline(), span)
++        }
++        for (span in spanned.getSpans(0, size, TextStyleSpan::class.java)) {
++            styled(span.styleFlags, span)
++        }
++        for (span in spanned.getSpans(0, size, URLSpanReplacement::class.java)) {
++            val entity = TLRPC.TL_messageEntityTextUrl()
++            entity.url = span.url
++            add(entity, span)
++            span.textStyleRun?.let { styled(it.flags, span) }
++        }
++        for (span in spanned.getSpans(0, size, URLSpanUserMention::class.java)) {
++            val id = span.url?.toLongOrNull() ?: continue
++            val entity = TLRPC.TL_messageEntityMentionName()
++            entity.user_id = id
++            add(entity, span)
++        }
++        for (span in spanned.getSpans(0, size, CodeHighlighting.Span::class.java)) {
++            val entity = TLRPC.TL_messageEntityPre()
++            entity.language = span.lng
++            add(entity, span)
++        }
++        for (span in spanned.getSpans(0, size, QuoteSpan::class.java)) {
++            val entity = TLRPC.TL_messageEntityBlockquote()
++            entity.collapsed = span.isCollapsing
++            add(entity, span)
++        }
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index dba82e883..981331664 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -69,7 +69,9 @@ object MessageMenu {
+         Item(ChatActivity.tele_option_bookmark, "Bookmark", "bookmark", TeleConfig.BOOKMARKS),
+         Item(ChatActivity.tele_option_rename_bookmark, "Rename bookmark", "rename_bookmark", TeleConfig.BOOKMARKS),
+         Item(ChatActivity.tele_option_retry_all, "Retry all failed", "retry_all_failed", TeleConfig.RETRY_ALL_FAILED),
+-        Item(ChatActivity.tele_option_send_held_now, "Send queued message now", "send_held_now", TeleConfig.QUEUE_BEHIND_MEDIA)
++        Item(ChatActivity.tele_option_send_held_now, "Send queued message now", "send_held_now", TeleConfig.QUEUE_BEHIND_MEDIA),
++        Item(ChatActivity.tele_option_copy_markdown, "Copy as Markdown", "copy_markdown", TeleConfig.COPY_MARKDOWN_HTML),
++        Item(ChatActivity.tele_option_copy_html, "Copy as HTML", "copy_html", TeleConfig.COPY_MARKDOWN_HTML)
+     )
+ 
+     private const val KEY = "message_menu_hidden"
+@@ -90,7 +92,9 @@ object MessageMenu {
+         ChatActivity.tele_option_bookmark to TeleConfig.BOOKMARKS,
+         ChatActivity.tele_option_rename_bookmark to TeleConfig.BOOKMARKS,
+         ChatActivity.tele_option_retry_all to TeleConfig.RETRY_ALL_FAILED,
+-        ChatActivity.tele_option_send_held_now to TeleConfig.QUEUE_BEHIND_MEDIA
++        ChatActivity.tele_option_send_held_now to TeleConfig.QUEUE_BEHIND_MEDIA,
++        ChatActivity.tele_option_copy_markdown to TeleConfig.COPY_MARKDOWN_HTML,
++        ChatActivity.tele_option_copy_html to TeleConfig.COPY_MARKDOWN_HTML
+     )
+ 
+     private fun loadOrder(): Map<Int, Int> {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 8953fe176..56d5d79d6 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -273,6 +273,9 @@ object TeleSearch {
+             section(1338, "Recent emoji from the keyboard", "sending", TeleSettingsActivity.MODE_SENDING, "Count typed emoji in recent emoji"),
+             section(1335, "Rewrite only the link preview", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(1336, "Rewrite links in the preview only", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Rewrite only the link preview"),
++            section(1339, "Copy as Markdown and HTML", "menus", TeleSettingsActivity.MODE_MENUS),
++            section(1340, "Copy as Markdown", "menus", TeleSettingsActivity.MODE_MENUS, "Copy as Markdown and HTML"),
++            section(1341, "Copy as HTML", "menus", TeleSettingsActivity.MODE_MENUS, "Copy as Markdown and HTML"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4c15e10b5..4cdeda059 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -717,6 +717,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Inline calcmula results after =" to "Typing = after an expression shows a chip; tap it to insert the result.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
+             "Count typed emoji in recent emoji" to "Emoji typed with the keyboard join the recent ones when you send.",
++            "Copy as Markdown and HTML" to "Adds both to the message menu and to the text selection menu.",
+             "Local names for people" to "Names for people that only you see.",
+             "Keep deleted messages" to "Messages deleted for everyone stay in the chat.",
+             "Keep messages you delete yourself" to "Your own deletions are kept too.",
+@@ -1011,6 +1012,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Copy custom emoji id", TeleConfig.COPY_EMOJI_ID),
+                 toggle("Copy the text of service messages", TeleConfig.COPY_SERVICE_TEXT),
+                 toggle("Copy the path of a downloaded file", TeleConfig.COPY_FILE_PATH),
++                toggle("Copy as Markdown and HTML", TeleConfig.COPY_MARKDOWN_HTML),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Chat menu items"),
+                 toggle("Remove my messages", TeleConfig.REMOVE_MY_MESSAGES),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 405f1e7ad..dc41b07c8 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -5,6 +5,10 @@
+     <string name="TeleDcUncertain">uncertain</string>
+     <string name="TeleGiftId">Gift ID</string>
+     <string name="TeleEmojiIdCopied">Emoji ID copied to clipboard</string>
++    <string name="TeleCopyMarkdown">Copy as Markdown</string>
++    <string name="TeleCopyHtml">Copy as HTML</string>
++    <string name="TeleMarkdownCopied">Markdown copied to clipboard</string>
++    <string name="TeleHtmlCopied">HTML copied to clipboard</string>
+     <string name="TeleIdCopied">ID copied to clipboard</string>
+     <string name="TeleDcCopied">DC copied to clipboard</string>
+     <string name="TeleMessageIdCopied">Message ID copied to clipboard</string>

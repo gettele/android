@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 19:55:32 +0300
+Subject: [PATCH 173/183] feat: dock shots above the field
+
+---
+ .../src/main/java/tele/helpers/DockedMedia.kt | 30 +++++++++++++++++++
+ .../java/tele/ui/settings/TeleShotActivity.kt | 15 +++++++++-
+ 2 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+index 5c384bf48..ff3ff3aa0 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -228,6 +228,36 @@ object DockedMedia {
+         return true
+     }
+ 
++    /** A finished file (a shot) joins the tray instead of being sent, like the desktop client's shot box. */
++    @JvmStatic
++    fun add(fragment: ChatActivity, entry: MediaController.PhotoEntry, asFile: Boolean): Boolean {
++        if (!enabled() || fragment.chatActivityEnterView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return false
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        if (tray.items.isEmpty()) tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        tray.items.add(snapshot(entry, asFile))
++        changed(key)
++        return true
++    }
++
++    /** Drops old kept shot files no tray of any account points to any more. */
++    @JvmStatic
++    fun pruneKept(dir: java.io.File) {
++        for (account in 0 until org.telegram.messenger.UserConfig.MAX_ACCOUNT_COUNT) {
++            if (org.telegram.messenger.UserConfig.getInstance(account).isClientActivated) ensureLoaded(account)
++        }
++        val used = HashSet<String>()
++        for (tray in trays.values) for (item in tray.items) {
++            item.path?.let { used.add(it) }
++            item.imagePath?.let { used.add(it) }
++        }
++        // saved and discarded drafts may still hold a shot for a week, so only older files go
++        val cutoff = System.currentTimeMillis() - 8L * 24 * 60 * 60 * 1000
++        dir.listFiles()?.forEach { if (it.absolutePath !in used && it.lastModified() < cutoff) it.delete() }
++    }
++
+     /**
+      * The picker closes with a selection: it goes to the tray instead of the discard question,
+      * the text of the picker's caption field goes to the chat field.
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt
+index 3735506a7..2eeae40c3 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt
+@@ -383,11 +383,24 @@ class TeleShotActivity(origin: ChatActivity, private val source: List<MessageObj
+         export { rendered ->
+             val forceDocument = (!shotOptions.background && shotOptions.transparent) || !fitsPhoto(rendered.width, rendered.height)
+             val entry = MediaController.PhotoEntry(0, 0, 0, rendered.file.absolutePath, 0, false, rendered.width, rendered.height, rendered.file.length())
+-            chat.sendMedia(entry, null, true, 0, 0, forceDocument, 0)
++            // the shot folder is emptied on every open, a docked shot has to outlive it
++            val kept = if (tele.helpers.DockedMedia.enabled()) keepForTray(rendered.file) else null
++            val docked = kept != null && tele.helpers.DockedMedia.add(chat,
++                MediaController.PhotoEntry(0, 0, 0, kept.absolutePath, 0, false, rendered.width, rendered.height, kept.length()), forceDocument)
++            if (!docked) {
++                kept?.delete()
++                chat.sendMedia(entry, null, true, 0, 0, forceDocument, 0)
++            }
+             finishFragment()
+         }
+     }
+ 
++    private fun keepForTray(file: File): File? = runCatching {
++        val dir = File(ApplicationLoader.getFilesDirFixed(), "tele_docked").also { it.mkdirs() }
++        tele.helpers.DockedMedia.pruneKept(dir)
++        file.copyTo(File(dir, file.name), overwrite = true)
++    }.getOrNull()
++
+     private fun fitsPhoto(width: Int, height: Int): Boolean {
+         val longSide = maxOf(width, height)
+         val shortSide = minOf(width, height)

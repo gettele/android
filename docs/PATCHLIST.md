@@ -346,17 +346,17 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0245 | живой markdown при наборе | todo | поле ввода, подписи, `getEntities`; L; реш.: 0245 декор-спаны + подтумблер `>`; цитаты `>`/`>!` отдельным подтумблером |
-| 0175 | подписи к стикерам | todo | `ChatMessageCell`, `DialogCell`, уведомления; L; реш.: 0175 отправка+рендер везде; сток не рисует подпись стикера |
-| 0210 | несколько цитат в одном ответе | todo | `ChatActivity`, `ChatActivityEnterView`; M; общий код с 0211 |
-| 0211 | цитата из расшифровки голосового | todo | `ChatActivity.canShowQuote`; S; зависит от 0210; реш.: 0137 транскрипция остаётся; вставка блок-цитатой в поле |
-| 0148 | подсказки calcmula | todo | `Calcmula.kt`, `CalcmulaPreview.kt`; M; зависит от android 0081, android 0082; send without calculating |
-| 0176 | calcmula-результат после = | todo | `ChatActivityEnterView`; M; зависит от android 0082; реш.: 0176 чип; тап вставляет |
-| 0144 | перезапись ссылки только для превью | todo | `EditTextCaption`, `ChatActivity`; S; зависит от android 0046, android 0047, android 0054; неактивно при no_link_previews |
-| 0141 | набранные эмодзи в «недавние» | todo | `Emoji`, `SendMessagesHelper`; S; тумблер выкл (fix) |
-| 0139 | копировать как Markdown/HTML | todo | `MessageMenu`, `ChatActivity`; M; зависит от android 0042; Writer entity→MD/HTML |
-| 0142 | нумерация строк code-блоков | todo | `ChatMessageCell`, `MessageObject`; M; rich-IV отдельно |
-| 0146 | шот → docked-лента (частично) | todo | `TeleShotActivity`, `DockedMedia`; S; зависит от android 0083, android 0086; только отправка в docked |
+| 0245 | живой markdown при наборе | built | `0174-feat-render-markdown-as-you-type`; поле ввода, подписи, `getEntities`; L; реш.: 0245 декор-спаны + подтумблер `>`; цитаты `>`/`>!` отдельным подтумблером |
+| 0175 | подписи к стикерам | built | `0175-feat-sticker-captions`; `ChatMessageCell`, `DialogCell`, уведомления; L; реш.: 0175 отправка+рендер везде; сток не рисует подпись стикера |
+| 0210 | несколько цитат в одном ответе | built | `0176-feat-multiple-quotes-in-one-reply`; `ChatActivity`, `ChatActivityEnterView`; M; общий код с 0211 |
+| 0211 | цитата из расшифровки голосового | built | `0177-feat-quote-voice-transcriptions`; `ChatActivity.canShowQuote`; S; зависит от 0210; реш.: 0137 транскрипция остаётся; вставка блок-цитатой в поле |
+| 0148 | подсказки calcmula | built | `0178-feat-calcmula-suggestions`; `Calcmula.kt`, `CalcmulaPreview.kt`; M; зависит от android 0081, android 0082; send without calculating |
+| 0176 | calcmula-результат после = | built | `0179-feat-inline-calcmula-results`; `ChatActivityEnterView`; M; зависит от android 0082; реш.: 0176 чип; тап вставляет |
+| 0144 | перезапись ссылки только для превью | built | `0180-feat-rewrite-only-the-link-preview`; `EditTextCaption`, `ChatActivity`; S; зависит от android 0046, android 0047, android 0054; неактивно при no_link_previews |
+| 0141 | набранные эмодзи в «недавние» | built | `0181-fix-count-typed-emoji-in-recents`; `Emoji`, `SendMessagesHelper`; S; тумблер выкл (fix) |
+| 0139 | копировать как Markdown/HTML | built | `0182-feat-copy-messages-as-markdown-or-html`; `MessageMenu`, `ChatActivity`; M; зависит от android 0042; Writer entity→MD/HTML |
+| 0142 | нумерация строк code-блоков | built | `0183-feat-number-code-block-lines`; `ChatMessageCell`, `MessageObject`; M; rich-IV отдельно |
+| 0146 | шот → docked-лента (частично) | built | `0173-feat-dock-shots-above-the-field`; `TeleShotActivity`, `DockedMedia`; S; зависит от android 0083, android 0086; только отправка в docked |
 
 ## пачка 19 — поиск и чат
 

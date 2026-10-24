@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 20:16:18 +0300
+Subject: [PATCH 181/183] fix: count typed emoji in recents
+
+---
+ .../java/org/telegram/messenger/Emoji.java    |  1 +
+ .../messenger/SendMessagesHelper.java         |  2 +
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/TypedEmoji.kt  | 74 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 6 files changed, 83 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TypedEmoji.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/Emoji.java b/TMessagesProj/src/main/java/org/telegram/messenger/Emoji.java
+index a19705634..58e62ad7b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/Emoji.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/Emoji.java
+@@ -891,6 +891,7 @@ public class Emoji {
+     }
+ 
+     public static void addRecentEmoji(String code) {
++        tele.helpers.TypedEmoji.remember(code);
+         Integer count = emojiUseHistory.get(code);
+         if (count == null) {
+             count = 0;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 2133be239..74eea804c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -4597,6 +4597,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             return;
+         }
+ 
++        tele.helpers.TypedEmoji.count(retryMessageObject != null ? null : (!TextUtils.isEmpty(message) ? message : caption), entities);
++
+         if (replyQuote != null && replyQuote.message != null && replyToMsg != null) {
+             replyToMsg = replyQuote.message;
+         }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 20157fbf6..d0f1815a9 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -273,6 +273,8 @@ object TeleConfig {
+     @JvmField
+     val HIDE_GIFT_BUTTON = BoolItem("hide_gift_button", false)
+     @JvmField
++    val RECENT_TYPED_EMOJI = BoolItem("recent_typed_emoji", false)
++    @JvmField
+     val HIDE_SIMILAR_CHANNELS = BoolItem("hide_similar_channels", false)
+     @JvmField
+     val HIDE_COLLECTIBLE_HINT = BoolItem("hide_collectible_hint", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TypedEmoji.kt b/TMessagesProj/src/main/java/tele/helpers/TypedEmoji.kt
+new file mode 100644
+index 000000000..646a902b4
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TypedEmoji.kt
+@@ -0,0 +1,74 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.Emoji
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++// emoji typed with the keyboard count in the recent ones when the message goes out (tele 0141)
++object TypedEmoji {
++    private const val MAX_PICKED = 128
++
++    // emoji already counted by a pick, so a sent message doesn't count them twice; UI thread
++    private val picked = HashMap<String, Int>()
++    private var counting = false
++
++    // from Emoji.addRecentEmoji, UI thread
++    @JvmStatic
++    fun remember(code: String?) {
++        if (code == null || counting || !TeleConfig.RECENT_TYPED_EMOJI.value) return
++        if (picked.size >= MAX_PICKED) picked.clear()
++        picked[code] = (picked[code] ?: 0) + 1
++    }
++
++    // any thread: the text is read here, the recent list changes on the UI thread
++    @JvmStatic
++    fun count(text: String?, entities: List<TLRPC.MessageEntity>?) {
++        if (!TeleConfig.RECENT_TYPED_EMOJI.value || text.isNullOrEmpty()) return
++        val codes = collect(text, entities?.toList())
++        if (codes.isEmpty()) return
++        AndroidUtilities.runOnUIThread { apply(codes) }
++    }
++
++    private fun collect(text: String, entities: List<TLRPC.MessageEntity>?): List<String> {
++        val custom = ArrayList<IntArray>()
++        val codes = ArrayList<String>()
++        entities?.forEach {
++            if (it is TLRPC.TL_messageEntityCustomEmoji && it.document_id != 0L) {
++                custom.add(intArrayOf(it.offset, it.offset + it.length))
++                codes.add("animated_" + it.document_id)
++            }
++        }
++        // the plain emoji under a custom one is only its placeholder
++        Emoji.parseEmojis(text).forEach { range ->
++            if (custom.none { range.start < it[1] && range.end > it[0] } && Emoji.isValidEmoji(range.code)) {
++                codes.add(range.code.toString())
++            }
++        }
++        return codes
++    }
++
++    private fun apply(codes: List<String>) {
++        Emoji.loadRecentEmoji()
++        // the list is sorted when the panel opens; addRecentEmoji needs it filled once the history is full
++        if (Emoji.recentEmoji.isEmpty()) Emoji.sortEmoji()
++        var added = false
++        counting = true
++        try {
++            for (code in codes) {
++                val left = picked[code] ?: 0
++                if (left > 1) {
++                    picked[code] = left - 1
++                } else if (left == 1) {
++                    picked.remove(code)
++                } else {
++                    Emoji.addRecentEmoji(code)
++                    added = true
++                }
++            }
++        } finally {
++            counting = false
++        }
++        if (added) Emoji.saveRecentEmoji()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 59ef01273..8953fe176 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -269,6 +269,8 @@ object TeleSearch {
+             section(1326, "Quote voice transcriptions", "messages", TeleSettingsActivity.MODE_MESSAGES, "Multiple quotes in one reply"),
+             section(1301, "Select more than 100 messages", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1302, "Send quick replies by name", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1337, "Count typed emoji in recent emoji", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1338, "Recent emoji from the keyboard", "sending", TeleSettingsActivity.MODE_SENDING, "Count typed emoji in recent emoji"),
+             section(1335, "Rewrite only the link preview", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(1336, "Rewrite links in the preview only", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Rewrite only the link preview"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index c492d509d..4c15e10b5 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -716,6 +716,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Calcmula suggestions and sending without calculating" to "Suggest fixes in the preview and add send without calculating to the send menu.",
+             "Inline calcmula results after =" to "Typing = after an expression shows a chip; tap it to insert the result.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
++            "Count typed emoji in recent emoji" to "Emoji typed with the keyboard join the recent ones when you send.",
+             "Local names for people" to "Names for people that only you see.",
+             "Keep deleted messages" to "Messages deleted for everyone stay in the chat.",
+             "Keep messages you delete yourself" to "Your own deletions are kept too.",
+@@ -989,6 +990,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Markdown"),
+                 toggle("Render markdown as you type", TeleConfig.LIVE_MARKDOWN),
+                 toggle("Send > lines as quotes", TeleConfig.LIVE_MARKDOWN_QUOTES),
++                toggle("Count typed emoji in recent emoji", TeleConfig.RECENT_TYPED_EMOJI),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Forwarding"),
+                 toggle("Forward protected messages as copies", TeleConfig.COPY_PROTECTED),
