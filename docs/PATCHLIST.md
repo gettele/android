@@ -326,17 +326,17 @@
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0128 | отправка без звука по умолчанию | todo | `SendMessagesHelper`, ChatActivity меню; M; по умолч.: 0128 silent_<id>; меню отправки «со звуком» |
-| 0130 | подтверждение отправки вторым тапом | todo | `EmojiView`, `ChatActivityEnterView`, `MentionsAdapter`; M; по умолч.: 0130 как десктоп; второй тап 5 с; голосовые — в превью |
-| 0318 | подтверждение стикеров из бокса набора | todo | `StickersAlert`; S; зависит от 0130; по умолч.: 0130/0318 по десктопу; общий `TeleSendConfirm` |
-| 0153 | .mkv как видео (частично) | todo | `SendMessagesHelper`; S; по умолч.: 0153 частично; нужна проверка на устройстве |
-| 0157 | аудиофайл как голосовое | todo | `MediaController`, `ChatAttachAlertAudioLayout`; L; зависит от android 0086; по умолч.: 0157 нативный энкодер; блокирует запись на время конвертации |
-| 0259 | пересылка по одному сообщению | todo | `SendMessagesHelper`; S; альбомы вместе; flood wait |
-| 0254 | быстрый ответ по точному /имени | todo | `ChatActivityEnterView`, `QuickRepliesController`; S; зависит от android 0057; не боты/stars/scheduled |
-| 0215 | ретрай упавших кусков загрузки | todo | `FileUploadOperation`; M; в секретных чатах не ретраить |
-| 0220 | отправить все неудавшиеся | todo | `ChatActivity.fillMessageMenu`, `MessageMenu.kt`; S; «Retry all» |
-| 0226 | очередь за загрузкой: видно и отпустить | todo | `SendOrder.kt`, `MessageMenu.kt`, `ChatMessageCell`; M; зависит от android 0058; под тумблером queue_behind_media |
-| 0269 | выделять больше 100 сообщений | todo | `ChatActivity`, `MessagesController.deleteMessages`; M; зависит от 0259; реш.: 0269 chunked; нарезка по 100 |
+| 0128 | отправка без звука по умолчанию | built | `0162-feat-send-silently-by-default`; `SendMessagesHelper`, ChatActivity меню; M; по умолч.: 0128 silent_<id>; меню отправки «со звуком» |
+| 0130 | подтверждение отправки вторым тапом | built | `0163-feat-confirm-sticker-gif-and-voice-sends`; `EmojiView`, `ChatActivityEnterView`, `MentionsAdapter`; M; по умолч.: 0130 как десктоп; второй тап 5 с; голосовые — в превью |
+| 0318 | подтверждение стикеров из бокса набора | built | `0164-fix-confirm-stickers-from-set-boxes`; `StickersAlert`; S; зависит от 0130; по умолч.: 0130/0318 по десктопу; общий `TeleSendConfirm` |
+| 0153 | .mkv как видео (частично) | built | `0165-fix-send-mkv-files-as-videos`; `SendMessagesHelper`; S; по умолч.: 0153 частично; нужна проверка на устройстве |
+| 0157 | аудиофайл как голосовое | built | `0166-feat-send-audio-as-voice`; `MediaController`, `ChatAttachAlertAudioLayout`; L; зависит от android 0086; по умолч.: 0157 нативный энкодер; блокирует запись на время конвертации |
+| 0259 | пересылка по одному сообщению | built | `0170-feat-forward-messages-one-by-one`; `SendMessagesHelper`; S; альбомы вместе; flood wait |
+| 0254 | быстрый ответ по точному /имени | built | `0172-feat-send-quick-replies-by-exact-name`; `ChatActivityEnterView`, `QuickRepliesController`; S; зависит от android 0057; не боты/stars/scheduled |
+| 0215 | ретрай упавших кусков загрузки | built | `0167-fix-retry-failed-upload-parts`; `FileUploadOperation`; M; в секретных чатах не ретраить |
+| 0220 | отправить все неудавшиеся | built | `0168-feat-retry-failed-messages`; `ChatActivity.fillMessageMenu`, `MessageMenu.kt`; S; «Retry all» |
+| 0226 | очередь за загрузкой: видно и отпустить | built | `0169-feat-release-messages-queued-behind-uploads`; `SendOrder.kt`, `MessageMenu.kt`, `ChatMessageCell`; M; зависит от android 0058; под тумблером queue_behind_media |
+| 0269 | выделять больше 100 сообщений | built | `0171-feat-select-more-than-100-messages`; `ChatActivity`, `MessagesController.deleteMessages`; M; зависит от 0259; реш.: 0269 chunked; нарезка по 100 |
 
 ## пачка 18 — поле ввода, текст и цитаты
 

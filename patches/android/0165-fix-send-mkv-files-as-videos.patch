@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:17:51 +0300
+Subject: [PATCH 165/172] fix: send mkv files as videos
+
+---
+ .../messenger/SendMessagesHelper.java         |  6 ++-
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/MkvVideo.kt    | 52 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 5 files changed, 62 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MkvVideo.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 04d97cd93..a599512a7 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -11300,7 +11300,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             videoEditedInfo = info.videoEditedInfo != null ? info.videoEditedInfo : createCompressionSettings(info.path, info.livePhotoVideoOffset);
+                         }
+ 
+-                        if (!forceDocument && (videoEditedInfo != null || info.path.endsWith("mp4")) || info.isLivePhoto) {
++                        if (!forceDocument && (videoEditedInfo != null || info.path.endsWith("mp4") || tele.helpers.MkvVideo.isVideo(info.path)) || info.isLivePhoto) {
+                             if (info.path == null && info.searchImage != null) {
+                                 if (info.searchImage.photo instanceof TLRPC.TL_photo) {
+                                     info.path = FileLoader.getInstance(accountInstance.getCurrentAccount()).getPathToAttach(info.searchImage.photo, true).getAbsolutePath();
+@@ -11419,6 +11419,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                                     attributeVideo.supports_streaming = true;
+                                 }
+                                 document.attributes.add(attributeVideo);
++                                tele.helpers.MkvVideo.label(document, attributeVideo, info.path, videoEditedInfo);
+                                 if (videoEditedInfo != null && (videoEditedInfo.needConvert() || !info.isVideo)) {
+                                     if (info.isVideo && videoEditedInfo.muted) {
+                                         fillVideoAttribute(info.path, attributeVideo, videoEditedInfo);
+@@ -12152,7 +12153,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             Bitmap thumb = null;
+             String thumbKey = null;
+ 
+-            if (videoEditedInfo != null || videoPath.endsWith("mp4") || isRound) {
++            if (videoEditedInfo != null || videoPath.endsWith("mp4") || tele.helpers.MkvVideo.isVideo(videoPath) || isRound) {
+                 String path = videoPath;
+                 String originalPath = videoPath;
+                 File temp = new File(originalPath);
+@@ -12228,6 +12229,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     }
+                     attributeVideo.round_message = isRound;
+                     document.attributes.add(attributeVideo);
++                    tele.helpers.MkvVideo.label(document, attributeVideo, videoPath, videoEditedInfo);
+                     if (videoEditedInfo != null && videoEditedInfo.notReadyYet) {
+                         attributeVideo.w = videoEditedInfo.resultWidth;
+                         attributeVideo.h = videoEditedInfo.resultHeight;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index ce3cd70fd..9bad25513 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -201,6 +201,8 @@ object TeleConfig {
+     @JvmField
+     val HD_PHOTOS = BoolItem("hd_photos", false)
+     @JvmField
++    val SEND_MKV_AS_VIDEO = BoolItem("send_mkv_as_video", false)
++    @JvmField
+     val DOCKED_MEDIA = BoolItem("docked_media", false)
+     @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MkvVideo.kt b/TMessagesProj/src/main/java/tele/helpers/MkvVideo.kt
+new file mode 100644
+index 000000000..22f8ccaa5
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MkvVideo.kt
+@@ -0,0 +1,52 @@
++package tele.helpers
++
++import android.media.MediaMetadataRetriever
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.VideoEditedInfo
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++// send mkv files as videos (tele 0153): stock only takes mp4 and files the converter can read
++object MkvVideo {
++
++    private const val MIME = "video/x-matroska"
++
++    private fun isMkv(path: String?): Boolean = path != null && path.endsWith(".mkv", ignoreCase = true)
++
++    /** An mkv counts as a video only when its video track has a real size and length. */
++    @JvmStatic
++    fun isVideo(path: String?): Boolean {
++        if (!TeleConfig.SEND_MKV_AS_VIDEO.value || !isMkv(path)) return false
++        val retriever = MediaMetadataRetriever()
++        return try {
++            retriever.setDataSource(path)
++            val video = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes"
++            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
++            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
++            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
++            video && width > 0 && height > 0 && duration > 0
++        } catch (e: Exception) {
++            FileLog.e(e)
++            false
++        } finally {
++            try {
++                retriever.release()
++            } catch (ignore: Exception) {
++            }
++        }
++    }
++
++    /** The file keeps its container, so the document says so and doesn't promise streaming. */
++    @JvmStatic
++    fun label(
++        document: TLRPC.TL_document,
++        attribute: TLRPC.TL_documentAttributeVideo,
++        path: String?,
++        info: VideoEditedInfo?
++    ) {
++        if (!TeleConfig.SEND_MKV_AS_VIDEO.value || !isMkv(path)) return
++        if (info != null && info.needConvert()) return
++        document.mime_type = MIME
++        attribute.supports_streaming = false
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index ab2f722d2..809cdb207 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -239,6 +239,8 @@ object TeleSearch {
+             section(1292, "Confirm before sending", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1293, "Confirm stickers and GIFs", "sending", TeleSettingsActivity.MODE_SENDING, "Stickers"),
+             section(1294, "Confirm voice and video messages", "sending", TeleSettingsActivity.MODE_SENDING, "Voice and video messages"),
++            section(1295, "Send MKV files as videos", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1299, "Matroska video", "sending", TeleSettingsActivity.MODE_SENDING, "Send MKV files as videos"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 9937929de..2dd46f286 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -618,6 +618,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+ 
+         private val DESCRIPTIONS = mapOf(
++            "Send MKV files as videos" to "Only when the video track can be read; other files stay files.",
+             "Remove my messages" to "Adds it to chat menus: deletes all your messages there for everyone.",
+             "Show seconds in message times" to "Times read 14:03:21, and service messages show their time too.",
+             "Move chats instantly" to "Chats jump to their new place in the list without sliding.",
+@@ -929,6 +930,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "sending"),
+                 Row(TYPE_HEADER, "Uploads"),
+                 toggle("Send photos in HD by default", TeleConfig.HD_PHOTOS),
++                toggle("Send MKV files as videos", TeleConfig.SEND_MKV_AS_VIDEO),
+                 toggle("Attach media above the field (beta)", TeleConfig.DOCKED_MEDIA),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Scheduled"),

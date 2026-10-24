@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:19:03 +0300
+Subject: [PATCH 172/172] feat: send quick replies by exact name
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 64 +++++++++++++------
+ .../ui/Components/ChatActivityEnterView.java  |  7 ++
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../java/tele/helpers/QuickReplyByName.kt     | 23 +++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 6 files changed, 79 insertions(+), 20 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/QuickReplyByName.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index d52b9cc8b..64dc062c7 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -7551,26 +7551,7 @@ public class ChatActivity extends BaseFragment implements
+                 return;
+             }
+             if (object instanceof QuickRepliesController.QuickReply) {
+-                if (!getUserConfig().isPremium()) {
+-                    showDialog(new PremiumFeatureBottomSheet(this, getContext(), currentAccount, true, PremiumPreviewFragment.PREMIUM_FEATURE_BUSINESS_QUICK_REPLIES, false, null));
+-                    return;
+-                }
+-                AlertsCreator.ensurePaidMessageConfirmation(currentAccount, dialog_id, Math.max(1, ((QuickRepliesController.QuickReply) object).getMessagesCount()), payStars -> {
+-                    if (currentChat != null && tele.TeleConfig.QUICK_REPLIES_IN_GROUPS.getValue()) {
+-                        teleResendQuickReply((QuickRepliesController.QuickReply) object);
+-                        if (chatActivityEnterView != null) {
+-                            chatActivityEnterView.setFieldText(null);
+-                        }
+-                        return;
+-                    }
+-                    TLRPC.TL_messages_sendQuickReplyMessages req = new TLRPC.TL_messages_sendQuickReplyMessages();
+-                    req.peer = getMessagesController().getInputPeer(dialog_id);
+-                    req.shortcut_id = ((QuickRepliesController.QuickReply) object).id;
+-                    getConnectionsManager().sendRequest(req, null);
+-                    if (chatActivityEnterView != null) {
+-                        chatActivityEnterView.setFieldText(null);
+-                    }
+-                });
++                teleSendQuickReply((QuickRepliesController.QuickReply) object);
+             } else if (object instanceof TLRPC.TL_document) {
+                 if (chatMode == 0 && checkSlowMode(view)) {
+                     return;
+@@ -14496,6 +14477,49 @@ public class ChatActivity extends BaseFragment implements
+         }
+     }
+ 
++    private void teleSendQuickReply(QuickRepliesController.QuickReply reply) {
++        if (!getUserConfig().isPremium()) {
++            showDialog(new PremiumFeatureBottomSheet(this, getContext(), currentAccount, true, PremiumPreviewFragment.PREMIUM_FEATURE_BUSINESS_QUICK_REPLIES, false, null));
++            return;
++        }
++        AlertsCreator.ensurePaidMessageConfirmation(currentAccount, dialog_id, Math.max(1, reply.getMessagesCount()), payStars -> {
++            if (currentChat != null && tele.TeleConfig.QUICK_REPLIES_IN_GROUPS.getValue()) {
++                teleResendQuickReply(reply);
++                if (chatActivityEnterView != null) {
++                    chatActivityEnterView.setFieldText(null);
++                }
++                return;
++            }
++            TLRPC.TL_messages_sendQuickReplyMessages req = new TLRPC.TL_messages_sendQuickReplyMessages();
++            req.peer = getMessagesController().getInputPeer(dialog_id);
++            req.shortcut_id = reply.id;
++            getConnectionsManager().sendRequest(req, null);
++            if (chatActivityEnterView != null) {
++                chatActivityEnterView.setFieldText(null);
++            }
++        });
++    }
++
++    // a message that is exactly /name goes out as that quick reply, where the slash list would offer it
++    public boolean teleSendQuickReplyByName(CharSequence text, int scheduleDate, int scheduleRepeatPeriod, long payStars) {
++        if (!tele.TeleConfig.QUICK_REPLIES_BY_NAME.getValue() || chatMode != 0 || scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0 || DialogObject.isEncryptedDialog(dialog_id) || !getUserConfig().isPremium() || getMessagesController().getSendPaidMessagesStars(dialog_id) > 0) {
++            return false;
++        }
++        final TLRPC.User user = getCurrentUser();
++        final boolean allowed = user != null
++            ? !user.bot && !UserObject.isReplyUser(user) && !UserObject.isService(user.id)
++            : tele.TeleConfig.QUICK_REPLIES_IN_GROUPS.getValue() && currentChat != null && ChatObject.canSendMessages(currentChat);
++        if (!allowed) {
++            return false;
++        }
++        final QuickRepliesController.QuickReply reply = tele.helpers.QuickReplyByName.find(currentAccount, text);
++        if (reply == null) {
++            return false;
++        }
++        teleSendQuickReply(reply);
++        return true;
++    }
++
+     private void teleResendQuickReply(QuickRepliesController.QuickReply reply) {
+         QuickRepliesController.getInstance(currentAccount).sendQuickReply(dialog_id, reply, messages -> {
+             if (messages == null || messages.isEmpty()) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 487f2c67d..7d0987b50 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -7127,6 +7127,10 @@ public class ChatActivityEnterView extends FrameLayout implements
+         return allowConfirm && parentFragment != null && audioToSend == null && videoToSendMessageObject == null && !richDraftActive && parentFragment.teleInterceptDraftSend();
+     }
+ 
++    private boolean teleSendQuickReplyByName(boolean allowConfirm, int scheduleDate, int scheduleRepeatPeriod, long payStars) {
++        return allowConfirm && parentFragment != null && messageEditText != null && audioToSend == null && videoToSendMessageObject == null && !richDraftActive && !isEditingMessage() && (telePendingDraftEntries == null || telePendingDraftEntries.isEmpty()) && parentFragment.teleSendQuickReplyByName(messageEditText.getText(), scheduleDate, scheduleRepeatPeriod, payStars);
++    }
++
+     private void teleUpdateDraftMenu() {
+         final boolean editing = parentFragment != null && parentFragment.teleEditingDraft();
+         if (teleSaveDraftItem != null) {
+@@ -7652,6 +7656,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+         if (teleInterceptDraftSend(allowConfirm)) {
+             return false;
+         }
++        if (teleSendQuickReplyByName(allowConfirm, scheduleDate, scheduleRepeatPeriod, payStars)) {
++            return false;
++        }
+         final boolean allowConfirmFinal = allowConfirm && !animatorEphemeralMessageVisibility.getValue();
+ 
+         final Runnable send = () -> {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 66a8b0928..4616cdd5c 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -229,6 +229,8 @@ object TeleConfig {
+     @JvmField
+     val SELECT_MANY = BoolItem("select_many", false)
+     @JvmField
++    val QUICK_REPLIES_BY_NAME = BoolItem("quick_replies_by_name", false)
++    @JvmField
+     val SEND_OLDER_REPLIES = BoolItem("send_older_replies", false)
+     @JvmField
+     val DOUBLE_ENTER_SEND = BoolItem("double_enter_send", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/QuickReplyByName.kt b/TMessagesProj/src/main/java/tele/helpers/QuickReplyByName.kt
+new file mode 100644
+index 000000000..e293066d6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/QuickReplyByName.kt
+@@ -0,0 +1,23 @@
++package tele.helpers
++
++import org.telegram.ui.Business.QuickRepliesController
++import tele.TeleConfig
++
++// "/name" typed in full and sent: the quick reply with exactly that name, never a prefix match
++object QuickReplyByName {
++
++    @JvmStatic
++    fun find(account: Int, text: CharSequence?): QuickRepliesController.QuickReply? {
++        if (!TeleConfig.QUICK_REPLIES_BY_NAME.value || text == null) {
++            return null
++        }
++        val trimmed = text.toString().trim()
++        if (trimmed.length < 2 || trimmed[0] != '/' || trimmed.any { it.isWhitespace() }) {
++            return null
++        }
++        val name = trimmed.substring(1)
++        return QuickRepliesController.getInstance(account).replies.firstOrNull {
++            !it.isSpecial() && it.getMessagesCount() > 0 && it.name?.equals(name, ignoreCase = true) == true
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 123354c10..609065385 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -251,6 +251,7 @@ object TeleSearch {
+             section(1299, "Matroska video", "sending", TeleSettingsActivity.MODE_SENDING, "Send MKV files as videos"),
+             section(1300, "Forward messages one by one", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1301, "Select more than 100 messages", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1302, "Send quick replies by name", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index b56909017..5f7a24b3f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -701,6 +701,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Forward protected messages as copies" to "Forward protected messages as fresh copies.",
+             "Forward messages one by one" to "Albums stay together; many at once can hit rate limits.",
+             "Select more than 100 messages" to "Up to 10000; deleting and forwarding go out in parts of 100.",
++            "Send quick replies by name" to "A message that is exactly /name sends that quick reply.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",
+             "Preview calcmula results while typing" to "Show the result above the field as you type.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
+@@ -864,6 +865,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Chat features"),
+                 toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
++                toggle("Send quick replies by name", TeleConfig.QUICK_REPLIES_BY_NAME),
+                 toggle("Select more than 100 messages", TeleConfig.SELECT_MANY),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Saved GIFs and stickers"),

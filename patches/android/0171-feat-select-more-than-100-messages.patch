@@ -1,0 +1,238 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:15:06 +0300
+Subject: [PATCH 171/172] feat: select more than 100 messages
+
+---
+ .../messenger/MessagesController.java         |  1 +
+ .../java/org/telegram/ui/ChatActivity.java    |  4 +-
+ .../Components/DeleteMessagesBottomSheet.java | 18 +++---
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../main/java/tele/helpers/ForwardSplit.kt    | 24 ++++++-
+ .../src/main/java/tele/helpers/SelectMany.kt  | 64 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 8 files changed, 103 insertions(+), 13 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/SelectMany.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 5eed55973..c3cdcd510 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -9352,6 +9352,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, boolean forAll, int mode, boolean cacheOnly, long taskId, TLObject taskRequest, int topicId, boolean movedToScheduled, int movedToScheduledMessageId, boolean userInitiated) {
++        if (tele.helpers.SelectMany.deleteInParts(this, messages, randoms, encryptedChat, dialogId, forAll, mode, cacheOnly, taskId, taskRequest, topicId, movedToScheduled, movedToScheduledMessageId, userInitiated)) return;
+         final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
+         final boolean quickReplies = mode == ChatActivity.MODE_QUICK_REPLIES;
+         final boolean welcomeMessages = mode == ChatActivity.MODE_WELCOME_MESSAGES;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 8fe6c8c9b..d52b9cc8b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1910,7 +1910,7 @@ public class ChatActivity extends BaseFragment implements
+                         return;
+                     }
+                     if (messageObject.contentType == 0) {
+-                        if (selected && selectedMessagesIds[0].size() + selectedMessagesIds[1].size() >= 100) {
++                        if (selected && selectedMessagesIds[0].size() + selectedMessagesIds[1].size() >= tele.helpers.SelectMany.max(isReport())) {
+                             limitReached = true;
+                         } else {
+                             limitReached = false;
+@@ -19944,7 +19944,7 @@ public class ChatActivity extends BaseFragment implements
+                     }
+                 }
+             } else {
+-                if (selectedMessagesIds[0].size() + selectedMessagesIds[1].size() >= 100) {
++                if (selectedMessagesIds[0].size() + selectedMessagesIds[1].size() >= tele.helpers.SelectMany.max(isReport())) {
+                     AndroidUtilities.shakeView(selectedMessagesCountTextView);
+                     Vibrator vibrator = (Vibrator) ApplicationLoader.applicationContext.getSystemService(Context.VIBRATOR_SERVICE);
+                     if (vibrator != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java
+index bc46fb5ee..95e8d78e1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/DeleteMessagesBottomSheet.java
+@@ -1167,15 +1167,17 @@ public class DeleteMessagesBottomSheet extends BottomSheetWithRecyclerListView {
+                 req.id = ids.get(0);
+                 ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
+             } else {
+-                TLRPC.TL_channels_reportSpam req = new TLRPC.TL_channels_reportSpam();
+-                req.channel = MessagesController.getInputChannel(inChat);
+-                if (participant instanceof TLRPC.User) {
+-                    req.participant = MessagesController.getInputPeer((TLRPC.User) participant);
+-                } else if (participant instanceof TLRPC.Chat) {
+-                    req.participant = MessagesController.getInputPeer((TLRPC.Chat) participant);
++                for (ArrayList<Integer> part : tele.helpers.SelectMany.parts(ids)) {
++                    TLRPC.TL_channels_reportSpam req = new TLRPC.TL_channels_reportSpam();
++                    req.channel = MessagesController.getInputChannel(inChat);
++                    if (participant instanceof TLRPC.User) {
++                        req.participant = MessagesController.getInputPeer((TLRPC.User) participant);
++                    } else if (participant instanceof TLRPC.Chat) {
++                        req.participant = MessagesController.getInputPeer((TLRPC.Chat) participant);
++                    }
++                    req.id = part;
++                    ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
+                 }
+-                req.id = ids;
+-                ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
+             }
+         });
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 2d487a5d6..66a8b0928 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -227,6 +227,8 @@ object TeleConfig {
+     @JvmField
+     val FORWARD_ONE_BY_ONE = BoolItem("forward_one_by_one", false)
+     @JvmField
++    val SELECT_MANY = BoolItem("select_many", false)
++    @JvmField
+     val SEND_OLDER_REPLIES = BoolItem("send_older_replies", false)
+     @JvmField
+     val DOUBLE_ENTER_SEND = BoolItem("double_enter_send", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt b/TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt
+index 6fa6d0f44..897bbdaf2 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt
+@@ -21,16 +21,34 @@ object ForwardSplit {
+     private val queues = HashMap<Int, HashMap<Long, ArrayDeque<Entry>>>()
+     private val handler = Handler(Looper.getMainLooper())
+ 
+-    // true when the request has to go out right after messages[index]
++    // true when the request has to go out right after messages[index]; pending counts the ones already in it
+     @JvmStatic
+     fun after(messages: List<MessageObject>, index: Int, pending: Int, scheduleDate: Int): Boolean {
+-        if (!TeleConfig.FORWARD_ONE_BY_ONE.value || scheduleDate != 0) {
++        val oneByOne = TeleConfig.FORWARD_ONE_BY_ONE.value && scheduleDate == 0
++        if (!oneByOne && !TeleConfig.SELECT_MANY.value) {
+             return false
+         }
+         val next = messages.getOrNull(index + 1) ?: return false
+         val group = messages[index].messageOwner?.grouped_id ?: 0L
++        val nextGroup = next.messageOwner?.grouped_id ?: 0L
+         // albums stay in one request
+-        return group == 0L || group != (next.messageOwner?.grouped_id ?: 0L)
++        if (group != 0L && group == nextGroup) {
++            return false
++        }
++        if (oneByOne) {
++            return true
++        }
++        // the stock cut at 100 would split an album that fits into the next request whole
++        if (nextGroup == 0L) {
++            return false
++        }
++        var album = 0
++        var i = index + 1
++        while (i < messages.size && messages[i].messageOwner?.grouped_id == nextGroup) {
++            album++
++            i++
++        }
++        return album <= SelectMany.PER_REQUEST && pending + album > SelectMany.PER_REQUEST
+     }
+ 
+     // false: the caller sends right away, as stock does
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SelectMany.kt b/TMessagesProj/src/main/java/tele/helpers/SelectMany.kt
+new file mode 100644
+index 000000000..073f6eed0
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/SelectMany.kt
+@@ -0,0 +1,64 @@
++package tele.helpers
++
++import org.telegram.messenger.MessagesController
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++// selecting past the stock cap of 100: requests still carry at most 100 ids each
++object SelectMany {
++    const val PER_REQUEST = 100
++    private const val MAX_SELECTED = 10000
++
++    // a report names its messages in one request, so it keeps the stock cap
++    @JvmStatic
++    fun max(report: Boolean): Int = if (!report && TeleConfig.SELECT_MANY.value) MAX_SELECTED else PER_REQUEST
++
++    @JvmStatic
++    fun parts(ids: ArrayList<Int>): List<ArrayList<Int>> {
++        if (!TeleConfig.SELECT_MANY.value || ids.size <= PER_REQUEST) {
++            return listOf(ids)
++        }
++        return ids.chunked(PER_REQUEST).map { ArrayList(it) }
++    }
++
++    // true when the deletion was handed over to the controller in parts of 100
++    @JvmStatic
++    fun deleteInParts(
++        controller: MessagesController,
++        messages: ArrayList<Int>?,
++        randoms: ArrayList<Long>?,
++        encryptedChat: TLRPC.EncryptedChat?,
++        dialogId: Long,
++        forAll: Boolean,
++        mode: Int,
++        cacheOnly: Boolean,
++        taskId: Long,
++        taskRequest: TLObject?,
++        topicId: Int,
++        movedToScheduled: Boolean,
++        movedToScheduledMessageId: Int,
++        userInitiated: Boolean
++    ): Boolean {
++        if (!TeleConfig.SELECT_MANY.value || taskId != 0L || messages == null || messages.size <= PER_REQUEST) {
++            return false
++        }
++        // secret chats pair every id with its random id; otherwise the randoms ride with the first part
++        val paired = randoms != null && randoms.size == messages.size
++        var from = 0
++        while (from < messages.size) {
++            val to = minOf(from + PER_REQUEST, messages.size)
++            val partRandoms = when {
++                paired -> ArrayList(randoms!!.subList(from, to))
++                from == 0 -> randoms
++                else -> null
++            }
++            controller.deleteMessages(
++                ArrayList(messages.subList(from, to)), partRandoms, encryptedChat, dialogId, forAll, mode,
++                cacheOnly, 0L, taskRequest, topicId, movedToScheduled, movedToScheduledMessageId, userInitiated
++            )
++            from = to
++        }
++        return true
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 5421b8b41..123354c10 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -250,6 +250,7 @@ object TeleSearch {
+             section(1298, "Convert audio to voice", "sending", TeleSettingsActivity.MODE_SENDING, "Send audio files as voice messages"),
+             section(1299, "Matroska video", "sending", TeleSettingsActivity.MODE_SENDING, "Send MKV files as videos"),
+             section(1300, "Forward messages one by one", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1301, "Select more than 100 messages", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index faafc060c..b56909017 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -700,6 +700,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Offer quick replies in groups" to "Suggest quick replies after / in groups.",
+             "Forward protected messages as copies" to "Forward protected messages as fresh copies.",
+             "Forward messages one by one" to "Albums stay together; many at once can hit rate limits.",
++            "Select more than 100 messages" to "Up to 10000; deleting and forwarding go out in parts of 100.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",
+             "Preview calcmula results while typing" to "Show the result above the field as you type.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
+@@ -863,6 +864,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Chat features"),
+                 toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
++                toggle("Select more than 100 messages", TeleConfig.SELECT_MANY),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Saved GIFs and stickers"),
+                 toggle("Keep saved GIFs and favorite stickers past the limit", TeleConfig.KEEP_MEDIA_PAST_LIMIT),

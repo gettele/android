@@ -1,0 +1,721 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:24:34 +0300
+Subject: [PATCH 166/172] feat: send audio as voice
+
+---
+ .../telegram/messenger/MediaController.java   |  21 +
+ .../java/org/telegram/ui/ChatActivity.java    |  25 +
+ .../ui/Components/ChatAttachAlert.java        |  14 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/AudioVoice.kt  | 497 ++++++++++++++++++
+ .../src/main/java/tele/helpers/MessageMenu.kt |   2 +
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ .../src/main/res/values/strings_tele.xml      |   1 +
+ 9 files changed, 567 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/AudioVoice.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
+index 7ba8b56c1..f1e54d16d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
+@@ -144,6 +144,23 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+ 
+     private native void stopRecord();
+ 
++    // the voice recorder's encoder, for the audio files sent as voice messages
++    public int tele_startRecord(String path, int sampleRate) {
++        return startRecord(path, sampleRate);
++    }
++
++    public int tele_writeFrame(ByteBuffer frame, int len) {
++        return writeFrame(frame, len);
++    }
++
++    public void tele_stopRecord() {
++        stopRecord();
++    }
++
++    public boolean tele_isRecording() {
++        return recordingAudio != null || audioRecorderV2Active;
++    }
++
+     public static native boolean cropOpusFile(String source, String destination, long startMs, long endMs);
+ 
+     public static native boolean joinOpusFiles(String file1, String file2, String dest);
+@@ -5058,6 +5075,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+     }
+ 
+     public void startRecording(int currentAccount, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem replyStory, int guid, boolean manual, SendMessageChatArguments sendMessageChatArguments, long monoForumPeerId, MessageSuggestionParams suggestionParams) {
++        if (tele.helpers.AudioVoice.busy()) {
++            AndroidUtilities.runOnUIThread(() -> NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStartError, guid));
++            return;
++        }
+         boolean paused = false;
+         if (playingMessageObject != null && isPlayingMessage(playingMessageObject) && !isMessagePaused()) {
+             paused = true;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 3786f1a88..b3f72b924 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1264,6 +1264,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_delete_alias = 222;
+     public final static int tele_option_bookmark = 240;
+     public final static int tele_option_rename_bookmark = 241;
++    public final static int tele_option_audio_voice = 365;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -34420,6 +34421,12 @@ public class ChatActivity extends BaseFragment implements
+                 tele.helpers.Bookmarks.toggle(this, tele_object);
+                 break;
+             }
++            case tele_option_audio_voice: {
++                final MessageObject tele_object = selectedObject;
++                closeMenu();
++                tele_sendAudioAsVoice(tele.helpers.AudioVoice.messagePaths(currentAccount, tele_object));
++                break;
++            }
+             case tele_option_rename_bookmark: {
+                 final MessageObject tele_object = selectedObject;
+                 closeMenu();
+@@ -36587,6 +36594,23 @@ public class ChatActivity extends BaseFragment implements
+         return userInfo;
+     }
+ 
++    public void tele_sendAudioAsVoice(ArrayList<String> paths) {
++        if (paths == null || paths.isEmpty() || !tele.TeleConfig.AUDIO_AS_VOICE.getValue() || isInScheduleMode()) {
++            return;
++        }
++        if (!tele.helpers.AudioVoice.canSend(currentChat, userInfo)) {
++            showMediaBannedHint();
++            return;
++        }
++        if (!checkSlowModeAlert()) {
++            return;
++        }
++        AlertsCreator.ensurePaidMessageConfirmation(currentAccount, dialog_id, paths.size(), payStars -> {
++            tele.helpers.AudioVoice.run(this, new tele.helpers.AudioVoice.Job(currentAccount, dialog_id, paths, replyingMessageObject, getThreadMessage(), getMessageChatSendParams(), getSendMonoForumPeerId(), messageSuggestionParams, payStars));
++            afterMessageSend();
++        });
++    }
++
+     public void sendAudio(ArrayList<MessageObject> audios, CharSequence caption, boolean notify, int scheduleDate, int scheduleRepeatPeriod, long effectId, boolean invertMedia, long payStars) {
+         if (checkSlowModeAlert()) {
+             fillEditingMediaWithCaption(caption, null);
+@@ -47702,6 +47726,7 @@ public class ChatActivity extends BaseFragment implements
+         }
+         tele.helpers.TeleShot.fillMenu(this, message, groupedMessages, items, icons, options);
+         tele.helpers.Bookmarks.fillMenu(this, message, items, icons, options);
++        tele.helpers.AudioVoice.fillMenu(this, message, items, icons, options);
+         if (teleKeptMessage) {
+             if (!tele.helpers.DeletedReply.quoteMode()) {
+                 for (int i = options.size() - 1; i >= 0; i--) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index 76f384eef..a7ec27257 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -4051,6 +4051,20 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+                     }
+                 });
+             }
++            final ChatActivity tele_voiceChat = chatActivity;
++            if (editingMessageObject == null && tele_voiceChat != null && !tele_voiceChat.isInScheduleMode() && (currentAttachLayout == audioLayout || currentAttachLayout == documentLayout)) {
++                final ArrayList<String> tele_voicePaths = tele.helpers.AudioVoice.selectedPaths(currentAttachLayout == audioLayout ? audioLayout.getSelected() : null, currentAttachLayout == documentLayout ? documentLayout.selectedFilesOrder : null);
++                if (!tele_voicePaths.isEmpty() && tele_voicePaths.size() == currentAttachLayout.getSelectedItemsCount()) {
++                    options.add(R.drawable.input_mic, getString(R.string.TeleSendAsVoice), () -> {
++                        tele_voiceChat.tele_sendAudioAsVoice(tele_voicePaths);
++                        if (messageSendPreview != null) {
++                            messageSendPreview.dismiss(true);
++                            messageSendPreview = null;
++                        }
++                        dismiss();
++                    });
++                }
++            }
+             if (editingMessageObject == null && canHaveStars && chatActivity != null && ChatObject.isChannelAndNotMegaGroup(chatActivity.getCurrentChat()) && chatActivity.getCurrentChatInfo() != null && chatActivity.getCurrentChatInfo().paid_media_allowed) {
+                 ActionBarMenuSubItem item = options.add(R.drawable.menu_feature_paid, getString(R.string.PaidMediaButton), null).getLast();
+                 item.setOnClickListener(v -> {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 9bad25513..5d7c15516 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -203,6 +203,8 @@ object TeleConfig {
+     @JvmField
+     val SEND_MKV_AS_VIDEO = BoolItem("send_mkv_as_video", false)
+     @JvmField
++    val AUDIO_AS_VOICE = BoolItem("audio_as_voice", false)
++    @JvmField
+     val DOCKED_MEDIA = BoolItem("docked_media", false)
+     @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/AudioVoice.kt b/TMessagesProj/src/main/java/tele/helpers/AudioVoice.kt
+new file mode 100644
+index 000000000..48fa5d22f
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/AudioVoice.kt
+@@ -0,0 +1,497 @@
++package tele.helpers
++
++import android.content.Context
++import android.media.MediaCodec
++import android.media.MediaExtractor
++import android.media.MediaFormat
++import android.net.Uri
++import android.webkit.MimeTypeMap
++import java.io.File
++import java.nio.ByteBuffer
++import java.nio.ByteOrder
++import java.util.concurrent.atomic.AtomicBoolean
++import org.telegram.messenger.AccountInstance
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.AutoDeleteMediaTask
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.FileLoader
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MediaController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessageSuggestionParams
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessageChatArguments
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.messenger.SharedConfig
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.Bulletin
++import org.telegram.ui.Components.BulletinFactory
++import tele.TeleConfig
++
++// send audio files as voice messages (tele 0157): decode, resample to 48k mono, encode with the voice recorder's opus encoder
++object AudioVoice {
++
++    private const val RATE = 48000
++    private const val FRAME = 960
++    private const val TIMEOUT_US = 10_000L
++    private const val SIZE_CHECK_FRAMES = 500
++
++    private val EXTENSIONS = setOf("mp3", "m4a", "ogg", "oga", "opus", "wav", "flac", "aac", "amr", "mka")
++
++    // the opus encoder is one per process, so only one conversion runs at a time
++    private val converting = AtomicBoolean(false)
++
++    class Job(
++        val account: Int,
++        val dialogId: Long,
++        val paths: List<String>,
++        val reply: MessageObject?,
++        val replyTop: MessageObject?,
++        val chatArgs: SendMessageChatArguments?,
++        val monoForumPeerId: Long,
++        val suggestion: MessageSuggestionParams?,
++        val payStars: Long
++    )
++
++    private enum class Failure { UNSUPPORTED, TOO_LONG, CANCELLED, FAILED }
++
++    private class Converted(val file: File, val document: TLRPC.TL_document)
++
++    private class Outcome(val result: Converted?, val failure: Failure?)
++
++    private class Cancel {
++        @Volatile
++        var requested = false
++    }
++
++    @JvmStatic
++    fun busy(): Boolean = converting.get()
++
++    @JvmStatic
++    fun isAudioPath(path: String?): Boolean {
++        if (path.isNullOrEmpty()) return false
++        val dot = path.lastIndexOf('.')
++        if (dot < 0 || dot == path.length - 1) return false
++        val ext = path.substring(dot + 1).lowercase()
++        if (ext in EXTENSIONS) return true
++        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)?.startsWith("audio/") == true
++    }
++
++    /** Audio files among the selected ones, the file must be there to be read. */
++    @JvmStatic
++    fun selectedPaths(audios: List<MessageObject>?, files: List<String?>?): ArrayList<String> {
++        val out = ArrayList<String>()
++        if (!TeleConfig.AUDIO_AS_VOICE.value) return out
++        audios?.forEach { message ->
++            val path = message.messageOwner?.attachPath
++            if (isAudioPath(path) && File(path!!).canRead()) out.add(path)
++        }
++        files?.forEach { path ->
++            if (isAudioPath(path) && File(path!!).canRead()) out.add(path)
++        }
++        return out
++    }
++
++    /** The voice may be sent only where a recorded one could be. */
++    @JvmStatic
++    fun canSend(chat: TLRPC.Chat?, userInfo: TLRPC.UserFull?): Boolean {
++        if (chat != null && !ChatObject.canSendVoice(chat)) return false
++        return userInfo == null || !userInfo.voice_messages_forbidden
++    }
++
++    private fun localFile(account: Int, message: MessageObject?): File? {
++        val document = message?.document ?: return null
++        val file = FileLoader.getInstance(account).getPathToAttach(document, true)
++        return if (file != null && file.canRead()) file else null
++    }
++
++    @JvmStatic
++    fun messagePaths(account: Int, message: MessageObject?): ArrayList<String> {
++        val out = ArrayList<String>()
++        localFile(account, message)?.let { out.add(it.absolutePath) }
++        return out
++    }
++
++    /** An audio message that is on the device, next to Delete. */
++    @JvmStatic
++    fun fillMenu(chat: ChatActivity, message: MessageObject, items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
++        if (!TeleConfig.AUDIO_AS_VOICE.value || message.id <= 0 || message.scheduled || chat.isInScheduleMode) return
++        if (message.isVoice || message.isRoundVideo) return
++        val mime = message.document?.mime_type
++        if (!message.isMusic && mime?.startsWith("audio/") != true) return
++        if (!canSend(chat.currentChat, chat.currentUserInfo) || localFile(chat.currentAccount, message) == null) return
++        val at = options.indexOf(ChatActivity.OPTION_DELETE).let { if (it >= 0) it else options.size }
++        items.add(at, LocaleController.getString(R.string.TeleSendAsVoice))
++        icons.add(at, R.drawable.input_mic)
++        options.add(at, ChatActivity.tele_option_audio_voice)
++    }
++
++    @JvmStatic
++    fun run(fragment: BaseFragment, job: Job) {
++        val context = fragment.parentActivity ?: return
++        if (job.paths.isEmpty()) return
++        if (MediaController.getInstance().tele_isRecording()) {
++            error(fragment, "Finish the recording first.")
++            return
++        }
++        if (!converting.compareAndSet(false, true)) {
++            error(fragment, "Another audio file is still converting.")
++            return
++        }
++        val cancel = Cancel()
++        val progress = showProgress(fragment, context, cancel)
++        Thread {
++            var failure: Failure? = null
++            try {
++                for ((index, path) in job.paths.withIndex()) {
++                    if (cancel.requested) {
++                        failure = Failure.CANCELLED
++                        break
++                    }
++                    val outcome = convert(job.account, path, cancel) { fraction ->
++                        val total = (index + fraction) / job.paths.size
++                        AndroidUtilities.runOnUIThread { progress.update(total) }
++                    }
++                    val converted = outcome.result
++                    if (converted == null) {
++                        failure = outcome.failure
++                        if (failure != Failure.TOO_LONG) break
++                        AndroidUtilities.runOnUIThread { sendAsFile(job, path) }
++                        continue
++                    }
++                    AndroidUtilities.runOnUIThread { send(job, converted) }
++                }
++            } finally {
++                converting.set(false)
++            }
++            AndroidUtilities.runOnUIThread {
++                progress.hide()
++                when (failure) {
++                    Failure.UNSUPPORTED -> error(fragment, "This audio format can't be converted to a voice message.")
++                    Failure.TOO_LONG -> error(fragment, "Too long for a voice message, sent as a file.")
++                    Failure.FAILED -> error(fragment, "Couldn't convert the audio.")
++                    else -> {}
++                }
++            }
++        }.start()
++    }
++
++    private fun error(fragment: BaseFragment, text: String) {
++        BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, TeleLowercase.lc(text)).show()
++    }
++
++    private class Progress(val layout: Bulletin.ProgressLayout, val bulletin: Bulletin) {
++        fun update(value: Float) {
++            layout.setProgress(value.coerceIn(0.02f, 0.98f))
++        }
++
++        fun hide() {
++            bulletin.hide()
++        }
++    }
++
++    private fun showProgress(fragment: BaseFragment, context: Context, cancel: Cancel): Progress {
++        val provider = fragment.resourceProvider
++        val layout = Bulletin.ProgressLayout(context, provider)
++        layout.imageView.setImageResource(R.drawable.input_mic, 0xFFFFFFFF.toInt())
++        layout.textView.setText(TeleLowercase.lc("Converting audio\u2026"), false)
++        layout.setButton(
++            Bulletin.UndoButton(context, true, provider)
++                .setText(TeleLowercase.lc("Cancel"))
++                .setUndoAction { cancel.requested = true }
++        )
++        val bulletin = BulletinFactory.of(fragment).create(layout, -1)
++        bulletin.show()
++        return Progress(layout, bulletin)
++    }
++
++    private fun send(job: Job, converted: Converted) {
++        val params = SendMessagesHelper.SendMessageParams.of(
++            converted.document, null, converted.file.absolutePath, job.dialogId, job.reply, job.replyTop,
++            null, null, null, null, true, 0, 0, 0, null, null, false
++        )
++        params.sendMessageChatArguments = job.chatArgs
++        params.monoForumPeer = job.monoForumPeerId
++        params.suggestionParams = job.suggestion
++        params.payStars = job.payStars
++        SendMessagesHelper.getInstance(job.account).sendMessage(params)
++    }
++
++    // past the stock upload size the voice message isn't possible, the file goes as a document
++    private fun sendAsFile(job: Job, path: String) {
++        val caption: String? = null
++        val mime: String? = null
++        SendMessagesHelper.prepareSendingDocuments(
++            AccountInstance.getInstance(job.account),
++            arrayListOf(path), arrayListOf(path), null as ArrayList<Uri>?, caption, mime,
++            job.dialogId, job.reply, job.replyTop, null, null, null, true, 0, null,
++            job.chatArgs, 0L, false, job.payStars
++        )
++    }
++
++    private fun newVoiceDocument(account: Int): TLRPC.TL_document {
++        val document = TLRPC.TL_document()
++        document.file_reference = ByteArray(0)
++        document.dc_id = Int.MIN_VALUE
++        document.id = SharedConfig.getLastLocalId().toLong()
++        document.user_id = UserConfig.getInstance(account).getClientUserId()
++        document.mime_type = "audio/ogg"
++        SharedConfig.saveConfig()
++        return document
++    }
++
++    private fun convert(account: Int, path: String, cancel: Cancel, progress: (Float) -> Unit): Outcome {
++        val extractor = MediaExtractor()
++        var decoder: MediaCodec? = null
++        var file: File? = null
++        var encoding = false
++        var done = false
++        try {
++            try {
++                extractor.setDataSource(path)
++            } catch (e: Exception) {
++                FileLog.e(e)
++                return Outcome(null, Failure.UNSUPPORTED)
++            }
++            var track = -1
++            for (i in 0 until extractor.trackCount) {
++                if (extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
++                    track = i
++                    break
++                }
++            }
++            if (track < 0) return Outcome(null, Failure.UNSUPPORTED)
++            extractor.selectTrack(track)
++            val format = extractor.getTrackFormat(track)
++            val mime = format.getString(MediaFormat.KEY_MIME) ?: return Outcome(null, Failure.UNSUPPORTED)
++            val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else 0L
++            decoder = try {
++                MediaCodec.createDecoderByType(mime).also {
++                    it.configure(format, null, null, 0)
++                    it.start()
++                }
++            } catch (e: Exception) {
++                FileLog.e(e)
++                return Outcome(null, Failure.UNSUPPORTED)
++            }
++
++            val document = newVoiceDocument(account)
++            val target = File(
++                FileLoader.getDirectory(FileLoader.MEDIA_DIR_AUDIO),
++                System.currentTimeMillis().toString() + "_" + FileLoader.getAttachFileName(document)
++            )
++            file = target
++            AutoDeleteMediaTask.lockFile(target)
++            val controller = MediaController.getInstance()
++            if (controller.tele_startRecord(target.path, RATE) == 0) return Outcome(null, Failure.FAILED)
++            encoding = true
++
++            val sink = Sink(controller)
++            val info = MediaCodec.BufferInfo()
++            var channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
++            var rate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else RATE
++            var float = false
++            var resampler = Resampler(rate)
++            var inputDone = false
++            var outputDone = false
++            var lastFraction = 0f
++            var checkedFrames = 0L
++            while (!outputDone) {
++                if (cancel.requested) return Outcome(null, Failure.CANCELLED)
++                if (!inputDone) {
++                    val index = decoder.dequeueInputBuffer(TIMEOUT_US)
++                    if (index >= 0) {
++                        val buffer = decoder.getInputBuffer(index)!!
++                        val size = extractor.readSampleData(buffer, 0)
++                        if (size < 0) {
++                            decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
++                            inputDone = true
++                        } else {
++                            val time = extractor.sampleTime
++                            decoder.queueInputBuffer(index, 0, size, time, 0)
++                            extractor.advance()
++                            if (durationUs > 0) {
++                                val fraction = (time.toFloat() / durationUs).coerceIn(0f, 1f)
++                                if (fraction - lastFraction >= 0.01f) {
++                                    lastFraction = fraction
++                                    progress(fraction)
++                                }
++                            }
++                        }
++                    }
++                }
++                val out = decoder.dequeueOutputBuffer(info, TIMEOUT_US)
++                if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
++                    val changed = decoder.outputFormat
++                    if (changed.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = changed.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
++                    if (changed.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
++                        val changedRate = changed.getInteger(MediaFormat.KEY_SAMPLE_RATE)
++                        if (changedRate != rate) {
++                            rate = changedRate
++                            resampler = Resampler(rate)
++                        }
++                    }
++                    float = changed.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
++                        changed.getInteger(MediaFormat.KEY_PCM_ENCODING) == android.media.AudioFormat.ENCODING_PCM_FLOAT
++                } else if (out >= 0) {
++                    if (info.size > 0) {
++                        val buffer = decoder.getOutputBuffer(out)!!
++                        buffer.position(info.offset)
++                        buffer.limit(info.offset + info.size)
++                        buffer.order(ByteOrder.nativeOrder())
++                        val mono = toMono(buffer, channels.coerceAtLeast(1), float)
++                        if (!resampler.feed(mono, sink)) return Outcome(null, Failure.FAILED)
++                        if (sink.frames - checkedFrames >= SIZE_CHECK_FRAMES) {
++                            checkedFrames = sink.frames
++                            if (!FileLoader.checkUploadFileSize(account, target.length())) return Outcome(null, Failure.TOO_LONG)
++                        }
++                    }
++                    decoder.releaseOutputBuffer(out, false)
++                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
++                }
++            }
++            if (!sink.finish() || sink.samples == 0L) return Outcome(null, Failure.FAILED)
++            encoding = false
++            controller.tele_stopRecord()
++            if (!FileLoader.checkUploadFileSize(account, target.length())) return Outcome(null, Failure.TOO_LONG)
++
++            val attribute = TLRPC.TL_documentAttributeAudio()
++            attribute.voice = true
++            attribute.waveform = MediaController.getWaveform(target.absolutePath)
++            if (attribute.waveform != null) attribute.flags = attribute.flags or 4
++            attribute.duration = sink.samples / RATE.toDouble()
++            document.date = ConnectionsManager.getInstance(account).currentTime
++            document.size = target.length()
++            document.attributes.clear()
++            document.attributes.add(attribute)
++            done = true
++            progress(1f)
++            return Outcome(Converted(target, document), null)
++        } catch (e: Throwable) {
++            FileLog.e(e)
++            return Outcome(null, Failure.FAILED)
++        } finally {
++            if (encoding) MediaController.getInstance().tele_stopRecord()
++            try {
++                decoder?.stop()
++            } catch (ignore: Exception) {
++            }
++            decoder?.release()
++            extractor.release()
++            if (!done && file != null) {
++                AutoDeleteMediaTask.unlockFile(file)
++                file.delete()
++            }
++        }
++    }
++
++    private fun toMono(buffer: ByteBuffer, channels: Int, float: Boolean): FloatArray {
++        return if (float) {
++            val samples = buffer.asFloatBuffer()
++            FloatArray(samples.remaining() / channels).also { out ->
++                for (i in out.indices) {
++                    var sum = 0f
++                    for (c in 0 until channels) sum += samples.get()
++                    out[i] = sum / channels
++                }
++            }
++        } else {
++            val samples = buffer.asShortBuffer()
++            FloatArray(samples.remaining() / channels).also { out ->
++                for (i in out.indices) {
++                    var sum = 0
++                    for (c in 0 until channels) sum += samples.get()
++                    out[i] = sum / (32768f * channels)
++                }
++            }
++        }
++    }
++
++    /** Takes 48k mono samples and hands full opus frames to the encoder. */
++    private class Sink(private val controller: MediaController) {
++        private val frame = ByteBuffer.allocateDirect(FRAME * 2).order(ByteOrder.nativeOrder())
++        private var filled = 0
++        var frames = 0L
++            private set
++        var samples = 0L
++            private set
++
++        fun put(value: Float): Boolean {
++            frame.putShort((filled * 2), (value.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
++            samples++
++            if (++filled < FRAME) return true
++            filled = 0
++            frames++
++            return controller.tele_writeFrame(frame, FRAME * 2) != 0
++        }
++
++        // the last frame must be a short one, it is the one that ends the stream
++        fun finish(): Boolean {
++            val pending = filled
++            if (pending == 0) {
++                frame.putShort(0, 0)
++                return controller.tele_writeFrame(frame, 2) != 0
++            }
++            return controller.tele_writeFrame(frame, pending * 2) != 0
++        }
++    }
++
++    /** Linear when it grows the rate, averaging when it shrinks it. */
++    private class Resampler(rate: Int) {
++        private val step = rate.toDouble() / RATE
++        private var position = 0.0
++        private var base = 0L
++        private var last = 0f
++        private var accumulator = 0.0
++        private var filled = 0.0
++
++        fun feed(input: FloatArray, sink: Sink): Boolean {
++            if (input.isEmpty()) return true
++            if (step == 1.0) {
++                for (value in input) if (!sink.put(value)) return false
++                return true
++            }
++            if (step < 1.0) return grow(input, sink)
++            return shrink(input, sink)
++        }
++
++        private fun grow(input: FloatArray, sink: Sink): Boolean {
++            val end = base + input.size
++            while (true) {
++                val index = position.toLong()
++                if (index + 1 >= end) break
++                val a = if (index < base) last else input[(index - base).toInt()]
++                val b = input[(index + 1 - base).toInt()]
++                val t = (position - index).toFloat()
++                if (!sink.put(a + (b - a) * t)) return false
++                position += step
++            }
++            last = input[input.size - 1]
++            base = end
++            return true
++        }
++
++        private fun shrink(input: FloatArray, sink: Sink): Boolean {
++            for (value in input) {
++                var remaining = 1.0
++                while (remaining > 1e-9) {
++                    val take = minOf(remaining, step - filled)
++                    accumulator += value * take
++                    filled += take
++                    remaining -= take
++                    if (step - filled <= 1e-9) {
++                        if (!sink.put((accumulator / step).toFloat())) return false
++                        accumulator = 0.0
++                        filled = 0.0
++                    }
++                }
++            }
++            return true
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index 9891cbe6b..37527a7b2 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -62,6 +62,7 @@ object MessageMenu {
+         Item(ChatActivity.tele_option_mark_viewed, "Mark as viewed", "mark_viewed", TeleConfig.KEEP_DISAPPEARING_MEDIA),
+         Item(ChatActivity.tele_option_shot, "Shot", "shot", TeleConfig.SHOT),
+         Item(ChatActivity.tele_option_copy_service_text, "Copy service text", "copy_service_text", TeleConfig.COPY_SERVICE_TEXT),
++        Item(ChatActivity.tele_option_audio_voice, "Send as voice message", "audio_voice", TeleConfig.AUDIO_AS_VOICE),
+         Item(ChatActivity.tele_option_copy_file_path, "Copy file path", "copy_file_path", TeleConfig.COPY_FILE_PATH),
+         Item(ChatActivity.tele_option_copy_alias, "Copy alias", "copy_alias", TeleConfig.USERNAME_ALIASES),
+         Item(ChatActivity.tele_option_delete_alias, "Delete alias", "delete_alias", TeleConfig.USERNAME_ALIASES),
+@@ -80,6 +81,7 @@ object MessageMenu {
+         ChatActivity.tele_option_shot to TeleConfig.SHOT,
+         ChatActivity.tele_option_mark_viewed to TeleConfig.KEEP_DISAPPEARING_MEDIA,
+         ChatActivity.tele_option_copy_service_text to TeleConfig.COPY_SERVICE_TEXT,
++        ChatActivity.tele_option_audio_voice to TeleConfig.AUDIO_AS_VOICE,
+         ChatActivity.tele_option_copy_file_path to TeleConfig.COPY_FILE_PATH,
+         ChatActivity.tele_option_copy_alias to TeleConfig.USERNAME_ALIASES,
+         ChatActivity.tele_option_delete_alias to TeleConfig.USERNAME_ALIASES,
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 809cdb207..e5de46a66 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -240,6 +240,9 @@ object TeleSearch {
+             section(1293, "Confirm stickers and GIFs", "sending", TeleSettingsActivity.MODE_SENDING, "Stickers"),
+             section(1294, "Confirm voice and video messages", "sending", TeleSettingsActivity.MODE_SENDING, "Voice and video messages"),
+             section(1295, "Send MKV files as videos", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1296, "Send audio files as voice messages", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1297, "Send as a voice message", "sending", TeleSettingsActivity.MODE_SENDING, "Send audio files as voice messages"),
++            section(1298, "Convert audio to voice", "sending", TeleSettingsActivity.MODE_SENDING, "Send audio files as voice messages"),
+             section(1299, "Matroska video", "sending", TeleSettingsActivity.MODE_SENDING, "Send MKV files as videos"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 2dd46f286..c6b811ec4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -619,6 +619,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+         private val DESCRIPTIONS = mapOf(
+             "Send MKV files as videos" to "Only when the video track can be read; other files stay files.",
++            "Send audio files as voice messages" to "Adds it to the send menu of audio files and to audio messages.",
+             "Remove my messages" to "Adds it to chat menus: deletes all your messages there for everyone.",
+             "Show seconds in message times" to "Times read 14:03:21, and service messages show their time too.",
+             "Move chats instantly" to "Chats jump to their new place in the list without sliding.",
+@@ -931,6 +932,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Uploads"),
+                 toggle("Send photos in HD by default", TeleConfig.HD_PHOTOS),
+                 toggle("Send MKV files as videos", TeleConfig.SEND_MKV_AS_VIDEO),
++                toggle("Send audio files as voice messages", TeleConfig.AUDIO_AS_VOICE),
+                 toggle("Attach media above the field (beta)", TeleConfig.DOCKED_MEDIA),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Scheduled"),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 024914dbb..4c90ffedc 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -39,6 +39,7 @@
+     <string name="TeleEditedVersion">Edited</string>
+     <string name="TeleCurrentVersion">Current</string>
+     <string name="TeleSaveAsDraft">Save as draft</string>
++    <string name="TeleSendAsVoice">Send as voice message</string>
+     <string name="TeleSavedDrafts">Saved drafts</string>
+     <string name="TeleDraftSaved">Draft saved</string>
+     <string name="TeleDraftDeleted">Draft deleted</string>

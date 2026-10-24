@@ -1,0 +1,204 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:12:43 +0300
+Subject: [PATCH 168/172] feat: retry failed messages
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 11 ++++
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/MessageMenu.kt |  6 +-
+ .../src/main/java/tele/helpers/RetryFailed.kt | 64 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  3 +
+ .../src/main/res/values/strings_tele.xml      |  2 +
+ 7 files changed, 88 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/RetryFailed.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index b3f72b924..7fb0e1295 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1265,6 +1265,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_bookmark = 240;
+     public final static int tele_option_rename_bookmark = 241;
+     public final static int tele_option_audio_voice = 365;
++    public final static int tele_option_retry_all = 375;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -34348,6 +34349,15 @@ public class ChatActivity extends BaseFragment implements
+                 presentFragment(fragment);
+                 break;
+             }
++            case tele_option_retry_all: {
++                tele.helpers.RetryFailed.retryAll(this, messages, () -> {
++                    updateVisibleRows();
++                    if (chatMode == 0) {
++                        moveScrollToLastMessage(false);
++                    }
++                });
++                break;
++            }
+             case tele_option_mark_viewed: {
+                 tele.TeleHooks.forceMarkViewed(currentAccount, selectedObject);
+                 break;
+@@ -47727,6 +47737,7 @@ public class ChatActivity extends BaseFragment implements
+         tele.helpers.TeleShot.fillMenu(this, message, groupedMessages, items, icons, options);
+         tele.helpers.Bookmarks.fillMenu(this, message, items, icons, options);
+         tele.helpers.AudioVoice.fillMenu(this, message, items, icons, options);
++        tele.helpers.RetryFailed.fillMenu(type, messages, items, icons, options);
+         if (teleKeptMessage) {
+             if (!tele.helpers.DeletedReply.quoteMode()) {
+                 for (int i = options.size() - 1; i >= 0; i--) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 5d7c15516..c78e8afe8 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -229,6 +229,8 @@ object TeleConfig {
+     @JvmField
+     val DOUBLE_ENTER_SEND = BoolItem("double_enter_send", false)
+     @JvmField
++    val RETRY_ALL_FAILED = BoolItem("retry_all_failed", false)
++    @JvmField
+     val QUICK_REPLIES_IN_GROUPS = BoolItem("quick_replies_in_groups", false)
+     @JvmField
+     val KEEP_MEDIA_PAST_LIMIT = BoolItem("keep_media_past_limit", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index 37527a7b2..4411bec06 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -67,7 +67,8 @@ object MessageMenu {
+         Item(ChatActivity.tele_option_copy_alias, "Copy alias", "copy_alias", TeleConfig.USERNAME_ALIASES),
+         Item(ChatActivity.tele_option_delete_alias, "Delete alias", "delete_alias", TeleConfig.USERNAME_ALIASES),
+         Item(ChatActivity.tele_option_bookmark, "Bookmark", "bookmark", TeleConfig.BOOKMARKS),
+-        Item(ChatActivity.tele_option_rename_bookmark, "Rename bookmark", "rename_bookmark", TeleConfig.BOOKMARKS)
++        Item(ChatActivity.tele_option_rename_bookmark, "Rename bookmark", "rename_bookmark", TeleConfig.BOOKMARKS),
++        Item(ChatActivity.tele_option_retry_all, "Retry all failed", "retry_all_failed", TeleConfig.RETRY_ALL_FAILED)
+     )
+ 
+     private const val KEY = "message_menu_hidden"
+@@ -86,7 +87,8 @@ object MessageMenu {
+         ChatActivity.tele_option_copy_alias to TeleConfig.USERNAME_ALIASES,
+         ChatActivity.tele_option_delete_alias to TeleConfig.USERNAME_ALIASES,
+         ChatActivity.tele_option_bookmark to TeleConfig.BOOKMARKS,
+-        ChatActivity.tele_option_rename_bookmark to TeleConfig.BOOKMARKS
++        ChatActivity.tele_option_rename_bookmark to TeleConfig.BOOKMARKS,
++        ChatActivity.tele_option_retry_all to TeleConfig.RETRY_ALL_FAILED
+     )
+ 
+     private fun loadOrder(): Map<Int, Int> {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/RetryFailed.kt b/TMessagesProj/src/main/java/tele/helpers/RetryFailed.kt
+new file mode 100644
+index 000000000..7bf8fdfd7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/RetryFailed.kt
+@@ -0,0 +1,64 @@
++package tele.helpers
++
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.AlertsCreator
++import org.telegram.ui.Components.BulletinFactory
++import tele.TeleConfig
++
++/** "Retry all" for the failed messages of the chat, each one goes through the stock retry. */
++object RetryFailed {
++
++    private fun retryable(message: MessageObject): Boolean {
++        val owner = message.messageOwner ?: return false
++        return message.isOut
++            && owner.id < 0
++            && owner.send_state == MessageObject.MESSAGE_SEND_STATE_SEND_ERROR
++            && !message.scheduled
++            && owner.action !is TLRPC.TL_messageActionGramTransfer
++    }
++
++    // the oldest first, the local ids go down with the time
++    private fun collect(messages: List<MessageObject>): List<MessageObject> =
++        messages.filter { retryable(it) }.sortedWith(compareBy<MessageObject> { it.messageOwner.date }.thenByDescending { it.id })
++
++    @JvmStatic
++    fun fillMenu(type: Int, messages: List<MessageObject>, items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
++        if (!TeleConfig.RETRY_ALL_FAILED.value || (type != 0 && type != 20)) return
++        // a single failed message has the stock retry
++        if (collect(messages).size < 2) return
++        val at = options.indexOf(ChatActivity.OPTION_RETRY).let { if (it >= 0) it + 1 else options.size }
++        items.add(at, TeleLowercase.lc(LocaleController.getString(R.string.TeleRetryAllFailed)))
++        icons.add(at, R.drawable.msg_retry)
++        options.add(at, ChatActivity.tele_option_retry_all)
++    }
++
++    @JvmStatic
++    fun retryAll(chat: ChatActivity, messages: List<MessageObject>, done: Runnable) {
++        val failed = collect(messages)
++        if (failed.isEmpty()) return
++        val account = chat.currentAccount
++        AlertsCreator.ensurePaidMessageConfirmation(account, chat.dialogId, failed.size) { payStars ->
++            val helper = SendMessagesHelper.getInstance(account)
++            var attempted = 0
++            var started = 0
++            for (message in failed) {
++                // it may have been retried or deleted while the confirmation was open
++                if (!retryable(message)) continue
++                attempted++
++                if (helper.retrySendMessage(message, false, payStars)) started++
++            }
++            if (started > 0) done.run()
++            if (started < attempted) {
++                BulletinFactory.of(chat).createSimpleBulletin(
++                    R.raw.error,
++                    LocaleController.formatString(R.string.TeleRetryAllPartial, started, attempted)
++                ).show()
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index e5de46a66..410c1b566 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -161,6 +161,8 @@ object TeleSearch {
+             section(GUID_SENDING + 3, "Queue messages behind uploading media", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 4, "Send replies to older messages right away", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 5, "Send right away on double enter", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1305, "Retry all failed messages", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1306, "Resend failed messages", "sending", TeleSettingsActivity.MODE_SENDING, "Retry all failed messages"),
+             section(GUID_SENDING + 6, "Offer quick replies in groups", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1197, "Keep saved GIFs and favorite stickers past the limit", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1198, "Saved GIFs limit", "chats", TeleSettingsActivity.MODE_CHATS, "Keep saved GIFs and favorite stickers past the limit"),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index c6b811ec4..ae8939f3c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -696,6 +696,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Stickers" to "A second tap on the same sticker sends it.",
+             "GIFs" to "A second tap on the same GIF sends it.",
+             "Voice and video messages" to "Recordings stop in the preview instead of sending.",
++            "Retry all failed messages" to "Adds it to the menu of a failed message: sends them all again.",
+             "Offer quick replies in groups" to "Suggest quick replies after / in groups.",
+             "Forward protected messages as copies" to "Forward protected messages as fresh copies.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",
+@@ -952,6 +953,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Stickers", TeleConfig.CONFIRM_STICKERS),
+                 toggle("GIFs", TeleConfig.CONFIRM_GIFS),
+                 toggle("Voice and video messages", TeleConfig.CONFIRM_VOICE),
++                Row(TYPE_HEADER, "Failed messages"),
++                toggle("Retry all failed messages", TeleConfig.RETRY_ALL_FAILED),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Message field"),
+                 toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 4c90ffedc..d1a2229d3 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -131,4 +131,6 @@
+     <string name="TeleSendSilentlyStop">Stop sending silently</string>
+     <string name="TeleSilentMessage">Silent message</string>
+     <string name="TeleConfirmTapAgain">Tap again to send</string>
++    <string name="TeleRetryAllFailed">Retry all failed</string>
++    <string name="TeleRetryAllPartial">Retried %1$d of %2$d messages</string>
+ </resources>

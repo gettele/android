@@ -1,0 +1,385 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:23:35 +0300
+Subject: [PATCH 163/172] feat: confirm sticker, gif and voice sends
+
+---
+ .../ui/Components/ChatActivityEnterView.java  |  36 ++++
+ .../org/telegram/ui/Components/EmojiView.java |   7 +
+ .../ui/Components/MentionsContainerView.java  |   6 +
+ .../src/main/java/tele/TeleConfig.kt          |   8 +
+ .../main/java/tele/helpers/TeleSendConfirm.kt | 155 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  15 ++
+ .../src/main/res/values/strings_tele.xml      |   1 +
+ 8 files changed, 231 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleSendConfirm.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index f698fe411..487f2c67d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -3005,6 +3005,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                     if (recordCircle.isSendButtonVisible()) {
+                         if (!hasRecordVideo || calledRecordRunnable) {
+                             startedDraggingX = -1;
++                            if (teleConfirmVoicePreview()) {
++                                return true;
++                            }
+                             if (hasRecordVideo && isInVideoMode()) {
+                                 if (AlertsCreator.needsPaidMessageAlert(currentAccount, dialog_id)) {
+                                     if (slideText != null) {
+@@ -3127,6 +3130,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                             sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_CLICKED);
+                         } else if (!hasRecordVideo || calledRecordRunnable) {
+                             startedDraggingX = -1;
++                            if (teleConfirmVoicePreview()) {
++                                return true;
++                            }
+                             if (hasRecordVideo && isInVideoMode()) {
+                                 if (AlertsCreator.needsPaidMessageAlert(currentAccount, dialog_id)) {
+                                     if (slideText != null) {
+@@ -7161,6 +7167,35 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+     }
+ 
++    /** Confirm mode: a recording stops in the paused preview instead of being sent. */
++    private boolean teleConfirmVoicePreview() {
++        if (!tele.helpers.TeleSendConfirm.voice() || !recordingAudioVideo) {
++            return false;
++        }
++        if (hasRecordVideo && isInVideoMode()) {
++            if (delegate.isVideoRecordingPaused()) {
++                return false;
++            }
++            if (slideText != null) {
++                slideText.setEnabled(false);
++            }
++            delegate.toggleVideoRecordingPause();
++        } else {
++            if (!sendVoiceEnabled || MediaController.getInstance().isRecordingPaused()) {
++                return false;
++            }
++            if (sendButtonVisible) {
++                calledRecordRunnable = true;
++            }
++            MediaController.getInstance().toggleRecordingPause(voiceOnce);
++            delegate.needStartRecordAudio(0);
++            if (slideText != null) {
++                slideText.setEnabled(false);
++            }
++        }
++        return true;
++    }
++
+     /** kind: 0 send, 1 send without sound, 2 schedule; the draft goes once the field is empty. */
+     private void teleSendThrough(int kind, Utilities.Callback<Boolean> done) {
+         if (parentFragment == null) {
+@@ -12229,6 +12264,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 }
+             }
+         };
++        emojiView.tele_confirmSend = true;
+         emojiView.shouldDrawStickerSettings = true;
+         if (!shouldDrawBackground) {
+             emojiView.updateColors();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+index 4f46a0c53..f1c8741ba 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+@@ -251,6 +251,7 @@ public class EmojiView extends FrameLayout implements
+     private int gifFirstEmojiTabNum = -2;
+     private boolean shouldDrawBackground = true;
+     public boolean shouldDrawStickerSettings;
++    public boolean tele_confirmSend;
+     public boolean shouldLightenBackground = true;
+ 
+     private FrameLayout stickersContainer;
+@@ -2072,6 +2073,9 @@ public class EmojiView extends FrameLayout implements
+                     if (delegate == null) {
+                         return;
+                     }
++                    if (tele_confirmSend && !tele.helpers.TeleSendConfirm.gifTap(view)) {
++                        return;
++                    }
+                     if (gifAdapter.addSearch) {
+                         position--;
+                     }
+@@ -2352,6 +2356,9 @@ public class EmojiView extends FrameLayout implements
+                 if (cell.isDisabled()) {
+                     return;
+                 }
++                if (tele_confirmSend && !tele.helpers.TeleSendConfirm.stickerTap(cell)) {
++                    return;
++                }
+                 cell.disable();
+                 delegate.onStickerSelected(cell, cell.getSticker(), query, cell.getParentObject(), cell.getSendAnimationData(), true, 0, 0);
+             };
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
+index 1a68b7cfb..9b025fd30 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
+@@ -623,6 +623,9 @@ public class MentionsContainerView extends FrameLayout implements NotificationCe
+                 return;
+             }
+             if (object instanceof TLRPC.TL_document) {
++                if (!tele.helpers.TeleSendConfirm.suggestionTap(view)) {
++                    return;
++                }
+                 MessageObject.SendAnimationData sendAnimationData = null;
+                 if (view instanceof StickerCell) {
+                     sendAnimationData = ((StickerCell) view).getSendAnimationData();
+@@ -689,6 +692,9 @@ public class MentionsContainerView extends FrameLayout implements NotificationCe
+                     PhotoViewer.getInstance().setParentActivity(baseFragment, resourcesProvider);
+                     PhotoViewer.getInstance().openPhotoForSelect(arrayList, getAdapter().getItemPosition(position), 3, false, botContextProvider, null);
+                 } else {
++                    if (!tele.helpers.TeleSendConfirm.inlineTap(view, result)) {
++                        return;
++                    }
+                     delegate.sendBotInlineResult(result, true, 0);
+                 }
+             }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 3cddd6da2..ce3cd70fd 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -209,6 +209,14 @@ object TeleConfig {
+     @JvmField
+     val SILENT_PER_CHAT = BoolItem("silent_per_chat", false)
+     @JvmField
++    val CONFIRM_SEND = BoolItem("confirm_send", false)
++    @JvmField
++    val CONFIRM_STICKERS = BoolItem("confirm_stickers", false)
++    @JvmField
++    val CONFIRM_GIFS = BoolItem("confirm_gifs", false)
++    @JvmField
++    val CONFIRM_VOICE = BoolItem("confirm_voice", false)
++    @JvmField
+     val QUEUE_BEHIND_MEDIA = BoolItem("queue_behind_media", false)
+     @JvmField
+     val COPY_PROTECTED = BoolItem("copy_protected", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSendConfirm.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSendConfirm.kt
+new file mode 100644
+index 000000000..9b7fbf212
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSendConfirm.kt
+@@ -0,0 +1,155 @@
++package tele.helpers
++
++import android.graphics.Canvas
++import android.graphics.ColorFilter
++import android.graphics.Paint
++import android.graphics.PixelFormat
++import android.graphics.RectF
++import android.graphics.drawable.Drawable
++import android.view.View
++import androidx.core.graphics.ColorUtils
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.ContextLinkCell
++import org.telegram.ui.Cells.StickerCell
++import org.telegram.ui.Cells.StickerEmojiCell
++import org.telegram.ui.Components.Bulletin
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.LaunchActivity
++import tele.TeleConfig
++
++/**
++ * Confirm before sending: the first tap on a sticker or a GIF only selects it, the second tap on
++ * the same item within [TIMEOUT_MS] sends it. The callers return when [stickerTap] and the like say no.
++ */
++object TeleSendConfirm {
++
++    private const val TIMEOUT_MS = 5000L
++
++    private class Selection(val view: View, val key: Any) {
++        val highlight = Highlight(view, key)
++        val expire = Runnable { clear() }
++        val detach = object : View.OnAttachStateChangeListener {
++            override fun onViewAttachedToWindow(v: View) {}
++
++            // a recycled or scrolled-away cell can't keep the selection
++            override fun onViewDetachedFromWindow(v: View) {
++                if (current === this@Selection) {
++                    clear()
++                }
++            }
++        }
++        var bulletin: Bulletin? = null
++    }
++
++    private var current: Selection? = null
++
++    @JvmStatic
++    fun stickers(): Boolean = TeleConfig.CONFIRM_SEND.value && TeleConfig.CONFIRM_STICKERS.value
++
++    @JvmStatic
++    fun gifs(): Boolean = TeleConfig.CONFIRM_SEND.value && TeleConfig.CONFIRM_GIFS.value
++
++    @JvmStatic
++    fun voice(): Boolean = TeleConfig.CONFIRM_SEND.value && TeleConfig.CONFIRM_VOICE.value
++
++    // what the cell shows right now: a rebound cell no longer matches its selection
++    private fun keyOf(view: View): Any? = when (view) {
++        is StickerEmojiCell -> view.sticker
++        is StickerCell -> view.sticker
++        is ContextLinkCell -> view.document ?: view.result
++        else -> null
++    }
++
++    /** The sticker panel grid. */
++    @JvmStatic
++    fun stickerTap(view: View): Boolean = !stickers() || confirmed(view)
++
++    /** The sticker suggestions over the field. */
++    @JvmStatic
++    fun suggestionTap(view: View): Boolean = !stickers() || view !is StickerCell || confirmed(view)
++
++    /** The GIF panel grid. */
++    @JvmStatic
++    fun gifTap(view: View): Boolean = !gifs() || view !is ContextLinkCell || confirmed(view)
++
++    /** An inline bot result that is sent by the tap itself. */
++    @JvmStatic
++    fun inlineTap(view: View, result: TLRPC.BotInlineResult): Boolean {
++        val needed = when (result.type) {
++            "sticker" -> stickers()
++            "gif" -> gifs()
++            else -> false
++        }
++        return !needed || view !is ContextLinkCell || confirmed(view)
++    }
++
++    @JvmStatic
++    fun clear() {
++        val selection = current ?: return
++        current = null
++        AndroidUtilities.cancelRunOnUIThread(selection.expire)
++        selection.view.removeOnAttachStateChangeListener(selection.detach)
++        selection.view.overlay.remove(selection.highlight)
++        selection.bulletin?.hide()
++    }
++
++    private fun confirmed(view: View): Boolean {
++        val key = keyOf(view) ?: return true
++        val selection = current
++        if (selection != null && selection.view === view && selection.key === key) {
++            clear()
++            return true
++        }
++        select(view, key)
++        return false
++    }
++
++    private fun select(view: View, key: Any) {
++        clear()
++        val selection = Selection(view, key)
++        current = selection
++        view.addOnAttachStateChangeListener(selection.detach)
++        view.overlay.add(selection.highlight)
++        view.invalidate()
++        AndroidUtilities.runOnUIThread(selection.expire, TIMEOUT_MS)
++        LaunchActivity.getSafeLastFragment()?.let {
++            selection.bulletin = BulletinFactory.of(it)
++                .createSimpleBulletin(R.raw.info, LocaleController.getString(R.string.TeleConfirmTapAgain), 1, Bulletin.DURATION_SHORT)
++                .also { b -> b.show() }
++        }
++    }
++
++    private class Highlight(private val view: View, private val key: Any) : Drawable() {
++        private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
++        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
++            style = Paint.Style.STROKE
++            strokeWidth = AndroidUtilities.dpf2(2f)
++        }
++        private val rect = RectF()
++
++        override fun draw(canvas: Canvas) {
++            if (keyOf(view) !== key) {
++                return
++            }
++            val color = Theme.getColor(Theme.key_featuredStickers_addButton)
++            fill.color = ColorUtils.setAlphaComponent(color, 38)
++            stroke.color = color
++            val inset = stroke.strokeWidth / 2f
++            rect.set(inset, inset, view.width - inset, view.height - inset)
++            val radius = AndroidUtilities.dpf2(8f)
++            canvas.drawRoundRect(rect, radius, radius, fill)
++            canvas.drawRoundRect(rect, radius, radius, stroke)
++        }
++
++        override fun setAlpha(alpha: Int) {}
++
++        override fun setColorFilter(colorFilter: ColorFilter?) {}
++
++        @Deprecated("Deprecated in Java")
++        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index b68138bad..ab2f722d2 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -236,6 +236,9 @@ object TeleSearch {
+             section(1289, "Remove a chat background for me", "chats", TeleSettingsActivity.MODE_CHATS, "Backgrounds only for you"),
+             section(1290, "Send silently by default", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1291, "Choose silent sending per chat", "sending", TeleSettingsActivity.MODE_SENDING, "Choose per chat"),
++            section(1292, "Confirm before sending", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1293, "Confirm stickers and GIFs", "sending", TeleSettingsActivity.MODE_SENDING, "Stickers"),
++            section(1294, "Confirm voice and video messages", "sending", TeleSettingsActivity.MODE_SENDING, "Voice and video messages"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index a38ce8461..9937929de 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -549,6 +549,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.SEND_OLDER_REPLIES.key,
+                 TeleConfig.DOUBLE_ENTER_SEND.key
+             ),
++            TeleConfig.CONFIRM_SEND.key to listOf(
++                TeleConfig.CONFIRM_STICKERS.key,
++                TeleConfig.CONFIRM_GIFS.key,
++                TeleConfig.CONFIRM_VOICE.key
++            ),
+             TeleConfig.HIDE_COUNTERS.key to listOf(
+                 TeleConfig.HIDE_FOLDER_COUNTERS.key,
+                 TeleConfig.HIDE_APP_COUNTER.key,
+@@ -685,6 +690,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Send right away on double enter" to "Press Enter twice to send a queued message now.",
+             "Send silently by default" to "Messages go out without a notification; the send menu offers sound.",
+             "Choose per chat" to "Adds \"Send silently\" to the chat menu.",
++            "Confirm before sending" to "Tap again to send stickers and GIFs; recordings wait in the preview.",
++            "Stickers" to "A second tap on the same sticker sends it.",
++            "GIFs" to "A second tap on the same GIF sends it.",
++            "Voice and video messages" to "Recordings stop in the preview instead of sending.",
+             "Offer quick replies in groups" to "Suggest quick replies after / in groups.",
+             "Forward protected messages as copies" to "Forward protected messages as fresh copies.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",
+@@ -934,6 +943,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Send silently by default", TeleConfig.SILENT_BY_DEFAULT),
+                 toggle("Choose per chat", TeleConfig.SILENT_PER_CHAT),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Confirmations"),
++                toggle("Confirm before sending", TeleConfig.CONFIRM_SEND),
++                toggle("Stickers", TeleConfig.CONFIRM_STICKERS),
++                toggle("GIFs", TeleConfig.CONFIRM_GIFS),
++                toggle("Voice and video messages", TeleConfig.CONFIRM_VOICE),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Message field"),
+                 toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+                 toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index f756858c1..024914dbb 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -129,4 +129,5 @@
+     <string name="TeleSendSilently">Send silently</string>
+     <string name="TeleSendSilentlyStop">Stop sending silently</string>
+     <string name="TeleSilentMessage">Silent message</string>
++    <string name="TeleConfirmTapAgain">Tap again to send</string>
+ </resources>

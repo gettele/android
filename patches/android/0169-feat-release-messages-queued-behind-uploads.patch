@@ -1,0 +1,228 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:07:47 +0300
+Subject: [PATCH 169/172] feat: release messages queued behind uploads
+
+---
+ .../telegram/ui/Cells/ChatMessageCell.java    |  3 ++
+ .../java/org/telegram/ui/ChatActivity.java    | 21 ++++++++
+ .../src/main/java/tele/helpers/MessageMenu.kt |  6 ++-
+ .../src/main/java/tele/helpers/SendOrder.kt   | 53 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  3 ++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +-
+ .../src/main/res/values/strings_tele.xml      |  2 +
+ 7 files changed, 87 insertions(+), 3 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index d4a686e1e..061a4355b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -18584,6 +18584,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         if (teleKeptDeleted && tele.helpers.DeletedMessages.textMarker() && !currentMessageObject.notime) {
+             currentTimeString = TextUtils.concat(tele.helpers.DeletedMessages.markerText(), "  ", currentTimeString);
+         }
++        if (currentMessageObject.isSending() && tele.helpers.SendOrder.isHeld(currentAccount, currentMessageObject.getDialogId(), currentMessageObject.getId()) && !currentMessageObject.notime) {
++            currentTimeString = TextUtils.concat(tele.helpers.SendOrder.heldMarker(), "  ", currentTimeString);
++        }
+         if (teleBookmarked && currentTimeString != null && !currentMessageObject.notime) {
+             currentTimeString = tele.helpers.Bookmarks.timeWithIcon(currentTimeString);
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 7fb0e1295..8fe6c8c9b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1266,6 +1266,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_rename_bookmark = 241;
+     public final static int tele_option_audio_voice = 365;
+     public final static int tele_option_retry_all = 375;
++    public final static int tele_option_send_held_now = 380;
+     public final static int OPTION_ABOUT_REVENUE_SHARING_ADS = 33;
+     public final static int OPTION_REPORT_AD = 34;
+     public final static int OPTION_REMOVE_ADS = 35;
+@@ -1839,6 +1840,17 @@ public class ChatActivity extends BaseFragment implements
+         }
+     }
+ 
++    public void tele_heldChanged(int messageId) {
++        final MessageObject object = messagesDict[0].get(messageId);
++        if (object != null && chatAdapter != null) {
++            final int index = messages.indexOf(object);
++            if (index >= 0) {
++                object.forceUpdate = true;
++                chatAdapter.updateRowAtPosition(chatAdapter.messagesStartRow + index);
++            }
++        }
++    }
++
+     public void teleBookmarksChanged(int messageId) {
+         final MessageObject object = messagesDict[0].get(messageId);
+         if (object != null && chatAdapter != null) {
+@@ -34362,6 +34374,10 @@ public class ChatActivity extends BaseFragment implements
+                 tele.TeleHooks.forceMarkViewed(currentAccount, selectedObject);
+                 break;
+             }
++            case tele_option_send_held_now: {
++                tele.helpers.SendOrder.releaseNow(currentAccount, dialog_id, selectedObject.getId());
++                break;
++            }
+             case tele_option_read: {
+                 // the ghost read option keeps the read receipts away, so the message is only marked read locally
+                 getMessagesController().markDialogAsRead(dialog_id, selectedObject.getId(), 0, 0, false, getTopicId(), 0, false, 0);
+@@ -47183,6 +47199,11 @@ public class ChatActivity extends BaseFragment implements
+                 options.add(OPTION_COPY);
+                 icons.add(R.drawable.msg_copy);
+             }
++            if (tele.helpers.SendOrder.isHeld(currentAccount, dialog_id, selectedObject.getId())) {
++                items.add(LocaleController.getString(R.string.TeleSendQueuedNow));
++                options.add(tele_option_send_held_now);
++                icons.add(R.drawable.msg_send);
++            }
+             items.add(LocaleController.getString(R.string.CancelSending));
+             options.add(OPTION_CANCEL_SENDING);
+             icons.add(R.drawable.msg_delete);
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index 4411bec06..dba82e883 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -68,7 +68,8 @@ object MessageMenu {
+         Item(ChatActivity.tele_option_delete_alias, "Delete alias", "delete_alias", TeleConfig.USERNAME_ALIASES),
+         Item(ChatActivity.tele_option_bookmark, "Bookmark", "bookmark", TeleConfig.BOOKMARKS),
+         Item(ChatActivity.tele_option_rename_bookmark, "Rename bookmark", "rename_bookmark", TeleConfig.BOOKMARKS),
+-        Item(ChatActivity.tele_option_retry_all, "Retry all failed", "retry_all_failed", TeleConfig.RETRY_ALL_FAILED)
++        Item(ChatActivity.tele_option_retry_all, "Retry all failed", "retry_all_failed", TeleConfig.RETRY_ALL_FAILED),
++        Item(ChatActivity.tele_option_send_held_now, "Send queued message now", "send_held_now", TeleConfig.QUEUE_BEHIND_MEDIA)
+     )
+ 
+     private const val KEY = "message_menu_hidden"
+@@ -88,7 +89,8 @@ object MessageMenu {
+         ChatActivity.tele_option_delete_alias to TeleConfig.USERNAME_ALIASES,
+         ChatActivity.tele_option_bookmark to TeleConfig.BOOKMARKS,
+         ChatActivity.tele_option_rename_bookmark to TeleConfig.BOOKMARKS,
+-        ChatActivity.tele_option_retry_all to TeleConfig.RETRY_ALL_FAILED
++        ChatActivity.tele_option_retry_all to TeleConfig.RETRY_ALL_FAILED,
++        ChatActivity.tele_option_send_held_now to TeleConfig.QUEUE_BEHIND_MEDIA
+     )
+ 
+     private fun loadOrder(): Map<Int, Int> {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+index e4b0f82c6..9e925734f 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/SendOrder.kt
+@@ -3,8 +3,13 @@ package tele.helpers
+ import android.os.Handler
+ import android.os.Looper
+ import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
+ import org.telegram.messenger.SendMessagesHelper
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.LaunchActivity
+ 
+ object SendOrder : NotificationCenter.NotificationCenterDelegate {
+ 
+@@ -55,10 +60,55 @@ object SendOrder : NotificationCenter.NotificationCenterDelegate {
+                 Held(account, dialogId, msgId, replyMsgId, System.currentTimeMillis(), send)
+             )
+         }
++        notifyChanged(account, dialogId, listOf(msgId))
+         scheduleRecheck()
+         return true
+     }
+ 
++    /** The message waits in the queue, its bubble shows it. */
++    @JvmStatic
++    fun isHeld(account: Int, dialogId: Long, msgId: Int): Boolean {
++        if (!tele.TeleConfig.QUEUE_BEHIND_MEDIA.value) return false
++        synchronized(held) {
++            val list = held[account]?.get(dialogId) ?: return false
++            return list.any { it.msgId == msgId && !it.cancelled }
++        }
++    }
++
++    @JvmStatic
++    fun heldMarker(): CharSequence = LocaleController.getString(R.string.TeleQueuedMarker)
++
++    /** Sends the message now, the upload it waits for keeps going. */
++    @JvmStatic
++    fun releaseNow(account: Int, dialogId: Long, msgId: Int) {
++        val taken = ArrayList<Held>()
++        synchronized(held) {
++            val dialogs = held[account] ?: return
++            val list = dialogs[dialogId] ?: return
++            val it = list.iterator()
++            while (it.hasNext()) {
++                val entry = it.next()
++                if (entry.msgId == msgId && !entry.cancelled) {
++                    taken.add(entry)
++                    it.remove()
++                }
++            }
++            if (list.isEmpty()) dialogs.remove(dialogId)
++            if (dialogs.isEmpty()) held.remove(account)
++        }
++        dispatch(taken)
++    }
++
++    private fun notifyChanged(account: Int, dialogId: Long, msgIds: List<Int>) {
++        if (msgIds.isEmpty()) return
++        handler.post {
++            val fragment: BaseFragment = LaunchActivity.getSafeLastFragment() ?: return@post
++            if (fragment is ChatActivity && fragment.currentAccount == account && fragment.dialogId == dialogId) {
++                for (id in msgIds) fragment.tele_heldChanged(id)
++            }
++        }
++    }
++
+     @JvmStatic
+     fun sendHeldOnDoubleEnter(account: Int, dialogId: Long, fieldEmpty: Boolean): Boolean {
+         val now = System.currentTimeMillis()
+@@ -137,6 +187,9 @@ object SendOrder : NotificationCenter.NotificationCenterDelegate {
+         } finally {
+             releasing = false
+         }
++        for (entry in taken) {
++            notifyChanged(entry.account, entry.dialogId, listOf(entry.msgId))
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 410c1b566..753682071 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -230,6 +230,9 @@ object TeleSearch {
+             section(1277, "Round bubble corners", "messages", TeleSettingsActivity.MODE_MESSAGES, "Hide bubble tails"),
+             section(1278, "Badges in forwarded and reply headers", "chats", TeleSettingsActivity.MODE_CHATS, "Badges next to names in messages"),
+             section(1279, "Checkmarks on forwards and replies", "chats", TeleSettingsActivity.MODE_CHATS, "Badges next to names in messages"),
++            section(1310, "Send a queued message now", "sending", TeleSettingsActivity.MODE_SENDING, "Queue messages behind uploading media"),
++            section(1311, "Release queued messages", "sending", TeleSettingsActivity.MODE_SENDING, "Queue messages behind uploading media"),
++            section(1312, "Queued messages marker", "sending", TeleSettingsActivity.MODE_SENDING, "Queue messages behind uploading media"),
+             section(GUID_LOWERCASE, "Lowercase everything", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1285, "Backgrounds only for you", "chats", TeleSettingsActivity.MODE_CHATS),
+             screen(1286, "Chat backgrounds") { TeleChatBackgroundsActivity() },
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index ae8939f3c..04109bc54 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -687,7 +687,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Send photos in HD by default" to "Send photos in full quality.",
+             "Attach media above the field (beta)" to "Picked photos and videos wait above the field.",
+             "Send scheduled messages on time" to "Send due scheduled messages while tele runs.",
+-            "Queue messages behind uploading media" to "Text waits for the media being uploaded.",
++            "Queue messages behind uploading media" to "Text waits for the media being uploaded. Send it early from its menu.",
+             "Send replies to older messages right away" to "Replies to older messages skip the queue.",
+             "Send right away on double enter" to "Press Enter twice to send a queued message now.",
+             "Send silently by default" to "Messages go out without a notification; the send menu offers sound.",
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index d1a2229d3..2bb570489 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -133,4 +133,6 @@
+     <string name="TeleConfirmTapAgain">Tap again to send</string>
+     <string name="TeleRetryAllFailed">Retry all failed</string>
+     <string name="TeleRetryAllPartial">Retried %1$d of %2$d messages</string>
++    <string name="TeleQueuedMarker">queued</string>
++    <string name="TeleSendQueuedNow">Send now</string>
+ </resources>

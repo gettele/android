@@ -1,0 +1,190 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:09:49 +0300
+Subject: [PATCH 170/172] feat: forward messages one by one
+
+---
+ .../messenger/SendMessagesHelper.java         |  5 +-
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../main/java/tele/helpers/ForwardSplit.kt    | 95 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 5 files changed, 103 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index a599512a7..3e2f80015 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -2747,7 +2747,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     }
+                 }
+ 
+-                if (arr.size() == 100 || a == messages.size() - 1 || a != messages.size() - 1 && messages.get(a + 1).getDialogId() != msgObj.getDialogId()) {
++                if (arr.size() == 100 || a == messages.size() - 1 || a != messages.size() - 1 && messages.get(a + 1).getDialogId() != msgObj.getDialogId() || tele.helpers.ForwardSplit.after(messages, a, arr.size(), scheduleDate)) {
+                     getMessagesStorage().putMessages(new ArrayList<>(arr), false, true, false, 0, scheduleDate != 0 ? 1 : 0, 0);
+                     getMessagesController().updateInterfaceWithMessages(peer, objArr, scheduleDate != 0 ? 1 : 0);
+                     getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
+@@ -2807,6 +2807,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     final boolean scheduledOnline = scheduleDate == 0x7FFFFFFE;
+                     final Runnable send = () -> {
+                         getConnectionsManager().sendRequest(req, (response, error) -> {
++                            if (tele.helpers.ForwardSplit.onResult(currentAccount, peer, req, error)) return;
+                             if (error == null) {
+                                 SparseLongArray newMessagesByIds = new SparseLongArray();
+                                 TLRPC.Updates updates = (TLRPC.Updates) response;
+@@ -2989,7 +2990,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     };
+ 
+                     if (StarsController.getInstance(currentAccount).beforeSendingFinalRequest(req, newMsgArr, send2)) {
+-                        send2.run();
++                        if (!tele.helpers.ForwardSplit.enqueue(currentAccount, peer, scheduleDate, req, send2)) send2.run();
+                     }
+ 
+                     if (a != messages.size() - 1) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index c78e8afe8..2d487a5d6 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -225,6 +225,8 @@ object TeleConfig {
+     @JvmField
+     val COPY_PROTECTED = BoolItem("copy_protected", false)
+     @JvmField
++    val FORWARD_ONE_BY_ONE = BoolItem("forward_one_by_one", false)
++    @JvmField
+     val SEND_OLDER_REPLIES = BoolItem("send_older_replies", false)
+     @JvmField
+     val DOUBLE_ENTER_SEND = BoolItem("double_enter_send", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt b/TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt
+new file mode 100644
+index 000000000..6fa6d0f44
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ForwardSplit.kt
+@@ -0,0 +1,95 @@
++package tele.helpers
++
++import android.os.Handler
++import android.os.Looper
++import org.telegram.messenger.MessageObject
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++// forward one by one: split points between requests, and a per-chat runner that waits out flood limits
++object ForwardSplit {
++
++    private const val MAX_FLOOD_WAIT = 300
++    private const val MAX_RETRIES = 3
++
++    private class Entry(val req: TLObject, val run: Runnable) {
++        var retries = 0
++    }
++
++    // account -> dialog -> requests of the forward in flight, head is the one on the wire
++    private val queues = HashMap<Int, HashMap<Long, ArrayDeque<Entry>>>()
++    private val handler = Handler(Looper.getMainLooper())
++
++    // true when the request has to go out right after messages[index]
++    @JvmStatic
++    fun after(messages: List<MessageObject>, index: Int, pending: Int, scheduleDate: Int): Boolean {
++        if (!TeleConfig.FORWARD_ONE_BY_ONE.value || scheduleDate != 0) {
++            return false
++        }
++        val next = messages.getOrNull(index + 1) ?: return false
++        val group = messages[index].messageOwner?.grouped_id ?: 0L
++        // albums stay in one request
++        return group == 0L || group != (next.messageOwner?.grouped_id ?: 0L)
++    }
++
++    // false: the caller sends right away, as stock does
++    @JvmStatic
++    fun enqueue(account: Int, dialogId: Long, scheduleDate: Int, req: TLObject, run: Runnable): Boolean {
++        if (!TeleConfig.FORWARD_ONE_BY_ONE.value || scheduleDate != 0) {
++            return false
++        }
++        val start: Boolean
++        synchronized(queues) {
++            val queue = queues.getOrPut(account) { HashMap() }.getOrPut(dialogId) { ArrayDeque() }
++            queue.addLast(Entry(req, run))
++            start = queue.size == 1
++        }
++        if (start) {
++            run.run()
++        }
++        return true
++    }
++
++    // network thread; true: the request is sent again after a flood wait, skip the stock handling
++    @JvmStatic
++    fun onResult(account: Int, dialogId: Long, req: TLObject, error: TLRPC.TL_error?): Boolean {
++        var retry: Entry? = null
++        var next: Entry? = null
++        var delay = 0L
++        synchronized(queues) {
++            val byDialog = queues[account] ?: return false
++            val queue = byDialog[dialogId] ?: return false
++            val head = queue.firstOrNull()
++            if (head == null || head.req !== req) {
++                return false
++            }
++            val wait = floodWait(error)
++            if (wait in 1..MAX_FLOOD_WAIT && head.retries < MAX_RETRIES) {
++                head.retries++
++                retry = head
++                delay = (wait + 1) * 1000L
++            } else {
++                queue.removeFirst()
++                next = queue.firstOrNull()
++                if (queue.isEmpty()) {
++                    byDialog.remove(dialogId)
++                    if (byDialog.isEmpty()) {
++                        queues.remove(account)
++                    }
++                }
++            }
++        }
++        retry?.let {
++            handler.postDelayed(it.run, delay)
++            return true
++        }
++        next?.let { handler.post(it.run) }
++        return false
++    }
++
++    private fun floodWait(error: TLRPC.TL_error?): Int {
++        val text = error?.text ?: return 0
++        return if (text.startsWith("FLOOD_WAIT_")) text.substring("FLOOD_WAIT_".length).toIntOrNull() ?: 0 else 0
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 753682071..5421b8b41 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -249,6 +249,7 @@ object TeleSearch {
+             section(1297, "Send as a voice message", "sending", TeleSettingsActivity.MODE_SENDING, "Send audio files as voice messages"),
+             section(1298, "Convert audio to voice", "sending", TeleSettingsActivity.MODE_SENDING, "Send audio files as voice messages"),
+             section(1299, "Matroska video", "sending", TeleSettingsActivity.MODE_SENDING, "Send MKV files as videos"),
++            section(1300, "Forward messages one by one", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 04109bc54..faafc060c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -699,6 +699,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Retry all failed messages" to "Adds it to the menu of a failed message: sends them all again.",
+             "Offer quick replies in groups" to "Suggest quick replies after / in groups.",
+             "Forward protected messages as copies" to "Forward protected messages as fresh copies.",
++            "Forward messages one by one" to "Albums stay together; many at once can hit rate limits.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",
+             "Preview calcmula results while typing" to "Show the result above the field as you type.",
+             "Hide the gift button in the message field" to "Hide the gift button in the field and in channels.",
+@@ -963,6 +964,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Forwarding"),
+                 toggle("Forward protected messages as copies", TeleConfig.COPY_PROTECTED),
++                toggle("Forward messages one by one", TeleConfig.FORWARD_ONE_BY_ONE),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_NOTIFICATIONS -> listOf(

@@ -1,0 +1,487 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:20:32 +0300
+Subject: [PATCH 162/172] feat: send silently by default
+
+---
+ .../messenger/SendMessagesHelper.java         |  10 +-
+ .../java/org/telegram/ui/ChatActivity.java    |  25 ++++
+ .../ui/Components/ChatActivityEnterView.java  |  44 +++++--
+ .../ui/Components/ChatAttachAlert.java        |  13 ++-
+ .../java/org/telegram/ui/PhotoViewer.java     |  10 +-
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   4 +
+ .../src/main/java/tele/helpers/TeleSilent.kt  | 107 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   6 +
+ .../src/main/res/values/strings_tele.xml      |   4 +
+ 11 files changed, 211 insertions(+), 18 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index b40fcb536..04d97cd93 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -2755,7 +2755,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+ 
+                     final TLRPC.TL_messages_forwardMessages req = new TLRPC.TL_messages_forwardMessages();
+                     req.to_peer = inputPeer;
+-                    req.silent = !notify || MessagesController.getNotificationsSettings(currentAccount).getBoolean("silent_" + peer, false);
++                    req.silent = !notify || tele.helpers.TeleSilent.isSilent(currentAccount, peer);
+                     if (replyToTopMsg != null) {
+                         req.top_msg_id = replyToTopMsg.getId();
+                         req.flags |= 512;
+@@ -4426,11 +4426,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         TLRPC.TL_messages_sendMedia request = new TLRPC.TL_messages_sendMedia();
+         request.peer = peer;
+         if (request.peer instanceof TLRPC.TL_inputPeerChannel) {
+-            request.silent = MessagesController.getNotificationsSettings(currentAccount).getBoolean("silent_" + -peer.channel_id, false);
++            request.silent = tele.helpers.TeleSilent.isSilent(currentAccount, -peer.channel_id);
+         } else if (request.peer instanceof TLRPC.TL_inputPeerChat) {
+-            request.silent = MessagesController.getNotificationsSettings(currentAccount).getBoolean("silent_" + -peer.chat_id, false);
++            request.silent = tele.helpers.TeleSilent.isSilent(currentAccount, -peer.chat_id);
+         } else {
+-            request.silent = MessagesController.getNotificationsSettings(currentAccount).getBoolean("silent_" + peer.user_id, false);
++            request.silent = tele.helpers.TeleSilent.isSilent(currentAccount, peer.user_id);
+         }
+         request.random_id = random_id != 0 ? random_id : getNextRandomId();
+         request.message = "";
+@@ -5064,7 +5064,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 }
+                 getUserConfig().saveConfig(false);
+             }
+-            newMsg.silent = !notify || MessagesController.getNotificationsSettings(currentAccount).getBoolean("silent_" + peer, false);
++            newMsg.silent = !notify || tele.helpers.TeleSilent.isSilent(currentAccount, peer);
+             if (newMsg.random_id == 0) {
+                 newMsg.random_id = getNextRandomId();
+             }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 39905f46e..3786f1a88 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1735,6 +1735,7 @@ public class ChatActivity extends BaseFragment implements
+     private final static int tele_action_bookmarks = 134;
+     private final static int tele_action_jump_first = 320;
+     private final static int tele_action_chat_background = 355;
++    private final static int tele_action_silent = 360;
+ 
+     private final static int id_chat_compose_panel = 1000;
+ 
+@@ -3899,6 +3900,9 @@ public class ChatActivity extends BaseFragment implements
+                     jumpToDate(86400);
+                 } else if (id == tele_action_chat_background) {
+                     tele.helpers.LocalBackgrounds.showMenu(ChatActivity.this, dialog_id);
++                } else if (id == tele_action_silent) {
++                    tele.helpers.TeleSilent.setSilent(currentAccount, dialog_id, !tele.helpers.TeleSilent.inChat(currentAccount, dialog_id));
++                    teleRefreshSilent();
+                 } else if (id == copy) {
+                     SpannableStringBuilder str = new SpannableStringBuilder();
+                     long previousUid = 0;
+@@ -4659,6 +4663,10 @@ public class ChatActivity extends BaseFragment implements
+             if (tele.TeleConfig.LOCAL_CHAT_BACKGROUNDS.getValue() && chatMode == 0 && themeDelegate.isThemeChangeAvailable(false) && (isTopic || threadMessageId == 0)) {
+                 headerItem.lazilyAddSubItem(tele_action_chat_background, R.drawable.msg_background, getString(R.string.TeleBackgroundForMe));
+             }
++            if (tele.helpers.TeleSilent.enabled() && chatMode == 0 && currentEncryptedChat == null && (currentUser == null || !currentUser.self) && !ChatObject.isChannelAndNotMegaGroup(currentChat) && (currentChat == null || ChatObject.canSendMessages(currentChat))) {
++                teleSilentItem = headerItem.lazilyAddSubItem(tele_action_silent, R.drawable.msg_mute, getString(R.string.TeleSendSilently));
++                teleUpdateSilentItem();
++            }
+             if (tele.TeleConfig.BOOKMARKS.getValue() && currentEncryptedChat == null) {
+                 headerItem.lazilyAddSubItem(tele_action_bookmarks, R.drawable.msg_saved, getString(R.string.TeleBookmarks));
+                 headerItem.hideSubItem(tele_action_bookmarks);
+@@ -30627,6 +30635,22 @@ public class ChatActivity extends BaseFragment implements
+ 
+     Bulletin.Delegate bulletinDelegate;
+     private int teleUiRevision;
++    private ActionBarMenuItem.Item teleSilentItem;
++
++    private void teleUpdateSilentItem() {
++        if (teleSilentItem != null) {
++            final boolean silent = tele.helpers.TeleSilent.inChat(currentAccount, dialog_id);
++            teleSilentItem.setText(getString(silent ? R.string.TeleSendSilentlyStop : R.string.TeleSendSilently));
++            teleSilentItem.setIcon(silent ? R.drawable.msg_unmute : R.drawable.msg_mute);
++        }
++    }
++
++    private void teleRefreshSilent() {
++        teleUpdateSilentItem();
++        if (chatActivityEnterView != null) {
++            chatActivityEnterView.tele_refreshSilent();
++        }
++    }
+ 
+     @Override
+     public void onResume() {
+@@ -30637,6 +30661,7 @@ public class ChatActivity extends BaseFragment implements
+         if (teleUiRevision != tele.TeleHooks.uiRevision()) {
+             // the fork settings changed the way the cells are drawn, so they have to be rebound
+             teleUiRevision = tele.TeleHooks.uiRevision();
++            teleRefreshSilent();
+             if (chatAdapter != null) {
+                 chatAdapter.notifyDataSetChanged();
+             }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index b9abd99c2..f698fe411 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -2822,6 +2822,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                         notifySilentDrawable.setCrossOut(silent, true);
+                         notifyButton.setImageDrawable(notifySilentDrawable);
+                         MessagesController.getNotificationsSettings(currentAccount).edit().putBoolean("silent_" + dialog_id, silent).commit();
++                        tele.helpers.TeleSilent.onToggled(currentAccount, dialog_id, silent);
+                         NotificationsController.getInstance(currentAccount).updateServerNotificationsSettings(dialog_id, fragment == null ? 0 : fragment.getTopicId());
+                         UndoView undoView = fragment.getUndoView();
+                         if (undoView != null) {
+@@ -4859,13 +4860,14 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 }
+                 if (sendWithoutSoundButtonValue) {
+                     ActionBarMenuSubItem sendWithoutSoundButton = new ActionBarMenuSubItem(getContext(), !scheduleButtonValue, true, resourcesProvider);
+-                    sendWithoutSoundButton.setTextAndIcon(LocaleController.getString(R.string.SendWithoutSound), R.drawable.input_notify_off);
++                    sendWithoutSoundButton.setTextAndIcon(teleSoundText(), teleSoundIcon());
++                    teleSendSoundItem = sendWithoutSoundButton;
+                     sendWithoutSoundButton.setMinimumWidth(dp(196));
+                     sendWithoutSoundButton.setOnClickListener(v -> {
+                         if (sendPopupWindow != null && sendPopupWindow.isShowing()) {
+                             sendPopupWindow.dismiss();
+                         }
+-                        sendMessageInternal(false, 0, 0, 0, true);
++                        sendMessageInternal(teleNotifyForMenu(), 0, 0, 0, true);
+                     });
+                     sendPopupLayout.addView(sendWithoutSoundButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, DEFAULT_HEIGHT));
+                 }
+@@ -5224,9 +5226,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+ 
+         if (sendWithoutSoundButtonValue) {
+-            options.add(R.drawable.input_notify_off, getString(R.string.SendWithoutSound), () -> {
++            options.add(teleSoundIcon(), teleSoundText(), () -> {
+                 sentFromPreview = System.currentTimeMillis();
+-                final boolean shownDialog = sendMessageInternal(false, 0, 0, 0, true);
++                final boolean shownDialog = sendMessageInternal(teleNotifyForMenu(), 0, 0, 0, true);
+                 if (!containsSendMessage && messageSendPreview != null) {
+                     messageSendPreview.dismiss(!shownDialog);
+                     messageSendPreview = null;
+@@ -7028,7 +7030,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                         messageEditText.setHintText(getString("ChannelBroadcast", R.string.ChannelBroadcast), animated);
+                     }
+                 } else {
+-                    messageEditText.setHintText(getString(R.string.TypeMessage));
++                    messageEditText.setHintText(tele.helpers.TeleSilent.typeHint(currentAccount, dialog_id, getString(R.string.TypeMessage)));
+                 }
+             }
+         }
+@@ -7131,6 +7133,34 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+     }
+ 
++    private ActionBarMenuSubItem teleSendSoundItem;
++
++    private int teleSoundIcon() {
++        return tele.helpers.TeleSilent.menuSound(currentAccount, dialog_id) ? R.drawable.input_notify_on : R.drawable.input_notify_off;
++    }
++
++    private String teleSoundText() {
++        return getString(tele.helpers.TeleSilent.menuSound(currentAccount, dialog_id) ? R.string.TeleSendWithSound : R.string.SendWithoutSound);
++    }
++
++    /** The notify flag of the "send without sound" entry; in a silent chat the entry sends with sound. */
++    private boolean teleNotifyForMenu() {
++        final boolean sound = tele.helpers.TeleSilent.menuSound(currentAccount, dialog_id);
++        if (sound) {
++            tele.helpers.TeleSilent.armSound(currentAccount, dialog_id);
++        }
++        return sound;
++    }
++
++    /** The silent state may change outside the chat: the bell and the field hint follow it. */
++    public void tele_refreshSilent() {
++        updateScheduleButton(false);
++        updateFieldHint(false);
++        if (teleSendSoundItem != null) {
++            teleSendSoundItem.setTextAndIcon(teleSoundText(), teleSoundIcon());
++        }
++    }
++
+     /** kind: 0 send, 1 send without sound, 2 schedule; the draft goes once the field is empty. */
+     private void teleSendThrough(int kind, Utilities.Callback<Boolean> done) {
+         if (parentFragment == null) {
+@@ -7599,7 +7629,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+             if (parentFragment != null) {
+                 TLRPC.Chat chat = parentFragment.getCurrentChat();
+                 TLRPC.User user = parentFragment.getCurrentUser();
+-                if (user != null || ChatObject.isChannel(chat) && chat.megagroup || !ChatObject.isChannel(chat)) {
++                if (!tele.helpers.TeleSilent.enabled() && (user != null || ChatObject.isChannel(chat) && chat.megagroup || !ChatObject.isChannel(chat))) {
+                     MessagesController.getNotificationsSettings(currentAccount).edit().putBoolean("silent_" + dialog_id, !notify).commit();
+                 }
+             }
+@@ -11420,7 +11450,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+         boolean notifyVisible = false;
+         if (DialogObject.isChatDialog(dialog_id)) {
+             TLRPC.Chat currentChat = accountInstance.getMessagesController().getChat(-dialog_id);
+-            silent = MessagesController.getNotificationsSettings(currentAccount).getBoolean("silent_" + dialog_id, false);
++            silent = tele.helpers.TeleSilent.inChat(currentAccount, dialog_id);
+             canWriteToChannel = ChatObject.isChannel(currentChat) && (currentChat.creator || currentChat.admin_rights != null && currentChat.admin_rights.post_messages) && !currentChat.megagroup;
+             if (notifyButton != null) {
+                 notifyVisible = canWriteToChannel;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index e7a870a26..76f384eef 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -4029,14 +4029,19 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+                 });
+             }
+             if (editingMessageObject == null && !self) {
+-                options.add(R.drawable.input_notify_off, getString(R.string.SendWithoutSound), () -> {
++                final long teleDialogId = dialogId;
++                final boolean teleSound = tele.helpers.TeleSilent.menuSound(currentAccount, teleDialogId);
++                options.add(teleSound ? R.drawable.input_notify_on : R.drawable.input_notify_off, getString(teleSound ? R.string.TeleSendWithSound : R.string.SendWithoutSound), () -> {
++                    if (teleSound) {
++                        tele.helpers.TeleSilent.armSound(currentAccount, teleDialogId);
++                    }
+                     final long effectId = messageSendPreview != null ? messageSendPreview.getSelectedEffect() : 0;
+                     writeButton.setEffect(ChatAttachAlert.this.effectId = effectId);
+                     boolean shownDialog = false;
+                     if (currentAttachLayout == photoLayout || currentAttachLayout == photoPreviewLayout) {
+-                        shownDialog = sendPressed(false, 0, 0, effectId, isCaptionAbove());
++                        shownDialog = sendPressed(teleSound, 0, 0, effectId, isCaptionAbove());
+                     } else {
+-                        if (!currentAttachLayout.sendSelectedItems(false, 0, 0, effectId, isCaptionAbove())) {
++                        if (!currentAttachLayout.sendSelectedItems(teleSound, 0, 0, effectId, isCaptionAbove())) {
+                             dismiss();
+                         }
+                     }
+@@ -4496,7 +4501,7 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+             ChatActivity chatActivity = (ChatActivity) baseFragment;
+             TLRPC.Chat chat = chatActivity.getCurrentChat();
+             TLRPC.User user = chatActivity.getCurrentUser();
+-            if (user != null || ChatObject.isChannel(chat) && chat.megagroup || !ChatObject.isChannel(chat)) {
++            if (!tele.helpers.TeleSilent.enabled() && (user != null || ChatObject.isChannel(chat) && chat.megagroup || !ChatObject.isChannel(chat))) {
+                 MessagesController.getNotificationsSettings(currentAccount).edit().putBoolean("silent_" + chatActivity.getDialogId(), !notify).commit();
+             }
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+index 7c09190b2..94dfaa53e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+@@ -7446,13 +7446,19 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+             final boolean showSchedule = !canEdit && canScheduleMessage && !hasTtl;
+             final boolean showWithoutSound = !(canEdit && canReplace) && !userIsSelf;
+             final boolean multipleSelected = placeProvider != null && placeProvider.getSelectedCount() > 1;
++            final boolean teleSound = parentChatActivity != null && tele.helpers.TeleSilent.menuSound(currentAccount, parentChatActivity.getDialogId());
+ 
+             final ItemOptions options = ItemOptions.makeOptions(containerView, new DarkThemeResourceProvider(), view)
+                 .addIf(showSendAsFile, R.drawable.msg_sendfile, getString(multipleSelected ? R.string.SendAsFiles : R.string.SendAsFile), () -> sendPressed(true, 0, 0, false, true, false))
+                 .addIf(canReplace, R.drawable.msg_send, getString(R.string.SendAsNewPhoto), () -> sendPressed(true, 0, 0))
+                 .addIf(canReplace, R.drawable.msg_replace, getString(R.string.ReplacePhoto), this::replacePressed)
+                 .addIf(showSchedule, R.drawable.msg_calendar2, getString(userIsSelf ? R.string.SetReminder : R.string.ScheduleMessage), this::showScheduleDatePickerDialog)
+-                .addIf(showWithoutSound, R.drawable.input_notify_off, getString(R.string.SendWithoutSound), () -> sendPressed(false, 0, 0));
++                .addIf(showWithoutSound, teleSound ? R.drawable.input_notify_on : R.drawable.input_notify_off, getString(teleSound ? R.string.TeleSendWithSound : R.string.SendWithoutSound), () -> {
++                    if (teleSound) {
++                        tele.helpers.TeleSilent.armSound(currentAccount, parentChatActivity.getDialogId());
++                    }
++                    sendPressed(teleSound, 0, 0);
++                });
+ 
+             if (options.getItemsCount() == 0) return false;
+ 
+@@ -8083,7 +8089,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+             if (!replace && parentChatActivity != null) {
+                 TLRPC.Chat chat = parentChatActivity.getCurrentChat();
+                 TLRPC.User user = parentChatActivity.getCurrentUser();
+-                if (user != null || ChatObject.isChannel(chat) && chat.megagroup || !ChatObject.isChannel(chat)) {
++                if (!tele.helpers.TeleSilent.enabled() && (user != null || ChatObject.isChannel(chat) && chat.megagroup || !ChatObject.isChannel(chat))) {
+                     MessagesController.getNotificationsSettings(currentAccount).edit().putBoolean("silent_" + parentChatActivity.getDialogId(), !notify).commit();
+                 }
+             }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 3d6c3b7bb..3cddd6da2 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -205,6 +205,10 @@ object TeleConfig {
+     @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+     @JvmField
++    val SILENT_BY_DEFAULT = BoolItem("silent_by_default", false)
++    @JvmField
++    val SILENT_PER_CHAT = BoolItem("silent_per_chat", false)
++    @JvmField
+     val QUEUE_BEHIND_MEDIA = BoolItem("queue_behind_media", false)
+     @JvmField
+     val COPY_PROTECTED = BoolItem("copy_protected", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 207d300d2..a96414f28 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -164,6 +164,10 @@ object TeleHooks {
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
++        if (item === TeleConfig.SILENT_BY_DEFAULT || item === TeleConfig.SILENT_PER_CHAT) {
++            // the open chats refresh their field hint and menu on resume
++            bumpUiRevision()
++        }
+         if (item === TeleConfig.LOCAL_PINS) {
+             tele.helpers.LocalPins.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt
+new file mode 100644
+index 000000000..bf128efda
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt
+@@ -0,0 +1,107 @@
++package tele.helpers
++
++import android.os.SystemClock
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * Silent sending by default. The per chat state is the stock "silent_<dialogId>" pref; with the
++ * global default on, a chat is silent unless it is listed as "sound" here (tele_kv, per account).
++ */
++object TeleSilent {
++
++    private const val SOUND_KEY = "silent_sound_"
++    private const val SOUND_WINDOW_MS = 6000L
++
++    private val sound = arrayOfNulls<HashSet<Long>>(UserConfig.MAX_ACCOUNT_COUNT)
++    private val armedDialog = LongArray(UserConfig.MAX_ACCOUNT_COUNT)
++    private val armedUntil = LongArray(UserConfig.MAX_ACCOUNT_COUNT)
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.SILENT_BY_DEFAULT.value || TeleConfig.SILENT_PER_CHAT.value
++
++    private fun stock(account: Int, dialogId: Long): Boolean =
++        MessagesController.getNotificationsSettings(account).getBoolean("silent_$dialogId", false)
++
++    private fun soundSet(account: Int): HashSet<Long> = synchronized(sound) {
++        sound[account] ?: HashSet<Long>().also { set ->
++            TeleDatabaseHelper.get(SOUND_KEY + account)?.split(',')?.forEach { it.toLongOrNull()?.let(set::add) }
++            sound[account] = set
++        }
++    }
++
++    private fun resolve(account: Int, dialogId: Long, stock: Boolean): Boolean {
++        if (dialogId == UserConfig.getInstance(account).getClientUserId()) {
++            return false
++        }
++        return stock || (TeleConfig.SILENT_BY_DEFAULT.value && synchronized(sound) { dialogId !in soundSet(account) })
++    }
++
++    /** The chat state the menus and the field hint show. */
++    @JvmStatic
++    fun inChat(account: Int, dialogId: Long): Boolean {
++        val stock = stock(account, dialogId)
++        return if (enabled()) resolve(account, dialogId, stock) else stock
++    }
++
++    /** What the send paths apply: [inChat] unless a "send with sound" was just picked for this chat. */
++    @JvmStatic
++    fun isSilent(account: Int, dialogId: Long): Boolean {
++        val stock = stock(account, dialogId)
++        if (!enabled()) {
++            return stock
++        }
++        return resolve(account, dialogId, stock) && !soundArmed(account, dialogId)
++    }
++
++    /** The send menus swap "send without sound" for "send with sound" in a silent chat. */
++    @JvmStatic
++    fun menuSound(account: Int, dialogId: Long): Boolean = dialogId != 0L && enabled() && inChat(account, dialogId)
++
++    /**
++     * The media sends build their messages on another thread a moment later, so the pick is
++     * kept for a short window instead of one call.
++     */
++    @JvmStatic
++    fun armSound(account: Int, dialogId: Long) {
++        synchronized(armedUntil) {
++            armedDialog[account] = dialogId
++            armedUntil[account] = SystemClock.elapsedRealtime() + SOUND_WINDOW_MS
++        }
++    }
++
++    private fun soundArmed(account: Int, dialogId: Long): Boolean = synchronized(armedUntil) {
++        armedDialog[account] == dialogId && SystemClock.elapsedRealtime() < armedUntil[account]
++    }
++
++    @JvmStatic
++    fun setSilent(account: Int, dialogId: Long, silent: Boolean) {
++        MessagesController.getNotificationsSettings(account).edit().putBoolean("silent_$dialogId", silent).apply()
++        onToggled(account, dialogId, silent)
++    }
++
++    /** The stock pref is already written; this keeps the "sound" list of the global default in step. */
++    @JvmStatic
++    fun onToggled(account: Int, dialogId: Long, silent: Boolean) {
++        if (!TeleConfig.SILENT_BY_DEFAULT.value) {
++            return
++        }
++        val ids = synchronized(sound) {
++            val set = soundSet(account)
++            if (!(if (silent) set.remove(dialogId) else set.add(dialogId))) {
++                return
++            }
++            set.joinToString(",")
++        }
++        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.put(SOUND_KEY + account, ids) }
++    }
++
++    @JvmStatic
++    fun typeHint(account: Int, dialogId: Long, base: String): String =
++        if (enabled() && inChat(account, dialogId)) LocaleController.getString(R.string.TeleSilentMessage) else base
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 584a6154c..b68138bad 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -234,6 +234,8 @@ object TeleSearch {
+             section(1287, "Background for me", "chats", TeleSettingsActivity.MODE_CHATS, "Backgrounds only for you"),
+             section(1288, "My default background", "chats", TeleSettingsActivity.MODE_CHATS, "Backgrounds only for you"),
+             section(1289, "Remove a chat background for me", "chats", TeleSettingsActivity.MODE_CHATS, "Backgrounds only for you"),
++            section(1290, "Send silently by default", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1291, "Choose silent sending per chat", "sending", TeleSettingsActivity.MODE_SENDING, "Choose per chat"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5e5fcf7b9..a38ce8461 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -683,6 +683,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Queue messages behind uploading media" to "Text waits for the media being uploaded.",
+             "Send replies to older messages right away" to "Replies to older messages skip the queue.",
+             "Send right away on double enter" to "Press Enter twice to send a queued message now.",
++            "Send silently by default" to "Messages go out without a notification; the send menu offers sound.",
++            "Choose per chat" to "Adds \"Send silently\" to the chat menu.",
+             "Offer quick replies in groups" to "Suggest quick replies after / in groups.",
+             "Forward protected messages as copies" to "Forward protected messages as fresh copies.",
+             "Calculate messages starting with = via calcmula.app" to "A message starting with = is computed by calcmula.app.",
+@@ -928,6 +930,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Send replies to older messages right away", TeleConfig.SEND_OLDER_REPLIES),
+                 toggle("Send right away on double enter", TeleConfig.DOUBLE_ENTER_SEND),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Silent sending"),
++                toggle("Send silently by default", TeleConfig.SILENT_BY_DEFAULT),
++                toggle("Choose per chat", TeleConfig.SILENT_PER_CHAT),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Message field"),
+                 toggle("Calculate messages starting with = via calcmula.app", TeleConfig.CALCMULA),
+                 toggle("Preview calcmula results while typing", TeleConfig.CALCMULA_PREVIEW),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index c20c4de58..f756858c1 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -125,4 +125,8 @@
+     <string name="TeleBackgroundDefault">My default background</string>
+     <string name="TeleBackgroundChoose">Choose a background\u2026</string>
+     <string name="TeleBackgroundFailed">Couldn\'t save the background</string>
++    <string name="TeleSendWithSound">Send with sound</string>
++    <string name="TeleSendSilently">Send silently</string>
++    <string name="TeleSendSilentlyStop">Stop sending silently</string>
++    <string name="TeleSilentMessage">Silent message</string>
+ </resources>

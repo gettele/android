@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 24 Oct 2026 15:12:43 +0300
+Subject: [PATCH 167/172] fix: retry failed upload parts
+
+---
+ .../messenger/FileUploadOperation.java        |  37 +++++-
+ .../src/main/java/tele/helpers/UploadRetry.kt | 118 ++++++++++++++++++
+ 2 files changed, 154 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java b/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java
+index b2ebccd72..ed88120a0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/FileUploadOperation.java
+@@ -265,11 +265,38 @@ public class FileUploadOperation {
+         forceSmallFile = true;
+     }
+ 
++    private final tele.helpers.UploadRetry tele_retry = new tele.helpers.UploadRetry();
++
++    private boolean tele_retryPart(int guid, int part, TLRPC.TL_error error) {
++        return state == 1 && !isEncrypted && tele_retry.onFailed(this, guid, part, error != null ? error.code : 0, error != null ? error.text : null);
++    }
++
++    // stage queue; a part that failed is counted in the requests already, an extra one is not
++    public void tele_resend(int guid, int part, long offset, int size, boolean extra) {
++        if (state != 1 || guid != operationGuid) {
++            return;
++        }
++        TLObject request = tele.helpers.UploadRetry.request(uploadingFilePath, isBigFile, currentFileId, estimatedSize != 0 ? -1 : totalPartsCount, part, offset, size);
++        if (request == null) {
++            state = 4;
++            delegate.didFailedUploadingFile(this);
++            cleanup();
++            return;
++        }
++        if (extra) {
++            uploadedBytesCount -= size;
++        } else {
++            currentUploadRequetsCount--;
++        }
++        sendUploadRequest(request, part, size, null, offset);
++    }
++
+     private void startUploadRequest() {
+         if (state != 1) {
+             return;
+         }
+ 
++        long tele_partOffset = 0;
+         final TLObject finalRequest;
+         final int currentRequestPartNum;
+ 
+@@ -462,6 +489,7 @@ public class FileUploadOperation {
+                 }
+             }
+ 
++            tele_partOffset = nextPartFirst ? 0 : stream.getFilePointer();
+             if (nextPartFirst) {
+                 stream.seek(0);
+                 if (isBigFile) {
+@@ -533,6 +561,13 @@ public class FileUploadOperation {
+             return;
+         }
+         currentPartNum++;
++        sendUploadRequest(finalRequest, currentRequestPartNum, currentRequestBytes, currentRequestIv, tele_partOffset);
++    }
++
++    private void sendUploadRequest(final TLObject finalRequest, final int currentRequestPartNum, final int currentRequestBytes, final byte[] currentRequestIv, long partOffset) {
++        if (!isEncrypted) {
++            tele_retry.remember(operationGuid, currentRequestPartNum, partOffset, currentRequestBytes);
++        }
+         currentUploadRequetsCount++;
+         final int requestNumFinal = requestNum++;
+         final long currentRequestBytesOffset = currentRequestPartNum + currentRequestBytes;
+@@ -665,7 +700,7 @@ public class FileUploadOperation {
+                     }
+                     startUploadRequest();
+                 }
+-            } else {
++            } else if (!tele_retryPart(currentOperationGuid, currentRequestPartNum, error)) {
+                 state = 4;
+                 delegate.didFailedUploadingFile(FileUploadOperation.this);
+                 cleanup();
+diff --git a/TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt b/TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt
+new file mode 100644
+index 000000000..bb511b884
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/UploadRetry.kt
+@@ -0,0 +1,118 @@
++package tele.helpers
++
++import android.util.SparseIntArray
++import org.telegram.messenger.BuildVars
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.FileUploadOperation
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.NativeByteBuffer
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import java.io.RandomAccessFile
++
++/**
++ * A failed part of an upload is sent again instead of failing the whole file.
++ * One instance per upload operation, everything runs on the stage queue.
++ */
++class UploadRetry {
++
++    // offset and size of every part sent, the chunk can't be reused after the send
++    private var spans = LongArray(64)
++    private val tries = SparseIntArray()
++    private val queued = HashSet<Int>()
++    private var guid = -1
++
++    private fun sync(current: Int) {
++        if (guid != current) {
++            // the operation started over, the old parts mean nothing
++            guid = current
++            tries.clear()
++            queued.clear()
++            spans.fill(0L)
++        }
++    }
++
++    fun remember(current: Int, part: Int, offset: Long, size: Int) {
++        if (part < 0 || size <= 0) return
++        sync(current)
++        if (part >= spans.size) {
++            spans = spans.copyOf(maxOf(part + 1, spans.size * 2))
++        }
++        spans[part] = (offset shl SIZE_BITS) or size.toLong()
++    }
++
++    /** True when the part is going to be sent again, false when the upload has to fail. */
++    fun onFailed(operation: FileUploadOperation, current: Int, part: Int, code: Int, text: String?): Boolean {
++        sync(current)
++        val missing = missingPart(text)
++        // a bad request or a lost session won't get better with time
++        if (missing == null && (code == 400 || code == 401 || code == 403)) return false
++        if (part < 0 || part >= spans.size || spans[part] == 0L) return false
++        val attempt = tries.get(part) + 1
++        tries.put(part, attempt)
++        if (attempt > MAX_RETRIES) return false
++        if (BuildVars.LOGS_ENABLED) {
++            FileLog.d("TeleUpload retry $attempt of $MAX_RETRIES, code $code")
++        }
++        if (missing != null && missing != part && missing >= 0 && missing < spans.size && spans[missing] != 0L && !queued.contains(missing)) {
++            tries.put(missing, 0)
++            schedule(operation, current, missing, 0L, true)
++        }
++        val delay = if (missing != null) 0L else 1000L shl (attempt - 1).coerceIn(0, 4)
++        schedule(operation, current, part, delay, false)
++        return true
++    }
++
++    private fun schedule(operation: FileUploadOperation, current: Int, part: Int, delay: Long, extra: Boolean) {
++        queued.add(part)
++        Utilities.stageQueue.postRunnable({
++            queued.remove(part)
++            if (guid != current) return@postRunnable
++            val span = spans.getOrElse(part) { 0L }
++            if (span == 0L) return@postRunnable
++            operation.tele_resend(current, part, span ushr SIZE_BITS, (span and SIZE_MASK).toInt(), extra)
++        }, delay)
++    }
++
++    companion object {
++        private const val MAX_RETRIES = 3
++        private const val SIZE_BITS = 24
++        private const val SIZE_MASK = (1L shl SIZE_BITS) - 1
++        private val MISSING = Regex("^FILE_PART_(\\d+)_MISSING$")
++
++        private fun missingPart(text: String?): Int? {
++            if (text == null) return null
++            return MISSING.matchEntire(text)?.groupValues?.get(1)?.toIntOrNull()
++        }
++
++        /** Builds the request of a part from the file, null when the file can't give it. */
++        @JvmStatic
++        fun request(path: String, big: Boolean, fileId: Long, totalParts: Int, part: Int, offset: Long, size: Int): TLObject? {
++            val bytes = ByteArray(size)
++            try {
++                RandomAccessFile(path, "r").use {
++                    it.seek(offset)
++                    it.readFully(bytes)
++                }
++            } catch (e: Exception) {
++                FileLog.e(e)
++                return null
++            }
++            val buffer = NativeByteBuffer(size)
++            buffer.writeBytes(bytes, 0, size)
++            if (big) {
++                val req = TLRPC.TL_upload_saveBigFilePart()
++                req.file_part = part
++                req.file_id = fileId
++                req.file_total_parts = totalParts
++                req.bytes = buffer
++                return req
++            }
++            val req = TLRPC.TL_upload_saveFilePart()
++            req.file_part = part
++            req.file_id = fileId
++            req.bytes = buffer
++            return req
++        }
++    }
++}
