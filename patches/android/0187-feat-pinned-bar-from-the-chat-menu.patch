@@ -4,17 +4,17 @@ Date: Sun, 25 Oct 2026 08:31:24 +0300
 Subject: [PATCH 187/194] feat: pinned bar from the chat menu
 
 ---
- .../java/org/telegram/ui/ChatActivity.java    | 24 ++++++++
+ .../java/org/telegram/ui/ChatActivity.java    | 17 ++++++
  .../src/main/java/tele/TeleConfig.kt          |  2 +
- .../src/main/java/tele/helpers/PinnedBar.kt   | 57 +++++++++++++++++++
+ .../src/main/java/tele/helpers/PinnedBar.kt   | 58 +++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
  .../src/main/res/values/strings_tele.xml      |  2 +
- 6 files changed, 89 insertions(+)
+ 6 files changed, 83 insertions(+)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/PinnedBar.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 8c024d1c4..eb021c143 100644
+index 83481c41e..3db783ff4 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -1742,6 +1742,7 @@ public class ChatActivity extends BaseFragment implements
@@ -30,7 +30,7 @@ index 8c024d1c4..eb021c143 100644
                      // a date before any message makes the stock date jump land on the oldest one
                      jumpToDate(86400);
 +                } else if (id == tele_action_pinned_bar) {
-+                    if (tele.helpers.PinnedBar.toggle(currentAccount, dialog_id, pinnedMessageIds, tele_canPin())) {
++                    if (tele.helpers.PinnedBar.toggle(currentAccount, dialog_id, pinnedMessageIds)) {
 +                        updatePinnedMessageView(true);
 +                    }
                  } else if (id == tele_action_chat_background) {
@@ -48,29 +48,22 @@ index 8c024d1c4..eb021c143 100644
              if (tele.TeleConfig.LOCAL_CHAT_BACKGROUNDS.getValue() && chatMode == 0 && themeDelegate.isThemeChangeAvailable(false) && (isTopic || threadMessageId == 0)) {
                  headerItem.lazilyAddSubItem(tele_action_chat_background, R.drawable.msg_background, getString(R.string.TeleBackgroundForMe));
              }
-+            if (chatMode == 0 && currentEncryptedChat == null && (isTopic || threadMessageId == 0)) {
++            if (tele.TeleConfig.PINNED_BAR_MENU.getValue() && chatMode == 0 && currentEncryptedChat == null && (isTopic || threadMessageId == 0)) {
 +                tele_pinnedBarItem = headerItem.lazilyAddSubItem(tele_action_pinned_bar, R.drawable.msg_unpin, "");
 +                tele_pinnedBarItem.setVisibility(View.GONE);
 +            }
              if (tele.helpers.TeleSilent.enabled() && chatMode == 0 && currentEncryptedChat == null && (currentUser == null || !currentUser.self) && !ChatObject.isChannelAndNotMegaGroup(currentChat) && (currentChat == null || ChatObject.canSendMessages(currentChat))) {
                  teleSilentItem = headerItem.lazilyAddSubItem(tele_action_silent, R.drawable.msg_mute, getString(R.string.TeleSendSilently));
                  teleUpdateSilentItem();
-@@ -30692,6 +30702,20 @@ public class ChatActivity extends BaseFragment implements
+@@ -30698,6 +30708,13 @@ public class ChatActivity extends BaseFragment implements
      Bulletin.Delegate bulletinDelegate;
      private int teleUiRevision;
      private ActionBarMenuItem.Item teleSilentItem;
 +    private ActionBarMenuItem.Item tele_pinnedBarItem;
 +
-+    private boolean tele_canPin() {
-+        if (currentChat != null) {
-+            return ChatObject.canPinMessages(currentChat) && !currentChat.monoforum;
-+        }
-+        return currentEncryptedChat == null && userInfo != null && userInfo.can_pin_message;
-+    }
-+
 +    private void tele_refreshPinnedItem() {
 +        if (tele_pinnedBarItem != null) {
-+            tele.helpers.PinnedBar.refresh(tele_pinnedBarItem, currentAccount, dialog_id, pinnedMessageIds, tele_canPin());
++            tele.helpers.PinnedBar.refresh(tele_pinnedBarItem, currentAccount, dialog_id, pinnedMessageIds);
 +        }
 +    }
  
@@ -91,10 +84,10 @@ index eef59883e..01fb3af4b 100644
      val SEND_OLDER_REPLIES = BoolItem("send_older_replies", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/PinnedBar.kt b/TMessagesProj/src/main/java/tele/helpers/PinnedBar.kt
 new file mode 100644
-index 000000000..7b0971367
+index 000000000..d326e8668
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/PinnedBar.kt
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,58 @@
 +package tele.helpers
 +
 +import android.view.View
@@ -105,7 +98,8 @@ index 000000000..7b0971367
 +import tele.TeleConfig
 +
 +/**
-+ * The chat menu hides and shows the pinned bar for people who can't pin. It uses the stock
++ * The chat menu hides and shows the pinned bar. It is offered to people who can pin too (desktop
++ * does not): their bar button unpins, so the menu is their only way to hide it. It uses the stock
 + * `pin_<dialog>` mark: the bar stays hidden while it holds the id of the top pinned message.
 + */
 +object PinnedBar {
@@ -117,14 +111,14 @@ index 000000000..7b0971367
 +    private fun hiddenId(account: Int, dialogId: Long): Int =
 +        MessagesController.getNotificationsSettings(account).getInt("pin_$dialogId", 0)
 +
-+    private fun state(account: Int, dialogId: Long, pinned: List<Int>, canPin: Boolean): Int {
-+        if (!TeleConfig.PINNED_BAR_MENU.value || canPin || pinned.isEmpty()) return NONE
++    private fun state(account: Int, dialogId: Long, pinned: List<Int>): Int {
++        if (!TeleConfig.PINNED_BAR_MENU.value || pinned.isEmpty()) return NONE
 +        return if (pinned[0] == hiddenId(account, dialogId)) HIDDEN else SHOWN
 +    }
 +
 +    @JvmStatic
-+    fun refresh(item: ActionBarMenuItem.Item, account: Int, dialogId: Long, pinned: List<Int>, canPin: Boolean) {
-+        when (state(account, dialogId, pinned, canPin)) {
++    fun refresh(item: ActionBarMenuItem.Item, account: Int, dialogId: Long, pinned: List<Int>) {
++        when (state(account, dialogId, pinned)) {
 +            SHOWN -> {
 +                item.setText(LocaleController.getString(R.string.TelePinnedBarHide))
 +                item.setIcon(R.drawable.msg_unpin)
@@ -141,9 +135,9 @@ index 000000000..7b0971367
 +
 +    /** Returns true when the mark changed and the bar has to be updated. */
 +    @JvmStatic
-+    fun toggle(account: Int, dialogId: Long, pinned: List<Int>, canPin: Boolean): Boolean {
++    fun toggle(account: Int, dialogId: Long, pinned: List<Int>): Boolean {
 +        val editor = MessagesController.getNotificationsSettings(account).edit()
-+        when (state(account, dialogId, pinned, canPin)) {
++        when (state(account, dialogId, pinned)) {
 +            SHOWN -> editor.putInt("pin_$dialogId", pinned[0])
 +            HIDDEN -> editor.remove("pin_$dialogId")
 +            else -> return false

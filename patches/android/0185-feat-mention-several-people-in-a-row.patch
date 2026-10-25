@@ -4,27 +4,37 @@ Date: Sun, 25 Oct 2026 08:14:48 +0300
 Subject: [PATCH 185/194] feat: mention several people in a row
 
 ---
- .../ui/Components/MentionsContainerView.java  | 19 +++++++++
+ .../java/org/telegram/ui/ChatActivity.java    |  6 +++
+ .../ui/Components/MentionsContainerView.java  | 10 ++++
  .../src/main/java/tele/TeleConfig.kt          |  2 +
- .../main/java/tele/helpers/ChainMentions.kt   | 40 +++++++++++++++++++
+ .../main/java/tele/helpers/ChainMentions.kt   | 51 +++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
- 5 files changed, 65 insertions(+)
+ 6 files changed, 73 insertions(+)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt
 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 373a5a210..44efe3162 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -7726,6 +7726,12 @@ public class ChatActivity extends BaseFragment implements
+             }
+         });
+         mentionContainer.getListView().setOnItemLongClickListener((view, position) -> {
++            // this listener replaces the container's own, so the chain hook lives here
++            TLRPC.User chainUser = tele.helpers.ChainMentions.enabled() && !searchingForUser ? tele.helpers.ChainMentions.user(mentionContainer.getAdapter(), position) : null;
++            if (chainUser != null) {
++                chatActivityEnterView.replaceWithText(mentionContainer.getAdapter().getResultStartPosition(), mentionContainer.getAdapter().getResultLength(), tele.helpers.ChainMentions.insertion(chainUser), false);
++                return true;
++            }
+             if (getParentActivity() == null || !mentionContainer.getAdapter().isLongClickEnabled()) {
+                 return false;
+             }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
-index 9b025fd30..4e8a0671c 100644
+index 9b025fd30..670d5bde6 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
-@@ -429,6 +429,7 @@ public class MentionsContainerView extends FrameLayout implements NotificationCe
-                 }
-             }
-             setVisibility(View.VISIBLE);
-+            tele.helpers.ChainMentions.bind(getListView(), tele_chainListener);
-         } else {
-             scrollToFirst = false;
-         }
-@@ -700,8 +701,26 @@ public class MentionsContainerView extends FrameLayout implements NotificationCe
+@@ -700,8 +700,18 @@ public class MentionsContainerView extends FrameLayout implements NotificationCe
              }
          });
          getListView().setOnTouchListener((v, event) -> ContentPreviewViewer.getInstance().onTouch(event, getListView(), 0, mentionsOnItemClickListener, null, resourcesProvider));
@@ -32,17 +42,9 @@ index 9b025fd30..4e8a0671c 100644
      }
  
 +    private final RecyclerListView.OnItemLongClickListener tele_chainListener = (view, position) -> {
-+        if (position == 0 || getAdapter().isBannedInline() || delegate == null) {
++        TLRPC.User user = tele.helpers.ChainMentions.user(getAdapter(), position);
++        if (user == null || delegate == null) {
 +            return false;
-+        }
-+        Object object = getAdapter().getItem(position - 1);
-+        if (!(object instanceof TLRPC.User)) {
-+            return false;
-+        }
-+        TLRPC.User user = (TLRPC.User) object;
-+        if (tele.helpers.ChainMentions.isInlineBot(user)) {
-+            mentionsOnItemClickListener.onItemClick(view, position);
-+            return true;
 +        }
 +        delegate.replaceText(getAdapter().getResultStartPosition(), getAdapter().getResultLength(), tele.helpers.ChainMentions.insertion(user), false);
 +        return true;
@@ -66,16 +68,17 @@ index a28d3850f..b6f18bcd2 100644
      val SEND_OLDER_REPLIES = BoolItem("send_older_replies", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt b/TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt
 new file mode 100644
-index 000000000..b1b9293b8
+index 000000000..b46f73a20
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,51 @@
 +package tele.helpers
 +
 +import android.text.SpannableStringBuilder
 +import android.text.Spanned
 +import org.telegram.messenger.UserObject
 +import org.telegram.tgnet.TLRPC
++import org.telegram.ui.Adapters.MentionsAdapter
 +import org.telegram.ui.Components.RecyclerListView
 +import org.telegram.ui.Components.URLSpanUserMention
 +import tele.TeleConfig
@@ -89,6 +92,16 @@ index 000000000..b1b9293b8
 +    // inline bots keep the stock flow: the mention starts the inline query
 +    @JvmStatic
 +    fun isInlineBot(user: TLRPC.User): Boolean = user.bot && user.bot_inline_placeholder != null
++
++    /** The user under a long-pressed row (padding row is position 0), or null when the row isn't chainable. */
++    @JvmStatic
++    fun user(adapter: MentionsAdapter, position: Int): TLRPC.User? {
++        if (position <= 0 || adapter.isBannedInline) {
++            return null
++        }
++        val user = adapter.getItem(position - 1) as? TLRPC.User ?: return null
++        return if (isInlineBot(user)) null else user
++    }
 +
 +    /** Sets the listener only while the option is on, so a held tap stays a plain tap otherwise. */
 +    @JvmStatic
