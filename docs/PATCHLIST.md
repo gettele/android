@@ -242,7 +242,7 @@
 | 0132 | скрыть похожие каналы | built | `0112-feat-hide-the-similar-channels`; запрос рекомендаций не уходит, вкладка похожих каналов и блок в чате скрыты, конфиг `hide_similar_channels` |
 | 0143 | скрыть тултип коллекционного статуса | built | `0113-feat-hide-the-collectible-status-hint`; подсказка коллекционного статуса не показывается, конфиг `hide_collectible_hint` |
 | 0154 | reduce motion | built | `0115-feat-reduce-motion`; состояние LiteMode сохраняется и возвращается, конфиг `reduce_motion` |
-| 0172 | скрыть телефон в профилях | built | `0114-feat-hide-phone-numbers-in-profiles`; строка телефона не создаётся в профиле, конфиг `hide_phone_in_profiles` |
+| 0172 | скрыть телефон в профилях | built | `0114-feat-hide-phone-numbers-in-profiles`; скрывает строки телефона в профилях, номер в шапке Settings и старых настройках, напоминание VALIDATE_PHONE_NUMBER; username остаётся. Конфиг `hide_phone_in_profiles` |
 | 0233 | нет метки «изменено» у ботов | built | `0116-feat-no-edited-mark-on-bot-messages`; метка «изменено» прячется для сообщений бота и via_bot_id, конфиг `hide_bot_edited_label` |
 | 0231 | параметр старта на кнопке Start | built | `0117-feat-show-the-start-parameter`; долгий тап по кнопке Start показывает параметр, конфиг `show_start_parameter` |
 
