@@ -1,6 +1,6 @@
 # Номера патчей десктопа: старые → текущие
 
-[docs/PATCHLIST.md](PATCHLIST.md) и [docs/portability.md](portability.md) ведут патчи по **текущей** нумерации очереди [nitreojs/tele](https://github.com/nitreojs/tele) (`patches/tdesktop/NNNN-*.patch`, ветка `main`, патчи 0001–0322; отдельная очередь `lib_ui` — 0001–0008). Очередь десктопа была перенумерована: исходный разбор (v7.2.9, патчи 0001–0127) шёл по старым номерам. Ниже — полная карта старый → новый.
+[docs/PATCHLIST.md](PATCHLIST.md) и [docs/portability.md](portability.md) ведут патчи по **текущей** нумерации очереди [nitreojs/tele](https://github.com/nitreojs/tele) (`patches/tdesktop/NNNN-*.patch`, ветка `main`, патчи 0001–0332; отдельная очередь `lib_ui` — 0001–0008). Очередь десктопа была перенумерована дважды: исходный разбор (v7.2.9, патчи 0001–0127) шёл по старым номерам, а номера 0303+ в наших документах (разбор 0303–0322) устарели после слияний — см. вторую таблицу. Ниже — полная карта старый → новый.
 
 обозначения: `=` без изменений, `~` косметика (портировать нечего), `Δ` поведение изменилось, `⇢` влит в другой патч (отдельного номера в новой очереди нет). Влитые: старый 0043 → 0017, старый 0079 → 0077, старый 0118 → 0107.
 
@@ -133,3 +133,30 @@
 | 0125 | 0122 | feat: hide mention and reaction badges in the chat list | = |
 | 0126 | 0123 | feat: pin chats past the limit | Δ |
 | 0127 | 0124 | feat: folders past the limit | = |
+
+## номера 0303+: прежние в наших документах → текущие
+
+разбор патчей 0303–0322 шёл по очереди, в которой после 0302 лежали отдельные патчи, позже влитые в 0302/0281/0313 или удалённые; текущие номера 0303+ сдвинулись. новые патчи 0318–0332 в прежней очереди не существовали. колонка «прежний» — номер в старых версиях docs/portability.md, PATCHLIST.md и гайдов пачек; «текущий» — `tele/patches/tdesktop/NNNN-*.patch`.
+
+| прежний | текущий | тема | класс |
+|---|---|---|---|
+| 0303 | 0302 (влит) | feat: ask before changing how messages and people look (grant display) | ⇢ |
+| 0304 | 0303 | feat: fill the whole profile with the blurred photo's colors | = |
+| 0305 | 0304 | feat: scroll to zoom in the media viewer | = |
+| 0306 | 0281 (влит) | feat: search a person's messages by type (внутри filter chat search by message type) | ⇢ |
+| 0307 | 0305 | feat: design the money card with a gift | = |
+| 0308 | 0306 | feat: smoother wheel glides in chats | = |
+| 0309 | 0307 | fix: quote the fee of a wallet key update again | = |
+| 0310 | 0308 | build: take wallet-engine from gettele/money for private keys | = |
+| 0311 | 0309 | feat: import wallets from private keys | = |
+| 0312 | 0310 | feat: copy secret words without waiting | = |
+| 0313 | 0311 | feat: hide the other balances above the money card | = |
+| 0314 | 0312 | build: fetch litehtml for html bubbles | = |
+| 0315 | 0313 | feat: render html cards with litehtml and run their scripts | = |
+| 0316 | 0313 (влит) | feat: playground chat and .tgw cards (внутри html-карточек) | ⇢ |
+| 0317 | 0314 | feat: put gifts on the money card as stickers | = |
+| 0318 | 0315 | fix: confirm stickers sent from sticker set boxes | = |
+| 0319 | — | β убрана с blurred-profile-bg (патча нет; текущий 0319 — dock-иконка macOS, другая тема) | ✗ |
+| 0320 | 0302 (влит) | feat: web platform and more APIs for scripts (текущий 0320 — фикс краша listing accounts) | ⇢ |
+| 0321 | 0316 | feat: recover deleted channel posts from forwards | = |
+| 0322 | 0317 | feat: filter stickers and emoji by format (текущий 0322 — gifts in money как gift-cards) | = |

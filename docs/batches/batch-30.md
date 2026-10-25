@@ -2,17 +2,17 @@
 
 ## Назначение и границы
 
-1. Этот документ описывает только текущие строки пачки 30 в `docs/PATCHLIST.md`: 0236, 0242 и 0230. Номера — текущая нумерация очереди desktop; Android-файлы после реализации получат номера очереди, а не номера desktop.
+1. Этот документ описывает только текущие строки пачки 30 в `docs/PATCHLIST.md`: 0236, 0242, 0230, 0327, 0324 и 0093 (остаток). Номера — текущая нумерация очереди desktop; Android-файлы после реализации получат номера очереди, а не номера desktop.
 2. Здесь создаётся только guide. Код должен сначала появиться отдельными коммитами в checkout `Telegram` на ветке `tele`, затем экспортироваться обычным `git format-patch`; `.patch` вручную не редактировать.
 3. Desktop-патчи были прочитаны через `git show origin/main:patches/tdesktop/...`; Android-якоря — через `git show tele:...`. Desktop C++/Qt не копируется в Kotlin/Java.
-4. Решение из `decisions.md` и PATCHLIST: все три строки остаются в плане, но идут поздно и имеют низкий приоритет. Оценка пачки — S×2, M×1. Ворота: debug APK и ручная проверка каждого фактического тумблера on/off.
+4. Решение из `decisions.md` и PATCHLIST: все строки остаются в плане, но идут поздно и имеют низкий приоритет. Оценка пачки — S×4, M×2. Ворота: debug APK и ручная проверка каждого фактического тумблера on/off.
 5. При выключенном новом или существующем тумблере поведение должно быть ровно stock Android. Не менять `TLRPC.java`, stock-схему БД или `LAST_DB_VERSION`; fork-состояние — только через уже существующие tele-хранилища.
 
 ## Доказанная зависимость и намеренно неполный объём
 
-6. **0236 → Android 0175 обязательно.** 0175 (план пачки 18) должен сначала дать единый caption path для отправки/правки стикера и показ подписи в `ChatMessageCell`, `DialogCell` и уведомлениях. 0236 не должен заново изобретать подписи или обходить этот path. Сейчас 0175 в PATCHLIST `todo`.
-7. **0236 → Android 0096 обязательно.** Реальный docked-media код находится в экспортированном Android 0096 (`tele/helpers/DockedMedia.kt`, `DockedStore.kt`, `tele/ui/TeleDockedStrip.kt`). Документ `batch-15.md` описывает списки, а не docked media; поэтому формулировка «batch 15 docked» неточна: доказанная зависимость — именно Android 0096 (строка desktop 0107), не batch-15 guide. [INFERENCE] Если нумерация пачек у мейнтейнера означает иной внутренний план, её нужно уточнить до кода.
-8. **0242 зависит только от существующего video-send path.** Он не зависит от 0175 или 0096. Android 0095 (GIF/video direction) ещё не завершён, поэтому портируется только обратная опция «беззвучное видео как GIF», без обещания полного desktop GIF/video parity.
+6. **0236 → Android 0175 обязательно.** 0175 (`0175-feat-sticker-captions`, пачка 18, уже `built`) даёт единый caption path для отправки/правки стикера и показ подписи в `ChatMessageCell`, `DialogCell` и уведомлениях. 0236 не должен заново изобретать подписи или обходить этот path.
+7. **0236 → Android 0086 обязательно.** Реальный docked-media код находится в экспортированном Android 0086 (`0086-feat-attach-media-above-the-field`; `tele/helpers/DockedMedia.kt`, `DockedStore.kt`, `tele/ui/TeleDockedStrip.kt`; строка desktop 0107). 0236 расширяет именно его.
+8. **0242 зависит только от существующего video-send path.** Он не зависит от 0175 или 0086. Остаток desktop 0093 (GIF/video direction) в этой же пачке отложен и требует проработки, поэтому 0242 портирует только обратную опцию «беззвучное видео как GIF», без обещания полного desktop GIF/video parity.
 9. **0230 имеет частичную зависимость от gift studio.** Desktop-половина, которая исправляет gzip при экспорте studio, ждёт desktop/Android gift studio 0197/0204; текущего Android studio нет. Полезная самостоятельная половина — исправление заголовка у пользовательского `.tgs` перед upload. Нельзя выдавать upload-половину за порт всей studio-фичи. [INFERENCE] Нужно решить перед коммитом, принимать ли этот частичный scope сейчас или ждать 0197/0204.
 
 ## Desktop-контракт
@@ -23,7 +23,7 @@
 11. `history_widget.cpp` и `history_view_compose_controls.cpp` направляют такой выбор в `ComposeDockedAddSticker`. Для sticker/GIF с подписью это должно добавить элемент над полем, а не открыть обычный `SendGifWithCaption`. Callback `sendSticker` передаёт документ, send options и текст подписи; при отправке документ уходит существующим media API с caption.
 12. Docked store desktop держит отдельный sticker/GIF item в tray, показывает его первым, получает кадр из TGS/WebM/WebP, считает его в заголовке и не позволяет перетаскивать/открывать обычное `more`-меню для этого item. Остальные media items продолжают жить в существующем tray.
 13. При send сначала проверяется лимит подписи sticker, затем sticker item удаляется из tray и отправляется с текстом поля; если вместе лежат обычные файлы, они отправляются своим прежним bundle path. Подпись должна сохранить обычные caption entities, reply и send options. Scheduled path в desktop специально не открывает дополнительное schedule box.
-14. Android-перевод не обязан повторять desktop `FileChosen`/Qt-типы. Нужен account/dialog/thread-bound fork item, persistence и UI-представление, совместимые с существующим 0096. Не разрешать sticker через старую ветку `PhotoEntry` только ради переиспользования.
+14. Android-перевод не обязан повторять desktop `FileChosen`/Qt-типы. Нужен account/dialog/thread-bound fork item, persistence и UI-представление, совместимые с существующим 0086. Не разрешать sticker через старую ветку `PhotoEntry` только ради переиспользования.
 
 ### 0242 — `choose how silent videos are sent`
 
@@ -43,10 +43,10 @@
 ## Android anchors и реализация
 
 24. Для 0236 базовый data hook — `tele/helpers/DockedMedia.kt`: `dock(...)` около 156 сейчас отвергает `sticker` около 169–170; `send(...)` около 257 работает только с `tray.items`; `toInfo(...)` около 232 формирует `SendingMediaInfo`, а отправка идёт через `SendMessagesHelper.prepareSendingMedia(...)` около 304. Расширить fork-модель отдельным sticker item, а не менять stock `MediaController.PhotoEntry` и не добавлять поля в TL.
-25. Точки интеграции UI 0096: `ChatActivity` attach selection около `12797` вызывает `DockedMedia.dock`; top view подключается около `8263`; `ChatActivityEnterView` вызывает `DockedMedia.send` около `7550`; `tele_setDockedMedia` управляет send button. 0236 должен сохранить этот порядок: docked send перехватывает send раньше обычного text path, очищает caption только после успешного consume и не отправляет sticker второй раз.
+25. Точки интеграции UI 0086: `ChatActivity` attach selection около `12797` вызывает `DockedMedia.dock`; top view подключается около `8263`; `ChatActivityEnterView` вызывает `DockedMedia.send` около `7550`; `tele_setDockedMedia` управляет send button. 0236 должен сохранить этот порядок: docked send перехватывает send раньше обычного text path, очищает caption только после успешного consume и не отправляет sticker второй раз.
 26. Для sticker/GIF picker найти фактические callback-ы в текущем `EmojiView`/`StickersAlert`/`ChatActivityEnterView` по symbol search, не по старым line numbers. В существующем callback добавить отдельное long-press/context-menu действие `Attach`, gated `TeleConfig.DOCKED_MEDIA`; обычный tap и OFF остаются stock. `TeleDockedStrip` должен bind/rebind sticker state на каждом recycle и не держать Activity/static View.
 27. Для отправки после 0175 переиспользовать его caption/entity helper и существующий `SendMessagesHelper.sendSticker(... CharSequence caption ...)` overload либо подтверждённый общий `sendMedia` path. Не вызывать private stock API дублированием; если нужен доступ — сделать минимальный `public`/`tele_` seam. Caption limit проверять до удаления tray, ошибку показывать на UI thread.
-28. Sticker state ключуется `currentAccount + dialogId + threadId`; persistence использует существующий `TeleDatabaseHelper`/`DockedStore` формат 0096, без stock DB migration. После process death, account switch, topic switch и config OFF не допускается показать item другого key. Если текущий 0096 формат не умеет документ reference/thumbnail, сначала определить безопасный локальный snapshot и download lifecycle. [INFERENCE]
+28. Sticker state ключуется `currentAccount + dialogId + threadId`; persistence использует существующий `TeleDatabaseHelper`/`DockedStore` формат 0086, без stock DB migration. После process death, account switch, topic switch и config OFF не допускается показать item другого key. Если текущий 0086 формат не умеет документ reference/thumbnail, сначала определить безопасный локальный snapshot и download lifecycle. [INFERENCE]
 29. Для 0242 новый helper может быть `tele/helpers/SilentVideo.kt`, но не дублировать VideoEditedInfo. Hook должен быть в самом общем текущем preparation path до worker/send, с явной проверкой `TeleConfig.SILENT_VIDEO_AS_GIF`; обычный `SendMessagesHelper` stock path при OFF не должен создавать helper work. `videoEditedInfo.muted` и animated attribute должны оставаться согласованными с уже существующим conversion code.
 30. Для 0230 helper в `tele/helpers/TgsUpload.kt` должен быть чистым bounded byte/file transform. Hook — на confirmed document upload path после расширения/URI resolution и до `FileUploadOperation`; если фактический upload API не допускает bytes, зафиксировать это как blocker, а не менять `TLRPC.java` или подменять MIME. Проверить также path, где `.tgs` приходит из content URI.
 31. Все фоновые callbacks для thumbnail/download/upload имеют account и generation; View/strip/field меняются только через main dispatcher. `LiteMode` учитывать для любой новой frame/animation работы; для низкоприоритетной sticker tile допустим статический thumbnail/frame, если exact animated behavior не подтверждён. [INFERENCE]
@@ -68,8 +68,8 @@
 37. Один desktop row — один Android commit; не объединять три фичи в «media improvements». Предлагаемый порядок:
    1. `fix: repair tgs upload headers` — 0230, S. Выполнить upload-only scope; studio exporter явно оставить за 0197/0204 либо остановиться до решения о зависимости.
    2. `feat: send silent videos as gifs` — 0242, S. Новый off-by-default switch, settings/search/export и общий video preparation hook.
-   3. `feat: dock captioned stickers` — 0236, M. Выполнять только после Android 0175 и подтверждения/стабилизации 0096 API; расширяет `DockedMedia` и picker callbacks, не переписывает queue.
-38. [INFERENCE] Если мейнтейнер требует строгого порядка строк PATCHLIST, поменять 0230 на третью позицию, но 0236 всё равно нельзя начинать до 0175/0096. Каждый commit должен собираться поверх предыдущего и экспортироваться отдельно.
+   3. `feat: dock captioned stickers` — 0236, M. Выполнять только после Android 0175 и подтверждения/стабилизации 0086 API; расширяет `DockedMedia` и picker callbacks, не переписывает queue.
+38. [INFERENCE] Если мейнтейнер требует строгого порядка строк PATCHLIST, поменять 0230 на третью позицию, но 0236 всё равно нельзя начинать до 0175/0086. Каждый commit должен собираться поверх предыдущего и экспортироваться отдельно.
 39. Рекомендуемые subjects — план, не готовый commit: перед commit сверить с фактическим diff и лимитом 5 слов. Фикс уже экспортированного patch-файла вливать в его commit через fixup (см. `docs/development.md`); не менять PATCHLIST status до реальной стадии `wip/queued/built/done`.
 
 ## Планируемые строки `features.md`
@@ -92,5 +92,25 @@
 
 47. Не считать расширение `mp4`/`.tgs` достаточным доказательством media type; не читать network bytes или message caption как local file; не держать `Activity`, `View`, `Bitmap` или account-0 singleton в долгоживущем helper. Проверять nullable TL fields и upload failures.
 48. Для 0236 главный риск — старый `DockedMedia.dock` прямо отвергает `sticker`, а `send`/`toInfo` знают только `tray.items`; нельзя просто снять `sticker` guard и потерять caption/persistence. Для 0242 главный риск — выставить `muted` после worker уже построил document; hook должен быть до этого момента. Для 0230 главный риск — переписать пользовательский файл или обойти `FHCRC`/size checks.
-49. Открытые вопросы до кода: (a) принимать ли 0230 upload-only до 0197/0204 или ждать studio; (b) точный Android API для explicit «send as video» и аудио-метаданных в 0242; (c) допустимы ли scheduled/paid/secret/TTL sticker items в 0236, поскольку текущий 0096 их ограничивает; (d) нужен ли отдельный setting для 0236 вместо наследования `docked_media`; (e) действительно ли batch-15 в запросе означает иной план, поскольку `docs/batches/batch-15.md` — списки.
-50. Gate пачки: все три commits закоммичены и экспортированы; `./gradlew :TMessagesProj_App:assembleDebug`; APK передан человеку; на устройстве проверены 0230 fixtures/upload, 0242 on/off/default и 0236 on/off при наличии 0175/0096; только после человеческой проверки строки PATCHLIST переводятся в `done`. До этого оставить `todo`/фактический промежуточный статус.
+49. Открытые вопросы до кода: (a) принимать ли 0230 upload-only до 0197/0204 или ждать studio; (b) точный Android API для explicit «send as video» и аудио-метаданных в 0242; (c) допустимы ли scheduled/paid/secret/TTL sticker items в 0236, поскольку текущий 0086 их ограничивает; (d) нужен ли отдельный setting для 0236 вместо наследования `docked_media`; (e) как считать skipped messages в шоте 0327 и воспроизводится ли гонка 0324 в `DeletedMessages`; (f) как транскодировать gif→mp4 для 0093.
+50. Gate пачки: все commits закоммичены и экспортированы; `./gradlew :TMessagesProj_App:assembleDebug`; APK передан человеку; на устройстве проверены 0230 fixtures/upload, 0242 on/off/default, 0236 on/off при наличии 0175/0086, 0327 счётчик в шоте, 0324 подгрузка истории при удалении во время загрузки; только после человеческой проверки строки PATCHLIST переводятся в `done`. До этого оставить `todo`/фактический промежуточный статус.
+
+## 0327 — пропущенные сообщения в шоте
+
+51. Desktop 0327: шот показывает счётчик skipped messages (сообщения, не попавшие в картинку). Перед кодом открыть `tele/patches/tdesktop/0327-feat-show-skipped-messages-in-shots.patch`. PATCHLIST: S, зависит от Android 0083 (`0083-feat-save-messages-as-a-picture`).
+52. Расширяется существующий код шота (`TeleShotActivity`, `ShotColumn`); нового экрана не добавлять.
+53. Счётчик считает сообщения выбранного диапазона, которые шот пропустил (по настройке «что показывать»); текст и формат — как на десктопе, строки в `strings_tele.xml`.
+54. Новый тумблер только если desktop-патч его вводит; OFF и default — как в 0083 без счётчика.
+
+## 0324 — краш при подгрузке старых сообщений, пока одно удаляется
+
+55. Desktop 0324 — фикс краша при подгрузке старых сообщений, если одно из них удалено во время загрузки (keep deleted). Перед кодом открыть `tele/patches/tdesktop/0324-fix-loading-older-messages-no-longer-crashes-on-a-me.patch`. PATCHLIST: S, зависит от Android 0060 (`DeletedMessages`).
+56. Это desktop-фикс: на Android в первую очередь проверить, есть ли гонка в `DeletedMessages`/`MessagesStorage` между подгрузкой истории и пометкой удалённого; не чинить гипотетический баг без воспроизведения.
+57. Если гонка найдена: обращения к реестру удержанных сообщений из потока подгрузки и из потока удаления — через один guard; никаких проглоченных исключений.
+58. Проверка: подгрузка старых сообщений в чате, где параллельно приходит удаление; нет краша, удалённое сообщение остаётся помеченным.
+
+## 0093 — остаток: gif как видео
+
+59. Desktop 0093: отправка gif как видео и видео как gif. «Видео как gif» уже в стоке (`videoEditedInfo.muted` → `TL_documentAttributeAnimated`), закрыто PATCHLIST (строка 0093 в пачке 6); остаётся «gif как видео».
+60. Статус: отложено, требует проработки. «gif как видео» требует транскода gif→mp4; на Android готового пути нет, длительность gif неоткуда взять. Перед кодом выбрать способ транскода и проверить его на разных gif; пока выбора нет, код не писать.
+61. Новый тумблер по умолчанию выключен; OFF — стоковая отправка gif.

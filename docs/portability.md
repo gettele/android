@@ -18,7 +18,7 @@
 
 ## Методика
 
-Каждый из 127 исходных патчей и каждый из 206 новых (0125–0322 и очередь `lib_ui` 0001–0008, текущая нумерация десктопа) прочитан; оценивалась переносимость **фичи** (не кода — C++/Qt-реализация tele не переиспользуется), с проверкой:
+Каждый из 127 исходных патчей и каждый из новых (0125–0332 и очередь `lib_ui` 0001–0008, текущая нумерация десктопа) прочитан; оценивалась переносимость **фичи** (не кода — C++/Qt-реализация tele не переиспользуется), с проверкой:
 
 1. Какие системы tdesktop задействует патч и есть ли Android-эквиваленты (точки внедрения в `MessagesController`, `SendMessagesHelper`, `ChatActivity`, `PhotoViewer`, `MessagesStorage`, `StoriesController`, tgnet и т.д.). Все названные классы сверены по исходникам 12.10.6.
 2. Есть ли уже готовый аналог в inugram (по `series` и `FEATURES.md`) — такие патчи «переносить не нужно», но указание на аналог даёт готовый каркас.
@@ -41,9 +41,9 @@
 
 **Исходные 127 патчей:** 98 переносимы · 20 частично · 9 не переносимы (в текущей нумерации это 124 номера — старые 0043, 0079 и 0118 влиты в 0017, 0077 и 0107).
 
-**Новые 206 патчей (0125–0322 и lib_ui 0001–0008):** ✅ 124 · ⚠️ 17 · ❌ 44 · 🟢 17 · 🔁 4 (после решений мейнтейнера; 🏗 включены в ✅).
+**Новые 216 записей (0125–0332 и lib_ui 0001–0008):** ✅ 128 · ⚠️ 18 · ❌ 49 · 🟢 17 · 🔁 4 (после решений мейнтейнера; 🏗 включены в ✅).
 
-**Всего оценено 333:** ✅ 222 · ⚠️ 37 · ❌ 53 · 🟢 17 · 🔁 4. Расклад по диапазонам новых патчей:
+**Всего оценено 343 записи (332 патча очереди десктопа + 8 lib_ui + 3 исходных патча, влитых в другие при перенумерации):** ✅ 226 · ⚠️ 38 · ❌ 58 · 🟢 17 · 🔁 4. Расклад по диапазонам новых патчей:
 
 | диапазон | патчей | ✅ | ⚠️ | ❌ | 🟢 | 🔁 |
 |---|---|---|---|---|---|---|
@@ -51,10 +51,10 @@
 | 0165–0204 | 40 | 27 | 1 | 8 | 3 | 1 |
 | 0205–0244 | 40 | 33 | 0 | 2 | 5 | 0 |
 | 0245–0284 | 40 | 21 | 1 | 13 | 3 | 2 |
-| 0285–0322 | 38 | 17 | 11 | 6 | 3 | 1 |
+| 0285–0332 | 48 | 21 | 12 | 11 | 3 | 1 |
 | lib_ui 0001–0008 | 8 | 0 | 0 | 7 | 1 | 0 |
 
-Из новых патчей несколько — **целые подсистемы**, перенос которых решён мейнтейнером: деньги (0285–0313, 0317 + Rust/NDK), скриптинг (0302, 0303, 0320, quickjs-ng через NDK), html-пузыри `.tgw` (0314–0316, litehtml через NDK), центр уведомлений (0205 + JNI-хук tgnet), MTProto-консоль (0195, 0218, 0298), студия подарков (0197, 0198, 0201, 0204, 0234) и массовые действия с подарками (0184–0193, 0213, 0217). Подробности — в разборе патчей и [decisions.md](decisions.md).
+Из новых патчей несколько — **целые подсистемы**, перенос которых решён мейнтейнером: деньги (0285–0311, 0314, 0322 + Rust/NDK), скриптинг (0302 с grant `display` и веб-платформой, 0329, quickjs-ng через NDK), html-пузыри `.tgw` (0312–0313, litehtml через NDK), центр уведомлений (0205 + JNI-хук tgnet), MTProto-консоль (0195, 0218, 0298), студия подарков (0197, 0198, 0201, 0204, 0234) и массовые действия с подарками (0184–0193, 0213, 0217). Подробности — в разборе патчей и [decisions.md](decisions.md).
 
 Типичные причины «не переносим» (все 9):
 
@@ -75,13 +75,13 @@
 
 | Категория | Патчи |
 |---|---|
-| Окна, мышь, тачпад, клавиатура, Windows/Qt (оконная геометрия, колесо, PageUp/Home, «Пуск», DirectWrite) | 0131 (по решению мейнтейнера), 0145, 0159, 0191, 0264, 0271, 0273, 0275, 0291, 0297, 0305, 0308, lib_ui 0001, 0003, 0005, 0006, 0008 |
+| Окна, мышь, тачпад, клавиатура, Windows/Qt (оконная геометрия, колесо, PageUp/Home, «Пуск», DirectWrite) | 0131 (по решению мейнтейнера), 0145, 0159, 0191, 0264, 0271, 0273, 0275, 0291, 0297, 0304, 0306, 0318, 0323, 0325, lib_ui 0001, 0003, 0005, 0006, 0008 |
 | Баги и рендер-кэши tdesktop, которых на Android нет (текстовый движок, перерисовка, кэши списков, стили) | 0136, 0174, 0177, 0178, 0180, 0183, 0188, 0250, 0252, 0257, 0270, 0272, 0274, lib_ui 0004 |
-| Нет объекта на Android (rich-редактор и таблицы, экспорт чата, масштаб интерфейса, offline-флаг, шаблоны заголовка, рендер-эффекты) | 0135, 0150 (по решению), 0152, 0163, 0199, 0214, 0216, 0251, 0263, 0277, 0294, 0319, lib_ui 0007 |
+| Нет объекта на Android (rich-редактор и таблицы, экспорт чата, масштаб интерфейса, offline-флаг, шаблоны заголовка, рендер-эффекты) | 0135, 0150 (по решению), 0152, 0163, 0199, 0214, 0216, 0251, 0263, 0277, 0294, lib_ui 0007 |
 
 ---
 
-## Сводная таблица (исходные 127 патчей и новые 0125–0322, lib_ui; текущие номера)
+## Сводная таблица (исходные 127 патчей и новые 0125–0332, lib_ui; текущие номера)
 
 Названия патчей — по именам файлов в `tele/patches/tdesktop/` (очередь `lib_ui` — отдельная, `lib_ui NNNN`).
 
@@ -367,7 +367,7 @@
 | 0278 | включить кошелёк до того, как включит Telegram | ✅ | `AppGlobalConfig.walletAvailable` — один хунк в `ConfigBoolean.get()`; кошелёк портируется (деньги) |
 | 0279 | скрыть дни рождения: баннеры, эффекты, кнопка подарка | ✅ | `BirthdayController.isToday`, подсказки `BIRTHDAY_*` в `DialogsActivity`, `ProfileBirthdayEffect` |
 | 0280 | упоминать нескольких подряд | ✅ | long-press по строке пользователя в `mentionContainer` (решение мейнтейнера), вставка + `@` |
-| 0281 | фильтр поиска в чате по типу сообщения | ✅ | `MediaDataController.searchMessagesInChat` + ряд чипов в поиске `ChatActivity`, включая GIF/кружки |
+| 0281 | фильтр поиска в чате по типу сообщения (+ «от X» вместе с типом) | ✅ | `MediaDataController.searchMessagesInChat` + ряд чипов в поиске `ChatActivity`, включая GIF/кружки; комбинация «от X + тип» (серверный фильтр не работает, дофильтрация локально) — внутри 0281 |
 | 0282 | подсмотреть скрытый «был(а) в сети» | ✅ | `ContactsController.setPrivacyRules(LASTSEEN)` + обязательное восстановление при старте, тумблер выкл. по умолчанию |
 | 0283 | сохранять удалённые чаты и топики | ✅ | `MessagesController` (`TL_updateChannel` → `deleteDialog`), `TopicsController`; вынужденные удаления и свои выход/удаление |
 | 0284 | прототип секретных чатов | 🟢 | секретные чаты в стоке (`SecretChatHelper`) |
@@ -388,27 +388,37 @@
 | 0299 | размытое фото профиля как фон шапки | ✅ | ветка «фото-фон» в `ProfileActivity.TopView`, блюр-инфраструктура уже есть |
 | 0300 | компактные папки «только иконки» | ⚠️ | в стоке нет режима иконок — новая фича в `FilterTabsView` (решение по умолчанию) |
 | 0301 | удалить все мои сообщения из чата | ✅ | `TL_messages_search(from_id=self)` + `MessagesController.deleteMessages`, новый `RemoveMine.kt` |
-| 0302 | скриптинг (QuickJS, grants, TL, перехватчики) | ⚠️ | решение мейнтейнера: порт целиком, quickjs-ng через NDK; виджет-слой/окна десктопа не переносятся |
-| 0303 | grant «display» — спрашивать перед изменением вида | ⚠️ | consent-слой вместе с 0302, хуки в `MessageObject`/`ChatMessageCell`/`DialogCell` |
-| 0304 | залить весь профиль цветом фото | ⚠️ | решение мейнтейнера: полный override `ResourcesProvider` профиля, регрессионно хрупко |
-| 0305 | zoom колесом в media viewer | ❌ | колесо мыши; pinch/double-tap в `PhotoViewer` родные |
-| 0306 | поиск по человеку + по типу сообщения | ✅ | становится актуален из-за решения по 0281 (чипы в поиске чата): `MediaDataController.searchMessagesInChat` + локальная дофильтрация |
-| 0307 | дизайн карточки money подарком | ⚠️ | решение мейнтейнера: 2D и 3D-шейдер; `WalletCardComponent`, `WalletCard3D`, `WalletCard2DView` |
-| 0308 | плавные «глайды» колеса | ❌ | колесо мыши/частота монитора; Android — `RecyclerView` + vsync |
-| 0309 | квота комиссии смены ключа (BoC) | ⚠️ | собственный BoC-парсер десктопа не нужен; проверить, что обновлённый `wallet-engine` (0310) разбирает ячейки с 2 ссылками |
-| 0310 | wallet-engine из gettele/money (сборка) | ✅ | решение мейнтейнера: перенести diff форка на ревизию `jni/wallet-engine` Android, пересобрать Rust |
-| 0311 | импорт кошельков по приватному ключу | ✅ | решение мейнтейнера: порт целиком; `WalletImportFragment`, `GramWalletStorage`, `WalletEngine2`, зависит от 0310 |
-| 0312 | копировать секретные слова без ожидания | ✅ | кнопка «Copy words» в `showRecoveryPhraseAlert` и `WalletSecretPhraseFragment`, очистка буфера через 60 с |
-| 0313 | скрыть «you also have …» над картой | ✅ | `WalletActivity.updateWalletTopPanel` под тумблер `TeleConfig` |
-| 0314 | сборка litehtml для HTML-пузырей | ✅ | решение мейнтейнера: litehtml через NDK (CMake) |
-| 0315 | HTML-карточки: litehtml + QuickJS | ⚠️ | решение мейнтейнера: порт, рендер litehtml в `Canvas` через JNI, скрипты — QuickJS из 0302; `ChatMessageCell` |
-| 0316 | playground-чат и `.tgw` как карточки | ⚠️ | локальный чат по образцу android 0077; сама карточка зависит от 0315 |
-| 0317 | подарки стикерами на карте money | ⚠️ | решение мейнтейнера: 2D и 3D-карта; слой стикеров в `WalletActivity` (`TAB_COLLECTIBLES`), зависит от 0307 |
-| 0318 | подтверждение отправки стикеров из бокса набора | ✅ | второй клик в `StickersAlert.onStickerSelected`, объём как у 0130 (решение по умолчанию) |
-| 0319 | β убрана с blurred-profile-bg | ❌ | переименование опции; β-меток в настройках Android нет |
-| 0320 | веб-платформа, воркеры, файлы, звук, вебвью для скриптов | ⚠️ | решение мейнтейнера: порт целиком; JS-часть переиспользуется, нативные `tele_script_*.cpp` — на JNI/Kotlin |
-| 0321 | восстановить удалённый пост канала из форварда | ✅ | основа — android 0060 (`DeletedMessages.kt`), перехват перехода по шапке форварда в `ChatMessageCell` |
-| 0322 | фильтр стикеров и эмодзи по формату | ✅ | `StickersActivity` (чипы, сортировка) + фильтр поиска в `EmojiView`; формат — по mime документов набора |
+| 0302 | скриптинг (QuickJS, grants, TL, перехватчики, grant «display», веб-платформа) | ⚠️ | решение мейнтейнера: порт целиком, quickjs-ng через NDK; виджет-слой/окна десктопа не переносятся; в 0302 влиты consent-слой «display» (хуки в `MessageObject`/`ChatMessageCell`/`DialogCell`) и веб-платформа (`tele_script_*` на JNI/Kotlin, JS-часть переиспользуется) |
+| 0303 | залить весь профиль цветом фото | ⚠️ | решение мейнтейнера: полный override `ResourcesProvider` профиля, регрессионно хрупко |
+| 0304 | zoom колесом в media viewer | ❌ | колесо мыши; pinch/double-tap в `PhotoViewer` родные |
+| 0305 | дизайн карточки money подарком | ⚠️ | решение мейнтейнера: 2D и 3D-шейдер; `WalletCardComponent`, `WalletCard3D`, `WalletCard2DView` |
+| 0306 | плавные «глайды» колеса | ❌ | колесо мыши/частота монитора; Android — `RecyclerView` + vsync |
+| 0307 | квота комиссии смены ключа (BoC) | ⚠️ | собственный BoC-парсер десктопа не нужен; проверить, что обновлённый `wallet-engine` (0308) разбирает ячейки с 2 ссылками |
+| 0308 | wallet-engine из gettele/money (сборка) | ✅ | решение мейнтейнера: перенести diff форка на ревизию `jni/wallet-engine` Android, пересобрать Rust |
+| 0309 | импорт кошельков по приватному ключу | ✅ | решение мейнтейнера: порт целиком; `WalletImportFragment`, `GramWalletStorage`, `WalletEngine2`, зависит от 0308 |
+| 0310 | копировать секретные слова без ожидания | ✅ | кнопка «Copy words» в `showRecoveryPhraseAlert` и `WalletSecretPhraseFragment`, очистка буфера через 60 с |
+| 0311 | скрыть «you also have …» над картой | ✅ | `WalletActivity.updateWalletTopPanel` под тумблер `TeleConfig` |
+| 0312 | сборка litehtml для HTML-пузырей | ✅ | решение мейнтейнера: litehtml через NDK (CMake) |
+| 0313 | HTML-карточки: litehtml + QuickJS, playground-чат и `.tgw` | ⚠️ | решение мейнтейнера: порт, рендер litehtml в `Canvas` через JNI, скрипты — QuickJS из 0302; `ChatMessageCell`; playground — локальный чат по образцу android 0077, в 0313 влит |
+| 0314 | подарки стикерами на карте money | ⚠️ | решение мейнтейнера: 2D и 3D-карта; слой стикеров в `WalletActivity` (`TAB_COLLECTIBLES`), зависит от 0305 |
+| 0315 | подтверждение отправки стикеров из бокса набора | ✅ | второй клик в `StickersAlert.onStickerSelected`, объём как у 0130 (решение по умолчанию) |
+| 0316 | восстановить удалённый пост канала из форварда | ✅ | основа — android 0060 (`DeletedMessages.kt`), перехват перехода по шапке форварда в `ChatMessageCell` |
+| 0317 | фильтр стикеров и эмодзи по формату | ✅ | `StickersActivity` (чипы, сортировка) + фильтр поиска в `EmojiView`; формат — по mime документов набора |
+| 0318 | глайды в боксах не затирают чаты под ними | ❌ | Qt-специфика (глайды боксов) |
+| 0319 | dock-иконка macOS при обновлении | ❌ | macOS |
+| 0320 | фикс: listing accounts из скрипта не падает | ⚠️ | фикс скриптинга 0302; учесть в `tg`-мосте |
+| 0321 | фикс: html-карточки не падают, когда их сообщение исчезает | ⚠️ | фикс 0313; учесть при реализации |
+| 0322 | подарки в money как gift-cards | ✅ | `WalletActivity`, `WalletCardView`, тайл подарка (`tele_gift_tile`); вместе с 0314 |
+| 0323 | passkey-запросы не считаются фризами | ❌ | Windows (webauthn + watchdog) |
+| 0324 | фикс: подгрузка старых сообщений не падает, когда одно удалено во время загрузки | ✅ | desktop keep-deleted; на android проверить гонку в `DeletedMessages` |
+| 0325 | кнопка «назад» мыши закрывает viewer | ❌ | мышь |
+| 0326 | фикс: `me` и peer-шорткаты работают везде в консоли | ⚠️ | фикс MTProto-консоли (0195) |
+| 0327 | пропущенные сообщения в шоте | ✅ | `TeleShotActivity`/`ShotColumn`, зависит от android 0083 |
+| 0328 | restrict участников из меню сообщения/юзерпика, пикеры ищут людей по числовому id | ✅ | `ChatActivity.fillMessageMenu`, `MessageMenu.kt`, пикеры участников |
+| 0329 | иконки у пунктов меню скриптов | ✅ | `tele/scripting`, зависит от 0302 |
+| 0330 | фикс: нумерация строк не вешает длинные code-блоки | ⚠️ | перф-фикс 0142; проверить android 0183 на длинных блоках |
+| 0331 | отступ первой строки code-блоков (IV-markdown) | ❌ | rich/markdown viewer десктопа, на Android такого нет |
+| 0332 | открытие json/code/text/csv во встроенном viewer | ❌ | встроенного viewer десктопа нет на Android |
 | lib_ui 0001 | fullscreen mini apps покрывают экран (Qt<6) | ❌ | геометрия окна Qt |
 | lib_ui 0002 | неразрывные символы не скроллят поле вбок | 🟢 | multiline `EditText` переносит длинные слова по символам |
 | lib_ui 0003 | реальные метрики шрифтов на Windows | ❌ | GDI/DirectWrite, только Windows |
@@ -1842,6 +1852,7 @@
 - **Суть:** в поиске по чату фильтры: фото, видео, файлы, музыка, голосовые, кружки, гифки, ссылки; без текста — все сообщения типа.
 - **Вердикт:** ✅ переносим — решение по умолчанию: ряд чипов в поиске по чату, включая GIF и кружки.
 - **Android:** `MediaDataController.searchMessagesInChat` (параметр фильтра `TL_inputMessagesFilter*`), UI в `ChatActivity.searchItem`; разрешить пустой запрос при выбранном типе; связь с 0168 (regex-поиск). `TeleConfig.SEARCH_TYPES`. Effort M.
+- **Внутри 0281 (прежний отдельный номер «поиск по человеку + типу»):** фикс десктопа: серверный «от X» + фильтр типа не работает, tele спрашивает «в обе стороны» и дофильтровывает локально. На Android в отчёте был ❌ (комбинации «от X + тип» нет); решение по умолчанию по 0281 делает её релевантной: `MediaDataController.searchMessagesInChat` + локальная фильтрация по `MessageObject`; effort M.
 
 #### 0282 — peek at a hidden last seen
 - **Суть:** при скрытом вашем «был(а) в сети» tele на миг добавляет собеседника в разрешённые (`account.setPrivacy`), читает статус и откатывает правила.
@@ -1858,7 +1869,9 @@
 - **Вердикт:** 🟢 уже в стоке — секретные чаты есть полностью.
 - **Android:** `SecretChatHelper`, `EncryptedChat`; связанные правки уже сделаны (android 0021–0024).
 
-### 0285–0322
+### 0285–0332
+
+номера 0303+ приведены к текущей нумерации десктопа; прежние номера (старые версии этого документа, PATCHLIST и гайдов) — в [desktop-numbers.md](desktop-numbers.md).
 
 #### 0285 — update wallet secret phrase without backup
 - **Суть:** тумблер добавляет в «Keys & backup» кнопку «Update secret phrase» для кошелька без бэкапа: новые слова, старые перестают работать, сеть берёт небольшую комиссию; переиспользуется поток ротации ключа.
@@ -1946,109 +1959,146 @@
 - **Android:** новый `tele/helpers/RemoveMine.kt`: `TL_messages_search` с `InputPeerSelf` + `MessagesController.deleteMessages(..., forAll=true)`; меню в `ChatActivity`, `DialogsActivity`, `TopicsFragment`; учесть android 0060 (kept deleted не считать удалёнными); настройка в `MODE_MENU`. Effort M.
 
 #### 0302 — scripting prototype
-- **Суть:** TS/JS-скрипты (`defineScript`, grants, consent-бокс, hot reload, raw-вызов любого метода, `onUpdate`, middleware `BeforeSend/BeforeResult/BeforeUpdate`, перехваты отправки), ~30k строк собственного C++ + `runtime.js`; документация `docs/scripting.md`.
-- **Вердикт:** ⚠️ решение мейнтейнера: портировать целиком, quickjs-ng через NDK; десктопные UI-поверхности (виджет-слой, окна, Monaco) не переносятся.
-- **Android:** воронка `ConnectionsManager.sendRequest`, апдейты — `MessagesController.processUpdates`, отправка — `SendMessagesHelper.sendMessage`; TL-мост поверх Java-классов `TLObject` (схемы `.tl` нет, `TLRPC.java` не правим). Папка скриптов — `getExternalFilesDir()` + SAF-импорт, отдельный поток скриптов (решение по умолчанию). Семейство «скриптинг», зависит от 0088 (инспектор). Effort L.
+- **Суть:** TS/JS-скрипты (`defineScript`, grants, consent-бокс, hot reload, raw-вызов любого метода, `onUpdate`, middleware `BeforeSend/BeforeResult/BeforeUpdate`, перехваты отправки), ~30k строк собственного C++ + `runtime.js`; документация `docs/scripting.md`. В 0302 влиты grant `display` (consent-бокс объясняет простыми словами, что скрипт может менять вид сообщений и людей) и веб-платформа (`fetch/WebSocket/URL/crypto.subtle/Intl/Workers`, файловая область, звук, webview-панели, сторис, подарки/stars, групповые звонки, media viewer, кнопки под сообщениями, npm-пакеты, обновления скриптов по ссылке, каталог на gettele.app).
+- **Вердикт:** ⚠️ решение мейнтейнера: портировать целиком, включая веб-платформу; quickjs-ng через NDK; десктопные UI-поверхности (виджет-слой, окна, Monaco; `panels`, `mediaviewer`, `groupcalls`, `chatui`) не переносятся либо адаптируются под Android по мере необходимости.
+- **Android:** воронка `ConnectionsManager.sendRequest`, апдейты — `MessagesController.processUpdates`, отправка — `SendMessagesHelper.sendMessage`; TL-мост поверх Java-классов `TLObject` (схемы `.tl` нет, `TLRPC.java` не правим). `AlertDialog`-консент для `display` в `tele/scripting`, хуки — `MessageObject.messageText`, `ChatMessageCell`, `DialogCell`. Нативные `tele_script_*.cpp` — на JNI/Kotlin; `Resources/tele/scripting/*.js` (runtime, web, websocket, crypto, intl, worker) движко-независимы; сеть скриптов — OkHttp с проверкой offline-флагов. Папка скриптов — `getExternalFilesDir()` + SAF-импорт, отдельный поток скриптов (решение по умолчанию). Семейство «скриптинг», зависит от 0088 (инспектор). Effort L.
 
-#### 0303 — ask before changing how messages and people look
-- **Суть:** новый grant `display`, consent-бокс объясняет простыми словами.
-- **Вердикт:** ⚠️ реализуется вместе с 0302 (решение мейнтейнера: скриптинг целиком).
-- **Android:** `AlertDialog`-консент в `tele/scripting`; хуки — `MessageObject.messageText`, `ChatMessageCell`, `DialogCell`. Зависит от 0302; effort M.
-
-#### 0304 — fill the whole profile with the photo color
+#### 0303 — fill the whole profile with the photo color
 - **Суть:** при 0299 опция «Fill the whole profile»: профиль перекрашивается палитрой от нижнего края фото (контраст ≥ 4.5), `window_palette` подменяет слоты.
 - **Вердикт:** ⚠️ решение мейнтейнера: полный override `ResourcesProvider`; «один в один» с Qt-палитрой не выйдет.
 - **Android:** `ProfileActivity` (`listView`, ячейки секций, `getThemedColor`), подмена `ResourcesProvider` на время профиля по образцу тем чата с peer color. Регрессионно хрупко. Зависит от 0299; effort L.
 
-#### 0305 — wheel zoom in the media viewer
+#### 0304 — wheel zoom in the media viewer
 - **Суть:** ctrl-колесо зумит/переключает фото.
 - **Вердикт:** ❌ колесо мыши; pinch/double-tap в `PhotoViewer` родные.
 - **Android:** —
 
-#### 0306 — search a person's messages by type
-- **Суть:** фикс десктопа: серверный «от X» + фильтр типа не работает, tele спрашивает «в обе стороны» и дофильтровывает локально.
-- **Вердикт:** ✅ в отчёте был ❌ (в Android нет комбинации «от X + тип»); решение по умолчанию по 0281 (чипы в поиске чата, включая GIF/кружки) делает фикс релевантным.
-- **Android:** `MediaDataController.searchMessagesInChat` + локальная фильтрация по `MessageObject`. Зависит от 0281; effort M.
-
-#### 0307 — money card design from a gift
+#### 0305 — money card design from a gift
 - **Суть:** карточка money берёт цвета, паттерн и модель коллекционного подарка (меню «⋮» → card design); отправленные переводы рисуются теми же цветами.
 - **Вердикт:** ⚠️ решение мейнтейнера: 2D и 3D-шейдер; Android-карта — GL/Canvas с собственными флеками, не простая заливка.
 - **Android:** `WalletCardComponent` (`WalletCard3D`+`WalletCardGLRenderer`, `WalletCard2DView`), `WalletCardFlecks`, `WalletActionLayout`; источник — `TL_starGiftUnique` (как в `StarGiftSheet`/`Gifts.kt`); страница card design в `WalletActivity`. Зависит от 0278; effort L.
 
-#### 0308 — smooth wheel glides in chats
+#### 0306 — smooth wheel glides in chats
 - **Суть:** плавные «глайды» колеса мыши, учёт частоты монитора, кэш-слой отрисовки.
 - **Вердикт:** ❌ колесо мыши; Android — `RecyclerView` + vsync.
 - **Android:** —
 
-#### 0309 — key-change fee quote (BoC)
+#### 0307 — key-change fee quote (BoC)
 - **Суть:** `gram_boc.cpp` принимал ячейку лишь с 1 ссылкой, при смене ключа со старым ключом их 2.
 - **Вердикт:** ⚠️ собственный парсер десктопа не нужен: BoC обрабатывает Rust-движок.
-- **Android:** после 0310 проверить, что движок (`gram-wallet`: `is_valid_cell_boc`, `message_body_hash`) принимает ячейки с 2 ссылками; при необходимости актуализировать ревизию сабмодуля. Зависит от 0285, 0310; effort S.
+- **Android:** после 0308 проверить, что движок (`gram-wallet`: `is_valid_cell_boc`, `message_body_hash`) принимает ячейки с 2 ссылками; при необходимости актуализировать ревизию сабмодуля. Зависит от 0285, 0308; effort S.
 
-#### 0310 — wallet-engine from gettele/money (build)
+#### 0308 — wallet-engine from gettele/money (build)
 - **Суть:** сборка движка берёт форк `gettele/money` (ветка `tele/<rev>/5` поверх `i582/wallet-engine`) с поддержкой приватных ключей.
 - **Вердикт:** ✅ решение мейнтейнера: перенести diff форка на Android-ревизию движка и пересобрать Rust.
 - **Android:** сабмодуль `jni/wallet-engine` (gitlink другой ревизии), `jni/gram-wallet/wallet-engine.patch`, `jni/prebuild/include/wallet-engine/`, `rust-toolchain.toml`; ветка форка привязана к ревизии десктопа — нужен re-port. Семейство «деньги»; effort L.
 
-#### 0311 — import wallets by private key
+#### 0309 — import wallets by private key
 - **Суть:** импорт кошелька по приватному ключу, такой кошелёк не бэкапится в Telegram, позже можно перейти на 12 слов (ротация); маркер `tele/private-key-wallets`, квиз-слова, очистка буфера через 60 с.
 - **Вердикт:** ✅ решение мейнтейнера: портировать включая приватные ключи; безопасность критична.
-- **Android:** `WalletImportFragment`, `GramWallet.importWallet`, `GramWalletStorage.init` (тип секрета сейчас — слова), `WalletEngine2` (вариант «по ключу» из форк-движка); маркер в таблице `tele_*`; `ClipboardManager` + `Handler` 60 с; `MODE_MONEY` (off). Зависит от 0310, 0278; effort L.
+- **Android:** `WalletImportFragment`, `GramWallet.importWallet`, `GramWalletStorage.init` (тип секрета сейчас — слова), `WalletEngine2` (вариант «по ключу» из форк-движка); маркер в таблице `tele_*`; `ClipboardManager` + `Handler` 60 с; `MODE_MONEY` (off). Зависит от 0308, 0278; effort L.
 
-#### 0312 — copy secret words without waiting
+#### 0310 — copy secret words without waiting
 - **Суть:** в каждом списке слов ссылка «Copy Words», «Continue» не ждёт 10 секунд.
 - **Вердикт:** ✅ таймера в Android нет, остаётся кнопка копирования; default off (правило AGENTS).
 - **Android:** `WalletKeysBackupFragment.showRecoveryPhraseAlert`, `WalletSecretPhraseFragment`, `WalletTestPhraseFragment`; `AndroidUtilities.addToClipboard` + очистка через 60 с. Effort S.
 
-#### 0313 — hide the "you also have …" rows above the card
+#### 0311 — hide the "you also have …" rows above the card
 - **Суть:** (off) скрыть строки других балансов над картой; ПКМ — «Hide these rows».
 - **Вердикт:** ✅ переносим.
 - **Android:** `WalletActivity.updateWalletTopPanel` — три `walletTopPanel.setViewVisible` (`waltButton`, `oldWalletsButton`, `gramEarningsButton`) под `TeleConfig`; быстрый «hide» — `ItemOptions` по long-press. Effort S.
 
-#### 0314 — build litehtml for HTML bubbles
-- **Суть:** CMake-зависимость litehtml для HTML-карточек (0315).
+#### 0312 — build litehtml for HTML bubbles
+- **Суть:** CMake-зависимость litehtml для HTML-карточек (0313).
 - **Вердикт:** ✅ решение мейнтейнера: рендерер litehtml через NDK.
 - **Android:** CMake/NDK в `TMessagesProj/jni`. Семейство «litehtml»; effort M.
 
-#### 0315 — HTML cards: litehtml + QuickJS
+#### 0313 — HTML cards: litehtml + QuickJS
 - **Суть:** `.tgw`-файлы показываются как HTML-карточки, скрипты — в QuickJS; лимиты (≤64 картинок, ≤4 МБ, 5000 элементов, глубина 256), `light-dark()`; другие клиенты видят файл.
 - **Вердикт:** ⚠️ решение мейнтейнера: порт, рендер litehtml; перенос ~2.2k строк `tele_html.cpp` на `Canvas` JNI.
-- **Android:** `ChatMessageCell` (новый тип блока для документа `*.tgw` по `file_name`) + контейнер litehtml на `Canvas`; скрипты — QuickJS из 0302. Зависит от 0302, 0314; effort L.
+- **Android:** `ChatMessageCell` (новый тип блока для документа `*.tgw` по `file_name`) + контейнер litehtml на `Canvas`; скрипты — QuickJS из 0302. Зависит от 0302, 0312; effort L.
+- **Внутри 0313 (прежний отдельный номер «playground-чат и `.tgw`»):** локальный чат-песочница, где написанное становится карточкой; носитель — по образцу android 0077 (локальный tele-чат, `TeleChangelog`), `tele/ui/HtmlPlayground`, `ChatMessageCell`.
 
-#### 0316 — playground chat and .tgw as HTML cards
-- **Суть:** локальный чат-песочница, где написанное становится карточкой; полученные `.tgw` открываются карточками.
-- **Вердикт:** ⚠️ носитель реализуем, сама карточка зависит от 0315.
-- **Android:** по образцу android 0077 (локальный tele-чат, `TeleChangelog`); `tele/ui/HtmlPlayground`, `ChatMessageCell`. Зависит от 0315; effort L.
-
-#### 0317 — gifts as stickers on the money card
+#### 0314 — gifts as stickers on the money card
 - **Суть:** подарки перетаскиваются на карту money как стикеры (в боксе card design или во вкладке collectibles), клик снимает.
 - **Вердикт:** ⚠️ решение мейнтейнера: карта 2D и 3D; сложность — драг/анимации.
-- **Android:** `WalletActivity` (`TAB_COLLECTIBLES`, `fillCollectibles`, `CollectibleCell`) + слой стикеров поверх `WalletCardView`; `GramWallet.CollectiblesList`. Зависит от 0307; effort L.
+- **Android:** `WalletActivity` (`TAB_COLLECTIBLES`, `fillCollectibles`, `CollectibleCell`) + слой стикеров поверх `WalletCardView`; `GramWallet.CollectiblesList`. Зависит от 0305; effort L.
 
-#### 0318 — confirm stickers sent from the set box
+#### 0315 — confirm stickers sent from the set box
 - **Суть:** продолжение 0130: второй клик и подсветка выбранного для `StickerSetBox`.
 - **Вердикт:** ✅ объём по 0130 — решение по умолчанию (следуем десктопу).
 - **Android:** `StickersAlert.onStickerSelected` (стр. ~202 и ~1189) — гейт «второй клик» с общим `TeleSendConfirm`, подсветка в `StickerEmojiCell`. Зависит от 0130; effort S.
 
-#### 0319 — β removed from blurred-profile-bg
-- **Суть:** переименование опции (убран маркер β).
-- **Вердикт:** ❌ нечего переносить.
-- **Android:** —; β-пометок в настройках Android нет, тумблер 0299 живёт без неё.
-
-#### 0320 — web platform and more APIs for scripts
-- **Суть:** расширение 0302: `fetch/WebSocket/URL/crypto.subtle/Intl/Workers`, файловая область, звук, webview-панели, сторис, подарки/stars, групповые звонки, media viewer, кнопки под сообщениями, npm-пакеты, обновления скриптов по ссылке, каталог на gettele.app.
-- **Вердикт:** ⚠️ решение мейнтейнера: портировать включая веб-платформу; UI-поверхности (`panels`, `mediaviewer`, `groupcalls`, `chatui`) адаптируются под Android по мере необходимости.
-- **Android:** `tele_script_*.cpp` на JNI/Kotlin; `Resources/tele/scripting/*.js` (runtime, web, websocket, crypto, intl, worker) движко-независимы; сеть скриптов — OkHttp с проверкой offline-флагов. Зависит от 0302; effort L.
-
-#### 0321 — restore a deleted channel post from a forward
+#### 0316 — restore a deleted channel post from a forward
 - **Суть:** при открытии удалённого поста канала из форварда tele восстанавливает пост из пересланного, помечает «kept deleted» и подсказкой «recovered from forward».
 - **Вердикт:** ✅ переносим.
 - **Android:** основа — android 0060 (`DeletedMessages.kt`: `archiveMessage`, `getMessage`, `isKept`); перехват клика по шапке форварда в `ChatMessageCell` → `ChatActivity.scrollToMessageId` по `fwd_from.channel_post`, сборка `TLRPC.Message` из пересланного (альбом по `grouped_id`); маркер — в fork-таблице и в тултипе времени. Зависит от 0019 (keep deleted); effort M.
 
-#### 0322 — filter stickers and emoji by format
+#### 0317 — filter stickers and emoji by format
 - **Суть:** в списках установленных стикеров/эмодзи фильтр по формату (static/animated/video/mixed), сортировка, «архивировать/удалить все показанные»; поиск панели тоже фильтрует по формату.
 - **Вердикт:** ✅ групповое архивирование в стоке есть (`MENU_ARCHIVE`), нужны фильтр, сортировка и формат.
 - **Android:** `StickersActivity` (`fillItems`, `currentType`, `MediaDataController.getStickerSets(type)`); формат по mime документов набора (`application/x-tgsticker` — animated, `video/webm` — video); фильтр поиска — `EmojiView` (`EmojiSearchAdapter`/`StickersSearchAdapter`); чипы над списком, тумблер в `MODE_INTERFACE`. Effort M.
+
+#### 0318 — glides in boxes no longer blank the chats under them
+- **Суть:** фикс десктопа: глайд бокса не затирает чаты под ним.
+- **Вердикт:** ❌ Qt-специфика, на Android такого рендера нет.
+
+#### 0319 — updates on macOS keep the dock icon
+- **Суть:** при обновлении на macOS сохраняется dock-иконка.
+- **Вердикт:** ❌ macOS.
+
+#### 0320 — listing accounts from a script no longer crashes
+- **Суть:** фикс краша при listing accounts из скрипта.
+- **Вердикт:** ⚠️ фикс скриптинга 0302; учесть в `tg`-мосте.
+
+#### 0321 — html cards no longer crash when their message goes away
+- **Суть:** фикс краша html-карточек, когда сообщение пропало.
+- **Вердикт:** ⚠️ фикс 0313; учесть при реализации.
+
+#### 0322 — gifts in money look like gift cards
+- **Суть:** подарки в money рисуются gift-карточками (`tele_gift_tile`), а не размытой аватаркой.
+- **Вердикт:** ✅ переносим вместе с 0314.
+- **Android:** `WalletActivity`, `WalletCardView`; зависит от 0314; effort S.
+
+#### 0323 — passkey prompts no longer count as freezes
+- **Суть:** passkey-запрос не считается фризом (webauthn + watchdog).
+- **Вердикт:** ❌ Windows.
+
+#### 0324 — loading older messages no longer crashes on a message deleted during load
+- **Суть:** фикс краша при подгрузке старых сообщений, если одно удалено во время загрузки (keep deleted).
+- **Вердикт:** ✅ на Android проверить гонку в `DeletedMessages` при подгрузке истории; effort S.
+
+#### 0325 — close the media viewer with mouse back
+- **Суть:** кнопка «назад» мыши закрывает viewer.
+- **Вердикт:** ❌ мышь.
+
+#### 0326 — `me` and other peer shortcuts work everywhere in the console
+- **Суть:** фикс MTProto-консоли: шорткаты `me` и peer работают везде.
+- **Вердикт:** ⚠️ фикс 0195; учесть при реализации консоли.
+
+#### 0327 — show skipped messages in shots
+- **Суть:** шот показывает счётчик пропущенных сообщений.
+- **Вердикт:** ✅ расширение шота (android 0083, `TeleShotActivity`/`ShotColumn`); effort S.
+
+#### 0328 — restrict members from message menus and find them by id
+- **Суть:** restrict участника из меню сообщения и юзерпика; пикеры находят людей по числовому id.
+- **Вердикт:** ✅ `ChatActivity.fillMessageMenu`, `MessageMenu.kt`, пикеры участников; effort M.
+
+#### 0329 — let scripts give their menu items icons
+- **Суть:** скрипт задаёт иконку пункта меню.
+- **Вердикт:** ✅ вместе с 0302; effort S.
+
+#### 0330 — line numbers no longer freeze long code blocks
+- **Суть:** перф-фикс нумерации строк code-блоков.
+- **Вердикт:** ⚠️ фикс 0142; проверить android 0183 на длинных блоках.
+
+#### 0331 — code blocks keep the indent of their first line
+- **Суть:** отступ первой строки code-блоков в IV-markdown.
+- **Вердикт:** ❌ rich/markdown viewer десктопа, на Android такого нет.
+
+#### 0332 — open json, code, text and csv files in tele
+- **Суть:** json/code/text/csv открываются во встроенном viewer.
+- **Вердикт:** ❌ встроенного viewer десктопа нет на Android.
 
 ### lib_ui 0001–0008
 
@@ -2083,7 +2133,7 @@
 - **Android:** —
 
 #### lib_ui 0007 — label `exchangeText`, table `rowSpans`
-- **Суть:** API Qt-виджетов под виджет-слой скриптов (0302/0320).
+- **Суть:** API Qt-виджетов под виджет-слой скриптов (0302).
 - **Вердикт:** ❌ Qt-виджеты; виджет-слой скриптов на Android не переносится.
 - **Android:** —
 
@@ -2139,7 +2189,7 @@
 - **Хранение локальных списков** (алиасы 0071/0103/0124, игнор 0016, имена 0078, пины 0123, папки 0124, версии правок 0018/0062): только fork-хранилище + хуки на stock load/save.
 - **Офф-скрин рендер** (шоты 0087/0107/0114): `ChatMessageCell` умеет рисовать в произвольный Canvas, но потребуется собрать «виртуальный» чат (фон, пузыри, тема) — самая трудоёмкая из переносимых фич.
 - **tele-server фичи** (0009, 0037, 0091, 0108): перезапись флагов пира в `MessagesController.putUser/processChat` + один HTTPS-фетч; архитектура сервера описана в README tele и платформенно-нейтральна.
-- **Нативные подсистемы** (центр уведомлений 0205, деньги 0310/0311, скриптинг 0302, litehtml 0314): первые хунки форка в `jni/` и первые сторонние нативные библиотеки (quickjs-ng, litehtml, Rust wallet-engine) — каждая в своём CMake-подкаталоге, сборка под все ABI; в stock-файлы `jni/` идёт один вызов, остальное — новые файлы.
+- **Нативные подсистемы** (центр уведомлений 0205, деньги 0308/0309, скриптинг 0302, litehtml 0312): первые хунки форка в `jni/` и первые сторонние нативные библиотеки (quickjs-ng, litehtml, Rust wallet-engine) — каждая в своём CMake-подкаталоге, сборка под все ABI; в stock-файлы `jni/` идёт один вызов, остальное — новые файлы.
 - **Приватность поверх списка игнора** (0166, 0227, 0228, 0229): сначала база (список игнора 0016/0073, per-chat ghost и ghost-schedule из 0032), только потом патчи, которые на неё опираются; фильтр уведомлений в `NotificationsController` проектируется сразу под все четыре.
 - **Тумблеры десктопа, включённые по умолчанию** (0134, 0147, 0156): на Android default off — правило форка важнее десктопного дефолта.
 

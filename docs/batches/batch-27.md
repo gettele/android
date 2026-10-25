@@ -4,7 +4,7 @@
 
 1. Руководство описывает Android-перенос строк пачки 27 из `docs/PATCHLIST.md`.
 2. Номера в заголовках и ниже — текущие номера desktop-очереди, не номера Android patch-файлов.
-3. Объём пачки: 0288, 0290, 0313, 0286, 0296, 0307 и 0317.
+3. Объём пачки: 0288, 0290, 0311, 0286, 0296, 0305, 0314 и 0322.
 4. Порядок строк реализации ниже выбирает безопасные зависимости, не меняет публичный список PATCHLIST.
 5. Деньги здесь означает существующий Telegram Wallet/TON-кошелёк, а не Stars-баланс.
 6. На Android дерево `tele` уже содержит полноценный Wallet: `GramWallet`, `WalletActivity`, `WalletCardComponent`, `WalletCardView`, `WalletCard3D`, `WalletCard2DView`, `WalletActionLayout` и `WalletCardGLRenderer`.
@@ -18,7 +18,7 @@
 14. Пачка зависит от batch 23 для общих local-passcode / dangerous-action решений, если wallet-карта, импорт или переходы требуют подтверждений.
 15. Не добавлять новую проверку пароля к чтению карты, баланса или истории; подтверждение сохраняется только там, где его требует stock wallet.
 16. Патчи 0287, 0289, 0292 и 0297 не добавляют работу этой пачке: 0287/0289/0292 покрыты stock, 0297 относится к Qt-окну.
-17. По решению мейнтейнера 0307 и 0317 включают оба пути карты: 2D Canvas и 3D GL/шейдер.
+17. По решению мейнтейнера 0305 и 0314 включают оба пути карты: 2D Canvas и 3D GL/шейдер.
 18. Не упрощать 3D-дизайн до постоянной 2D-карты: низкий режим качества может принудительно выбирать 2D, но функциональность должна быть доступна.
 19. Desktop-патчи 0286 и 0296 должны ссылаться на `tonscan.org`, как зафиксировано в PATCHLIST/decisions.
 20. Не подменять заданный endpoint `tonscan.org` серверным `tonBlockchainExplorerUrl` без решения мейнтейнера.
@@ -40,13 +40,13 @@
 33. `WalletCardComponent` создаёт `WalletCard2DView` или `WalletCardView`; 3D реализация — через stock wallet GL renderer.
 34. `WalletCardComponent` учитывает power-save режим и форсирует 2D при энергосбережении.
 35. `WalletCardComponent` управляет балансом, QR, engraving, наклоном и переходом баланса на ActionBar; не ломать эти переходы при замене материала.
-36. Desktop 0307 — большой самостоятельный патч: настройки выбора подарочной темы, локальное сохранение выбора, загрузка/проверка владения collectible, отрисовка gift-material на карте и исходящих transfer cards.
-37. Desktop 0317 добавляет draggable gifts/stickers на карту; Android данные коллекций уже доступны в wallet UI.
+36. Desktop 0305 — большой самостоятельный патч: настройки выбора подарочной темы, локальное сохранение выбора, загрузка/проверка владения collectible, отрисовка gift-material на карте и исходящих transfer cards.
+37. Desktop 0314 добавляет draggable gifts/stickers на карту; Android данные коллекций уже доступны в wallet UI.
 38. Источником оформления выступают уникальные подарки (`TL_starGiftUnique`) и их backdrop/pattern/model.
 39. Desktop 0286/0296 используют tonscan.org; PATCHLIST разрешает «copy»/«open» из истории и сообщения.
 40. Desktop 0288 выключает wallet целиком и нормализует отображение переводов; Android использует единый флаг `AppGlobalConfig.walletAvailable`.
 41. При 0288 предпочтение tele должно побеждать stock/server enablement; 0278 наоборот форсирует доступность, значит «Turn off Money» имеет приоритет.
-42. PATCHLIST effort для пачки: S×5, L×2. Все оценки сохранять при разделении коммитов.
+42. PATCHLIST effort для пачки: S×6, L×2. Все оценки сохранять при разделении коммитов.
 43. [INFERENCE] Точный текущий номер Android settings-search ID для каждого нового wallet-пункта надо сверить с деревом `TeleSearch` на момент реализации; диапазон 1420–1439 зарезервировать для этой пачки согласно заданию.
 44. [INFERENCE] Не предполагать, что текущий search registry автоматически назначит эти ID; зарегистрировать их явно и проверить уникальность локальным поиском по существующим ID.
 45. [INFERENCE] Все названия hook-функций ниже — целевые семантические якоря; перед изменением найти их точные определения/перегрузки на актуальной ветке `tele`.
@@ -55,22 +55,23 @@
 
 46. Перед началом подтвердить, что batch 26 импортирован/собран и ветка `tele` содержит ожидаемые wallet-engine изменения.
 47. Также проверить batch 23 для password/action primitives; использовать готовый механизм, не заводить второй passcode.
-48. Порядок коммитов: сначала 0288, затем 0290, 0313, 0286, 0296, после этого 0307 и 0317.
+48. Порядок коммитов: сначала 0288, затем 0290, 0311, 0286, 0296, после этого 0305, 0314 и 0322.
 49. 0288 — `feat: turn off money`, S.
 50. 0290 — `feat: dim wallet address groups`, S.
-51. 0313 — `feat: hide wallet balances`, S.
+51. 0311 — `feat: hide wallet balances`, S.
 52. 0286 — `feat: copy wallet transaction links`, S.
 53. 0296 — `feat: open transfer transaction links`, S.
-54. 0307 — `feat: design wallet card with gifts`, L.
-55. 0317 — `feat: place gifts on wallet card`, L.
+54. 0305 — `feat: design wallet card with gifts`, L.
+55. 0314 — `feat: place gifts on wallet card`, L.
+55a. 0322 — `feat: gift cards in money`, S.
 56. Subject коммита — imperative lowercase, максимум пять слов, не включать desktop номер в заголовок.
 57. Каждый патч — отдельный commit в Android tree, экспортируется в очередь; соответствующие PATCHLIST и `features.md` обновления включить в процесс согласно репо-правилам.
 58. Рабочие изменения выполняются в `Telegram` branch `tele`; не редактировать экспортированные `.patch` вручную.
 59. Точный номер Android patch после очереди заранее не обещать: format-patch нумеруется текущей позицией.
 60. 0288 первым задаёт главный поведенческий контракт для остальных: скрытая money UI не должна открываться из ссылок или переводов.
-61. 0290 и 0313 локальны, не зависят от explorer.
+61. 0290 и 0311 локальны, не зависят от explorer.
 62. 0286 вводит общий URL-builder, 0296 использует его, поэтому эти два коммита строго упорядочены.
-63. 0307 строит выбор дизайна/передачу theme; 0317 добавляет размещение gift-стикеров только поверх готового дизайна.
+63. 0305 строит выбор дизайна/передачу theme; 0314 добавляет размещение gift-стикеров только поверх готового дизайна.
 64. Не начинать L-карту до проверки доступности batch 26 API и 3D renderer в обеих режимах.
 65. Перед каждым патчем проверить settings group, search registry, export/import preferences и существующий stock equivalent.
 66. Если текущий stock содержит требуемое поведение, не дублировать его: зафиксировать отсутствие работы в PATCHLIST примечании.
@@ -142,7 +143,7 @@
 123. Рецайкл: если адресная view переиспользуется, каждый bind должен полностью очистить старые spans прежде чем применять новое значение.
 124. Отдельно сверить детали транзакции, экран импорта, wallet card embossing; последний может не входить в 0290, если поведение изменения карты не требуется.
 
-## 0313 — скрыть дополнительные балансы над картой (S)
+## 0311 — скрыть дополнительные балансы над картой (S)
 
 125. Цель — скрыть дополнительный баланс других/старых кошельков и earnings, не скрывая текущий wallet balance.
 126. Якорь — `WalletActivity.updateWalletTopPanel()` и его три visibility calls для `waltButton`, `oldWalletsButton`, `gramEarningsButton`.
@@ -190,7 +191,7 @@
 162. Учитывать pending transfer: если `findTransaction` ссылается на pending запись без on-chain hash, опции скрыты.
 163. Не выводить «transaction not found» toast просто из-за того, что сервер ещё не загрузил историю.
 
-## 0307 — дизайн карты по подарку (L)
+## 0305 — дизайн карты по подарку (L)
 
 164. Цель — выбрать collectible gift и взять из него цвета/backdrop/pattern/model для кошельковой карты.
 165. Android интерфейс уже абстрагирует рендер через `WalletCardComponent`; использовать оба backend, не переписывать wallet view.
@@ -231,7 +232,7 @@
 200. Выбор цвета текста должен иметь читаемый контраст относительно фона в светлой и тёмной системной теме.
 201. Сохранять выбор дизайна отдельно от stars purchase history и wallet transaction history.
 
-## 0317 — подарки-стикеры на карте (L)
+## 0314 — подарки-стикеры на карте (L)
 
 202. Цель — перетаскивать принадлежащие пользователю collectible gifts на плоскость карты и убирать их повторным тапом/контекстным действием.
 203. Desktop behavior переносить на Android touch drag, а не имитировать mouse drag.
@@ -329,21 +330,21 @@
 286. Проверить batch 23 local passcode и wallet passcode before/after NO_MONEY; не должно быть обхода подтверждения транзакции.
 287. На двух account slots подтвердить независимость истории, balance, settings и card design.
 288. Для 0290 проверить address details, import screen, short address, long address, copy raw address, RTL и крупный шрифт; off/on.
-289. Для 0313 проверить balance combinations: none, previous wallet, earnings, both; restart fragment/rotate; off/on.
+289. Для 0311 проверить balance combinations: none, previous wallet, earnings, both; restart fragment/rotate; off/on.
 290. Для 0286 проверить transaction sheet copy URL, open URL и long-press history row; сравнить с `https://tonscan.org/transaction/<hash>`.
 291. При history pending/error/empty hash проверить отсутствие explorer action; убедиться, что тап по обычному ряду работает как прежде.
 292. Для 0296 открыть outgoing и incoming transfer message; тестировать доступную транзакцию, pending, history-not-loaded и Wallet off.
 293. Проверить правильный `currentAccount` для одинаковых сообщений/tx in separate account slots.
 294. В тестовом режиме проверить network logs: Tonscan не вызывается без explicit open, приложение не делает explorer fetch и не передаёт wallet data tele-server.
 295. Проверить действие copy без network и содержимое clipboard; не попадать в clipboard seed/private key.
-296. Для 0307 проверить default stock design off; включить gift design; выбрать принадлежащий collectible gift; повторно открыть Wallet — выбор persisted локально.
+296. Для 0305 проверить default stock design off; включить gift design; выбрать принадлежащий collectible gift; повторно открыть Wallet — выбор persisted локально.
 297. Проверить gift selection после удаления/недоступности gift, offline, asset missing и смены аккаунта: корректный stock fallback, crash-free.
 298. Проверить 2D Canvas card на низкой производительности и 3D GLSurface на GPU; оба показывают тему, QR, balance, address, flecks и overlays.
 299. Проверить GL context loss, background/foreground, orientation, fragment recreation и быстрое закрытие sheet при создании модели.
 300. Проверить power saver, Android LiteMode и low performance: 2D/облегчённый режим без лишних непрерывных кадров.
 301. Проверить contrast и читабельность balance/address/title на светлой/тёмной теме и для разных backdrop colors.
 302. Проверить, что выбор подарка не изменяет wallet address, QR payload, transaction signing, balance и отправку TON.
-303. Для 0317 drag collectible на карту, cancel, drop, move, remove, rotate, reopen; placement восстанавливается по normalized position.
+303. Для 0314 drag collectible на карту, cancel, drop, move, remove, rotate, reopen; placement восстанавливается по normalized position.
 304. Проверить gesture scroll history vs drag, RecyclerView recycling, быстрый tab switch и detach durante animation.
 305. Проверить accessible actions add/remove sticker без drag; TalkBack labels не должны сообщать секретные данные.
 306. Проверить 2D/3D placement transforms, hit testing, clipping края и исключение QR/button area.
@@ -358,7 +359,7 @@
 312. Строка сообщает простыми словами, что делает опция, где найти, default, Android patch и исходный desktop номер.
 313. Не добавлять planning details, тестовые секреты или технические anchors в user-facing `features.md`.
 314. После экспорта обновить статусы каждой строки PATCHLIST по факту; `queued` — лишь exported patch, не означает tested.
-315. Собрать debug APK командой из development guide после всех семи коммитов; собрать/проверить native Rust все ABI как часть зависимости batch 26.
+315. Собрать debug APK командой из development guide после всех восьми коммитов; собрать/проверить native Rust все ABI как часть зависимости batch 26.
 316. Передать APK для ручного теста на emulator/device и список шагов; только human verification переводит пачку `done`.
 317. `built` допустим после успешной сборки и передачи APK, а `done` — только после включённого и выключенного поведения, подтверждённого человеком.
 318. Не утверждать работоспособность карты, explorer links или wallet safety только по сборке.
@@ -377,7 +378,7 @@
 328. Rates/prices: отображать stock Wallet/Telegram rate; не вводить сторонний pricing endpoint или purchase price history в эту пачку.
 329. Географические карты: 0138 остаётся отдельной настройкой provider; money-card не относится к map providers.
 330. Third-party requests: Tonscan вызывается только внешним browser intent после действия пользователя; никаких background explorer запросов.
-331. `0313` quick-hide menu и `0307` sync-with-emoji-status UI не описаны полностью в Android patchlist; подтвердить desktop scope при реализации и пометить [INFERENCE] места.
+331. `0311` quick-hide menu и `0305` sync-with-emoji-status UI не описаны полностью в Android patchlist; подтвердить desktop scope при реализации и пометить [INFERENCE] места.
 332. Search IDs 1420–1439 должны быть уникальными; окончательно распределить после проверки существующего `TeleSearch` API, не выдумывать экранные ID.
 333. `WalletCardGLRenderer` lifecycle и существующие shader assets — изучить перед патчем, рендеринг/texture updates выполнять на GL thread.
 334. Если текущая ветка уже содержит часть этих функций, переиспользовать stock, сократить патч без изменения acceptance criteria и обновить план примечанием.
@@ -387,10 +388,19 @@
 
 336. 0288 готов, когда выключатель полностью блокирует wallet UI/routes и показывает безопасные сервисные переводы, сохраняя ключи и данные.
 337. 0290 готов, когда alternating address groups согласованы, raw value остаётся неизменным, а off возвращает stock rendering.
-338. 0313 готов, когда только дополнительные balances скрываются/возвращаются, а общий баланс не затронут.
+338. 0311 готов, когда только дополнительные balances скрываются/возвращаются, а общий баланс не затронут.
 339. 0286 готов, когда history actions дают корректный Tonscan URL только для валидной транзакции и не делают фонового network traffic.
 340. 0296 готов, когда чат-меню открывает/копирует ровно URL найденной transaction, pending/unknown transaction не показывает action.
-341. 0307 готов, когда одна выбранная collectible theme отображается на карте и transfer card через 2D и 3D, с безопасным fallback и сохранением stock interaction.
-342. 0317 готов, когда пользователь может перетащить/снять принадлежащие ему stickers, state локально сохраняется, renderer и touch lifecycle безопасны.
+341. 0305 готов, когда одна выбранная collectible theme отображается на карте и transfer card через 2D и 3D, с безопасным fallback и сохранением stock interaction.
+342. 0314 готов, когда пользователь может перетащить/снять принадлежащие ему stickers, state локально сохраняется, renderer и touch lifecycle безопасны.
 343. Общая пачка готова только после всех коммитов/экспорта, tests, debug APK и человеческого emulator/device gate.
 344. Главное правило безопасности: никакого реального платежа/покупки при тестах; не собирать и не логировать секреты; действие с деньгами остаётся под stock Wallet confirmation и batch 23.
+
+## 0322 — подарки в money как gift-cards
+
+345. Desktop 0322 — фикс отрисовки: подарки в money выглядят как gift-карточки (`tele_gift_tile`), а не размытая аватарка. Перед кодом открыть `tele/patches/tdesktop/0322-fix-gifts-in-money-look-like-gift-cards-instead-of-a.patch`.
+346. PATCHLIST: строка 0322, S, делается вместе с 0314 (подарки стикерами на карте) и после него; зависит от слоя подарков на карте.
+347. Android-якоря: `WalletActivity` (`TAB_COLLECTIBLES`, `fillCollectibles`, `CollectibleCell`), `WalletCardView`; плитка подарка рисуется из данных коллекционного подарка (модель, паттерн, фон), без размытия аватара.
+348. Не копировать Qt-отрисовку; повторить вид карточки нативным `Canvas`/View и стоковыми ресурсами подарка.
+349. Отдельный тумблер не добавлять: 0322 меняет вид уже портируемой функции 0314; OFF = как без 0314.
+350. Проверка на устройстве (тестовый кошелёк): подарок на карте/в списке коллекционных выглядит gift-карточкой, не размытой аватаркой, в светлой и тёмной теме.

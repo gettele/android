@@ -4,7 +4,7 @@
 
 1. Этот план описывает только пачку 19 из `docs/PATCHLIST.md`.
 2. Название пачки: «поиск и чат».
-3. В пачку входят ровно десять строк таблицы PATCHLIST: 0168, 0281, 0306, 0280, 0268, 0134, 0235, 0127, 0322, 0249.
+3. В пачку входят ровно десять строк таблицы PATCHLIST: 0168, 0281, 0280, 0268, 0134, 0235, 0127, 0317, 0328, 0249.
 4. Очерёдность номеров — текущая нумерация desktop queue, а не старые номера.
 5. `docs/desktop-numbers.md` — источник отображения старой и новой нумерации.
 6. Изучены правила `AGENTS.md`, PATCHLIST, решения, portability, desktop-numbers, architecture и development.
@@ -37,13 +37,13 @@
 
 31. 0168 — regex поиск в уже загруженной истории; решение по умолчанию включает поиск в чате и в поиске списка чатов.
 32. 0281 — поиск в чате с рядом type chips, включая GIF и кружки.
-33. 0306 — сочетание автора и типа сообщения в поиске чата; следует за 0281.
+33. Поиск по автору вместе с типом сообщения (прежняя отдельная строка 0306, на десктопе влита в 0281) входит в 0281.
 34. 0280 — последовательное упоминание нескольких людей долгим нажатием; не для inline-ботов.
 35. 0268 — показать онлайн участников большой группы, включая край скрытого списка участников при числе не более 200.
 36. 0134 — показать/скрыть панель закрепа из меню чата; default off, пункт при `!allowPin` согласно PATCHLIST.
 37. 0235 — собственная полоса реакций, локальный порядок и drag-reorder.
 38. 0127 — локально закреплённые sticker/emoji наборы в панели.
-39. 0322 — фильтр sticker/emoji по формату через mime документа.
+39. 0317 — фильтр sticker/emoji по формату через mime документа.
 40. 0249 — запрет мини-аппам переходить в fullscreen; при запросе вернуть `UNSUPPORTED`.
 41. В строках пачки нет call log, VoIP-звонков или voice-chat функций.
 42. Поэтому calls не добавлять и не расширять call UI в этой пачке.
@@ -70,12 +70,12 @@
 60. Предлагаемый `PINNED_BAR_MENU` — 0134, default `false`.
 61. Предлагаемый `REACTION_STRIP` — 0235, default `false`.
 62. Предлагаемый `PIN_STICKER_SETS` — 0127, default `false`.
-63. Предлагаемый `STICKER_FORMAT_FILTER` — 0322, default `false`.
+63. Предлагаемый `STICKER_FORMAT_FILTER` — 0317, default `false`.
 64. Предлагаемый `WEBAPPS_NO_FULLSCREEN` — 0249, default `false`.
 65. Property/key names здесь — планируемые, сверить совпадения в `TeleConfig` перед добавлением.
-66. 0306 является дополнительным измерением поиска, включаемым 0281, а не самостоятельным дополнительным switch.
+66. Сочетание «автор + тип» — дополнительное измерение поиска внутри 0281, а не самостоятельный дополнительный switch.
 67. Не создавать switch для функции, уже работающей в stock и не изменяемой форком.
-68. В частности поиск-пользователь 0306 зависит от search chips 0281 и текущего Android API, а не обязательно config item отдельного типа.
+68. В частности поиск-пользователь внутри 0281 зависит от search chips и текущего Android API, а не обязательно config item отдельного типа.
 69. Настройки размещать в существующей подходящей группе/странице `TeleSettingsActivity`; не строить новый корневой экран.
 70. Chat-search и sticker-panel опции — группа chats/interface в текущей структуре; соблюдать действующие `MODE_*`.
 71. Реакции — существующая группа chats/interface, по фактической структуре настроек.
@@ -122,27 +122,27 @@
 ## 4. Dependencies, commits and ordering
 
 111. Implement 0168 before 0281 because 0281 explicitly depends on it in PATCHLIST.
-112. Implement 0281 before 0306; 0306 applies sender + type to the search UI/filter contract introduced by 0281.
+112. Implement search chips of 0281 first, then the sender + type combination inside the same row, on the filter contract of the chips.
 113. Implement 0280 independently after checking existing mention adapter behavior.
 114. Implement 0268 independently; preserve stock online count logic and add only the missing edge.
 115. Implement 0134 independently; panel visibility must follow chat-specific permissions and preferences.
 116. Implement 0235 after inspecting `MediaDataController` reaction source and custom emoji resolution.
 117. Implement 0127 independently; local ordering state is per account.
-118. Implement 0322 after inspecting sticker/emoji list filtering and document MIME metadata.
+118. Implement 0317 after inspecting sticker/emoji list filtering and document MIME metadata.
 119. Implement 0249 independently, but test both initial fullscreen and later WebApp request paths.
 120. Suggested commit 1: `feat: add regex history search` (0168).
 121. Suggested commit 2: `feat: filter chat search` (0281).
-122. Suggested commit 3: `fix: search messages by sender` (0306).
+122. Suggested commit 3: `feat: restrict from menus` (0328).
 123. Suggested commit 4: `feat: chain user mentions` (0280).
 124. Suggested commit 5: `feat: show group online members` (0268).
 125. Suggested commit 6: `feat: toggle pinned bar` (0134).
 126. Suggested commit 7: `feat: customize reaction strip` (0235).
 127. Suggested commit 8: `feat: pin sticker sets` (0127).
-128. Suggested commit 9: `feat: filter stickers by format` (0322).
+128. Suggested commit 9: `feat: filter stickers by format` (0317).
 129. Suggested commit 10: `feat: disable web app fullscreen` (0249).
 130. Subjects are suggestions; retain imperative, lowercase commit style and <=5 words per AGENTS commit rule.
 131. Keep exactly one feature per commit, never combine all search changes into one commit.
-132. 0281 may share API contracts with 0306, but 0306 remains its own feature/fix commit.
+132. In 0281 the type chips and the sender filter share one filter state; the sender part may be a separate step inside the commit.
 133. If 0168 integration requires reusable scanner, create it in 0168 so later rows can depend on its stable API.
 134. Avoid a speculative generalized search framework.
 135. `TeleConfig`, hook, strings, UI, export spec, and feature row belong in the corresponding feature commit.
@@ -150,7 +150,7 @@
 137. Do not edit this guide as part of Android implementation unless plan genuinely changes.
 138. Do not do build/test/format jobs until all batch work lands; final verification is the batch gate.
 139. Existing dependencies: `ChatActivity`, `MediaDataController.searchMessagesInChat`, `DialogCell` and search adapters are stock anchors.
-140. 0306’s sender filtering must preserve 0281’s type chips and vice versa.
+140. Sender filtering in 0281 must preserve the type chips and vice versa.
 141. 0127’s persisted set order is in fork state (`tele_kv`), never in stock database schema.
 142. 0235 should resolve custom reactions through the current account’s `MediaDataController`.
 143. 0249 has two distinct entry surfaces: URL/initial properties and WebApp fullscreen request callback.
@@ -214,7 +214,7 @@
 195. No custom animation is needed; honor `LiteMode` if animated chip transitions are introduced.
 196. `[INFERENCE]` PATCHLIST asks row of chips, so do not replace with an overflow menu without maintainer approval.
 197. Support combined filters only when API can represent them; do not silently pretend a combination works when server filter is singular.
-198. 0306 specifically provides person + type search and must be designed into filter state composition.
+198. Person + type search is part of 0281 and must be designed into filter state composition.
 199. Sender chip must coexist with search type without clearing query or losing scroll position unnecessarily.
 200. Preserve pagination offsets and server cursor for each filter tuple.
 201. Avoid showing stale page contents while a new filter request is in flight; use standard loading/empty state.
@@ -228,9 +228,9 @@
 209. Search state is fragment/account/dialog scoped; restoring it must not restore another account’s query.
 210. Do not add a filter to ProfileActivity media tabs as a substitute for chat search.
 
-## 7. 0306 — человек плюс тип
+## 7. 0281 (продолжение) — человек плюс тип
 
-211. This row is relevant after 0281 and must be implemented after its API contract is established.
+211. Прежняя отдельная строка 0306 влита в 0281 на десктопе; реализуется после chips, на их контракте.
 212. Provide a sender/person selector in chat search and combine it with currently selected type.
 213. Preserve selected sender ID as a peer identity, not display name (names can change or collide).
 214. Sender resolution and labels use current account’s cached users/chats; avoid network resolution unless stock explicitly requires it.
@@ -244,7 +244,7 @@
 222. When sender is cleared, retain type and query.
 223. Test a user’s photos, messages, and GIFs with both sender and type selected.
 224. `[INFERENCE]` Server filtering semantics for sender + media type should be confirmed against current method implementation and desktop patch; do not claim local-only combination is equivalent until verified.
-225. Do not merge sender selection into 0281 commit; it remains the separate 0306 fix.
+225. Sender selection is part of the 0281 commit, no separate commit.
 
 ## 8. 0280 — последовательные упоминания
 
@@ -332,7 +332,7 @@
 295. Default off means stock pack order and stock picker layout remain unchanged.
 296. Tests: pin/unpin, reordered pins, pack removed, cache reload, multiple accounts, restart, switch off.
 
-## 13. 0322 — фильтр sticker/emoji по формату
+## 13. 0317 — фильтр sticker/emoji по формату
 
 297. `StickersActivity` and `EmojiView` are the planned Android surfaces.
 298. Decide actual format categories from document MIME/type metadata present in the current object; do not infer format from file name alone.
@@ -369,7 +369,7 @@
 323. Every user-facing patch updates `main/features.md` in English in the same export commit.
 324. One feature row per feature, placed under the section that owns its switch.
 325. Each row states one plain sentence, settings location, default, Android patch filename, and current desktop patch number.
-326. 0306 may be described as sender-plus-type search in its own row because it is a separate user-visible extension.
+326. Sender-plus-type search is described inside the 0281 row of PATCHLIST; no separate row.
 327. Stock-only parts do not receive a fake feature row.
 328. Current Android patch filenames are assigned by queue position at export; do not guess them in advance.
 329. Desktop source number in feature rows is current number (0168 etc.), not historical number.
@@ -417,13 +417,13 @@
 365. `[INFERENCE]` Decide whether a hard maximum scan window/page count is needed; sources specify loaded history but no numeric cap.
 366. `[INFERENCE]` Confirm regex matching source includes captions, translated text, or only original text before finalizing help text.
 367. 0281 uses a chip row and explicitly includes GIF and round videos, per PATCHLIST decision.
-368. 0306 adds person + type after 0281; confirm exact server API compatibility during implementation rather than silently weakening combination semantics.
+368. Person + type search (inside 0281) adds the sender filter after the chips; confirm exact server API compatibility during implementation rather than silently weakening combination semantics.
 369. 0280 long-press is decided; no desktop mouse gesture analogue should be added on Android.
 370. 0268 only addresses hidden participants ≤200 where stock lacks count; no request to change other group sizes.
 371. 0134 is default-off; confirm precise stock pref ownership before reusing `pin_<dialogId>`.
 372. 0235 order is local; unresolved custom-reaction display policy should default to omit invalid entries, not corrupt state.
 373. 0127 visual location (promoted section vs separate strip) should follow inspected desktop and existing Android picker UX; seek maintainer only if actual user-visible divergence cannot be resolved.
-374. 0322 format taxonomy must be evidenced by desktop patch and Android metadata; no invented category promises.
+374. 0317 format taxonomy must be evidenced by desktop patch and Android metadata; no invented category promises.
 375. 0249 must reject fullscreen initial and requested paths; no further product question.
 376. No calls, deletion recovery, retry, queued-send, chat-history archival, chat-details, or calendar feature is included by PATCHLIST rows.
 377. If any such scope is later requested, amend PATCHLIST and create an appropriately bounded batch rather than silently expanding batch 19.
@@ -483,3 +483,15 @@
 422. The assistant must not claim device verification unless the human has actually exercised it.
 423. No commit or Android implementation is part of this documentation task.
 424. This file is the implementation guide only; authoritative statuses and row names stay in PATCHLIST.
+
+## 21. 0328 — restrict из меню сообщения и поиск человека по числовому id
+
+425. Desktop 0328: пункт restrict участника из меню сообщения и из меню юзерпика; пикеры участников находят человека по числовому id. Перед кодом открыть патч `tele/patches/tdesktop/0328-feat-restrict-members-from-message-menus-and-find-th.patch`.
+426. PATCHLIST: строка 0328, M, зависит от android 0042 (настраиваемое меню сообщения).
+427. Пункт меню сообщения — через `ChatActivity.fillMessageMenu` и `MessageMenu.kt`, код пункта в реестре меню (скрытие, порядок, группы — как у остальных пунктов).
+428. Пункт показывается только там, где у текущего пользователя есть право ограничивать участников (admin с `ban_users`) и цель — не создатель и не сам пользователь; иначе пункта нет.
+429. Restrict использует стоковый путь (`ChatRightsEditActivity` / banned rights), своих TL-запросов не добавлять; `TLRPC.java` не править.
+430. Поиск по числовому id в пикерах участников: запрос из цифр сопоставляется с id уже загруженных участников чата; сетевое разрешение id — только если сток уже так делает.
+431. Пользователь выбирается по id как peer identity, а не по имени.
+432. Новый тумблер только если desktop-патч его вводит; по умолчанию выключен, при выключенном — стоковое меню и стоковый поиск без изменений.
+433. Проверка на устройстве: в группе, где пользователь admin, restrict из меню сообщения и из меню юзерпика; поиск участника по id в пикере; off = сток.

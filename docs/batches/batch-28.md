@@ -3,13 +3,13 @@
 ## Назначение и границы
 
 1. Этот документ — план реализации Android-переноса строк пачки 28 из `docs/PATCHLIST.md`.
-2. В объём входят текущие номера desktop-очереди 0302, 0303 и 0320.
-3. Номера 0302/0303/0320 — номера desktop, а не будущих Android-файлов `patches/android/`.
+2. В объём входят текущие номера desktop-очереди 0302 (в него влиты grant `display` и веб-платформа) и 0329 (иконки пунктов меню скриптов).
+3. Номера 0302/0329 — номера desktop, а не будущих Android-файлов `patches/android/`.
 4. Android-патчи должны быть отдельными коммитами в Telegram checkout на ветке `tele`.
 5. Экспортированные `.patch` нельзя редактировать вручную.
 6. Целевой язык fork-кода — Kotlin/Java под `tele/`, native-часть — C++/QuickJS в `TMessagesProj/jni/`.
 7. Desktop C++/Qt-код не копировать: переносится поведение и контракт API, не реализация виджетов.
-8. По решению мейнтейнера портируется вся подсистема скриптинга, включая веб-платформу 0320.
+8. По решению мейнтейнера портируется вся подсистема скриптинга, включая веб-платформу (влита в 0302).
 9. Это не означает перенос Qt-окон, Monaco, Qt widget API или desktop tray.
 10. В Android-версии UI-поверхности должны быть нативными Android, WebView и системными picker-диалогами.
 11. QuickJS-ng — исполняемый движок, а не средство дать скрипту доступ к Android VM.
@@ -31,7 +31,7 @@
 27. В пачке нет виджет-слоя Qt и нет Monaco editor.
 28. Текстовый редактор скрипта — внешний редактор пользователя либо системный SAF picker.
 29. В пачке нет HTML-пузырей `.tgw`; это зависимая последующая пачка 29.
-30. В пачке нет litehtml; 0314–0316 реализуются отдельно после 0302.
+30. В пачке нет litehtml; 0312–0313 реализуются отдельно после 0302.
 31. В пачке нет расширения stock TL schema; схема берётся из сгенерированного Android `TLRPC`/TL-классов.
 32. `TLRPC.java` не редактировать.
 33. Stock database schema и `LAST_DB_VERSION` не редактировать.
@@ -47,18 +47,18 @@
 
 41. `PATCHLIST.md` описывает batch 28 как QuickJS-ng через NDK, grants, web-платформу, SAF import и отдельный script thread.
 42. Ворота PATCHLIST: debug APK, запуск скрипта из папки, consent для `display`, рабочие TL-вызовы и остановка скрипта.
-43. `PATCHLIST.md` оценивает пачку как `M×1, L×2`.
+43. `PATCHLIST.md` оценивает пачку как `L×1, S×1` (0302 — L, 0329 — S).
 44. 0302 отмечен как прототип scripting с QuickJS, grants, TL и interception hooks; effort L.
-45. 0303 отмечен как grant `display` с consent; effort M и выполняется вместе с 0302.
-46. 0320 отмечен как web platform и script APIs через `tele_script_*` JNI/Kotlin и OkHttp; effort L.
-47. Decisions фиксирует: 0302/0303/0320 портируются полностью, включая веб-платформу 0320.
+45. Grant `display` с consent (прежняя отдельная строка 0303) влит в 0302 на десктопе; в плане — шаг внутри 0302.
+46. Web platform и script APIs через `tele_script_*` JNI/Kotlin и OkHttp (прежняя отдельная строка 0320) влиты в 0302 на десктопе; в плане — шаг внутри 0302. Десктопный фикс 0320 (падение при listing accounts из скрипта) учесть в `tg`-мосте.
+47. Decisions фиксирует: 0302 портируется полностью, включая grant `display` и веб-платформу; 0329 — отдельная небольшая строка (S).
 48. Decisions отдельно фиксирует папку скриптов в app external files dir и импорт через SAF.
 49. Decisions отдельно фиксирует отдельный поток скриптов.
 50. Portability описывает 0302 как `ConnectionsManager.sendRequest`, `MessagesController.processUpdates` и новый engine.
-51. Portability описывает 0303 как `tele/scripting` permissions/consent.
-52. Portability описывает 0320 как fetch, WebSocket, URL, AbortController, crypto.subtle, Intl, Workers, compression и fs.
+51. Portability описывает grant `display` как `tele/scripting` permissions/consent внутри 0302.
+52. Portability описывает веб-платформу внутри 0302 как fetch, WebSocket, URL, AbortController, crypto.subtle, Intl, Workers, compression и fs.
 53. Portability предупреждает, что panels, webview panels, media viewer, group calls и chat UI требуют Android UI решения.
-54. `local://desk-5.md` повторяет эти оценки и перечисляет 0320 API: stories, gifts, inline, dialogs, files, search, compose, panels и media.
+54. `local://desk-5.md` повторяет эти оценки и перечисляет API веб-платформы: stories, gifts, inline, dialogs, files, search, compose, panels и media.
 55. `local://desk-5.md` предлагает переиспользовать runtime JS files почти как есть, но `tele_script_*.cpp` переносить через JNI/Kotlin.
 56. Desktop `origin/main:docs/scripting.md` описывает QuickJS-ng 0.17 и отдельный engine per script/per account.
 57. Desktop documentation описывает ES modules, TypeScript stripping, `defineScript`, generated `tele.d.ts` и off-until-enabled lifecycle.
@@ -78,23 +78,23 @@
 
 ## Порядок патчей, subjects, effort и зависимости
 
-71. Патчи делать в порядке 0302 → 0303 → 0320.
+71. Внутри 0302 шаги делать в порядке: runtime → grants/display → web platform; 0329 — после 0302.
 72. 0302 сначала создаёт runtime, storage, TL bridge, lifecycle и минимальный script manager.
-73. 0303 добавляет consent/grant engine поверх реального 0302 registry, не создаёт второй permission system.
-74. 0320 добавляет web platform и API surfaces поверх стабильных bridge/thread/security interfaces.
+73. Шаг grants/display добавляет consent/grant engine поверх реального 0302 registry, не создаёт второй permission system.
+74. Шаг web platform добавляет web platform и API surfaces поверх стабильных bridge/thread/security interfaces.
 75. 0302 subject: `feat: add android scripting runtime`.
-76. 0303 subject: `feat: ask script display grants`.
-77. 0320 subject: `feat: add script web platform`.
+76. Шаг grants/display, subject: `feat: ask script display grants`.
+77. Шаг web platform, subject: `feat: add script web platform`.
 78. Subjects — lowercase imperative, максимум пять слов и 50 символов по правилам репозитория.
 79. 0302 effort L: native vendor, JNI, runtime lifecycle, TL serialization и update interception.
-80. 0303 effort M: grant parser, consent UI, per-account persistence и display gate.
-81. 0320 effort L: web globals, OkHttp bridge, worker scheduling, file APIs, WebView bridge и Android API adapters.
+80. Шаг grants/display, effort M: grant parser, consent UI, per-account persistence и display gate.
+81. Шаг web platform, effort L: web globals, OkHttp bridge, worker scheduling, file APIs, WebView bridge и Android API adapters.
 82. 0302 зависит от готовых TeleConfig, TeleHooks, settings section, TeleSearch и export/import infrastructure.
 83. 0302 зависит от Android stock `ConnectionsManager`, `MessagesController`, `Utilities.stageQueue`, `NativeByteBuffer` и `FileLog`.
-84. 0303 зависит строго от 0302 API; нельзя сначала добавлять UI-mock grants.
-85. 0320 зависит от 0302 QuickJS isolate/thread and 0303 grant checks.
+84. Шаг grants/display зависит строго от API runtime 0302; нельзя сначала добавлять UI-mock grants.
+85. Шаг web platform зависит от QuickJS isolate/thread runtime и от grant checks.
 86. Batch 29 depends on script runtime and must not leak `.tgw` rendering into this batch.
-87. 0302 may expose a small API needed by 0320, but no speculative UI API without a caller.
+87. Runtime 0302 may expose a small API needed by the web platform step, but no speculative UI API without a caller.
 88. Each commit must build independently on top of preceding queue commits.
 89. Export each commit after its code is committed; Android patch numbering is determined by queue position.
 90. `features.md` update is required for user-facing rows in the same repository commit as exported feature patch.
@@ -279,7 +279,7 @@
 254. Test rapid updates, update bursts, channel difference and process death while a hook is pending.
 255. Test off state: no hook registration and identical stock output.
 
-## 0303 — grants, consent и display
+## 0302 (шаг) — grants, consent и display
 
 256. Implement one canonical grant parser and matcher in `tele/scripting`.
 257. Grant declarations are strings, normalized for whitespace and validated against known names/scopes.
@@ -315,7 +315,7 @@
 287. Test dangerous method exact grant versus wildcard grant.
 288. Test display grant off/on with a message decorator and verify no server mutation.
 
-## 0320 — web platform и API скриптов
+## 0302 (шаг) — web platform и API скриптов
 
 289. Implement URL/URLSearchParams with a standards-tested JavaScript/native implementation.
 290. Implement AbortController and cancellation propagation to OkHttp calls.
@@ -365,7 +365,7 @@
 334. File import from SAF is user-selected and must not require broad filesystem permission.
 335. URI copy must be bounded, MIME-checked and atomic; reject executable/native libraries by default.
 336. Imported script remains off until user explicitly enables it and consents.
-337. [INFERENCE] Link-installed update support should be postponed until signature/version policy is decided; do not download-and-run as part of 0320 core.
+337. [INFERENCE] Link-installed update support should be postponed until signature/version policy is decided; do not download-and-run as part of the web platform core.
 338. If link updates are included, verify HTTPS, size, redirect grants, version and digest before replacing file.
 
 ## Хранилище, SAF и external files dir
@@ -491,8 +491,8 @@
 445. [INFERENCE] Должен ли `tg.call` сразу принимать arbitrary TL methods или сначала работать через audited allowlist?
 446. [INFERENCE] Какая update point authoritative для interception: до `processUpdates`, после sequence validation или обе точки разными API?
 447. [INFERENCE] Как представлять dropped `pts`/`qts`, чтобы не запускать нежелательные `getDifference` loops?
-448. [INFERENCE] Какую Android WebView presentation выбрать для 0320: fragment, bottom sheet или full-screen activity?
-449. [INFERENCE] Нужны ли WebSocket и crypto.subtle в первом 0320 commit или временно explicit `unsupported` errors?
+448. [INFERENCE] Какую Android WebView presentation выбрать для веб-платформы: fragment, bottom sheet или full-screen activity?
+449. [INFERENCE] Нужны ли WebSocket и crypto.subtle в первом commit веб-платформы или временно explicit `unsupported` errors?
 450. [INFERENCE] Входят ли stories, gifts, calls, media viewer и inline results в первую Android API schema или требуют последующих UI patches?
 451. [INFERENCE] Какое user-facing warning нужно для SAF scripts по сравнению с trusted source?
 452. [INFERENCE] Для source updates нужны signature verification, pinned key, digest или только explicit file replacement?
@@ -558,7 +558,7 @@
 
 ## Ворота пачки, документация и передача результата
 
-509. До gate все три commit должны быть применены к ветке `tele` checkout `Telegram` и экспортированы.
+509. До gate все commit скриптинга (runtime, grants/display, web platform) и 0329 должны быть применены к ветке `tele` checkout `Telegram` и экспортированы.
 510. Запустить `./gradlew :TMessagesProj_App:assembleDebug` со всеми настроенными ABI splits.
 511. Установить соответствующий debug APK на device или emulator; compilation сама по себе не доказывает успех.
 512. Проверить scripting ON/OFF, account isolation, grant consent, TL call, update listener и stop.
@@ -568,7 +568,7 @@
 516. Отметить PATCHLIST `built` только после assemble и передачи APK.
 517. Отметить `done` только после human verification gate, не после agent inspection.
 518. Добавить в `features.md` по одной English row для каждой user-facing scripting setting/API surface.
-519. В каждой row указать location, default, Android patch file и desktop number 0302/0303/0320.
+519. В каждой row указать location, default, Android patch file и desktop number 0302 (и 0329 для иконок меню).
 520. Честно описать grants и риск imported code; не называть feature secure без evidence.
 521. Обновить export/import spec для каждой persisted non-secret script setting.
 522. Не экспортировать approved grants, tokens, source digests или account data без отдельного reviewed format.
@@ -580,3 +580,14 @@
 528. Failed TL/update sequence test блокирует gate: недопустимы data loss и stale state.
 529. Failed redaction test блокирует gate: logs являются частью privacy surface.
 530. Никаких fake security assurances: при APK hand-off сообщить остаточные threat-model gaps и unresolved questions.
+
+## 0329 — иконки пунктов меню скриптов
+
+531. Desktop 0329: скрипт задаёт иконку своему пункту меню. Перед кодом открыть `tele/patches/tdesktop/0329-feat-let-scripts-give-their-menu-items-icons.patch`.
+532. PATCHLIST: строка 0329, S, зависит от 0302 (скриптинг); делается после 0302.
+533. Иконка задаётся полем пункта в API меню скриптов; допустимые значения — имена из фиксированного набора stock-иконок Android (`R.drawable.msg_*`), произвольные ресурсы и URL запрещены.
+534. Неизвестное имя иконки — пункт без иконки, без исключения в скрипт и без падения.
+535. Показ иконки — только в нативных меню Android (`ActionBarMenuItem`), на main thread; данные иконки хранятся вместе с описанием пункта в registry скриптов.
+536. Иконка не должна давать скрипту доступ к ресурсам вне набора и не меняет grants: отдельного grant для иконок нет, если desktop-патч его не вводит.
+537. OFF-поведение: при выключенном скриптинге пунктов и иконок нет; stock-меню без изменений.
+538. Проверка на устройстве: скрипт добавляет пункт с иконкой, иконка отображается, неизвестное имя даёт пункт без иконки.

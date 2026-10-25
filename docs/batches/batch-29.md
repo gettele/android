@@ -3,14 +3,14 @@
 ## Назначение и границы
 
 1. Этот документ — implementation guide для строк пачки 29 в `docs/PATCHLIST.md`.
-2. Desktop numbers 0314–0316 означают позиции текущей очереди tele, не будущие номера Android patch-файлов.
+2. Desktop numbers 0312 и 0313 означают позиции текущей очереди tele, не будущие номера Android patch-файлов.
 3. Реализация идёт в соседнем Telegram checkout на ветке `tele`; здесь создаётся только этот guide.
 4. Не коммитить из этого задания и не менять другие файлы.
 5. После выполнения реальной реализации экспортировать commits штатным `git format-patch`, не редактируя `.patch` вручную.
 6. Цель — отображать локально HTML карточки в Telegram `.tgw` attachment и дать пользователю локальную playground-песочницу.
-7. Решение мейнтейнера: портировать подсистему 0314–0316, использовать litehtml через NDK, не WebView в пузыре.
-8. 0315 исполняет сценарий карточки в QuickJS; базовый QuickJS runtime принадлежит desktop 0302 и пачке Android 28.
-9. 0316 опирается на 0315 и использует локальный чат как носитель, аналог Android 0077.
+7. Решение мейнтейнера: портировать подсистему 0312–0313 (playground-чат влит в 0313), использовать litehtml через NDK, не WebView в пузыре.
+8. 0313 исполняет сценарий карточки в QuickJS; базовый QuickJS runtime принадлежит desktop 0302 и пачке Android 28.
+9. Playground-часть 0313 опирается на карточки 0313 и использует локальный чат как носитель, аналог Android 0077.
 10. Desktop Qt/C++ implementation — описание поведения и формата, не исходник для механического Android копирования.
 11. Android UI и Android Canvas остаются нативными; C++ renderer работает через JNI и получает только ограниченный drawing surface.
 12. Не включать WebView, remote HTML, произвольные сетевые картинки, tele-server APIs, wallet/script APIs либо Qt UI в эту пачку.
@@ -28,17 +28,17 @@
 ## Источники и установленная доказательная база
 
 23. Прочитаны `AGENTS.md`, `PATCHLIST.md`, `decisions.md`, `portability.md`, `desktop-numbers.md`, `architecture.md` и `development.md`.
-24. Прочитан `local://desk-5.md`, оценка desktop 0285–0322 и патчи origin/main.
-25. Desktop `origin/main:patches/tdesktop/0314-build-fetch-litehtml-for-html-bubbles.patch` вендорит litehtml revision `8848b99b1fae17026117c45c3ec9cd3e38b2e511`, SHA256 `42b8c62384f2e0383a1490c9b7688ebca4d296c9f36614583b89ef291ff75aa4`.
-26. Desktop 0314 делает отдельные static targets `tele_gumbo` и `tele_litehtml`, C99 для gumbo и C++17 для litehtml.
-27. Desktop 0314 добавляет собственный patch litehtml для parsed/shared CSS; Android должен проверить, требуется ли этот API текущему renderer.
-28. Desktop `0315` добавляет `tele_html.cpp` (1310 строк), `tele_html_script.cpp` (698 строк), заголовки и связь с litehtml + QuickJS.
-29. Desktop 0315 содержит Canvas-like backend для Qt painter, CSS light-dark conversion, fonts, data images, SVG/raster decoding и HTML/CSS layout.
+24. Прочитан `local://desk-5.md`, оценка desktop 0285–0317 и патчи origin/main.
+25. Desktop `origin/main:patches/tdesktop/0312-build-fetch-litehtml-for-html-bubbles.patch` вендорит litehtml revision `8848b99b1fae17026117c45c3ec9cd3e38b2e511`, SHA256 `42b8c62384f2e0383a1490c9b7688ebca4d296c9f36614583b89ef291ff75aa4`.
+26. Desktop 0312 делает отдельные static targets `tele_gumbo` и `tele_litehtml`, C99 для gumbo и C++17 для litehtml.
+27. Desktop 0312 добавляет собственный patch litehtml для parsed/shared CSS; Android должен проверить, требуется ли этот API текущему renderer.
+28. Desktop `0313` добавляет `tele_html.cpp` (1310 строк), `tele_html_script.cpp` (698 строк), заголовки и связь с litehtml + QuickJS.
+29. Desktop 0313 содержит Canvas-like backend для Qt painter, CSS light-dark conversion, fonts, data images, SVG/raster decoding и HTML/CSS layout.
 30. Desktop source constants включают font size 14, максимум 64 images, 4 MiB image bytes, 4096 px сторона/pixel bound, depth 256, 5000 elements, 48 MiB document pixels.
 31. Desktop source устанавливает ограничения и на SVG external references; Android обязан повторить сетевой запрет своей backend реализацией.
-32. Desktop `0316` добавляет HTML media/cards, playground peer/chat, sample cards, settings toggle, help/menus и changelog chat integration.
+32. Desktop `0313` добавляет HTML media/cards, playground peer/chat, sample cards, settings toggle, help/menus и changelog chat integration (прежняя отдельная строка 0316 влита в 0313). Десктопный фикс 0321 (html-карточки не падают, когда сообщение исчезает) учесть в интеграции с `ChatMessageCell`.
 33. Desktop playground имеет reset/read affordances; это локальный псевдо-чат, не Telegram remote peer.
-34. PATCHLIST описывает batch 29 effort `M×1, L×2`, deps 0302, 0314 и Android 0077.
+34. PATCHLIST описывает batch 29 effort `M×1, L×1` (0312 — M, 0313 — L с playground), deps 0302, 0312 и Android 0077.
 35. `decisions.md` прямо выбирает litehtml NDK rendering для `.tgw`.
 36. `portability.md` уточняет Canvas JNI backend, QuickJS scripts и зависимость playground от Android 0077.
 37. Android checkout branch `tele` использует `TMessagesProj/jni/CMakeLists.txt`; Android.mk по указанному пути отсутствует.
@@ -48,7 +48,7 @@
 41. Android 0077 уже хранит локальные changelog сообщения в Tele DB и рисует их `ChatMessageCell` в `TeleChatActivity`.
 42. Android 0077 показывает, что fork-local chat pattern возможен; это не подтверждает, что вся desktop playground UX уже имеет Android аналог.
 43. [INFERENCE] Полный точный формат `.tgw` (manifest, mime, attachment fields, HTML/script extraction order) определяется desktop источником, но PATCHLIST и короткий `desk-5` excerpt не фиксируют его спецификацию.
-44. Перед кодом открыть соответствующие полные функции/поля в desktop 0315/0316 и составить byte-level format contract; не угадывать формат из extension.
+44. Перед кодом открыть соответствующие полные функции/поля в desktop 0313 и составить byte-level format contract; не угадывать формат из extension.
 45. [INFERENCE] Android branch current `Document` file_name availability needs re-check through exact current `MessageObject.getDocument()` and mime metadata before implementation.
 46. Search IDs `1460..1479` — плановый блок данной пачки, но до реализации проверить реестр `TeleSearch` и stock collision.
 47. Search IDs — локальные navigation identifiers, не Telegram dialog IDs и никогда не отправляются в сеть.
@@ -57,27 +57,27 @@
 ## Коммиты и зависимости
 
 49. Один desktop feature = один Android commit, с минимальными stock hunks и fork logic в `tele/`.
-50. Рекомендуемый commit 1: desktop 0314, `build: vendor litehtml for android`.
+50. Рекомендуемый commit 1: desktop 0312, `build: vendor litehtml for android`.
 51. Он добавляет pinned source, license/upstream manifest, CMake target и ABI build integration, без parser/UI behavior.
-52. Рекомендуемый commit 2: desktop 0315, `feat: render tgw html cards`.
-53. Он зависит от batch 28 Android 0302 QuickJS runtime и commit 0314 litehtml.
+52. Рекомендуемый commit 2: desktop 0313, `feat: render tgw html cards`.
+53. Он зависит от batch 28 Android 0302 QuickJS runtime и commit 0312 litehtml.
 54. При отсутствии готового 0302 runtime остановиться на dependency: не подменять QuickJS WebView, fake executor или no-op script.
-55. 0315 содержит format reader, policy checks, JS bridge, litehtml document container, Canvas JNI adapter, size/measure/render cache и gated ChatMessageCell hook.
-56. Рекомендуемый commit 3: desktop 0316, `feat: add html playground chat`.
-57. Он зависит от 0315 и Android 0077 `TeleChat`/локальных сообщений, не от network chat implementation.
+55. 0313 содержит format reader, policy checks, JS bridge, litehtml document container, Canvas JNI adapter, size/measure/render cache и gated ChatMessageCell hook.
+56. Рекомендуемый commit 3 (playground-часть 0313): `feat: add html playground chat`.
+57. Он зависит от 0313 и Android 0077 `TeleChat`/локальных сообщений, не от network chat implementation.
 58. Каждый commit должен собираться отдельно поверх предыдущего commit в очереди.
-59. Если конкретные CMake integration changes требуют правки native build root, включить их в 0314, не растягивать JNI setup в несвязанные commits.
-60. Если 0302 export/runtime interfaces пока не стабилизированы, согласовать интерфейс с пачкой 28 перед 0315; не добавлять speculative public JS API.
-61. 0316 не должен переписывать или ломать обычный changelog chat 0087; выделить отдельный peer identity and routing.
-62. Не объединять patches 0314–0316 в один commit: PATCHLIST перечисляет три исходных feature rows, с явными зависимостями.
+59. Если конкретные CMake integration changes требуют правки native build root, включить их в 0312, не растягивать JNI setup в несвязанные commits.
+60. Если 0302 export/runtime interfaces пока не стабилизированы, согласовать интерфейс с пачкой 28 перед 0313; не добавлять speculative public JS API.
+61. Playground-чат не должен переписывать или ломать обычный changelog chat Android 0077; выделить отдельный peer identity and routing.
+62. Не объединять litehtml 0312 и 0313 в один commit: PATCHLIST перечисляет две строки (0312, 0313) с явными зависимостями; внутри 0313 playground — отдельный commit после карточек.
 63. Изменения `features.md` добавлять при экспорте каждой user-facing feature в соответствующий commit.
 64. `PATCHLIST.md` статусы обновляются только по фактической фазе (wip/queued/built/done).
 65. В этом guide список commit subjects — рекомендации; подтверждённый repo format `feat:`/`build:` согласовать с AGENTS commit conventions.
 
 ## Настройки, переключатель и search IDs
 
-66. Один общий master toggle управляет parsing/rendering HTML cards and playground, если desktop 0316 показывает единый `html_bubbles` option.
-67. Desktop 0316 adds `kOptionHtmlBubbles`; setting is listed in Debug, search keywords include html, tgw, widget, card, playground.
+66. Один общий master toggle управляет parsing/rendering HTML cards and playground, если desktop 0313 показывает единый `html_bubbles` option.
+67. Desktop 0313 adds `kOptionHtmlBubbles`; setting is listed in Debug, search keywords include html, tgw, widget, card, playground.
 68. Android config recommendation: `TeleConfig.HTML_BUBBLES = BoolItem("html_bubbles", false)`.
 69. [INFERENCE] Android key and property spelling are proposed from desktop option semantics; inspect 0302/other current `TeleConfig` before implementation.
 70. Default MUST be false; OFF bypasses parser, renderer, script startup, synthetic chat routing and extra measurement.
@@ -118,7 +118,7 @@
 102. Make link handling inert by default or route an explicit user tap through existing Telegram link confirmation/policy; no auto-navigation on parse/render.
 103. No HTML form submission, downloads, intents, clipboard writes, contact/message reads or Telegram API calls unless explicitly part of approved desktop card contract and separately authorized.
 104. Card JS should not make network requests unless an explicit feature/grant exists; this batch should not silently inherit general scripting fetch grants.
-105. [INFERENCE] Safest initial accepted card package is self-contained HTML/CSS/JS/data with inline data assets; verify against desktop 0315 packaging and samples before fixing this as contract.
+105. [INFERENCE] Safest initial accepted card package is self-contained HTML/CSS/JS/data with inline data assets; verify against desktop 0313 packaging and samples before fixing this as contract.
 106. If package is archive/container, cap compressed and decompressed bytes, entry count and path depth; reject absolute paths, traversal, symlinks and duplicate normalized paths.
 107. Reject unsupported archive encodings, encrypted archives and nested archives rather than attempting recovery.
 108. If `.tgw` is a raw HTML source instead of archive, validate its source size before UTF-8 decoding, then parse under limits.
@@ -167,7 +167,7 @@
 145. Implement Android document container in new fork native sources under `TMessagesProj/jni/tele_html/` or the established `tele` native subtree.
 146. Add a `tele_litehtml` static target and, if required by pinned litehtml revision, separate `tele_gumbo` static target.
 147. Use target-local include directories/compile flags; do not globally change Telegram C/C++ flags to satisfy litehtml.
-148. Compile litehtml as C++17, gumbo as C99, aligning with upstream's current 0314 source contract.
+148. Compile litehtml as C++17, gumbo as C99, aligning with upstream's current 0312 source contract.
 149. Link targets into the existing native library only after confirming Java loader and JNI registration path; avoid a second `.so` without packaging rationale.
 150. Follow existing Android CMake conventions and `RegisterNatives` pattern; use hidden visibility and export only necessary JNI entry points.
 151. Build the static libraries for every configured ABI, not only the development machine's architecture.
@@ -236,14 +236,14 @@
 208. Keep renderer output data-only and validated; HTML layout does not gain additional capabilities from JS.
 209. Execution, initialization and event callbacks must run off main thread and off Telegram networking/storage critical queues.
 210. Use QuickJS instruction interrupt/deadline, memory cap and bounded recursion from batch 28 policy.
-211. [INFERENCE] Desktop 0315 exact JS timeout and memory budget are not established by PATCHLIST/local note; align with batch 28 runtime constants and document Android cap.
+211. [INFERENCE] Desktop 0313 exact JS timeout and memory budget are not established by PATCHLIST/local note; align with batch 28 runtime constants and document Android cap.
 212. Never allow script infinite loop to block chat scrolling, stage queue, or settings UI.
 213. Cancel runtime work on message recycle when no longer needed, card removal, toggle OFF, account logout, chat close and process shutdown.
 214. Use generation tokens to suppress stale completion after cancellation or rebind.
 215. Runtime may not outlive corresponding message view/account reference unless explicit stable cache data has been copied.
 216. QuickJS callbacks crossing to Java use immutable bounded values, not borrowed native/Java mutable objects.
 217. Promise jobs/timers require a bounded scheduler integrated with 0302 lifecycle; do not create a thread per card.
-218. No timers/workers unless desktop 0315 and batch 28 explicitly expose these capabilities to HTML card scripts.
+218. No timers/workers unless desktop 0313 and batch 28 explicitly expose these capabilities to HTML card scripts.
 219. No `fetch`, WebSocket, filesystem, Telegram client API, clipboard, media playback, notifications or generic `tg` bridge by inheritance.
 220. Any exposed script capability must have an explicit security review and user-visible policy; card rendering alone is not a grant.
 221. Separate script parse errors from HTML parse errors; fallback UI must remain understandable and must not expose source code.
@@ -302,7 +302,7 @@
 268. Do not announce raw HTML tags, script source, file path or technical errors to screen readers.
 269. Respect Android touch target/accessibility focus for interactive card controls; avoid invisible links.
 270. Establish text-selection/copy behavior; card contents should not become unselectable if desktop UX promises selectable text.
-271. [INFERENCE] Desktop source's exact selection semantics are not available from PATCHLIST; inspect 0316 behavior and decide Android native equivalent before implementation.
+271. [INFERENCE] Desktop source's exact selection semantics are not available from PATCHLIST; inspect 0313 behavior and decide Android native equivalent before implementation.
 272. TalkBack order should follow document reading order, including RTL.
 273. Contrast and color selection must remain legible in Telegram light/dark theme; authored CSS should not bypass basic safe defaults.
 274. Enforce source file cap at least no larger than desktop 4 MiB reference for card document; account for container metadata/entries where applicable.
@@ -323,15 +323,15 @@
 
 ## Playground UX and local data
 
-289. 0316 adds a local playground chat whose messages demonstrate/test HTML cards; it is not a real remote Telegram conversation.
+289. The playground part of 0313 adds a local playground chat whose messages demonstrate/test HTML cards; it is not a real remote Telegram conversation.
 290. Follow Android 0077 `TeleChatActivity`/`TeleChangelog` pattern where it fits, not a synthetic server message or fake peer on network.
 291. Use a distinct local peer/chat identity from changelog peer and any Telegram dialog IDs.
-292. [INFERENCE] Stable synthetic peer ID and account storage strategy are not established in provided docs; inspect 0087 and choose collision-proof local-only identity before coding.
+292. [INFERENCE] Stable synthetic peer ID and account storage strategy are not established in provided docs; inspect Android 0077 (`TeleChangelog`) and choose collision-proof local-only identity before coding.
 293. Keep playground messages and sample cards in fork-owned storage/resources, never stock dialog/message tables or server synchronization.
 294. If reusing `tele.db`, extend only fork-owned `tele_*` tables through `TeleDatabaseHelper`; do not alter stock schema/version.
 295. If samples are packaged resources, version and validate them; do not treat sample as permission to execute arbitrary user file.
 296. The settings entry opens playground only while `HTML_BUBBLES` is ON; when OFF, keep row available to enable the parent but do not enter active parser path.
-297. Exact route (settings row, local chat list item, or both) should match desktop 0316 and Android conventions after source review.
+297. Exact route (settings row, local chat list item, or both) should match desktop 0313 and Android conventions after source review.
 298. Entering playground shows locally generated sample cards/messages with clear “local test” identity and no misleading online status.
 299. Playground must be clearly distinguishable from real user, bot, group and channel to avoid accidental sends.
 300. Disable message composer/send-to-server behavior unless desktop UX specifically supports card source editing locally.
@@ -343,8 +343,8 @@
 306. Account switch and logout invalidate local card runtime state and account-specific synthetic chat data as policy defines.
 307. Display normal back/navigation behavior and accessibility labels; opening sample card should not exit the playground unexpectedly.
 308. Keep reset/help/disable affordances reachable without long press only.
-309. [INFERENCE] Exact playground samples, empty state, editor affordance and reset confirmation wording are not specified in docs; copy desktop 0316 UX only after source inspection and adapt to Android.
-310. No placeholder empty “playground” page counts as implementation; it must demonstrate the real 0315 renderer and a safe supported card sample.
+309. [INFERENCE] Exact playground samples, empty state, editor affordance and reset confirmation wording are not specified in docs; copy desktop 0313 UX only after source inspection and adapt to Android.
+310. No placeholder empty “playground” page counts as implementation; it must demonstrate the real 0313 renderer and a safe supported card sample.
 
 ## TeleConfig state, account scope, threads and LiteMode
 
@@ -367,11 +367,11 @@
 
 ## Feature rows and documentation
 
-327. Add one English `features.md` row for user-facing 0315/0316 according to actual setting page and default.
-328. Candidate row: “Render `.tgw` HTML cards in message bubbles and open a local playground; debug setting, default off; Android patch file and desktop 0315/0316.”
+327. Add one English `features.md` row for user-facing 0313 according to actual setting page and default.
+328. Candidate row: “Render `.tgw` HTML cards in message bubbles and open a local playground; debug setting, default off; Android patch file and desktop 0313.”
 329. Do not add row before patch export; patch filenames are assigned by queue order and must be exact.
-330. If 0314 is strictly build infrastructure with no user-facing option, no separate feature row is required.
-331. Link current desktop origin/main numbers 0314, 0315 and 0316; never old numbering or generated Android patch number in desktop column.
+330. If 0312 is strictly build infrastructure with no user-facing option, no separate feature row is required.
+331. Link current desktop origin/main numbers 0312 and 0313; never old numbering or generated Android patch number in desktop column.
 332. Feature row belongs in same repository commit as exported user-facing patch per AGENTS.
 333. Settings text goes only to `strings_tele.xml`, prefixed `Tele`; do not edit stock `strings.xml`.
 334. Search descriptions should say “HTML card scripts are local, experimental and disabled by default”; do not promise secure sandbox or web compatibility.
@@ -430,20 +430,20 @@
 378. Test offline mode; local sample/card still works and no remote assets are fetched.
 379. Test TalkBack and large font size before passing accessibility gate.
 380. Capture sanitized logcat for parse/limit/native failures only; redact content and identifiers.
-381. Batch gate requires all rows 0314–0316 committed/exported, full debug build, ABI native result, APK delivered and human on/off verification.
+381. Batch gate requires both rows 0312 and 0313 committed/exported, full debug build, ABI native result, APK delivered and human on/off verification.
 382. Mark statuses built/done only after their documented gates are actually met.
 
 ## Features rows/gates and remaining questions
 
 383. PATCHLIST gate remains: litehtml builds on all ABIs; `.tgw` card renders in bubble with script; playground chat opens.
 384. Extend this minimum gate with explicit OFF-is-stock, no-network, malformed input, resource limits, recycling, theme and accessibility checks above.
-385. 0314 build row depends on pinned litehtml/gumbo sources and native compilation for all packaged ABIs.
-386. 0315 feature row depends on 0302 QuickJS runtime, format contract, secure allowlist, native Canvas/Bitmap renderer and ChatMessageCell lifecycle integration.
-387. 0316 feature row depends on 0315 and Android 0077 local-chat pattern plus approved local identity/storage.
+385. 0312 build row depends on pinned litehtml/gumbo sources and native compilation for all packaged ABIs.
+386. 0313 feature row depends on 0302 QuickJS runtime, format contract, secure allowlist, native Canvas/Bitmap renderer and ChatMessageCell lifecycle integration.
+387. The playground part of 0313 depends on the card part and Android 0077 local-chat pattern plus approved local identity/storage.
 388. Open question: what is exact `.tgw` byte format and how are HTML, CSS, JS, assets and metadata encoded?
 389. Open question: which desktop-defined HTML tags/CSS properties, script APIs, events and `light-dark()` behaviors are contractual?
 390. Open question: are scripts active on every `.tgw`, require consent/grants, or only use a restricted card API?
-391. Open question: desktop 0315 exact image formats, `app:` asset names, and SVG rules—verify full implementation before port.
+391. Open question: desktop 0313 exact image formats, `app:` asset names, and SVG rules—verify full implementation before port.
 392. Open question: which secret, protected, disappearing, scheduled, album and local-only contexts may render or execute scripts?
 393. Open question: should link clicks be inert, use Telegram open-link confirmation, or support only a narrow allowlist?
 394. Open question: exact max `.tgw` source/packaging size, script time/memory cap, cache budget and per-device concurrency.

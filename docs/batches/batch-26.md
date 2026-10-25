@@ -3,7 +3,7 @@
 ## 1. Назначение и границы
 
 1. Этот файл — план реализации пачки 26 из `docs/PATCHLIST.md`.
-2. Пачка включает ровно шесть строк: 0278, 0310, 0311, 0285, 0309 и 0312.
+2. Пачка включает ровно шесть строк: 0278, 0308, 0309, 0285, 0307 и 0310.
 3. Порядок строк в PATCHLIST не является безопасным порядком разработки.
 4. Безопасный порядок зафиксирован ниже и является REQUIRED для очереди.
 5. Решение мейнтейнера: портировать всю подсистему money.
@@ -15,8 +15,8 @@
 11. Решение мейнтейнера: страница настроек называется `MODE_MONEY`.
 12. Все пользовательские настройки пачки должны быть выключены по умолчанию.
 13. При выключенной настройке поведение должно совпадать со стоком Android.
-14. 0310 — инфраструктура, а не пользовательский переключатель.
-15. 0309 — проверка/исправление формата BoC, а не новый UI-переключатель.
+14. 0308 — инфраструктура, а не пользовательский переключатель.
+15. 0307 — проверка/исправление формата BoC, а не новый UI-переключатель.
 16. Ворота пачки требуют сборку Rust на всех ABI.
 17. Ворота требуют импорт приватным ключом на тестовом кошельке.
 18. Ворота требуют смену фразы без backup на тестовом кошельке.
@@ -47,7 +47,7 @@
 40. Последний видимый commit движка содержит key-rotation preview.
 41. Последний видимый commit движка содержит caller-supplied recipient key.
 42. В видимой ревизии нет подтверждения поддержки desktop private-key API.
-43. Поэтому 0310 требует re-port, даже если текущий wallet уже собирается.
+43. Поэтому 0308 требует re-port, даже если текущий wallet уже собирается.
 44. Рабочее дерево submodule имеет локальные удаления и изменения.
 45. Эти изменения не следует смешивать с новым патчем пачки.
 46. Перед работой сохранить состояние submodule и проверить чистый checkout.
@@ -88,44 +88,44 @@
 78. Android-изменение должно быть одним тонким override для `walletAvailable`.
 79. [INFERENCE] Имя Android item: `FORCE_WALLET`.
 80. [INFERENCE] Ключ Android item: `force_wallet`.
-81. Desktop 0310 меняет Docker-подготовку Rust wallet-engine.
-82. Desktop 0310 сначала фиксирует upstream `i582/wallet-engine` revision.
-83. Desktop 0310 затем fetch-ит `gettele/money` branch `tele/<revision>/5`.
-84. Desktop 0310 применяет `patches/wallet-engine.patch`.
-85. Desktop 0310 меняет cache version суффиксом `.tele5`.
+81. Desktop 0308 меняет Docker-подготовку Rust wallet-engine.
+82. Desktop 0308 сначала фиксирует upstream `i582/wallet-engine` revision.
+83. Desktop 0308 затем fetch-ит `gettele/money` branch `tele/<revision>/5`.
+84. Desktop 0308 применяет `patches/wallet-engine.patch`.
+85. Desktop 0308 меняет cache version суффиксом `.tele5`.
 86. Android не имеет права предполагать существование такой ветки на 5c65e47.
 87. Android должен перенести изменения по смыслу и API.
-88. Desktop 0311 добавляет `tele_wallet_keys.cpp` и `.h`.
-89. Desktop 0311 добавляет новый исходник в `Telegram/CMakeLists.txt`.
-90. Desktop 0311 добавляет toggle private keys и экспорт settings spec.
-91. Desktop 0311 расширяет wallet content, engine и session.
-92. Desktop 0311 использует marker `tele/private-key-wallets`.
+88. Desktop 0309 добавляет `tele_wallet_keys.cpp` и `.h`.
+89. Desktop 0309 добавляет новый исходник в `Telegram/CMakeLists.txt`.
+90. Desktop 0309 добавляет toggle private keys и экспорт settings spec.
+91. Desktop 0309 расширяет wallet content, engine и session.
+92. Desktop 0309 использует marker `tele/private-key-wallets`.
 93. Marker хранит адрес, public anchor и признак предложения ротации.
 94. Marker не хранит приватный ключ.
-95. Desktop 0311 распознаёт private-key input через engine.
-96. Desktop 0311 вычисляет адрес из private key на mainnet.
-97. Desktop 0311 принимает private key отдельно.
-98. Desktop 0311 принимает address плюс 12 recovery words.
-99. Desktop 0311 проверяет слова до сетевого восстановления.
-100. Desktop 0311 использует отдельный recovery client.
-101. Desktop 0311 отменяет незавершённый recovery при закрытии UI.
-102. Desktop 0311 запрещает backup для private-key wallet.
-103. Desktop 0311 предлагает заменить длинный ключ на 12 слов.
-104. Desktop 0311 показывает предупреждение о прекращении действия старого ключа.
-105. Desktop 0311 сохраняет только публичный marker состояния.
-106. Desktop 0311 очищает clipboard через 60 секунд, если содержимое не изменилось.
-107. Desktop 0312 добавляет copy words в recovery phrase UI.
-108. Desktop 0312 снимает desktop wait semantics для copy action.
+95. Desktop 0309 распознаёт private-key input через engine.
+96. Desktop 0309 вычисляет адрес из private key на mainnet.
+97. Desktop 0309 принимает private key отдельно.
+98. Desktop 0309 принимает address плюс 12 recovery words.
+99. Desktop 0309 проверяет слова до сетевого восстановления.
+100. Desktop 0309 использует отдельный recovery client.
+101. Desktop 0309 отменяет незавершённый recovery при закрытии UI.
+102. Desktop 0309 запрещает backup для private-key wallet.
+103. Desktop 0309 предлагает заменить длинный ключ на 12 слов.
+104. Desktop 0309 показывает предупреждение о прекращении действия старого ключа.
+105. Desktop 0309 сохраняет только публичный marker состояния.
+106. Desktop 0309 очищает clipboard через 60 секунд, если содержимое не изменилось.
+107. Desktop 0310 добавляет copy words в recovery phrase UI.
+108. Desktop 0310 снимает desktop wait semantics для copy action.
 109. Android уже не имеет подтверждённого десятисекундного таймера в этом экране.
-110. Поэтому Android-порт 0312 — прежде всего явная кнопка копирования.
+110. Поэтому Android-порт 0310 — прежде всего явная кнопка копирования.
 111. Desktop 0285 добавляет toggle `WalletRotate`.
 112. Desktop 0285 показывает кнопку только при disabled backup.
 113. Desktop 0285 переиспользует rotation quote и confirmation flow.
 114. Desktop 0285 очищает rotation guard после подтверждения нового ключа сервером.
 115. Desktop 0285 отдельно логирует quote, submit и завершение rotation.
 116. Desktop 0285 не вызывает обычный `disableBackup` для нового режима.
-117. Desktop 0309 разрешает BoC cell с одной или двумя references.
-118. Desktop 0309 меняет `gram/gram_boc.cpp`.
+117. Desktop 0307 разрешает BoC cell с одной или двумя references.
+118. Desktop 0307 меняет `gram/gram_boc.cpp`.
 119. Android не должен переносить этот C++ parser механически.
 120. Android должен проверить Rust `wallet-engine` BoC path.
 121. Desktop patch headers и hunks — источник намерения, не код для копирования.
@@ -136,26 +136,26 @@
 123. Усилие 0278: S.
 124. Зависимость 0278: существующий Android money stack.
 125. 0278 блокирует UI и импорт следующих патчей.
-126. Вторым идёт 0310: `misc: build wallet engine`.
-127. Усилие 0310: L.
-128. Зависимость 0310: 0278 не техническая, но money API должен быть зафиксирован.
-129. 0310 блокирует 0311, 0285 и 0309.
-130. Третьим идёт 0311: `feat: import private wallets`.
-131. Усилие 0311: L.
-132. Зависимости 0311: 0278, 0310 и существующий money stack.
+126. Вторым идёт 0308: `misc: build wallet engine`.
+127. Усилие 0308: L.
+128. Зависимость 0308: 0278 не техническая, но money API должен быть зафиксирован.
+129. 0308 блокирует 0309, 0285 и 0307.
+130. Третьим идёт 0309: `feat: import private wallets`.
+131. Усилие 0309: L.
+132. Зависимости 0309: 0278, 0308 и существующий money stack.
 133. Четвёртым идёт 0285: `feat: rotate wallet phrase`.
 134. Усилие 0285: M.
-135. Зависимости 0285: 0278, 0310 и 0311 private-secret model.
-136. Пятым идёт 0309: `fix: quote key change fee`.
-137. Усилие 0309: S.
-138. Зависимости 0309: 0285 и 0310.
-139. Шестым идёт 0312: `feat: copy wallet words`.
-140. Усилие 0312: S.
-141. Зависимость 0312: money UI; 0310 не обязателен для простой кнопки.
-142. Для одной линейной очереди 0312 всё равно экспортировать после 0309.
-143. Нельзя коммитить 0311 до доступного ABI/API private-key signing.
+135. Зависимости 0285: 0278, 0308 и 0309 private-secret model.
+136. Пятым идёт 0307: `fix: quote key change fee`.
+137. Усилие 0307: S.
+138. Зависимости 0307: 0285 и 0308.
+139. Шестым идёт 0310: `feat: copy wallet words`.
+140. Усилие 0310: S.
+141. Зависимость 0310: money UI; 0308 не обязателен для простой кнопки.
+142. Для одной линейной очереди 0310 всё равно экспортировать после 0307.
+143. Нельзя коммитить 0309 до доступного ABI/API private-key signing.
 144. Нельзя коммитить 0285 до доказанной fee quote.
-145. Нельзя коммитить 0309 до фикстуры BoC с двумя references.
+145. Нельзя коммитить 0307 до фикстуры BoC с двумя references.
 146. Нельзя объявлять batch `built` до всех шести экспортированных patch files.
 147. Коммиты должны быть в Telegram checkout на ветке `tele`.
 148. Коммиты здесь должны появиться только после export.
@@ -179,7 +179,7 @@
 163. Добавить `PRIVATE_KEY_WALLETS` с default `false`.
 164. Добавить `ROTATE_WALLET_PHRASE` с default `false`.
 165. Добавить `COPY_WALLET_WORDS` с default `false`.
-166. 0310 и 0309 не требуют пользовательского toggle.
+166. 0308 и 0307 не требуют пользовательского toggle.
 167. Если security review потребует master gate, он тоже default off.
 168. Не прятать дочерние rows за несуществующим toggle.
 169. Private-key import row может быть виден в MODE_MONEY, но off делает его недоступным.
@@ -254,11 +254,11 @@
 232. Сохранить off-path как byte-for-byte минимальный stock hunk.
 233. Commit 0278 экспортировать до native work.
 
-## 8. 0310: перенос diff wallet-engine
+## 8. 0308: перенос diff wallet-engine
 
 234. Зафиксировать исходный Android gitlink `5c65e47...` в рабочей заметке.
 235. Не переписывать существующий submodule pointer до review diff.
-236. Получить desktop patch через `git show origin/main:patches/tdesktop/0310-*`.
+236. Получить desktop patch через `git show origin/main:patches/tdesktop/0308-*`.
 237. Отдельно выписать изменения Docker и `build/prepare/prepare.py`.
 238. Android не использует desktop Docker prepare pipeline.
 239. Android source of truth — `jni/wallet-engine` и `jni/gram-wallet`.
@@ -278,7 +278,7 @@
 253. [INFERENCE] Private-key API может потребовать `detect_private_key`.
 254. [INFERENCE] Private-key API может потребовать `private_key_public_key`.
 255. [INFERENCE] Private-key API может потребовать `private_key_address`.
-256. [INFERENCE] Эти названия наблюдались в desktop 0311, но не подтверждены Android API.
+256. [INFERENCE] Эти названия наблюдались в desktop 0309, но не подтверждены Android API.
 257. Не объявлять API доступным, пока `git grep` и bindgen не подтверждают его.
 258. Для rotated words сохранить разницу anchor key/signing key.
 259. Для private key не превращать raw key в обычный mnemonic без доказательства.
@@ -357,7 +357,7 @@
 329. Do not use `git clean` until prebuild artifacts are backed up or reproducible.
 330. Record Rust, NDK, CMake, bindgen and submodule revisions in evidence.
 
-## 10. 0311: private-key import
+## 10. 0309: private-key import
 
 331. Existing entry point is `WalletImportFragment`.
 332. Existing UI has 12-word and 24-word tabs.
@@ -465,7 +465,7 @@
 431. [INFERENCE] Server behavior for no-backup rotation is not proven by source.
 432. This is a REQUIRED maintainer/device decision before release.
 
-## 12. 0309: two-reference BoC fee quote
+## 12. 0307: two-reference BoC fee quote
 
 433. Desktop accepts request cell refs equal to 1 or 2.
 434. Android currently routes BoC validation through Rust adapter.
@@ -483,7 +483,7 @@
 446. Confirm more than two refs is rejected where protocol requires it.
 447. Confirm invalid BOC cannot trigger network request.
 448. Confirm error text does not echo BOC if it may contain secrets.
-449. If Android engine already accepts two refs, record 0309 as verification-only.
+449. If Android engine already accepts two refs, record 0307 as verification-only.
 450. If it rejects them, port the minimal Rust parser change.
 451. Keep parser change in wallet-engine revision, not generated C++.
 452. Rebuild all four ABIs after parser change.
@@ -492,7 +492,7 @@
 455. [INFERENCE] Exact BoC fixture bytes must come from engine test vectors or maintainer.
 456. Do not invent bytes and call them protocol-valid.
 
-## 13. 0312: copy secret words
+## 13. 0310: copy secret words
 
 457. Existing phrase surfaces include `showRecoveryPhraseAlert`.
 458. Existing phrase surfaces include `WalletSecretPhraseFragment`.
@@ -637,11 +637,11 @@
 585. Do not use `logcat | grep` patterns that print secret payloads.
 586. Redact account ids, wallet addresses and operation ids where required.
 587. Evidence for 0278: config getter behavior after cold restart.
-588. Evidence for 0310: four Rust archives and CMake target success.
-589. Evidence for 0311: derived address, proof result and local storage kind only.
+588. Evidence for 0308: four Rust archives and CMake target success.
+589. Evidence for 0309: derived address, proof result and local storage kind only.
 590. Evidence for 0285: fee quote, confirmation, server state and new phrase quiz.
-591. Evidence for 0309: one-ref and two-ref BoC validation.
-592. Evidence for 0312: copy action and delayed clear without secret text.
+591. Evidence for 0307: one-ref and two-ref BoC validation.
+592. Evidence for 0310: copy action and delayed clear without secret text.
 593. A successful build is evidence of build only, not wallet correctness.
 594. A logcat line saying success is not proof of on-chain finality.
 595. Confirm final wallet state from trusted server response.
@@ -682,7 +682,7 @@
 627. Verify wipe removes local imported key.
 628. Verify reimport after wipe requires explicit key input.
 629. Use a test-only address for two-reference BoC fixture.
-630. Do not test 0309 by crafting a live spend transaction.
+630. Do not test 0307 by crafting a live spend transaction.
 631. Stop immediately on unexpected address, fee, nonce or public key.
 632. Stop immediately on any phrase/key in logcat.
 633. Stop immediately on an unexpected provider or upload.
@@ -693,7 +693,7 @@
 
 636. Which exact private-key encoding is supported: hex, base64, or both?
 637. Is the raw key Ed25519 seed, expanded secret, or another TON key form?
-638. Should address-plus-12-words recovery be included in Android 0311?
+638. Should address-plus-12-words recovery be included in desktop 0309 (import by private key)?
 639. Which TON network must the test wallet use?
 640. Does the configured Toncenter endpoint support that network?
 641. Does server accept no-backup key rotation without `TL_wallet.disableBackup`?
@@ -701,7 +701,7 @@
 643. How should Android reconcile an old served key after rotation?
 644. What exact fee quote validity window must UI display?
 645. Is 60-second clipboard clear sufficient for Android system clipboard history?
-646. Should copy action remain default off despite desktop default-on 0312?
+646. Should copy action remain default off despite desktop default-on 0310?
 647. Is private-key display allowed only after wallet passcode/biometric unlock?
 648. Should FORCE_WALLET be visible in MODE_MONEY or a debug sub-group?
 649. Which release ABIs are mandatory: all four or arm64 only?
@@ -723,9 +723,9 @@
 662. Each row states `tele · money` as the location.
 663. Each row states the default, which is off for new toggles.
 664. Each row names the exported Android patch file after export.
-665. Each row names its desktop source number: 0278, 0311, 0285 or 0312.
-666. 0310 build infrastructure need not be a user-facing row.
-667. 0309 may be described in patch notes, not as a toggle.
+665. Each row names its desktop source number: 0278, 0309, 0285 or 0310.
+666. 0308 build infrastructure need not be a user-facing row.
+667. 0307 may be described in patch notes, not as a toggle.
 668. Do not invent Android patch numbers before `git format-patch`.
 669. Export with the documented `git format-patch` command.
 670. Verify only expected patch files changed in `main/`.
@@ -740,28 +740,28 @@
 
 677. 0278 off returns stock walletAvailable behavior.
 678. 0278 on takes effect only after restart.
-679. 0310 cleanly builds Rust with the pinned toolchain.
-680. 0310 creates all four ABI archives.
-681. 0310 generated bindings compile as C++20.
-682. 0310 JNI object links into `tmessages.49`.
-683. 0311 private-key import is hidden/disabled when off.
-684. 0311 invalid key is rejected locally.
-685. 0311 valid key derives expected address.
-686. 0311 imported wallet is marked non-backupable.
-687. 0311 private key is encrypted at rest through wallet storage.
-688. 0311 private key is absent from logs, exports and telemetry.
+679. 0308 cleanly builds Rust with the pinned toolchain.
+680. 0308 creates all four ABI archives.
+681. 0308 generated bindings compile as C++20.
+682. 0308 JNI object links into `tmessages.49`.
+683. 0309 private-key import is hidden/disabled when off.
+684. 0309 invalid key is rejected locally.
+685. 0309 valid key derives expected address.
+686. 0309 imported wallet is marked non-backupable.
+687. 0309 private key is encrypted at rest through wallet storage.
+688. 0309 private key is absent from logs, exports and telemetry.
 689. 0285 button appears only for no-backup wallet and enabled toggle.
 690. 0285 quote shows fee before confirmation.
 691. 0285 cancelled flow does not broadcast.
 692. 0285 confirmed flow is tested on disposable wallet.
 693. 0285 server/local keys reconcile after restart.
-694. 0309 accepts one-reference fixture.
-695. 0309 accepts two-reference fixture.
-696. 0309 rejects malformed fixture.
-697. 0312 copy is hidden when toggle off.
-698. 0312 copy works when toggle on.
-699. 0312 clears unchanged clipboard after 60 seconds.
-700. 0312 does not clear replacement clipboard content.
+694. 0307 accepts one-reference fixture.
+695. 0307 accepts two-reference fixture.
+696. 0307 rejects malformed fixture.
+697. 0310 copy is hidden when toggle off.
+698. 0310 copy works when toggle on.
+699. 0310 clears unchanged clipboard after 60 seconds.
+700. 0310 does not clear replacement clipboard content.
 701. All UI callbacks run on main thread.
 702. All account operations use the active account.
 703. No stock DB schema or `TLRPC.java` was edited.
@@ -776,11 +776,11 @@
 ## 22. Planned commit summary
 
 711. `feat: force wallet` — 0278, S, first.
-712. `misc: build wallet engine` — 0310, L, after Android API review.
-713. `feat: import private wallets` — 0311, L, after 0310.
-714. `feat: rotate wallet phrase` — 0285, M, after 0311.
-715. `fix: quote key change fee` — 0309, S, after 0285.
-716. `feat: copy wallet words` — 0312, S, after money UI.
+712. `misc: build wallet engine` — 0308, L, after Android API review.
+713. `feat: import private wallets` — 0309, L, after 0308.
+714. `feat: rotate wallet phrase` — 0285, M, after 0309.
+715. `fix: quote key change fee` — 0307, S, after 0285.
+716. `feat: copy wallet words` — 0310, S, after money UI.
 717. Не использовать `build:`: правила Android-очереди допускают `feat:`, `fix:`, `debloat:` и `misc:`.
 718. Keep subjects lowercase and imperative.
 719. Keep each subject within repository commit-word limits.

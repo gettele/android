@@ -1,6 +1,6 @@
 # PATCHLIST
 
-план переноса фич [tele](https://github.com/nitreojs/tele) (telegram desktop) на telegram android. основа — [docs/portability.md](portability.md): из 333 оценённых патчей tele 222 переносимы, 37 частично, 53 не переносимы, 17 уже в стоке android, 4 уже перенесены нашими патчами (127 исходных патчей v7.2.9 и 206 новых — 0125–0322 и lib_ui). здесь переносимые разбиты на **пачки** (batches): порядок реализации, зависимости и статусы. решения мейнтейнера по спорным патчам — [docs/decisions.md](decisions.md).
+план переноса фич [tele](https://github.com/nitreojs/tele) (telegram desktop) на telegram android. основа — [docs/portability.md](portability.md): из 332 оценённых патчей tele 222 переносимы, 37 частично, 53 не переносимы, 17 уже в стоке android, 4 уже перенесены нашими патчами (127 исходных патчей v7.2.9 и новые — 0125–0332 и lib_ui). здесь переносимые разбиты на **пачки** (batches): порядок реализации, зависимости и статусы. решения мейнтейнера по спорным патчам — [docs/decisions.md](decisions.md).
 
 анализ исходных патчей: [nitreojs/tele](https://github.com/nitreojs/tele) v7.2.9, патчи 0001–0127. колонка «№» указывает патч tele по **текущей нумерации очереди десктопа** (`tele/patches/tdesktop/NNNN-*.patch`; очередь была перенумерована, старый → новый — [docs/desktop-numbers.md](desktop-numbers.md)); файлы в `patches/android/` нумеруются **по позиции в очереди** (`git format-patch`), соответствие наш→исходный — в таблицах ниже. номера в `` `NNNN-…` `` внутри примечаний — файлы `patches/android/`, голые номера — патчи десктопа.
 
@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Гайды исполнителей: [11 — база приватности](batches/batch-11.md) · [12 — follow-up и быстрые тумблеры](batches/batch-12.md) · [13](batches/batch-13.md) · [14](batches/batch-14.md) · [15](batches/batch-15.md) · [16](batches/batch-16.md) · [17](batches/batch-17.md) · [18](batches/batch-18.md) · [19](batches/batch-19.md) · [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md)
+Гайды исполнителей для оставшихся пачек: [19](batches/batch-19.md) · [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
 
 инфраструктурные патчи (без номера tele) помечены `infra`: `0002`, `0003`, `0019`, `0065`, `0066`.
 
@@ -99,7 +99,7 @@
 | 0103 | отправить inline-запрос как текст | n/a | на Android кнопка отправки уже шлёт текст поля (`processSendingText`), панель инлайна — отдельный тап по результату; десктопный пункт нужен был потому, что Enter отправлял подсвеченный результат |
 | 0066 | инлайн-результаты без via | done | `0037-feat-send-inline-results-without-via`; тумблер `inline_no_via` (секция privacy + поиск): `via_bot_id` не ставится ни при отправке (`params.containsKey("bot")`), ни в ретрае (ветка `replyMarkup`), локальная отрисовка честная. **не проверено на девайсе**; игры/webview-результаты могут требовать via — поэтому тумблер по умолчанию выключен |
 | 0101 | поиск по алиасам | done | `0030-feat-search-chats-and-mentions-by-alias`; зависит от 0071. поиск чатов — `DialogsSearchAdapter.searchDialogsInternal` после `MessagesStorage.localSearch`: диалоги, чей алиас содержит запрос, добавляются в выдачу, в ячейке видно `Имя @алиас`; `@` в строке ввода — `MentionsAdapter.showUsersResult` больше не требует непустой серверной выдачи, алиасы подставляются всегда. Серверные алиасы в поиске чатов — `0074-feat-find-chats-by-server-aliases` (пачка 8) |
-| 0103 | управление локальными именами и алиасами | done | `0032-feat-manage-local-names-and-aliases-from-tele-settin`; зависит от 0071/0029. `tele/ui/settings/TeleNamesActivity.kt` — два экрана из настроек tele («your data»): список «Имя → значение», тап открывает диалог редактирования с кнопкой Delete, долгий тап открывает профиль (`0036` — индекс строки сдвинут на заголовок). Диалоги алиаса и локального имени — один общий в `TeleHooks`: `ChatActivity` и `ProfileActivity` больше не держат свои копии (`0037`), поэтому подпись, линия, отступы и Delete одинаковые везде; тема чата прокидывается через `getResourceProvider()` плейсхолдеры диалогов приглушены, `@` в поле алиаса — приглушённый префикс (`0034`) |
+| 0078, 0071 | управление локальными именами и алиасами | done | `0032-feat-manage-local-names-and-aliases-from-tele-settin`; зависит от 0071/0029. `tele/ui/settings/TeleNamesActivity.kt` — два экрана из настроек tele («your data»): список «Имя → значение», тап открывает диалог редактирования с кнопкой Delete, долгий тап открывает профиль (`0036` — индекс строки сдвинут на заголовок). Диалоги алиаса и локального имени — один общий в `TeleHooks`: `ChatActivity` и `ProfileActivity` больше не держат свои копии (`0037`), поэтому подпись, линия, отступы и Delete одинаковые везде; тема чата прокидывается через `getResourceProvider()` плейсхолдеры диалогов приглушены, `@` в поле алиаса — приглушённый префикс (`0034`) |
 | 0121 | алиасы для inline-ботов | done | покрыто 0030: `MentionsAdapter.teleAliasRealUsername` резолвит алиас в бота до инлайн-запроса (`searchForContextBot`); подтверждено пользователем (memeindexerbot/zaza); серверные алиасы (`@calc` → `@calcmulabot`) — 0079, проверено на эмуляторе |
 
 ## пачка 5 — ссылки
@@ -120,7 +120,7 @@
 | 0050, 0118, 0119 | очередь текста за загружающимся медиа (+ ответы мимо очереди, форс-отправка) | done | `0058-feat-queue-text-behind-uploading-media`; тумблеры в sending: `queue_behind_media`, `send_older_replies`, `double_enter_send`. Исправлено после device-теста: delayed upload с уже установленным `sendRequest` больше не исключается; сравнение учитывает отрицательные local IDs (раннее сообщение = больший ID), upload groups и активные sending-media до server ack; flush теперь после финального media RPC success/failure; cancel вызывает `markCancelled` + targeted flush после очистки send/upload state. Вторая причина невыхода из очереди найдена и исправлена: held-текст не регистрируется в `sendingMessages` (это происходит только внутри `performSendMessageRequest`), поэтому existence-check в flush молча выбрасывал held-записи — заменён на явный `cancelled`-флаг; safety recheck повторяется раз в 2с только пока held очередь не опустела |
 | 0095 | отложенные отправляются вовремя | built | `0056-feat-send-scheduled-messages-on-time`; тумблер `punctual_scheduled` (секция sending): локальный таймер `tele/helpers/PunctualScheduled.kt` каждые 20с — из `scheduled_messages_v2` берутся server-scheduled (mid>0, не секретные) с `date <= now` и отправляются штатным `TL_messages_sendScheduledMessages` (тот же запрос, что «send now»); работает пока приложение живо и онлайн, при офлайне сервер отсылает сам (может опоздать). старт — `ApplicationLoader` после `checkUnsentMessages`; доработка «отложенные вовремя: ретраи и уведомление»: состояние ретрая по (account, dialog, mid), `FLOOD_WAIT_N`/`SLOWMODE_WAIT_N` ждут N+1 с, лестница 5/15/60/300/900 с, максимум 5 попыток, тост и уведомление в канале `tele_scheduled` |
 | 0100 | фото в HD по умолчанию | done | `0055-feat-send-photos-in-HD-by-default`; тумблер `hd_photos` (секция sending): один гейт в `MediaController.MediaEditState.isHighQuality()` — при отсутствии per-photo выбора (`highQuality == null`) дефолт HD, покрывает все UI-пути (PhotoViewer, attach-панель, редактор); стоковый пер-photo HD-тоггл и запоминание `photoHighQualityDefault` работают как раньше |
-| 0093 | gif как видео и видео как gif | частично n/a | «видео как gif» уже в стоке: mute в PhotoViewer (`videoEditedInfo.muted`) → сток добавляет `TL_documentAttributeAnimated` (`SendMessagesHelper` 11213+) — видео уходит гифкой; «gif как видео» требует транскода gif→mp4 (на desktop `Media::Encode`, на android нет готового пути — длительность gif неоткуда взять), отложено до отдельной проработки |
+| 0093 | gif как видео и видео как gif | частично n/a | «видео как gif» уже в стоке: mute в PhotoViewer (`videoEditedInfo.muted`) → сток добавляет `TL_documentAttributeAnimated` (`SendMessagesHelper` 11213+) — видео уходит гифкой; «gif как видео» требует транскода gif→mp4 (на desktop `Media::Encode`, на android нет готового пути — длительность gif неоткуда взять), отложено до отдельной проработки; остаток — строка в пачке 30 |
 | 0069 | реплай на удалённое: скип или цитата | done | `0063-feat-skip-or-quote-deleted-messages-when-replying`, follow-up `0064-fix-saved-drafts-and-deleted-replies`; выбор в your data: `reply to deleted messages` — `skip them` (по умолчанию) или `quote them`. В 0072: Reply скрыт в меню и режиме выделения, Forward заблокирован в выделении и action guard (удалённое сообщение отсутствует на сервере); после удаления удержанного выделение сбрасывается, пузырь перерисовывается через forceUpdate. Сборка debug успешна; **ручная проверка на устройстве ожидается** |
 | 0008 | quick replies в группах и каналах | done | `0057-feat-offer-quick-replies-in-groups`: тумблер `quick_replies_in_groups`; `/` autocomplete показывает Business quick replies в разрешённых группах. Исправлено после device-теста: shortcut content fetch-ится через `messages.getQuickReplyMessages`; IDs больше не уходят в обычный `messages.forwardMessages` (который трактовал shortcut IDs как IDs history и давал чужой текст/стикер). Каждый item отправляется как fresh text/photo/document через `SendMessageParams`, поэтому retry использует send/upload путь; отсутствующий локальный файл у серверного document не считается причиной отказаться от remote media reference. Private-chat replay не менялся |
 | 0114 | пересылка защищённых как копий | done | `0059-feat-forward-protected-messages-as-copies`; перехват в `SendMessagesHelper.sendMessage(ArrayList<MessageObject>, …)` — единой точке форвардов: защищённые (noforwards у сообщения или пира) отправляются свежими копиями. Текст сохраняет entities и web preview; фото и документы сначала скачиваются при отсутствии локального файла, затем загружаются как новые media (не remote reference, который сервер отклоняет с `CHAT_FORWARDS_RESTRICTED`); GIF/video явно принудительно идут через upload; sticker/voice/round используют штатную document-ветку. Опросы клонируются с новым id (correct-флаги квизов не переносятся), контакты и статичные локации/venue копируются из полей media. Paid media, игры, сторис, опросы с медиа, неотвеченные квизы и live locations не копируются — показывается причина. Гейты forward-меню и selection в ChatActivity/PhotoViewer через `ProtectedMessages.allowsForward`/`peerNoForwards`; копии не очищают draft целевого чата. Текст/фото/стикеры подтверждены пользователем; GIF/video ещё требуют ручной проверки после принудительного upload fix.
@@ -277,7 +277,7 @@
 | 0219 | откат неудавшегося удаления | built | `0135-fix-restore-failed-deletions`; `MessagesController.deleteMessages`, `DeletedMessages.kt`; M; зависит от android 0060; различать FLOOD/сеть и жёсткие ошибки |
 | 0182 | хранение удалённых после рестарта | built | `0134-feat-deleted-messages-retention` + `0143-fix-protect-all-kept-media`; `DeletedMessages`, `MessageHistory`; S; зависит от android 0060, android 0061, 0151; реш.: 0182 срок 1/7/30/навсегда; остаток: срок + защита kept-медиа |
 | 0283 | сохранять удалённые чаты и топики | built | `0142-feat-keep-deleted-chats-and-topics`; `MessagesController`, `TopicsController`, `DialogCell`; L; зависит от 0019, 0151, 0256, android 0060, 0182; реш.: 0283 как desktop; все пути удаления |
-| 0321 | восстановить пост канала из форварда | built | `0136-feat-recover-posts-from-forwards`; `DeletedMessages.kt`, `ChatMessageCell`; M; зависит от 0019, android 0060; маркер в fork-таблице |
+| 0316 | восстановить пост канала из форварда | built | `0136-feat-recover-posts-from-forwards`; `DeletedMessages.kt`, `ChatMessageCell`; M; зависит от 0019, android 0060; маркер в fork-таблице |
 | 0301 | удалить все мои сообщения из чата | built | `0137-feat-remove-all-my-messages`; `RemoveMine.kt`, `ChatActivity`, `DialogsActivity`, `TopicsFragment`; M; зависит от 0019, android 0060; FLOOD_WAIT, пропуск kept deleted |
 | 0126 | закладки и точка возврата | built | `0138-feat-bookmark-messages` + `0139-feat-return-to-where-you-were`; `ChatActivity`, `ChatMessageCell`, `tele.db`; L; зависит от android 0042; реш.: 0126 tele.db; два тумблера, можно разделить на два патча |
 | 0147 | время прочтения ваших сообщений | built | `0140-feat-remember-read-times`; `MessagesController`, `MessageSeenView`, `tele.db`; M; по умолч.: тумблер выкл; лимиты как у десктопа |
@@ -312,7 +312,7 @@
 | 0300 | компактные папки «только иконки» (частично) | built | `0155-feat-compact-icon-only-folders`; `FilterTabsView`, `DialogsActivity`; L; по умолч.: новая фича; нет режима иконок в стоке |
 | 0279 | скрыть дни рождения | built | `0153-feat-hide-birthdays`; `BirthdayController`, `DialogsActivity`, `ProfileBirthdayEffect`; S; зависит от 0125; без рестарта через onConfigChanged |
 | 0299 | размытое фото как фон шапки профиля | built | `0156-feat-blurred-photo-profile-background`; `ProfileActivity.TopView`; M; MODE_IDS или interface |
-| 0304 | залить профиль цветом фото (частично) | built | `0157-feat-fill-profile-with-photo-colors`; `ProfileActivity`, `ResourcesProvider`; L; зависит от 0299; реш.: 0304 полный override; регрессионно хрупко |
+| 0303 | залить профиль цветом фото (частично) | built | `0157-feat-fill-profile-with-photo-colors`; `ProfileActivity`, `ResourcesProvider`; L; зависит от 0299; реш.: 0303 полный override; регрессионно хрупко |
 | 0267 | убрать хвостики пузырей | built | `0158-feat-hide-bubble-tails`; `ChatMessageCell`, `Theme.MessageDrawable`; M; форсировать drawPinnedBottom; проверка на устройстве |
 | 0276 | бейджи в «Переслано» и reply | built | `0159-feat-badges-on-forwarded-and-reply-headers`; `ChatMessageCell`, `TeleNameBadges`; M; зависит от 0012, android 0069, android 0073; горячий файл, проверка на устройстве |
 | 0022, 0035 | lowercase всего интерфейса | built | `0160-feat-lowercase-the-interface`; перехват `LocaleController.getString` (+ строки `strings_tele.xml`); тумблер выкл.; M |
@@ -329,7 +329,7 @@
 |---|---|---|---|
 | 0128 | отправка без звука по умолчанию | built | `0162-feat-send-silently-by-default`; `SendMessagesHelper`, ChatActivity меню; M; по умолч.: 0128 silent_<id>; меню отправки «со звуком» |
 | 0130 | подтверждение отправки вторым тапом | built | `0163-feat-confirm-sticker-gif-and-voice-sends`; `EmojiView`, `ChatActivityEnterView`, `MentionsAdapter`; M; по умолч.: 0130 как десктоп; второй тап 5 с; голосовые — в превью |
-| 0318 | подтверждение стикеров из бокса набора | built | `0164-fix-confirm-stickers-from-set-boxes`; `StickersAlert`; S; зависит от 0130; по умолч.: 0130/0318 по десктопу; общий `TeleSendConfirm` |
+| 0315 | подтверждение стикеров из бокса набора | built | `0164-fix-confirm-stickers-from-set-boxes`; `StickersAlert`; S; зависит от 0130; по умолч.: 0130/0315 по десктопу; общий `TeleSendConfirm` |
 | 0153 | .mkv как видео (частично) | built | `0165-fix-send-mkv-files-as-videos`; `SendMessagesHelper`; S; по умолч.: 0153 частично; нужна проверка на устройстве |
 | 0157 | аудиофайл как голосовое | built | `0166-feat-send-audio-as-voice`; `MediaController`, `ChatAttachAlertAudioLayout`; L; зависит от android 0086; по умолч.: 0157 нативный энкодер; блокирует запись на время конвертации |
 | 0259 | пересылка по одному сообщению | built | `0170-feat-forward-messages-one-by-one`; `SendMessagesHelper`; S; альбомы вместе; flood wait |
@@ -356,7 +356,7 @@
 | 0144 | перезапись ссылки только для превью | built | `0180-feat-rewrite-only-the-link-preview`; `EditTextCaption`, `ChatActivity`; S; зависит от android 0046, android 0047, android 0054; неактивно при no_link_previews |
 | 0141 | набранные эмодзи в «недавние» | built | `0181-fix-count-typed-emoji-in-recents`; `Emoji`, `SendMessagesHelper`; S; тумблер выкл (fix) |
 | 0139 | копировать как Markdown/HTML | built | `0182-feat-copy-messages-as-markdown-or-html`; `MessageMenu`, `ChatActivity`; M; зависит от android 0042; Writer entity→MD/HTML |
-| 0142 | нумерация строк code-блоков | built | `0183-feat-number-code-block-lines`; `ChatMessageCell`, `MessageObject`; M; rich-IV отдельно |
+| 0142 | нумерация строк code-блоков | built | `0183-feat-number-code-block-lines`; `ChatMessageCell`, `MessageObject`; M; rich-IV отдельно; десктопный фикс 0330 (нумерация строк больше не вешает длинные code-блоки) — проверить `0183` на длинных блоках |
 | 0146 | шот → docked-лента (частично) | built | `0173-feat-dock-shots-above-the-field`; `TeleShotActivity`, `DockedMedia`; S; зависит от android 0083, android 0086; только отправка в docked |
 
 ## пачка 19 — поиск и чат
@@ -368,19 +368,19 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0168 | regex-поиск по истории | todo | поиск в чате и чат-листе; M; по умолч.; только память, не SQLite |
-| 0281 | фильтр поиска в чате по типу | todo | `MediaDataController.searchMessagesInChat`, `ChatActivity`; M; зависит от 0168; реш.: 0281 chip row (по умолч.); включая GIF/кружки |
-| 0306 | поиск по человеку + типу | todo | `MediaDataController.searchMessagesInChat`; M; зависит от 0281; по умолч.: 0281 чипы; вердикт изменён с ❌, релевантен после 0281 |
+| 0281 | фильтр поиска в чате по типу | todo | `MediaDataController.searchMessagesInChat`, `ChatActivity`; M; зависит от 0168; реш.: 0281 chip row (по умолч.); включая GIF/кружки; поиск по человеку + типу (прежняя отдельная строка 0306) — внутри 0281: `from_id` комбинируется с чипами |
 | 0280 | упоминать нескольких подряд | todo | ChatActivity mentionContainer; S; реш.: 0280 long-press; не для inline-ботов |
 | 0268 | онлайн участников в больших группах (частично) | todo | `MessagesController`, `ChatAvatarContainer`; S; реш.: 0268 край скрытых ≤200; в стоке; доделываем край |
 | 0134 | панель закрепа из меню чата | todo | `ChatActivity`; S; по умолч.: 0134 выкл; пункт при !allowPin |
 | 0235 | своя полоса реакций | todo | `ReactionsContainerLayout`, `TeleSettingsActivity`; M; drag-reorder; кастомные реакции через `MediaDataController` |
 | 0127 | закрепить наборы стикеров/эмодзи | todo | `EmojiView`; M; локально в tele_kv |
-| 0322 | фильтр стикеров и эмодзи по формату | todo | `StickersActivity`, `EmojiView`; M; формат по mime документов |
+| 0317 | фильтр стикеров и эмодзи по формату | todo | `StickersActivity`, `EmojiView`; M; формат по mime документов |
+| 0328 | restrict участников из меню сообщения/юзерпика + поиск человека по числовому id | todo | `ChatActivity.fillMessageMenu`, `MessageMenu.kt`, пикеры участников; M; зависит от android 0042; пикеры находят людей по числовому id |
 | 0249 | мини-аппы никогда на весь экран | todo | `BotWebViewContainer/Sheet`; S; UNSUPPORTED на fullscreen |
 
 ## пачка 20 — имена, id и история версий
 
-невидимые имена и скрытые символы, DC/ID/дата загрузки, история версий в APK и живые превью настроек (0244 — последним: опирается на ghost, 0208/0209, 0169). effort: S×3, M×5, L×1.
+невидимые имена и скрытые символы, DC/ID/дата загрузки, история версий в APK и живые превью настроек (0244 — последним: опирается на ghost, 0208/0209, 0169), копирование peer id цифрами (0253). effort: S×4, M×5, L×1.
 
 ворота: debug-apk, на устройстве: невидимые имена пользователей и чатов заменены `@username` (только в памяти, БД не меняется); скрытые символы подсвечены; DC по первому фото; история версий открывается офлайн из `res/raw`; живые превью в настройках.
 
@@ -395,6 +395,7 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 | 0237 | история изменений всех версий | todo | `TeleChangelog.kt`, `res/raw`; M; зависит от android 0077, android 0078; реш.: 0237/0241 в APK, CI; `changelog_history.json` генерирует CI |
 | 0241 | what's new с живыми тумблерами | todo | `TeleSettingsActivity(MODE_NEW)`, `TeleSearch.kt`; M; зависит от 0237, android 0078; реш.: 0169 структура настроек, 0237/0241; после 0237 |
 | 0244 | живые превью в настройках | todo | `TeleSettingsActivity` (`TYPE_PREVIEW`); L; зависит от 0208, 0209, ghost, android 0024; реш.: 0169; делать последним |
+| 0253 | копировать peer id голыми цифрами | todo | `ProfileActivity`, `tele/helpers/PeerId.kt` (`PeerId.copyText`); S; зависит от android 0024; влить в `0024`, не отдельный тумблер |
 
 ## пачка 21 — уведомления, загрузки и система
 
@@ -473,10 +474,10 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0088 | debug-логи и mtproto-инспектор (частично) | todo | лог/JSON-вьюер; полнота упирается в JNI tgnet; в новой очереди инспектор разросся (консоль 0195, подтверждения 0218, панели 0298) — делается вместе с ними, TL-схема в комплекте; решение мейнтейнера: инспектор и консоль; L |
-| 0195 | MTProto-консоль | todo | `WebView`, `ConnectionsManager`; L; зависит от android 0078 (инспектор), android 0051, 0187, 0218, 0298; реш.: инспектор+консоль; TL-схема в комплекте |
+| 0195 | MTProto-консоль | todo | `WebView`, `ConnectionsManager`; L; зависит от 0088 (инспектор), android 0051, 0187, 0218, 0298; реш.: инспектор+консоль; TL-схема в комплекте; фикс 0326 — шорткаты `me` и peer работают везде в консоли |
 | 0218 | консоль mtproto: опасные методы | todo | консоль mtproto; S; зависит от 0195; реш.: инспектор + консоль; список переносится как есть |
-| 0298 | инспектор/консоль как панели (частично) | todo | консоль MTProto, полноэкранный фрагмент; S; зависит от 0195, 0218, android 0080; реш.: инспектор+консоль порт; идёт в составе 0195/0218 |
-| 0202 | отчёты о крашах без дампа | todo | `TeleCrash`, `ApplicationExitInfo`; S; зависит от android 0033, android 0075; по умолч.: серверный тумблер; нужна поддержка tele-server |
+| 0298 | инспектор/консоль как панели (частично) | todo | консоль MTProto, полноэкранный фрагмент; S; зависит от 0195, 0218, 0088; реш.: инспектор+консоль порт; идёт в составе 0195/0218 |
+| 0202 | отчёты о крашах без дампа | todo | `TeleCrash`, `ApplicationExitInfo`; S; зависит от android 0067, android 0075; по умолч.: серверный тумблер; нужна поддержка tele-server |
 | 0203 | отчёты о зависаниях | todo | ApplicationLoader watchdog, `TeleCrash`; M; зависит от 0202; по умолч.: серверный тумблер; нужна поддержка tele-server |
 
 ## пачка 26 — деньги: движок и ключи
@@ -488,15 +489,15 @@ wallet-engine из gettele/money: дифф переносится на реви�
 | № | патч | статус | примечание |
 |---|---|---|---|
 | 0278 | кошелёк до включения Telegram | todo | `AppGlobalConfig.walletAvailable`; S; зависит от деньги; реш.: деньги портируются; один хунк, нужен рестарт |
-| 0310 | wallet-engine из gettele/money | todo | `jni/wallet-engine`, `jni/gram-wallet`, `Rust/NDK`; L; зависит от деньги; реш.: re-port diff + пересборка Rust; ревизия отличается от десктопа |
-| 0311 | импорт кошельков по приватному ключу | todo | `WalletImportFragment`, `GramWalletStorage`, `WalletEngine2`; L; зависит от 0310, 0278, деньги; реш.: включая приватные ключи; безопасность критична |
+| 0308 | wallet-engine из gettele/money | todo | `jni/wallet-engine`, `jni/gram-wallet`, `Rust/NDK`; L; зависит от деньги; реш.: re-port diff + пересборка Rust; ревизия отличается от десктопа |
+| 0309 | импорт кошельков по приватному ключу | todo | `WalletImportFragment`, `GramWalletStorage`, `WalletEngine2`; L; зависит от 0308, 0278, деньги; реш.: включая приватные ключи; безопасность критична |
 | 0285 | секретная фраза кошелька без бэкапа | todo | деньги: `GramWallet`, `WalletKeysBackupFragment`; M; зависит от 0278; реш.: 0285 порт+тест-кошелёк; проверять на тестовом кошельке; MODE_MONEY |
-| 0309 | квота комиссии смены ключа (BoC) (частично) | todo | Rust `gram-wallet`; S; зависит от 0285, 0310, деньги; реш.: money порт всё; проверка движка после 0310 |
-| 0312 | копировать секретные слова без ожидания | todo | `WalletKeysBackupFragment`, `WalletSecretPhraseFragment`; S; зависит от деньги; default off, очистка буфера 60 с |
+| 0307 | квота комиссии смены ключа (BoC) (частично) | todo | Rust `gram-wallet`; S; зависит от 0285, 0308, деньги; реш.: money порт всё; проверка движка после 0308 |
+| 0310 | копировать секретные слова без ожидания | todo | `WalletKeysBackupFragment`, `WalletSecretPhraseFragment`; S; зависит от деньги; default off, очистка буфера 60 с |
 
 ## пачка 27 — деньги: интерфейс и карта
 
-отключение money, тусклые группы адреса, ссылки на транзакции (tonscan.org), 2D и 3D-шейдер карты. effort: S×5, L×2.
+отключение money, тусклые группы адреса, ссылки на транзакции (tonscan.org), 2D и 3D-шейдер карты, подарки как gift-cards. effort: S×6, L×2.
 
 ворота: debug-apk, на устройстве: money выключается целиком (нужен рестарт); ссылки на транзакции открываются; карта 2D и 3D, подарки стикерами на карте; на тестовом кошельке.
 
@@ -504,39 +505,38 @@ wallet-engine из gettele/money: дифф переносится на реви�
 |---|---|---|---|
 | 0288 | выключить money целиком | todo | `AppGlobalConfig.walletAvailable`, `MessageObject`, `ChatActionCell`; S; зависит от деньги; override флага + ранние возвраты |
 | 0290 | тусклые группы адреса | todo | `WalletActivity.formatTransactionAddress`; S; зависит от деньги; раскомментировать диммирование |
-| 0313 | скрыть «you also have …» над картой | todo | `WalletActivity.updateWalletTopPanel`; S; зависит от деньги; под тумблер MODE_MONEY |
+| 0311 | скрыть «you also have …» над картой | todo | `WalletActivity.updateWalletTopPanel`; S; зависит от деньги; под тумблер MODE_MONEY |
 | 0286 | копировать ссылки на транзакции | todo | деньги: `WalletActivity.openTransactionSheet`; S; зависит от деньги; реш.: 0286/0296 tonscan.org; tonscan вместо серверного explorer |
 | 0296 | ссылка на транзакцию из перевода | todo | `ChatActivity.fillMessageMenu`; S; зависит от 0286, деньги; реш.: 0286/0296 tonscan.org; пункт только при найденной транзакции |
-| 0307 | дизайн карточки money подарком (частично) | todo | `WalletCardComponent`, `WalletCard3D`, `WalletCard2DView`; L; зависит от 0278, деньги; реш.: 0307/0317 2D+3D; 3D-шейдер включён |
-| 0317 | подарки стикерами на карте money (частично) | todo | `WalletActivity`, `WalletCardView`; L; зависит от 0307, деньги, студия подарков; реш.: 0307/0317 2D+3D; драг и анимации |
+| 0305 | дизайн карточки money подарком (частично) | todo | `WalletCardComponent`, `WalletCard3D`, `WalletCard2DView`; L; зависит от 0278, деньги; реш.: 0305/0314 2D+3D; 3D-шейдер включён |
+| 0314 | подарки стикерами на карте money (частично) | todo | `WalletActivity`, `WalletCardView`; L; зависит от 0305, деньги, студия подарков; реш.: 0305/0314 2D+3D; драг и анимации |
+| 0322 | подарки в money как gift-cards | todo | `WalletActivity`, `WalletCardView`, тайл подарка (`tele_gift_tile`); S; зависит от деньги; вместе с 0314: карточка подарка вместо размытой аватарки |
 
 ## пачка 28 — скриптинг
 
-quickjs-ng через NDK, grants, web-платформа; папка скриптов — external files dir + импорт через SAF; отдельный поток скриптов. без виджет-слоя Qt и Monaco. effort: M×1, L×2.
+quickjs-ng через NDK, grants (в том числе «display»), web-платформа в одном патче 0302; папка скриптов — external files dir + импорт через SAF; отдельный поток скриптов; иконки пунктов меню скриптов (0329). без виджет-слоя Qt и Monaco. effort: L×1, S×1.
 
 ворота: debug-apk, на устройстве: скрипт из папки запускается, grant «display» спрашивает согласие, TL-вызовы работают; остановка скрипта; off = сток.
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0302 | скриптинг (QuickJS, grants, TL) (частично) | todo | `ConnectionsManager`, `MessagesController`, NDK quickjs-ng; L; зависит от 0088, скриптинг; реш.: скриптинг порт всё; по умолч.: папка + SAF; без виджет-слоя и Monaco |
-| 0303 | grant «display» для скриптов (частично) | todo | `tele/scripting` consent; M; зависит от 0302, скриптинг; реш.: скриптинг порт всё; делается вместе с 0302 |
-| 0320 | веб-платформа и API для скриптов (частично) | todo | `tele_script_*` JNI/Kotlin, `OkHttp`; L; зависит от 0302, скриптинг; реш.: 0320 порт включая веб-платформу; UI-поверхности по необходимости |
+| 0302 | скриптинг (QuickJS, grants, TL, веб-платформа) (частично) | todo | `ConnectionsManager`, `MessagesController`, NDK quickjs-ng, `tele_script_*` JNI/Kotlin, `OkHttp`; L; зависит от 0088, скриптинг; реш.: скриптинг порт всё; по умолч.: папка + SAF; без виджет-слоя и Monaco; в 0302 уже влиты grant «display» (consent, прежняя строка 0303) и веб-платформа/fetch-API (прежняя строка 0320); десктопный фикс 0320 (падение при listing accounts из скрипта) — учесть в `tg`-мосте |
+| 0329 | иконки у пунктов меню скриптов | todo | `tele/scripting`, меню; S; зависит от 0302, скриптинг; скрипт задаёт иконку пункта меню |
 
 ## пачка 29 — html-пузыри .tgw
 
-litehtml через NDK (сборка), карточки в `ChatMessageCell` через Canvas JNI, playground-чат. зависит от скриптинга (0302) и litehtml (0314). effort: M×1, L×2.
+litehtml через NDK (сборка), карточки в `ChatMessageCell` через Canvas JNI, playground-чат (в одном патче 0313). зависит от скриптинга (0302) и litehtml (0312). effort: M×1, L×1.
 
 ворота: debug-apk, на устройстве: litehtml собирается на всех ABI; .tgw-карточка рисуется в пузыре со скриптом; playground-чат открывается.
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0314 | сборка litehtml | todo | CMake/NDK `jni`; M; зависит от litehtml; реш.: litehtml через NDK; только сборка |
-| 0315 | HTML-карточки litehtml + QuickJS (частично) | todo | `ChatMessageCell`, Canvas JNI; L; зависит от 0302, 0314, litehtml; реш.: .tgw порт; перенос ~2.2k строк `tele_html.cpp` |
-| 0316 | playground-чат и .tgw карточки (частично) | todo | локальный чат, `ChatMessageCell`; L; зависит от 0315, android 0077, litehtml; реш.: .tgw порт; носитель по образцу android 0077 |
+| 0312 | сборка litehtml | todo | CMake/NDK `jni`; M; зависит от litehtml; реш.: litehtml через NDK; только сборка |
+| 0313 | HTML-карточки litehtml + QuickJS, playground-чат и .tgw (частично) | todo | `ChatMessageCell`, Canvas JNI, локальный чат; L; зависит от 0302, 0312, android 0077, litehtml; реш.: .tgw порт; перенос ~2.2k строк `tele_html.cpp`; носитель playground — по образцу android 0077 (в 0313 влиты прежние строки 0315 и 0316); десктопный фикс 0321 (html-карточки не падают, когда сообщение исчезает) — учесть |
 
 ## пачка 30 — низкий приоритет
 
-патчи, которые в плане, но не горят (решение по умолчанию): подписанные стикеры в docked, беззвучное видео как GIF, починка gzip-заголовка .tgs. effort: S×2, M×1.
+патчи, которые в плане, но не горят (решение по умолчанию): подписанные стикеры в docked, беззвучное видео как GIF, починка gzip-заголовка .tgs, пропущенные сообщения в шоте, гонка при подгрузке с удалением, gif как видео. effort: S×4, M×2.
 
 ворота: debug-apk, на устройстве: каждый тумблер on/off.
 
@@ -545,6 +545,9 @@ litehtml через NDK (сборка), карточки в `ChatMessageCell` ч
 | 0236 | подписанные стикеры в docked-медиа | todo | `DockedMedia.kt`, `TeleDockedStrip.kt`, `EmojiView`; M; зависит от 0175, android 0086; по умолч.: поздний батч, низкий приоритет; реш.: 0175; `sendMedia` с caption |
 | 0242 | беззвучное видео как gif | todo | `SendMessagesHelper`, `VideoEditedInfo.muted`; S; по умолч.: поздний батч, низкий приоритет; нужна только обратная опция |
 | 0230 | починка gzip-заголовка .tgs | todo | `SendMessagesHelper`; S; зависит от студия подарков; по умолч.: поздний батч, низкий приоритет; полезно при отправке .tgs файлом |
+| 0327 | пропущенные сообщения в шоте | todo | `TeleShotActivity`, `ShotColumn`; S; зависит от android 0083; расширение shot (счётчик skipped messages) |
+| 0324 | краш при подгрузке старых сообщений, если одно удалено во время загрузки | todo | `DeletedMessages`, `MessagesStorage`; S; зависит от android 0060; десктопный фикс (keep deleted); на android проверить гонку в `DeletedMessages` при подгрузке истории |
+| 0093 | gif как видео (остаток 0093) | todo | `SendMessagesHelper`; M; отложено, требует проработки: нужен транскод gif→mp4, готового пути нет |
 
 ---
 
@@ -617,9 +620,14 @@ litehtml через NDK (сборка), карточки в `ChatMessageCell` ч
 | 0293 | rich-редактор оставляет черновики локально | 🔁 уже перенесено (`MediaDataController.saveDraft`), гейт `TeleConfig.LOCAL_DRAFTS` в android 0021 |
 | 0294 | бокс «сохранить черновик» не блокирует | ❌ нет бокса ожидания облака (`RichEditor`) |
 | 0297 | ресайз окна money | ❌ оконная фича Qt; реш.: money «порт всё», но окна нет |
-| 0305 | zoom колесом в viewer | ❌ колесо мыши (`PhotoViewer`) |
-| 0308 | плавные глайды колеса | ❌ колесо мыши |
-| 0319 | β убрана с blurred-profile-bg | ❌ только имя опции |
+| 0304 | zoom колесом в viewer | ❌ колесо мыши (`PhotoViewer`) |
+| 0306 | плавные глайды колеса | ❌ колесо мыши |
+| 0318 | глайды в боксах не затирают чаты под ними | ❌ Qt-глайды в боксах |
+| 0319 | dock-иконка при обновлении на macOS | ❌ macOS |
+| 0323 | passkey-запрос не считается фризом | ❌ Windows (webauthn + watchdog) |
+| 0325 | кнопка «назад» мыши закрывает viewer | ❌ мышь |
+| 0331 | отступ первой строки code-блоков | ❌ rich/markdown viewer десктопа, на android такого нет |
+| 0332 | открывать json/code/text/csv во встроенном viewer | ❌ встроенного viewer десктопа нет на android |
 | lib_ui 0001 | fullscreen mini apps (Qt<6) | ❌ геометрия окна Qt |
 | lib_ui 0002 | неразрывные символы не скроллят поле | 🟢 в стоке (`EditText`): multiline уже переносит по символам |
 | lib_ui 0003 | метрики шрифтов на Windows | ❌ только Windows |
@@ -635,19 +643,19 @@ litehtml через NDK (сборка), карточки в `ChatMessageCell` ч
 
 решено мейнтейнером:
 
-- портируем целые подсистемы: деньги (с приватными ключами 0310/0311, страница `MODE_MONEY`), скриптинг (quickjs-ng через NDK, включая веб-платформу 0320), html-пузыри `.tgw` (litehtml через NDK), центр уведомлений (JNI-хук в tgnet), mtproto-инспектор и консоль, подарки (массовые действия, локальный пароль, студия, fake-апгрейд);
+- портируем целые подсистемы: деньги (с приватными ключами 0308/0309, страница `MODE_MONEY`), скриптинг (quickjs-ng через NDK, включая веб-платформу), html-пузыри `.tgw` (litehtml через NDK), центр уведомлений (JNI-хук в tgnet), mtproto-инспектор и консоль, подарки (массовые действия, локальный пароль, студия, fake-апгрейд);
 - приватность — база первой: игнор-лист, ghost по чатам, ghost-schedule, затем 0166, 0227, 0228, 0229 (пачка 12);
-- 0131 (отключение жестов) не портируем; 0137 — расшифровка голосовых остаётся; 0126 — закладки в `tele.db`; 0129 — полноценные компактные строки; 0138 — веб-карты; 0155 — со службой keep-alive; 0158 — подпапка `Telegram/<чат>`; 0169, 0171 — структура настроек и меню как на десктопе; 0175, 0176, 0182, 0208, 0237/0241, 0245, 0268, 0269, 0280–0283, 0300, 0304 — как записано в decisions.md.
+- 0131 (отключение жестов) не портируем; 0137 — расшифровка голосовых остаётся; 0126 — закладки в `tele.db`; 0129 — полноценные компактные строки; 0138 — веб-карты; 0155 — со службой keep-alive; 0158 — подпапка `Telegram/<чат>`; 0169, 0171 — структура настроек и меню как на десктопе; 0175, 0176, 0182, 0208, 0237/0241, 0245, 0268, 0269, 0280–0283, 0300, 0303 — как записано в decisions.md.
 
 решено лидом по умолчанию:
 
-- 0128 (стоковый `silent_<dialogId>`), 0130/0318, 0134/0147/0156 (тумблеры по умолчанию выкл.), 0150 (пропуск), 0153, 0157, 0161 и 0261 (уже в стоке), 0162, 0166, 0167, 0168, 0189, 0192, 0193, 0197/0204 (api.changes.tg за тумблером), 0230/0236/0242 (поздний батч), 0285, 0286/0296, 0302 — см. decisions.md;
+- 0128 (стоковый `silent_<dialogId>`), 0130/0315, 0134/0147/0156 (тумблеры по умолчанию выкл.), 0150 (пропуск), 0153, 0157, 0161 и 0261 (уже в стоке), 0162, 0166, 0167, 0168, 0189, 0192, 0193, 0197/0204 (api.changes.tg за тумблером), 0230/0236/0242 (поздний батч), 0285, 0286/0296, 0302 — см. decisions.md;
 - **открытые пункты для мейнтейнера сервера:** 0202/0203 (отчёты о зависаниях и Tele-Note за серверным тумблером) и 0206 (общий фид должен принимать платформу `android` и номера сборок Android) требуют поддержки в tele-server.
 
 ## сводка
 
 - пачек: 31 (0–30): 0–11 собраны (в них остаются отдельные `queued`), 12–30 — план, все строки `todo`
-- строк в плане (пачки 12–30): 150 — 142 новых патча десктопа (0125–0322), 4 строки по прежним номерам (остатки старых пачек 11–12: пины, папки, сообщества, первое сообщение, мгновенные перемещения, lowercase, шаблон заголовка, фоны чатов, test-аккаунты, mtproto-инспектор) и 4 доработки перенесённого (0017, 0077, 0095, 0006)
-- вне плана: 78 (14 прежних + 64 новых: ❌ нет аналога или десктопная специфика, 🟢 уже в стоке, 🔁 уже перенесено; см. skip)
-- порядок реализации строго по пачкам; зависимости: игнор-лист, per-chat ghost и ghost-schedule (пачка 11) → 0166, 0227, 0228, 0229 — сделаны; 0169 (пачка 13) → 0170, 0241, 0244; 0171 → 0255, 0295; 0187 (пачка 23) → 0184–0193, 0217, подарочные платежи, консоль 0195; 0205 (пачка 22) → 0206, 0212, 0213, 0232, 0239, 0240, 0246; 0175 → 0236; 0197/0204 → 0198, 0201, 0234, 0247, 0248, 0230; 0310 → 0311, 0309, 0285, затем 0278 → карта 0307 → 0317; 0302 → 0303, 0320, 0315; 0314 → 0315 → 0316; 0195 → 0218, 0298 (прежние: 0101/0121 → 0071; 0012/0081/0108 → 0009; 0080 → 0045; 0118/0119 → 0050)
-- нативная работа (NDK/CMake, все ABI): 0205 (jni tgnet), 0310/0311 (Rust wallet-engine), 0302 (quickjs-ng), 0314 (litehtml) — каждая в своей пачке, сборка проверяется на всех ABI
+- строк в плане (пачки 12–30): 150 — новые патчи десктопа (0125–0332), 4 строки по прежним номерам (остатки старых пачек 11–12: пины, папки, сообщества, первое сообщение, мгновенные перемещения, lowercase, шаблон заголовка, фоны чатов, test-аккаунты, mtproto-инспектор) и 4 доработки перенесённого (0017, 0077, 0095, 0006)
+- вне плана: 81 (14 прежних + 67 новых: ❌ нет аналога или десктопная специфика, 🟢 уже в стоке, 🔁 уже перенесено; см. skip)
+- порядок реализации строго по пачкам; зависимости: игнор-лист, per-chat ghost и ghost-schedule (пачка 11) → 0166, 0227, 0228, 0229 — сделаны; 0169 (пачка 13) → 0170, 0241, 0244; 0171 → 0255, 0295; 0187 (пачка 23) → 0184–0193, 0217, подарочные платежи, консоль 0195; 0205 (пачка 22) → 0206, 0212, 0213, 0232, 0239, 0240, 0246; 0175 → 0236; 0197/0204 → 0198, 0201, 0234, 0247, 0248, 0230; 0308 → 0309, 0307, 0285, затем 0278 → карта 0305 → 0314 → 0322; 0302 → 0313, 0329; 0312 → 0313; 0195 → 0218, 0298 (прежние: 0101/0121 → 0071; 0012/0081/0108 → 0009; 0080 → 0045; 0118/0119 → 0050)
+- нативная работа (NDK/CMake, все ABI): 0205 (jni tgnet), 0308/0309 (Rust wallet-engine), 0302 (quickjs-ng), 0312 (litehtml) — каждая в своей пачке, сборка проверяется на всех ABI
