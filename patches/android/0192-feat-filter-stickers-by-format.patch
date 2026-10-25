@@ -1,0 +1,589 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 08:40:45 +0300
+Subject: [PATCH 192/194] feat: filter stickers by format
+
+---
+ .../org/telegram/ui/Components/EmojiView.java |  54 ++++-
+ .../org/telegram/ui/StickersActivity.java     |  48 +++-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/helpers/StickerFormats.kt  | 213 ++++++++++++++++++
+ .../java/tele/helpers/StickerSearchButton.kt  |  67 ++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ 7 files changed, 378 insertions(+), 11 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/StickerFormats.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/StickerSearchButton.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+index 00cb09d67..9077014b8 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+@@ -789,6 +789,7 @@ public class EmojiView extends FrameLayout implements
+ 
+         private StickerCategoriesListView.EmojiCategory recent;
+         private StickerCategoriesListView.EmojiCategory trending;
++        private tele.helpers.StickerSearchButton tele_button;
+ 
+         @SuppressLint("ClickableViewAccessibility")
+         public SearchField(Context context, int type) {
+@@ -910,6 +911,9 @@ public class EmojiView extends FrameLayout implements
+                 public void afterTextChanged(Editable s) {
+                     updateButton();
+                     final String query = searchEditText.getText().toString();
++                    if (tele_button != null) {
++                        tele_button.sync(!TextUtils.isEmpty(query));
++                    }
+                     search(query, true);
+                     if (categoriesListView != null) {
+                         categoriesListView.selectCategory(null);
+@@ -1028,6 +1032,21 @@ public class EmojiView extends FrameLayout implements
+                 });
+                 box.addView(categoriesListView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 36, Gravity.LEFT | Gravity.TOP, 36, 0, 0, 0));
+             }
++            if (type != 2) {
++                tele_button = new tele.helpers.StickerSearchButton(context, fragment, glassDesign ? getGlassIconColor(0.4f) : getThemedColor(Theme.key_chat_emojiSearchIcon), getThemedColor(Theme.key_featuredStickers_addedIcon), this::tele_formatChanged, shown -> {
++                    ((LayoutParams) searchEditText.getLayoutParams()).rightMargin = dp(shown ? 64 : 28);
++                    searchEditText.requestLayout();
++                });
++                box.addView(tele_button, LayoutHelper.createFrame(36, 36, Gravity.RIGHT | Gravity.TOP, 0, 0, 36, 0));
++            }
++        }
++
++        private void tele_formatChanged() {
++            if (type == 0) {
++                stickersSearchGridAdapter.notifyDataSetChanged();
++            } else if (type == 1) {
++                emojiSearchAdapter.search(searchEditText.getText().toString(), false);
++            }
+         }
+ 
+         public boolean isCategorySelected() {
+@@ -7925,6 +7944,10 @@ public class EmojiView extends FrameLayout implements
+         }
+     }
+ 
++    private static int tele_searchFormat(SearchField field) {
++        return field != null && field.tele_button != null ? field.tele_button.searchFormat() : 0;
++    }
++
+     public ArrayList<EmojiPack> getEmojipacks() {
+         ArrayList<EmojiPack> packs = new ArrayList<>();
+         for (int i = 0; i < emojipacksProcessed.size(); ++i) {
+@@ -7969,6 +7992,8 @@ public class EmojiView extends FrameLayout implements
+         private final ArrayList<MediaDataController.KeywordResult> result = new ArrayList<>();
+         private final ArrayList<MediaDataController.KeywordResult> resultPre = new ArrayList<>();
+         private final ArrayList<MediaDataController.KeywordResult> resultGlobal = new ArrayList<>();
++        // the global results before the format filter, for the paging
++        private int tele_globalCount;
+         private final ArrayList<EmojiPackInfo> packs = new ArrayList<>();
+         private String lastSearchEmojiString;
+         private String lastSearchAlias;
+@@ -8406,9 +8431,10 @@ public class EmojiView extends FrameLayout implements
+                         emojiSearchField.showProgress(true);
+                         searchEmoji(() -> {
+                             emojiSearchField.showProgress(false);
+-                            isCompleted = (resultGlobal.size()) >= searchResult.size();
++                            isCompleted = tele_globalCount >= searchResult.size();
++                            tele_globalCount = searchResult.size();
+                             resultGlobal.clear();
+-                            resultGlobal.addAll(searchResult);
++                            resultGlobal.addAll(tele.helpers.StickerFormats.filterKeywords(currentAccount, tele_searchFormat(emojiSearchField), searchResult));
+                             notifyDataSetChanged();
+                         }, searchResult, true);
+                     }
+@@ -8533,10 +8559,12 @@ public class EmojiView extends FrameLayout implements
+                                     if (emojiGridView.getAdapter() != emojiSearchAdapter) {
+                                         emojiGridView.setAdapter(emojiSearchAdapter);
+                                     }
++                                    final int tele_format = tele_searchFormat(emojiSearchField);
+                                     result.clear();
+-                                    result.addAll(resultPre);
++                                    result.addAll(tele.helpers.StickerFormats.filterKeywords(currentAccount, tele_format, resultPre));
+                                     resultGlobal.clear();
+-                                    resultGlobal.addAll(searchResult);
++                                    resultGlobal.addAll(tele.helpers.StickerFormats.filterKeywords(currentAccount, tele_format, searchResult));
++                                    tele_globalCount = searchResult.size();
+                                     packs.clear();
+ 
+                                     final LongSparseIntArray f = new LongSparseIntArray();
+@@ -8552,6 +8580,13 @@ public class EmojiView extends FrameLayout implements
+                                             packs.add(i);
+                                         }
+                                     }
++                                    if (tele_format != 0) {
++                                        for (int p = packs.size() - 1; p >= 0; p--) {
++                                            if (!tele.helpers.StickerFormats.matches(tele_format, tele.helpers.StickerFormats.setFormat(packs.get(p).documents))) {
++                                                packs.remove(p);
++                                            }
++                                        }
++                                    }
+                                     notifyDataSetChanged();
+                                 }
+                             );
+@@ -10076,8 +10111,10 @@ public class EmojiView extends FrameLayout implements
+                 return;
+             }
+ 
+-            final boolean hasLocalEmoji = !emojiArrays.isEmpty();
+-            final boolean hasGlobalEmoji = globalSearchArray != null && !globalSearchArray.isEmpty();
++            final int tele_format = tele_searchFormat(stickersSearchField);
++            final ArrayList<TLRPC.Document> tele_global = globalSearchArray != null ? tele.helpers.StickerFormats.filterDocuments(tele_format, globalSearchArray) : null;
++            final boolean hasLocalEmoji = !emojiArrays.isEmpty() && tele.helpers.StickerFormats.hasAny(tele_format, emojiArrays);
++            final boolean hasGlobalEmoji = tele_global != null && !tele_global.isEmpty();
+ 
+             cache.put(totalItems++, "search");
+             startRow++;
+@@ -10099,6 +10136,7 @@ public class EmojiView extends FrameLayout implements
+                         lastEmoji = emoji;
+                         positionToEmoji.put(totalItems + documentsCount, lastEmoji);
+                     }
++                    documents = tele.helpers.StickerFormats.filterDocuments(tele_format, documents);
+                     for (int b = 0, size = documents.size(); b < size; b++) {
+                         int num = documentsCount + totalItems;
+                         int row = startRow + documentsCount / stickersGridAdapter.stickersPerRow;
+@@ -10130,11 +10168,11 @@ public class EmojiView extends FrameLayout implements
+                 if (emoji != null) {
+                     positionToEmoji.put(totalItems, emoji);
+                 }
+-                for (int b = 0, size = globalSearchArray.size(); b < size; b++) {
++                for (int b = 0, size = tele_global.size(); b < size; b++) {
+                     int num = documentsCount + totalItems;
+                     int row = startRow + documentsCount / stickersGridAdapter.stickersPerRow;
+ 
+-                    TLRPC.Document document = globalSearchArray.get(b);
++                    TLRPC.Document document = tele_global.get(b);
+                     cache.put(num, document);
+                     Object parent = MediaDataController.getInstance(currentAccount).getStickerSetById(MediaDataController.getStickerSetId(document));
+                     if (parent != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/StickersActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/StickersActivity.java
+index 35efcde32..7fbba1713 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/StickersActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/StickersActivity.java
+@@ -327,6 +327,15 @@ public class StickersActivity extends BaseFragment implements NotificationCenter
+     private static final int ID_DYNAMIC_PACK_ORDER = 7;
+     private static final int ID_SHOW_MORE_FEATURED = 8;
+     private static final int ID_SUGGEST_EMOJI = 9;
++    private static final int ID_TELE_FORMAT = 435;
++    private static final int ID_TELE_SORT = 436;
++    private static final int ID_TELE_REMOVE = 437;
++
++    // the format view of the sets: the filter, the order, and the lists it is made from
++    private int tele_format;
++    private int tele_sort;
++    private ArrayList<TLRPC.TL_messages_stickerSet> tele_base;
++    private ArrayList<TLRPC.TL_messages_stickerSet> tele_shown;
+ 
+     private void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
+         MediaDataController mediaDataController = MediaDataController.getInstance(currentAccount);
+@@ -341,6 +350,17 @@ public class StickersActivity extends BaseFragment implements NotificationCenter
+             }
+         }
+ 
++        if (tele_shown != null && sets == tele_shown) {
++            sets = tele_base;
++        }
++        tele_base = sets;
++        tele_shown = null;
++        final boolean tele_on = tele.helpers.StickerFormats.enabled() && currentType != TYPE_MASK;
++        final boolean tele_view = tele_on && (tele_format != 0 || tele_sort != 0);
++        if (tele_view) {
++            sets = tele_shown = tele.helpers.StickerFormats.view(sets, tele_format, tele_sort);
++        }
++
+         boolean truncatedFeaturedStickers = false;
+         featured = new ArrayList<>(getFeaturedSets());
+         for (int i = 0; i < featured.size(); ++i) {
+@@ -401,13 +421,20 @@ public class StickersActivity extends BaseFragment implements NotificationCenter
+             items.add(UItem.asShadow(getString(R.string.SuggestAnimatedEmojiInfo)));
+         }
+ 
+-        if (sets.size() > 0) {
++        if (sets.size() > 0 || tele_on && !tele_base.isEmpty()) {
+             adapter.whiteSectionStart();
+             if (currentType == TYPE_EMOJIPACKS || !featured.isEmpty() && currentType == TYPE_IMAGE) {
+                 items.add(UItem.asHeader(getString(currentType == TYPE_EMOJIPACKS ? R.string.ChooseStickerMyEmojiPacks : R.string.ChooseStickerMyStickerSets)));
+             }
++            if (tele_on && !tele_base.isEmpty()) {
++                items.add(UItem.asButton(ID_TELE_FORMAT, R.drawable.menu_tag_filter, tele.helpers.StickerFormats.formatLabel(), tele.helpers.StickerFormats.name(tele_format)));
++                items.add(UItem.asButton(ID_TELE_SORT, R.drawable.menu_sort_value, tele.helpers.StickerFormats.sortLabel(), tele.helpers.StickerFormats.sortValue(tele_sort, currentType == TYPE_EMOJIPACKS)));
++                if (tele_format != 0 && !sets.isEmpty()) {
++                    items.add(UItem.asButton(ID_TELE_REMOVE, R.drawable.msg_delete, tele.helpers.StickerFormats.removeLabel()));
++                }
++            }
+ 
+-            adapter.reorderSectionStart();
++            if (!tele_view) adapter.reorderSectionStart();
+             for (TLRPC.TL_messages_stickerSet set : sets) {
+                 items.add(
+                     StickerSetCell.Factory.of(set)
+@@ -416,7 +443,7 @@ public class StickersActivity extends BaseFragment implements NotificationCenter
+                         .setChecked(selectedSets.contains(set.set.id))
+                 );
+             }
+-            adapter.reorderSectionEnd();
++            if (!tele_view) adapter.reorderSectionEnd();
+ 
+             adapter.whiteSectionEnd();
+ 
+@@ -493,6 +520,21 @@ public class StickersActivity extends BaseFragment implements NotificationCenter
+             return;
+         }
+         switch (item.id) {
++            case ID_TELE_FORMAT:
++                tele.helpers.StickerFormats.showFormatMenu(this, view, tele_format, true, picked -> {
++                    tele_format = picked;
++                    clearSelected();
++                });
++                break;
++            case ID_TELE_SORT:
++                tele.helpers.StickerFormats.showSortMenu(this, view, tele_sort, currentType == TYPE_EMOJIPACKS, picked -> {
++                    tele_sort = picked;
++                    clearSelected();
++                });
++                break;
++            case ID_TELE_REMOVE:
++                tele.helpers.StickerFormats.confirmRemove(this, currentAccount, currentType, sets);
++                break;
+             case ID_ARCHIVED:
+                 presentFragment(new ArchivedStickersActivity(currentType));
+                 break;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 75861ad8d..38987281c 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -261,6 +261,8 @@ object TeleConfig {
+     @JvmField
+     val PIN_SETS = BoolItem("pin_sets", false)
+     @JvmField
++    val STICKER_FORMATS = BoolItem("sticker_formats", false)
++    @JvmField
+     val CALCMULA = BoolItem("calcmula", false)
+     @JvmField
+     val EDITOR_EYEDROPPER = BoolItem("editor_eyedropper", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/StickerFormats.kt b/TMessagesProj/src/main/java/tele/helpers/StickerFormats.kt
+new file mode 100644
+index 000000000..ec4650dcd
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/StickerFormats.kt
+@@ -0,0 +1,213 @@
++package tele.helpers
++
++import java.text.Collator
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.R
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.AnimatedEmojiDrawable
++import org.telegram.ui.Components.ItemOptions
++import tele.TeleConfig
++
++/**
++ * Sticker and emoji formats for the set lists and the panel search. The format comes from what a document
++ * carries (mime type, attributes), nothing is downloaded, and the sets and documents are never changed.
++ */
++object StickerFormats {
++    const val ALL = 0
++    const val STATIC = 1
++    const val ANIMATED = 2
++    const val VIDEO = 3
++    const val MIXED = 4
++    const val UNKNOWN = 5
++
++    const val SORT_UPSTREAM = 0
++    const val SORT_FORMAT = 1
++    const val SORT_NAME = 2
++    const val SORT_COUNT = 3
++
++    private const val MIME_TGS = "application/x-tgsticker"
++    private const val MIME_WEBM = "video/webm"
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.STICKER_FORMATS.value
++
++    @JvmStatic
++    fun documentFormat(document: TLRPC.Document?): Int {
++        if (document == null) return UNKNOWN
++        val mime = document.mime_type?.lowercase()
++        if (mime != null) {
++            if (mime == MIME_TGS) return ANIMATED
++            if (mime == MIME_WEBM) return VIDEO
++            if (mime.startsWith("image/")) return STATIC
++        }
++        val attributes = document.attributes
++        if (attributes != null) {
++            for (attribute in attributes) {
++                if (attribute is TLRPC.TL_documentAttributeVideo) return VIDEO
++            }
++        }
++        return UNKNOWN
++    }
++
++    /** The format all the known documents share, MIXED when they differ, UNKNOWN when none is known. */
++    @JvmStatic
++    fun setFormat(documents: List<TLRPC.Document>?): Int {
++        var result = UNKNOWN
++        if (documents == null) return result
++        for (document in documents) {
++            val format = documentFormat(document)
++            if (format == UNKNOWN) continue
++            if (result == UNKNOWN) result = format else if (result != format) return MIXED
++        }
++        return result
++    }
++
++    @JvmStatic
++    fun matches(filter: Int, format: Int): Boolean = filter == ALL || filter == format
++
++    /** The documents of the format; the same list when the filter is off. */
++    @JvmStatic
++    fun filterDocuments(filter: Int, documents: ArrayList<TLRPC.Document>): ArrayList<TLRPC.Document> {
++        if (filter == ALL) return documents
++        val result = ArrayList<TLRPC.Document>(documents.size)
++        for (document in documents) if (documentFormat(document) == filter) result.add(document)
++        return result
++    }
++
++    @JvmStatic
++    fun hasAny(filter: Int, lists: List<List<TLRPC.Document>>): Boolean {
++        if (filter == ALL) return lists.isNotEmpty()
++        return lists.any { list -> list.any { documentFormat(it) == filter } }
++    }
++
++    @JvmStatic
++    fun hasDocuments(filter: Int, documents: List<TLRPC.Document>): Boolean =
++        if (filter == ALL) documents.isNotEmpty() else documents.any { documentFormat(it) == filter }
++
++    /** The emoji search results of the format: the plain emoji go, they have no document. */
++    @JvmStatic
++    fun filterKeywords(
++        account: Int,
++        filter: Int,
++        results: ArrayList<MediaDataController.KeywordResult>
++    ): ArrayList<MediaDataController.KeywordResult> {
++        if (filter == ALL) return results
++        val result = ArrayList<MediaDataController.KeywordResult>(results.size)
++        for (item in results) {
++            val emoji = item.emoji ?: continue
++            if (!emoji.startsWith("animated_")) continue
++            val id = emoji.substring(9).toLongOrNull() ?: continue
++            if (documentFormat(AnimatedEmojiDrawable.findDocument(account, id)) == filter) result.add(item)
++        }
++        return result
++    }
++
++    @JvmStatic
++    fun name(format: Int): String = TeleLowercase.lc(
++        when (format) {
++            STATIC -> "Static"
++            ANIMATED -> "Animated"
++            VIDEO -> "Video"
++            MIXED -> "Mixed"
++            else -> "All"
++        }
++    )
++
++    private fun sortName(sort: Int, emoji: Boolean): String = TeleLowercase.lc(
++        when (sort) {
++            SORT_FORMAT -> "Format"
++            SORT_NAME -> "Name"
++            SORT_COUNT -> if (emoji) "Emoji count" else "Sticker count"
++            else -> "Upstream order"
++        }
++    )
++
++    @JvmStatic
++    fun formatLabel(): String = TeleLowercase.lc("Format")
++
++    @JvmStatic
++    fun sortLabel(): String = TeleLowercase.lc("Sort")
++
++    @JvmStatic
++    fun removeLabel(): String = TeleLowercase.lc("Remove all shown")
++
++    @JvmStatic
++    fun sortValue(sort: Int, emoji: Boolean): String = sortName(sort, emoji)
++
++    private fun rank(format: Int) = when (format) {
++        STATIC -> 0
++        ANIMATED -> 1
++        VIDEO -> 2
++        MIXED -> 3
++        else -> 4
++    }
++
++    /** The sets of the format in the order; a new list. */
++    @JvmStatic
++    fun view(sets: List<TLRPC.TL_messages_stickerSet>, filter: Int, sort: Int): ArrayList<TLRPC.TL_messages_stickerSet> {
++        val result = ArrayList<TLRPC.TL_messages_stickerSet>(sets.size)
++        for (set in sets) if (matches(filter, setFormat(set.documents))) result.add(set)
++        if (sort == SORT_UPSTREAM) return result
++        val collator = Collator.getInstance()
++        fun title(set: TLRPC.TL_messages_stickerSet) = (set.set?.title ?: "").lowercase()
++        val byName = Comparator<TLRPC.TL_messages_stickerSet> { a, b -> collator.compare(title(a), title(b)) }
++        val comparator = when (sort) {
++            SORT_FORMAT -> Comparator<TLRPC.TL_messages_stickerSet> { a, b -> rank(setFormat(a.documents)).compareTo(rank(setFormat(b.documents))) }.then(byName)
++            SORT_COUNT -> Comparator<TLRPC.TL_messages_stickerSet> { a, b -> (b.documents?.size ?: 0).compareTo(a.documents?.size ?: 0) }.then(byName)
++            else -> byName
++        }
++        result.sortWith(comparator)
++        return result
++    }
++
++    @JvmStatic
++    fun showFormatMenu(fragment: BaseFragment, anchor: android.view.View, current: Int, withMixed: Boolean, picked: Utilities.Callback<Int>) {
++        val options = ItemOptions.makeOptions(fragment, anchor)
++        val formats = if (withMixed) intArrayOf(ALL, STATIC, ANIMATED, VIDEO, MIXED) else intArrayOf(ALL, STATIC, ANIMATED, VIDEO)
++        for (format in formats) options.addChecked(current == format, name(format)) { picked.run(format) }
++        options.show()
++    }
++
++    @JvmStatic
++    fun showSortMenu(fragment: BaseFragment, anchor: android.view.View, current: Int, emoji: Boolean, picked: Utilities.Callback<Int>) {
++        val options = ItemOptions.makeOptions(fragment, anchor)
++        for (sort in intArrayOf(SORT_UPSTREAM, SORT_FORMAT, SORT_NAME, SORT_COUNT)) {
++            options.addChecked(current == sort, sortName(sort, emoji)) { picked.run(sort) }
++        }
++        options.show()
++    }
++
++    /** Archives the shown sticker sets, removes the shown emoji sets, after a confirm. */
++    @JvmStatic
++    fun confirmRemove(fragment: BaseFragment, account: Int, type: Int, sets: List<TLRPC.TL_messages_stickerSet>) {
++        val activity = fragment.parentActivity ?: return
++        val list = ArrayList<TLRPC.StickerSet>()
++        for (set in sets) set.set?.let { list.add(it) }
++        if (list.isEmpty()) return
++        val remove = type == MediaDataController.TYPE_EMOJIPACKS
++        val count = list.size
++        val builder = AlertDialog.Builder(activity)
++        val label = LocaleController.formatPluralString("StickerSets", count)
++        if (remove) {
++            builder.setTitle(LocaleController.formatString(R.string.DeleteStickerSetsAlertTitle, label))
++            builder.setMessage(LocaleController.formatString(R.string.DeleteStickersAlertMessage, count))
++        } else {
++            builder.setTitle(LocaleController.formatString(R.string.ArchiveStickerSetsAlertTitle, label))
++            builder.setMessage(LocaleController.formatString(R.string.ArchiveStickersAlertMessage, count))
++        }
++        builder.setPositiveButton(LocaleController.getString(if (remove) R.string.Delete else R.string.Archive)) { _, _ ->
++            MediaDataController.getInstance(account).toggleStickerSets(list, type, if (remove) 0 else 1, fragment, true)
++        }
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        val dialog = builder.create()
++        fragment.showDialog(dialog)
++        if (remove) {
++            (dialog.getButton(AlertDialog.BUTTON_POSITIVE) as? android.widget.TextView)?.setTextColor(Theme.getColor(Theme.key_text_RedBold))
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/StickerSearchButton.kt b/TMessagesProj/src/main/java/tele/helpers/StickerSearchButton.kt
+new file mode 100644
+index 000000000..44b1a7b1d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/StickerSearchButton.kt
+@@ -0,0 +1,67 @@
++package tele.helpers
++
++import android.content.Context
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.view.View
++import android.widget.ImageView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.R
++import org.telegram.messenger.Utilities
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++
++/** The format filter of the panel search, next to the clear button; shown while a query is typed. */
++class StickerSearchButton(
++    context: Context,
++    private val fragment: BaseFragment?,
++    private val color: Int,
++    private val activeColor: Int,
++    // the format changed while the query stays
++    private val changed: Runnable,
++    // the button shows or hides, for the room it takes in the field
++    private val shown: Utilities.Callback<Boolean>
++) : ImageView(context) {
++
++    private var format = StickerFormats.ALL
++    private var visible = false
++
++    init {
++        scaleType = ScaleType.CENTER
++        setImageResource(R.drawable.menu_tag_filter)
++        background = Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector), Theme.RIPPLE_MASK_CIRCLE_20DP, AndroidUtilities.dp(15f))
++        contentDescription = StickerFormats.formatLabel()
++        visibility = GONE
++        applyColor()
++        setOnClickListener {
++            val owner = fragment ?: return@setOnClickListener
++            StickerFormats.showFormatMenu(owner, this, format, false) { picked ->
++                if (picked != format) {
++                    format = picked
++                    applyColor()
++                    changed.run()
++                }
++            }
++        }
++    }
++
++    private fun applyColor() {
++        colorFilter = PorterDuffColorFilter(if (format != StickerFormats.ALL) activeColor else color, PorterDuff.Mode.MULTIPLY)
++    }
++
++    /** The format to filter by; ALL while the option is off. */
++    fun searchFormat(): Int = if (StickerFormats.enabled() && visible) format else StickerFormats.ALL
++
++    /** Called as the query changes; leaving the search resets the format. */
++    fun sync(searching: Boolean) {
++        val show = StickerFormats.enabled() && fragment != null && searching
++        if (!show && format != StickerFormats.ALL) {
++            format = StickerFormats.ALL
++            applyColor()
++        }
++        if (show == visible) return
++        visible = show
++        visibility = if (show) VISIBLE else GONE
++        shown.run(show)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 489176d76..bd8632533 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -293,6 +293,9 @@ object TeleSearch {
+             section(1343, "Number the lines of code", "messages", TeleSettingsActivity.MODE_MESSAGES, "Line numbers in code blocks"),
+             section(1365, "Pin sticker and emoji sets", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1366, "Pin sticker sets", "chats", TeleSettingsActivity.MODE_CHATS, "Pin sticker and emoji sets"),
++            section(1367, "Filter stickers and emoji by format", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1368, "Filter stickers by format", "chats", TeleSettingsActivity.MODE_CHATS, "Filter stickers and emoji by format"),
++            section(1369, "Filter emoji by format", "chats", TeleSettingsActivity.MODE_CHATS, "Filter stickers and emoji by format"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index a4ca8f3da..4ca00492b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -801,6 +801,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Return to where you were reading" to "After sending while scrolled up, jump back to where you were.",
+             "Keep saved GIFs and favorite stickers past the limit" to "Keep the ones over the server limit on this device.",
+             "Pin sticker and emoji sets" to "Long-press a set tab to pin it to the front.",
++            "Filter stickers and emoji by format" to "Filter your sets and the panel search by static, animated or video.",
+             "Pin chats past the limit" to "Pin more chats than Telegram allows; extras stay on this device.",
+             "Blurred photo as profile background" to "The header shows the blurred profile photo.",
+             "Fill the whole profile" to "The whole profile takes the color of the photo.",
+@@ -950,6 +951,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Panels"),
+                 toggle("Pin sticker and emoji sets", TeleConfig.PIN_SETS),
++                toggle("Filter stickers and emoji by format", TeleConfig.STICKER_FORMATS),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Backgrounds"),
+                 toggle("Backgrounds only for you", TeleConfig.LOCAL_CHAT_BACKGROUNDS),

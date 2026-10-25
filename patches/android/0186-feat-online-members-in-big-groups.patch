@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 08:22:19 +0300
+Subject: [PATCH 186/194] feat: online members in big groups
+
+---
+ .../src/main/java/org/telegram/ui/ChatActivity.java  |  4 ++++
+ .../telegram/ui/Components/ChatAvatarContainer.java  |  2 +-
+ .../main/java/org/telegram/ui/ProfileActivity.java   |  2 +-
+ TMessagesProj/src/main/java/tele/TeleConfig.kt       |  2 ++
+ TMessagesProj/src/main/java/tele/TeleHooks.kt        |  4 ++++
+ .../src/main/java/tele/helpers/GroupOnlines.kt       | 12 ++++++++++++
+ .../src/main/java/tele/ui/settings/TeleSearch.kt     |  2 ++
+ .../java/tele/ui/settings/TeleSettingsActivity.kt    |  2 ++
+ 8 files changed, 28 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GroupOnlines.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 373a5a210..8c024d1c4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -30721,6 +30721,10 @@ public class ChatActivity extends BaseFragment implements
+             if (chatAdapter != null) {
+                 chatAdapter.notifyDataSetChanged();
+             }
++            if (avatarContainer != null) {
++                avatarContainer.updateOnlineCount();
++                avatarContainer.updateSubtitle();
++            }
+         }
+         updateTeleDraftButton(false);
+         teleBookmarksStart();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAvatarContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAvatarContainer.java
+index 7e2fa23e6..fc8b6b467 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAvatarContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAvatarContainer.java
+@@ -1515,7 +1515,7 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
+                     onlineCount++;
+                 }
+             }
+-        } else if (info instanceof TLRPC.TL_channelFull && info.participants_count > 200) {
++        } else if (info instanceof TLRPC.TL_channelFull && info.participants_count > 200 || tele.helpers.GroupOnlines.serverCount(info)) {
+             onlineCount = info.online_count;
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 16b1b7aa6..6fa3be54c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -10458,7 +10458,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             if (sharedMediaLayout != null && sharedMediaRow != -1 && (sortedUsers.size() > 5 || usersForceShowingIn == 2) && usersForceShowingIn != 1) {
+                 sharedMediaLayout.setChatUsers(sortedUsers, chatInfo);
+             }
+-        } else if (chatInfo instanceof TLRPC.TL_channelFull && chatInfo.participants_count > 200) {
++        } else if (chatInfo instanceof TLRPC.TL_channelFull && chatInfo.participants_count > 200 || tele.helpers.GroupOnlines.serverCount(chatInfo)) {
+             onlineCount = chatInfo.online_count;
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index b6f18bcd2..eef59883e 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -239,6 +239,8 @@ object TeleConfig {
+     @JvmField
+     val CHAIN_MENTIONS = BoolItem("chain_mentions", false)
+     @JvmField
++    val ONLINE_IN_BIG_GROUPS = BoolItem("online_in_big_groups", false)
++    @JvmField
+     val MULTI_QUOTE = BoolItem("multi_quote", false)
+     @JvmField
+     val SEND_OLDER_REPLIES = BoolItem("send_older_replies", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 7ad8d91cd..7c8462eea 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -196,6 +196,10 @@ object TeleHooks {
+         if (item === TeleConfig.CODE_LINE_NUMBERS) {
+             tele.helpers.CodeLines.onToggled()
+         }
++        if (item === TeleConfig.ONLINE_IN_BIG_GROUPS) {
++            // the open chats refresh their subtitle on resume
++            bumpUiRevision()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GroupOnlines.kt b/TMessagesProj/src/main/java/tele/helpers/GroupOnlines.kt
+new file mode 100644
+index 000000000..078046048
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GroupOnlines.kt
+@@ -0,0 +1,12 @@
++package tele.helpers
++
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++/** Small groups with a hidden member list have no local count, so the server's one is used. */
++object GroupOnlines {
++
++    @JvmStatic
++    fun serverCount(info: TLRPC.ChatFull?): Boolean =
++        TeleConfig.ONLINE_IN_BIG_GROUPS.value && info is TLRPC.TL_channelFull && info.participants_count <= 200 && info.participants == null
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index e43979b54..b75544504 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -271,6 +271,8 @@ object TeleSearch {
+             section(1302, "Send quick replies by name", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1350, "Mention several people in a row", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1351, "Chain mentions with a long press", "sending", TeleSettingsActivity.MODE_SENDING, "Mention several people in a row"),
++            section(1352, "Show online members in big groups", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1353, "Online count with a hidden member list", "chats", TeleSettingsActivity.MODE_CHATS, "Show online members in big groups"),
+             section(1337, "Count typed emoji in recent emoji", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1338, "Recent emoji from the keyboard", "sending", TeleSettingsActivity.MODE_SENDING, "Count typed emoji in recent emoji"),
+             section(1335, "Rewrite only the link preview", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 9c25395c4..5f09c8dc2 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -803,6 +803,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Lowercase everything" to "Interface text in lowercase; messages and names stay as they are.",
+             "Show sticker captions" to "Captions show under stickers and in previews.",
+             "Send stickers with captions" to "Text in the field goes out as the caption of a sticker.",
++            "Show online members in big groups" to "Also when the member list is hidden; the count comes from the server.",
+             "Mention several people in a row" to "Long-press a person in the mention list to add them and pick the next one.",
+         )
+ 
+@@ -914,6 +915,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Turn off animated userpics", TeleConfig.STATIC_AVATARS),
+                 toggle("Badges next to names in messages", TeleConfig.BUBBLE_BADGES),
+                 toggle("Hide birthdays", TeleConfig.HIDE_BIRTHDAYS),
++                toggle("Show online members in big groups", TeleConfig.ONLINE_IN_BIG_GROUPS),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Unread counters"),
+                 toggle("Hide unread counters", TeleConfig.HIDE_COUNTERS),

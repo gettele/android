@@ -1,0 +1,572 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 08:53:16 +0300
+Subject: [PATCH 194/194] feat: filter chat search by type
+
+---
+ .../messenger/MediaDataController.java        |   4 +-
+ .../java/org/telegram/ui/ChatActivity.java    |   4 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
+ .../src/main/java/tele/helpers/ChatSearch.kt  | 330 +++++++++++++++++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ .../src/main/res/values/strings_tele.xml      |  10 +
+ 8 files changed, 340 insertions(+), 17 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+index a754510a6..55e4f4840 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+@@ -3984,7 +3984,7 @@ public class MediaDataController extends BaseController {
+                     req.saved_reaction.add(reaction.toTLReaction());
+                     req.flags |= 8;
+                 }
+-                req.filter = new TLRPC.TL_inputMessagesFilterEmpty();
++                req.filter = tele.helpers.ChatSearch.filter(currentAccount, guid);
+                 mergeReqId = getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                     if (lastMergeDialogId == mergeDialogId) {
+                         mergeReqId = 0;
+@@ -4069,7 +4069,7 @@ public class MediaDataController extends BaseController {
+             req.saved_reaction.add(reaction.toTLReaction());
+             req.flags |= 8;
+         }
+-        req.filter = new TLRPC.TL_inputMessagesFilterEmpty();
++        req.filter = tele.helpers.ChatSearch.filter(currentAccount, guid);
+         lastSearchQuery = query;
+         long queryWithDialogFinal = queryWithDialog;
+         String finalQuery = query;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index f3162e2c9..82ce49c87 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1881,6 +1881,10 @@ public class ChatActivity extends BaseFragment implements
+         return searchingUserMessages != null ? searchingUserMessages.id : searchingChatMessages != null ? -searchingChatMessages.id : 0;
+     }
+ 
++    public long tele_threadId() {
++        return threadMessageId;
++    }
++
+     // 0: nothing older to load, 1: can load, 2: loading
+     public int tele_olderState() {
+         if (endReached[0] && (mergeDialogId == 0 || endReached[1])) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 2aa4ab6a6..c4024bb4d 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -352,6 +352,8 @@ object TeleConfig {
+     val LOCAL_CHAT_BACKGROUNDS = BoolItem("local_chat_backgrounds", false)
+     @JvmField
+     val REGEX_SEARCH = BoolItem("regex_search", false)
++    @JvmField
++    val SEARCH_TYPES = BoolItem("search_types", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 9318ab0c0..f9e33d8ea 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -203,7 +203,7 @@ object TeleHooks {
+             // the open chats refresh their subtitle on resume
+             bumpUiRevision()
+         }
+-        if (item === TeleConfig.REGEX_SEARCH) {
++        if (item === TeleConfig.REGEX_SEARCH || item === TeleConfig.SEARCH_TYPES) {
+             tele.helpers.ChatSearch.onToggled()
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ChatSearch.kt b/TMessagesProj/src/main/java/tele/helpers/ChatSearch.kt
+index b18faaf89..1f506dc5b 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ChatSearch.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ChatSearch.kt
+@@ -32,6 +32,10 @@ import java.lang.ref.WeakReference
+ import java.util.concurrent.ConcurrentHashMap
+ import java.util.regex.Pattern
+ import java.util.regex.PatternSyntaxException
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.tgnet.ConnectionsManager
+ 
+ // regex search over the messages a chat has already loaded (tele 0168); the hits go through the stock result list and arrows
+ object ChatSearch {
+@@ -44,6 +48,10 @@ object ChatSearch {
+     private const val SLOW_NANOS = 3_000_000_000L
+     private const val CACHE_LIMIT = 3000
+     private const val CHIP_REGEX = -1
++    // a combined search reads up to PAGES pages of PAGE messages until TARGET of them fit both filters
++    private const val PAGE = 100
++    private const val PAGES = 5
++    private const val TARGET = 20
+ 
+     private val queue by lazy { DispatchQueue("teleChatSearch") }
+     private val sessions = ConcurrentHashMap<Long, WeakReference<Session>>()
+@@ -70,6 +78,11 @@ object ChatSearch {
+     @JvmStatic
+     fun more(account: Int, guid: Int): Boolean = session(account, guid)?.loadMore() ?: false
+ 
++    // the filter of the stock request; the empty one while the type chips are off
++    @JvmStatic
++    fun filter(account: Int, guid: Int): TLRPC.MessagesFilter =
++        session(account, guid)?.filter() ?: TLRPC.TL_inputMessagesFilterEmpty()
++
+     @JvmStatic
+     fun onToggled() {
+         val it = sessions.entries.iterator()
+@@ -117,7 +130,44 @@ object ChatSearch {
+ 
+     private enum class State { IDLE, OK, INVALID, SLOW }
+ 
+-    private enum class Mode { NONE, REGEX }
++    private enum class Mode { NONE, REGEX, COMBO }
++
++    // the message types of the chips; the server filter is the one of the same name
++    private enum class Type(val title: Int) {
++        PHOTO(R.string.TeleSearchPhotos),
++        VIDEO(R.string.TeleSearchVideos),
++        FILE(R.string.TeleSearchFiles),
++        MUSIC(R.string.TeleSearchMusic),
++        VOICE(R.string.TeleSearchVoice),
++        ROUND(R.string.TeleSearchRound),
++        GIF(R.string.TeleSearchGifs),
++        LINK(R.string.TeleSearchLinks);
++
++        fun filter(): TLRPC.MessagesFilter = when (this) {
++            PHOTO -> TLRPC.TL_inputMessagesFilterPhotos()
++            VIDEO -> TLRPC.TL_inputMessagesFilterVideo()
++            FILE -> TLRPC.TL_inputMessagesFilterDocument()
++            MUSIC -> TLRPC.TL_inputMessagesFilterMusic()
++            VOICE -> TLRPC.TL_inputMessagesFilterVoice()
++            ROUND -> TLRPC.TL_inputMessagesFilterRoundVideo()
++            GIF -> TLRPC.TL_inputMessagesFilterGif()
++            LINK -> TLRPC.TL_inputMessagesFilterUrl()
++        }
++
++        // the same split by media kind as the server filters; used when the sender is the part the server filters
++        fun matches(message: TLRPC.Message): Boolean = when (this) {
++            PHOTO -> MessageObject.getMedia(message) is TLRPC.TL_messageMediaPhoto
++            VIDEO -> MessageObject.isVideoMessage(message) && !MessageObject.isRoundVideoMessage(message) &&
++                !MessageObject.isGifMessage(message) && !MessageObject.isNewGifMessage(message)
++            FILE -> MediaDataController.getMediaType(message) == MediaDataController.MEDIA_FILE
++            MUSIC -> MessageObject.isMusicMessage(message)
++            VOICE -> MessageObject.isVoiceMessage(message)
++            ROUND -> MessageObject.isRoundVideoMessage(message)
++            GIF -> MessageObject.isGifMessage(message) || MessageObject.isNewGifMessage(message)
++            LINK -> MediaDataController.getMediaType(message) == MediaDataController.MEDIA_URL ||
++                MessageObject.getMedia(message) is TLRPC.TL_messageMediaWebPage
++        }
++    }
+ 
+     private class ChipRow(context: Context, private val resources: Theme.ResourcesProvider?) : HorizontalScrollView(context) {
+         private val box = LinearLayout(context)
+@@ -193,6 +243,8 @@ object ChatSearch {
+         private var pendingOlder = false
+         private var pendingFrom = 0
+         private var olderBudget = 0
++        private var type: Type? = null
++        private var combo: Combo? = null
+ 
+         private val typed = Runnable { runRegex(jump = true, keep = false) }
+         private val rescan = Runnable { runRegex(jump = false, keep = true) }
+@@ -217,14 +269,21 @@ object ChatSearch {
+             if (TeleConfig.REGEX_SEARCH.value) {
+                 list.add(Chip(CHIP_REGEX, ".*", LocaleController.getString(R.string.TeleRegexChip)))
+             }
++            // a regex search never reaches the server, so the server filters have nothing to do with it
++            if (TeleConfig.SEARCH_TYPES.value && !regexOn) {
++                for (kind in Type.values()) {
++                    val title = LocaleController.getString(kind.title)
++                    list.add(Chip(kind.ordinal, title, title))
++                }
++            }
+             return list
+         }
+ 
+-        private fun selected(chip: Chip) = chip.id == CHIP_REGEX && regexOn
++        private fun selected(chip: Chip) = if (chip.id == CHIP_REGEX) regexOn else type?.ordinal == chip.id
+ 
+         private fun click(chip: Chip) {
+             if (released) return
+-            if (chip.id == CHIP_REGEX) toggleRegex()
++            if (chip.id == CHIP_REGEX) toggleRegex() else pickType(Type.values()[chip.id])
+         }
+ 
+         // shown together with the stock bottom bar of the search, hidden for hashtag queries which are a different search
+@@ -248,12 +307,17 @@ object ChatSearch {
+                 regexOn = false
+                 leaveRegex()
+             }
++            if (!TeleConfig.SEARCH_TYPES.value && type != null) {
++                type = null
++                rerunTyped()
++            }
+             syncPanel()
+         }
+ 
+         fun destroy() {
+             released = true
+             cancelTimers()
++            cancelCombo()
+             token.value = ++generation
+             cache.clear()
+             panel.removeView(row)
+@@ -263,6 +327,8 @@ object ChatSearch {
+         fun onCollapse() {
+             cancelTimers()
+             token.value = ++generation
++            type = null
++            cancelCombo()
+             regexOn = false
+             query = ""
+             hashtag = false
+@@ -278,19 +344,32 @@ object ChatSearch {
+         // true when the search was answered here, so the stock request is skipped
+         fun onSearchPressed(text: String): Boolean {
+             query = text
+-            if (!regexActive()) {
+-                mode = Mode.NONE
+-                return false
++            if (regexActive()) {
++                cancelCombo()
++                runRegex(jump = true, keep = false)
++                return true
+             }
+-            runRegex(jump = true, keep = false)
+-            return true
++            if (comboWanted()) {
++                startCombo()
++                return true
++            }
++            cancelCombo()
++            mode = Mode.NONE
++            return false
+         }
+ 
+         fun onFromChosen(): Boolean {
+-            if (!regexActive()) return false
+-            query = ""
+-            runRegex(jump = true, keep = false)
+-            return true
++            if (regexActive()) {
++                query = ""
++                runRegex(jump = true, keep = false)
++                return true
++            }
++            if (comboWanted()) {
++                query = ""
++                startCombo()
++                return true
++            }
++            return false
+         }
+ 
+         fun onTextChanged(text: String) {
+@@ -322,7 +401,17 @@ object ChatSearch {
+         }
+ 
+         fun countText(index: Int, count: Int, list: Boolean): CharSequence? {
+-            if (released || !regexActive()) return null
++            if (released) return null
++            if (mode == Mode.COMBO) {
++                // more may exist behind the loaded pages, which the "+" says
++                if (count <= 0 || combo?.full != false) return null
++                return if (list) {
++                    LocaleController.formatString(R.string.TeleSearchCountMoreList, count)
++                } else {
++                    LocaleController.formatString(R.string.TeleSearchCountMore, index + 1, count)
++                }
++            }
++            if (!regexActive()) return null
+             return when {
+                 state == State.INVALID -> LocaleController.getString(R.string.TeleRegexInvalid)
+                 state == State.SLOW -> LocaleController.getString(R.string.TeleRegexSlow)
+@@ -343,6 +432,10 @@ object ChatSearch {
+         private fun toggleRegex() {
+             regexOn = !regexOn
+             hashtag = false
++            if (regexOn) {
++                type = null
++                cancelCombo()
++            }
+             syncPanel()
+             if (regexOn) runRegex(jump = true, keep = false) else leaveRegex()
+         }
+@@ -510,7 +603,12 @@ object ChatSearch {
+         }
+ 
+         internal fun loadMore(): Boolean {
+-            if (released || mode != Mode.REGEX) return false
++            if (released) return false
++            if (mode == Mode.COMBO) {
++                combo?.more()
++                return true
++            }
++            if (mode != Mode.REGEX) return false
+             if (pendingOlder) return true
+             val older = activity.tele_olderState()
+             if (older == 0) return true
+@@ -526,5 +624,209 @@ object ChatSearch {
+             activity.tele_refreshSearchCount()
+             return true
+         }
++
++        internal fun filter(): TLRPC.MessagesFilter {
++            val kind = type
++            return if (kind != null && !released && !hashtag && TeleConfig.SEARCH_TYPES.value && !regexActive()) {
++                kind.filter()
++            } else {
++                TLRPC.TL_inputMessagesFilterEmpty()
++            }
++        }
++
++        // a sender and a type together: the server takes one of the two, the other one is checked here
++        private fun comboWanted() = TeleConfig.SEARCH_TYPES.value && !regexActive() && type != null && !hashtag && activity.tele_searchFrom() != 0L
++
++        private fun pickType(kind: Type) {
++            type = if (type == kind) null else kind
++            syncPanel()
++            AndroidUtilities.hideKeyboard(container)
++            rerunTyped()
++        }
++
++        // a chip changed: the sender and the query stay, only the results of the old filter go
++        private fun rerunTyped() {
++            if (comboWanted()) {
++                startCombo()
++                return
++            }
++            cancelCombo()
++            mode = Mode.NONE
++            activity.tele_runSearch(query, query.isEmpty() && type == null)
++        }
++
++        private fun cancelCombo() {
++            combo?.cancel()
++            combo = null
++            if (mode == Mode.COMBO) mode = Mode.NONE
++        }
++
++        private fun startCombo() {
++            val kind = type ?: return
++            cancelCombo()
++            activity.tele_runSearch(query, true)
++            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.chatSearchResultsLoading, guid)
++            val next = Combo(query, activity.tele_searchFrom(), kind, activity.tele_threadId())
++            combo = next
++            next.start()
++        }
++
++        private inner class Combo(val query: String, val from: Long, val kind: Type, val thread: Long) {
++            private val requests = IntArray(2)
++            private var peer: TLRPC.InputPeer? = null
++            private var fromPeer: TLRPC.InputPeer? = null
++            private var byFrom: TLRPC.messages_Messages? = null
++            private var byType: TLRPC.messages_Messages? = null
++            private var answered = 0
++            private var typeOnServer = false
++            private var offsetId = 0
++            private var pages = 0
++            private var batch = 0
++            private var cancelled = false
++            private var busy = true
++            private var first = true
++            private var firstNew = 0
++            private val found = ArrayList<MessageObject>()
++            private val ids = HashSet<Int>()
++
++            var full = false
++                private set
++
++            private fun alive() = !cancelled && !released && combo === this
++
++            private fun build(fromPeer: TLRPC.InputPeer?, filter: TLRPC.MessagesFilter, offset: Int): TLRPC.TL_messages_search {
++                val req = TLRPC.TL_messages_search()
++                req.peer = peer
++                req.q = query
++                req.filter = filter
++                req.limit = PAGE
++                req.offset_id = offset
++                if (fromPeer != null) {
++                    req.from_id = fromPeer
++                    req.flags = req.flags or 1
++                }
++                if (thread != 0L) {
++                    req.top_msg_id = thread.toInt()
++                    req.flags = req.flags or 2
++                }
++                return req
++            }
++
++            private fun send(req: TLRPC.TL_messages_search, done: (TLRPC.messages_Messages?) -> Unit): Int =
++                ConnectionsManager.getInstance(account).sendRequest(req, { response, _ ->
++                    AndroidUtilities.runOnUIThread { if (alive()) done(response as? TLRPC.messages_Messages) }
++                }, ConnectionsManager.RequestFlagFailOnServerErrors)
++
++            fun start() {
++                val controller = MessagesController.getInstance(account)
++                peer = controller.getInputPeer(dialogId)
++                fromPeer = controller.getInputPeer(from)
++                if (peer == null || fromPeer == null) {
++                    failed()
++                    return
++                }
++                requests[0] = send(build(fromPeer, TLRPC.TL_inputMessagesFilterEmpty(), 0)) { byFrom = it; probed() }
++                requests[1] = send(build(null, kind.filter(), 0)) { byType = it; probed() }
++            }
++
++            private fun count(res: TLRPC.messages_Messages) = if (isSlice(res)) res.count else res.messages.size
++
++            private fun isSlice(res: TLRPC.messages_Messages) = res is TLRPC.TL_messages_messagesSlice || res is TLRPC.TL_messages_channelMessages
++
++            // the narrower of the two answers is the one the server keeps filtering, fewer pages to read through
++            private fun probed() {
++                if (++answered < 2) return
++                val a = byFrom
++                val b = byType
++                val chosen = if (a != null && (b == null || count(a) <= count(b))) {
++                    typeOnServer = false
++                    a
++                } else if (b != null) {
++                    typeOnServer = true
++                    b
++                } else {
++                    failed()
++                    return
++                }
++                byFrom = null
++                byType = null
++                consume(chosen)
++            }
++
++            private fun page(res: TLRPC.messages_Messages?) {
++                if (res == null) {
++                    failed()
++                    return
++                }
++                consume(res)
++            }
++
++            private fun matches(message: TLRPC.Message) =
++                if (typeOnServer) DialogObject.getPeerDialogId(message.from_id) == from else kind.matches(message)
++
++            private fun consume(res: TLRPC.messages_Messages) {
++                MessagesStorage.getInstance(account).putUsersAndChats(res.users, res.chats, true, true)
++                MessagesController.getInstance(account).putUsers(res.users, false)
++                MessagesController.getInstance(account).putChats(res.chats, false)
++                offsetId = res.messages.lastOrNull()?.id ?: offsetId
++                full = res.messages.isEmpty() || !isSlice(res) || res.messages.size < PAGE
++                var matched = 0
++                for (message in res.messages) {
++                    if (message is TLRPC.TL_messageEmpty || message.action is TLRPC.TL_messageActionHistoryClear) continue
++                    if (!matches(message) || !ids.add(message.id)) continue
++                    val item = MessageObject(account, message, null, null, null, null, null, true, true, 0L, false, false, isSaved)
++                    if (item.hasValidGroupId()) item.isPrimaryGroupMessage = true
++                    item.setQuery(query, true)
++                    found.add(item)
++                    matched++
++                }
++                batch += matched
++                pages++
++                if (!full && batch < TARGET && pages < PAGES) {
++                    next()
++                } else {
++                    finish()
++                }
++            }
++
++            private fun next() {
++                val req = if (typeOnServer) build(null, kind.filter(), offsetId) else build(fromPeer, TLRPC.TL_inputMessagesFilterEmpty(), offsetId)
++                requests[0] = send(req) { page(it) }
++            }
++
++            private fun finish() {
++                busy = false
++                mode = Mode.COMBO
++                // the first batch moves to its first hit, a later one to the first hit it added
++                val index = if (first) 0 else firstNew
++                first = false
++                mdc.tele_portResults(guid, dialogId, query, ArrayList(found), index, found.size, full, true)
++            }
++
++            private fun failed() {
++                busy = false
++                if (combo === this) combo = null
++                mode = Mode.NONE
++                // no results and no spinner; the stock handling of an error does not show one either
++                mdc.tele_clearResults()
++                NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.chatSearchResultsAvailable, guid, 0, 0, 0L, 0, -1, false)
++            }
++
++            fun more() {
++                if (cancelled || busy || full) return
++                busy = true
++                pages = 0
++                batch = 0
++                firstNew = found.size
++                next()
++            }
++
++            fun cancel() {
++                cancelled = true
++                for (id in requests) {
++                    if (id != 0) ConnectionsManager.getInstance(account).cancelRequest(id, true)
++                }
++            }
++        }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 74218a5e0..8f004bb18 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -298,6 +298,9 @@ object TeleSearch {
+             section(1369, "Filter emoji by format", "chats", TeleSettingsActivity.MODE_CHATS, "Filter stickers and emoji by format"),
+             section(1345, "Regex search in chats", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1346, "Regular expression search", "chats", TeleSettingsActivity.MODE_CHATS, "Regex search in chats"),
++            section(1347, "Message type filter in chat search", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1348, "Search by sender and type", "chats", TeleSettingsActivity.MODE_CHATS, "Message type filter in chat search"),
++            section(1349, "Filter chat search by photos, videos and links", "chats", TeleSettingsActivity.MODE_CHATS, "Message type filter in chat search"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 54553d993..3ec5f941d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -813,6 +813,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Show online members in big groups" to "Also when the member list is hidden; the count comes from the server.",
+             "Mention several people in a row" to "Long-press a person in the mention list to add them and pick the next one.",
+             "Regex search in chats" to "A .* chip in chat search; matches only the messages already loaded.",
++            "Message type filter in chat search" to "Chips for photos, videos, links and more; an empty query lists them all.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -945,6 +946,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
+                 toggle("Send quick replies by name", TeleConfig.QUICK_REPLIES_BY_NAME),
+                 toggle("Regex search in chats", TeleConfig.REGEX_SEARCH),
++                toggle("Message type filter in chat search", TeleConfig.SEARCH_TYPES),
+                 toggle("Select more than 100 messages", TeleConfig.SELECT_MANY),
+                 toggle("Show sticker captions", TeleConfig.STICKER_CAPTIONS_SHOW),
+                 Row(TYPE_SHADOW),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 80ce2f5e6..ed4072cf8 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -157,4 +157,14 @@
+     <string name="TeleRegexCountOf">%1$d of %2$d loaded</string>
+     <string name="TeleRegexCountList">%1$d found in loaded messages</string>
+     <string name="TeleRegexLoading">Loading older messages…</string>
++    <string name="TeleSearchPhotos">Photos</string>
++    <string name="TeleSearchVideos">Videos</string>
++    <string name="TeleSearchFiles">Files</string>
++    <string name="TeleSearchMusic">Music</string>
++    <string name="TeleSearchVoice">Voice messages</string>
++    <string name="TeleSearchRound">Round videos</string>
++    <string name="TeleSearchGifs">GIFs</string>
++    <string name="TeleSearchLinks">Links</string>
++    <string name="TeleSearchCountMore">%1$d of %2$d+</string>
++    <string name="TeleSearchCountMoreList">%1$d+ results</string>
+ </resources>

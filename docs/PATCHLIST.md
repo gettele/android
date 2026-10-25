@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Гайды исполнителей для оставшихся пачек: [19](batches/batch-19.md) · [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
+Гайды исполнителей для оставшихся пачек: [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
 
 инфраструктурные патчи (без номера tele) помечены `infra`: `0002`, `0003`, `0019`, `0065`, `0066`.
 
@@ -367,16 +367,16 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0168 | regex-поиск по истории | todo | поиск в чате и чат-листе; M; по умолч.; только память, не SQLite |
-| 0281 | фильтр поиска в чате по типу | todo | `MediaDataController.searchMessagesInChat`, `ChatActivity`; M; зависит от 0168; реш.: 0281 chip row (по умолч.); включая GIF/кружки; поиск по человеку + типу (прежняя отдельная строка 0306) — внутри 0281: `from_id` комбинируется с чипами |
-| 0280 | упоминать нескольких подряд | todo | ChatActivity mentionContainer; S; реш.: 0280 long-press; не для inline-ботов |
-| 0268 | онлайн участников в больших группах (частично) | todo | `MessagesController`, `ChatAvatarContainer`; S; реш.: 0268 край скрытых ≤200; в стоке; доделываем край |
-| 0134 | панель закрепа из меню чата | todo | `ChatActivity`; S; по умолч.: 0134 выкл; пункт при !allowPin |
-| 0235 | своя полоса реакций | todo | `ReactionsContainerLayout`, `TeleSettingsActivity`; M; drag-reorder; кастомные реакции через `MediaDataController` |
-| 0127 | закрепить наборы стикеров/эмодзи | todo | `EmojiView`; M; локально в tele_kv |
-| 0317 | фильтр стикеров и эмодзи по формату | todo | `StickersActivity`, `EmojiView`; M; формат по mime документов |
-| 0328 | restrict участников из меню сообщения/юзерпика + поиск человека по числовому id | todo | `ChatActivity.fillMessageMenu`, `MessageMenu.kt`, пикеры участников; M; зависит от android 0042; пикеры находят людей по числовому id |
-| 0249 | мини-аппы никогда на весь экран | todo | `BotWebViewContainer/Sheet`; S; UNSUPPORTED на fullscreen |
+| 0168 | regex-поиск по истории | built | `0193-feat-regex-search-in-loaded-history`; поиск в чате и чат-листе; M; по умолч.; только память, не SQLite |
+| 0281 | фильтр поиска в чате по типу | built | `0194-feat-filter-chat-search-by-type`; `MediaDataController.searchMessagesInChat`, `ChatActivity`; M; зависит от 0168; реш.: 0281 chip row (по умолч.); включая GIF/кружки; поиск по человеку + типу (прежняя отдельная строка 0306) — внутри 0281: `from_id` комбинируется с чипами |
+| 0280 | упоминать нескольких подряд | built | `0185-feat-mention-several-people-in-a-row`; ChatActivity mentionContainer; S; реш.: 0280 long-press; не для inline-ботов |
+| 0268 | онлайн участников в больших группах (частично) | built | `0186-feat-online-members-in-big-groups`; `MessagesController`, `ChatAvatarContainer`; S; реш.: 0268 край скрытых ≤200; в стоке; доделываем край |
+| 0134 | панель закрепа из меню чата | built | `0187-feat-pinned-bar-from-the-chat-menu`; `ChatActivity`; S; по умолч.: 0134 выкл; пункт при !allowPin |
+| 0235 | своя полоса реакций | built | `0189-feat-your-own-reaction-strip`; `ReactionsContainerLayout`, `TeleSettingsActivity`; M; drag-reorder; кастомные реакции через `MediaDataController` |
+| 0127 | закрепить наборы стикеров/эмодзи | built | `0191-feat-pin-sticker-and-emoji-sets`; `EmojiView`; M; локально в tele_kv |
+| 0317 | фильтр стикеров и эмодзи по формату | built | `0192-feat-filter-stickers-by-format`; `StickersActivity`, `EmojiView`; M; формат по mime документов |
+| 0328 | restrict участников из меню сообщения/юзерпика + поиск человека по числовому id | built | `0190-feat-restrict-members-from-menus`; `ChatActivity.fillMessageMenu`, `MessageMenu.kt`, пикеры участников; M; зависит от android 0042; пикеры находят людей по числовому id |
+| 0249 | мини-аппы никогда на весь экран | built | `0188-feat-never-open-web-apps-fullscreen`; `BotWebViewContainer/Sheet`; S; UNSUPPORTED на fullscreen |
 
 ## пачка 20 — имена, id и история версий
 

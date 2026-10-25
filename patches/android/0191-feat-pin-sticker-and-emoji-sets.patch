@@ -1,0 +1,461 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 08:40:41 +0300
+Subject: [PATCH 191/194] feat: pin sticker and emoji sets
+
+---
+ .../messenger/MediaDataController.java        |   1 +
+ .../ui/Components/EmojiTabsStrip.java         |   7 +
+ .../org/telegram/ui/Components/EmojiView.java |  31 ++-
+ .../ui/Components/ScrollSlidingTabStrip.java  |   6 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../src/main/java/tele/helpers/PinSets.kt     | 232 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ 9 files changed, 284 insertions(+), 4 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/PinSets.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+index 496cf9bca..46720c629 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java
+@@ -347,6 +347,7 @@ public class MediaDataController extends BaseController {
+ 
+     public void cleanup() {
+         tele.helpers.PastLimit.cleanup(currentAccount);
++        tele.helpers.PinSets.cleanup(currentAccount);
+         for (int a = 0; a < recentStickers.length; a++) {
+             if (recentStickers[a] != null) {
+                 recentStickers[a].clear();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiTabsStrip.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiTabsStrip.java
+index b3867e3b5..e45406574 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiTabsStrip.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiTabsStrip.java
+@@ -622,6 +622,8 @@ public class EmojiTabsStrip extends ScrollableHorizontalScrollView {
+                     tabsView.contentView.getChildAt(a).setOnClickListener(e -> {
+                         onTabClick(index);
+                     });
++                    final View tele_tab = tabsView.contentView.getChildAt(a);
++                    tele_tab.setOnLongClickListener(e -> tele_onTabLongClick(index, tele_tab));
+                 }
+                 --j;
+             } else if (child != null) {
+@@ -629,6 +631,7 @@ public class EmojiTabsStrip extends ScrollableHorizontalScrollView {
+                 child.setOnClickListener(e -> {
+                     onTabClick(index);
+                 });
++                child.setOnLongClickListener(e -> tele_onTabLongClick(index, child));
+             }
+         }
+         if (settingsTab != null) {
+@@ -644,6 +647,10 @@ public class EmojiTabsStrip extends ScrollableHorizontalScrollView {
+         return true;
+     }
+ 
++    protected boolean tele_onTabLongClick(int index, View tab) {
++        return false;
++    }
++
+     private float paddingLeftDp = 5 + 6;
+ 
+     public void setPaddingLeft(float paddingLeftDp) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+index f1c8741ba..00cb09d67 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+@@ -1916,6 +1916,19 @@ public class EmojiView extends FrameLayout implements
+                 return true;
+             }
+ 
++            @Override
++            protected boolean tele_onTabLongClick(int index, View tab) {
++                if (index <= 0) {
++                    return false;
++                }
++                final ArrayList<EmojiPack> packs = getEmojipacks();
++                final int i = index - 1 - EmojiData.dataColored.length;
++                if (packs == null || i < 0 || i >= packs.size() || packs.get(i).set == null || packs.get(i).featured) {
++                    return false;
++                }
++                return tele.helpers.PinSets.showMenu(fragment, tab, currentAccount, tele.helpers.PinSets.EMOJI, packs.get(i).set.id);
++            }
++
+             @Override
+             protected ColorFilter getEmojiColorFilter() {
+                 return animatedEmojiTextColorFilter;
+@@ -2404,6 +2417,7 @@ public class EmojiView extends FrameLayout implements
+                     final MediaDataController mediaDataController = MediaDataController.getInstance(currentAccount);
+ 
+                     swapListElements(stickerSets, index1, index2);
++                    if (!tele.helpers.PinSets.tabsMoved(currentAccount, tele.helpers.PinSets.STICKERS, stickerSets, mediaDataController.getStickerSets(MediaDataController.TYPE_IMAGE)))
+                     Collections.sort(mediaDataController.getStickerSets(MediaDataController.TYPE_IMAGE), (o1, o2) -> {
+                         int i1 = stickerSets.indexOf(o1);
+                         int i2 = stickerSets.indexOf(o2);
+@@ -2451,13 +2465,22 @@ public class EmojiView extends FrameLayout implements
+                     TLRPC.TL_messages_reorderStickerSets req = new TLRPC.TL_messages_reorderStickerSets();
+                     req.masks = false;
+                     req.emojis = false;
+-                    for (int a = hasChatStickers ? 1 : 0; a < stickerSets.size(); a++) {
+-                        req.order.add(stickerSets.get(a).set.id);
++                    final List<TLRPC.TL_messages_stickerSet> tele_order = tele.helpers.PinSets.serverOrder(currentAccount, tele.helpers.PinSets.STICKERS, stickerSets);
++                    for (int a = hasChatStickers ? 1 : 0; a < tele_order.size(); a++) {
++                        req.order.add(tele_order.get(a).set.id);
+                     }
+                     ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> { });
+                     NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.stickersDidLoad, MediaDataController.TYPE_IMAGE, true);
+                 }
+ 
++                @Override
++                protected void tele_onTabHold(int position, View tab) {
++                    final int index = position - stickersTabOffset;
++                    if (index >= 0 && index < stickerSets.size() && stickerSets.get(index).set != null) {
++                        tele.helpers.PinSets.showMenu(fragment, tab, currentAccount, tele.helpers.PinSets.STICKERS, stickerSets.get(index).set.id);
++                    }
++                }
++
+                 @Override
+                 protected void invalidateOverlays() {
+                     if (stickersTabContainer != null) {
+@@ -5663,7 +5686,7 @@ public class EmojiView extends FrameLayout implements
+         groupStickerPackNum = -10;
+ 
+         if (frozenStickerSets == null || updateStickerSets) {
+-            frozenStickerSets = new ArrayList<>(mediaDataController.getStickerSets(MediaDataController.TYPE_IMAGE));
++            frozenStickerSets = tele.helpers.PinSets.order(currentAccount, tele.helpers.PinSets.STICKERS, new ArrayList<>(mediaDataController.getStickerSets(MediaDataController.TYPE_IMAGE)));
+         }
+         ArrayList<TLRPC.TL_messages_stickerSet> packs = frozenStickerSets;
+         for (int i = 0; i < primaryInstallingStickerSets.length; i++) {
+@@ -7587,7 +7610,7 @@ public class EmojiView extends FrameLayout implements
+ 
+             MediaDataController mediaDataController = MediaDataController.getInstance(currentAccount);
+             if (updateEmojipacks || frozenEmojiPacks == null) {
+-                frozenEmojiPacks = new ArrayList<>(mediaDataController.getStickerSets(MediaDataController.TYPE_EMOJIPACKS));
++                frozenEmojiPacks = tele.helpers.PinSets.order(currentAccount, tele.helpers.PinSets.EMOJI, new ArrayList<>(mediaDataController.getStickerSets(MediaDataController.TYPE_EMOJIPACKS)));
+             }
+             ArrayList<TLRPC.TL_messages_stickerSet> installedEmojipacks = frozenEmojiPacks;
+             boolean isPremium = UserConfig.getInstance(currentAccount).isPremium() || allowEmojisForNonPremium;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ScrollSlidingTabStrip.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ScrollSlidingTabStrip.java
+index e016b26e8..d1a4c4d51 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ScrollSlidingTabStrip.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ScrollSlidingTabStrip.java
+@@ -1001,6 +1001,8 @@ public class ScrollSlidingTabStrip extends HorizontalScrollView {
+                     for (int i = 0; i < tabsContainer.getChildCount(); i++) {
+                         tabsContainer.getChildAt(i).setTag(R.id.index_tag, i);
+                     }
++                } else if (ev.getAction() == MotionEvent.ACTION_UP && Math.abs(dragDx) < touchSlop) {
++                    tele_onTabHold(startDragFromPosition, draggingView);
+                 }
+                 ValueAnimator dragViewOutAnimator = ValueAnimator.ofFloat(0, 1f);
+                 dragViewOutAnimator.addUpdateListener(valueAnimator -> {
+@@ -1030,6 +1032,10 @@ public class ScrollSlidingTabStrip extends HorizontalScrollView {
+     protected void stickerSetPositionChanged(int fromPosition, int toPosition) {
+     }
+ 
++    // a long press on a tab that was released without a drag
++    protected void tele_onTabHold(int position, View tab) {
++    }
++
+     private boolean canSwap(int p) {
+         if (!dragEnabled) {
+             return false;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 08cf9d0e3..75861ad8d 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -259,6 +259,8 @@ object TeleConfig {
+     @JvmField
+     val KEEP_MEDIA_PAST_LIMIT = BoolItem("keep_media_past_limit", false)
+     @JvmField
++    val PIN_SETS = BoolItem("pin_sets", false)
++    @JvmField
+     val CALCMULA = BoolItem("calcmula", false)
+     @JvmField
+     val EDITOR_EYEDROPPER = BoolItem("editor_eyedropper", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 7c8462eea..65ac05f80 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -167,6 +167,9 @@ object TeleHooks {
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
++        if (item === TeleConfig.PIN_SETS) {
++            tele.helpers.PinSets.onToggled()
++        }
+         if (item === TeleConfig.SILENT_BY_DEFAULT || item === TeleConfig.SILENT_PER_CHAT) {
+             // the open chats refresh their field hint and menu on resume
+             bumpUiRevision()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PinSets.kt b/TMessagesProj/src/main/java/tele/helpers/PinSets.kt
+new file mode 100644
+index 000000000..d09d674ee
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/PinSets.kt
+@@ -0,0 +1,232 @@
++package tele.helpers
++
++import android.util.SparseArray
++import android.view.View
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.Components.ItemOptions
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * Sticker and emoji sets pinned to the front of the panel tabs. The pins live in tele_kv per account and
++ * only reorder what the panel shows; the order the server keeps is never sent from here.
++ */
++object PinSets {
++    const val STICKERS = 0
++    const val EMOJI = 1
++    private const val KINDS = 2
++    private const val KEY = "pin_sets"
++    private const val MAX = 4096
++
++    private class State(val userId: Long) {
++        val lists = Array(KINDS) { ArrayList<Long>() }
++        var loaded = false
++        var loading = false
++    }
++
++    // the UI thread owns the states
++    private val states = SparseArray<State>()
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.PIN_SETS.value
++
++    private fun type(kind: Int) = if (kind == EMOJI) MediaDataController.TYPE_EMOJIPACKS else MediaDataController.TYPE_IMAGE
++
++    private fun state(account: Int): State? {
++        val userId = UserConfig.getInstance(account).getClientUserId()
++        if (userId == 0L) return null
++        var s = states.get(account)
++        if (s == null || s.userId != userId) {
++            s = State(userId)
++            states.put(account, s)
++        }
++        if (!s.loaded && !s.loading) load(account, s)
++        return s
++    }
++
++    private fun load(account: Int, s: State) {
++        s.loading = true
++        val key = "$KEY:${s.userId}"
++        Utilities.globalQueue.postRunnable {
++            val raw = runCatching { TeleDatabaseHelper.get(key) }.onFailure { FileLog.e(it) }.getOrNull()
++            val read = Array(KINDS) { ArrayList<Long>() }
++            if (raw != null) {
++                runCatching {
++                    val json = JSONObject(raw)
++                    for (kind in 0 until KINDS) {
++                        val array = json.optJSONArray(if (kind == EMOJI) "e" else "s") ?: continue
++                        for (i in 0 until minOf(array.length(), MAX)) {
++                            val id = array.getLong(i)
++                            if (id !in read[kind]) read[kind].add(id)
++                        }
++                    }
++                }.onFailure { FileLog.e(it) }
++            }
++            AndroidUtilities.runOnUIThread {
++                if (states.get(account) !== s) return@runOnUIThread
++                // a pin made before the rows arrived is newer
++                for (kind in 0 until KINDS) {
++                    for (id in s.lists[kind]) if (id !in read[kind]) read[kind].add(id)
++                    s.lists[kind] = read[kind]
++                }
++                s.loaded = true
++                s.loading = false
++                if (enabled() && s.lists.any { it.isNotEmpty() }) notifyLists(account, STICKERS, EMOJI)
++            }
++        }
++    }
++
++    private fun persist(s: State) {
++        val json = JSONObject()
++        json.put("s", JSONArray(s.lists[STICKERS]))
++        json.put("e", JSONArray(s.lists[EMOJI]))
++        val text = json.toString()
++        val key = "$KEY:${s.userId}"
++        Utilities.globalQueue.postRunnable { runCatching { TeleDatabaseHelper.put(key, text) }.onFailure { FileLog.e(it) } }
++    }
++
++    // makes the panels rebuild their tabs from the sets, in the order below
++    private fun notifyLists(account: Int, vararg kinds: Int) {
++        val center = NotificationCenter.getInstance(account)
++        for (kind in kinds) center.postNotificationName(NotificationCenter.stickersDidLoad, type(kind), true)
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (!UserConfig.getInstance(account).isClientActivated) continue
++            if (enabled()) state(account)
++            notifyLists(account, STICKERS, EMOJI)
++        }
++    }
++
++    // the account logs out: its pins must not reach the next user of the slot
++    @JvmStatic
++    fun cleanup(account: Int) {
++        states.remove(account)
++    }
++
++    private fun installed(account: Int, kind: Int): List<TLRPC.TL_messages_stickerSet> =
++        MediaDataController.getInstance(account).getStickerSets(type(kind))
++
++    // the pinned ids that are installed, in the shown order
++    private fun shown(account: Int, kind: Int, s: State): List<Long> {
++        val ids = installed(account, kind).mapNotNull { it.set?.id }.toHashSet()
++        return s.lists[kind].filter { it in ids }
++    }
++
++    /** The sets with the pinned ones first; the same list when nothing is pinned. */
++    @JvmStatic
++    fun order(account: Int, kind: Int, sets: ArrayList<TLRPC.TL_messages_stickerSet>): ArrayList<TLRPC.TL_messages_stickerSet> {
++        if (!enabled()) return sets
++        val s = state(account) ?: return sets
++        if (!s.loaded || s.lists[kind].isEmpty()) return sets
++        val byId = HashMap<Long, TLRPC.TL_messages_stickerSet>()
++        for (set in sets) set.set?.let { byId.putIfAbsent(it.id, set) }
++        val head = s.lists[kind].mapNotNull { byId[it] }
++        if (head.isEmpty()) return sets
++        val pinned = head.map { it.set.id }.toHashSet()
++        val result = ArrayList<TLRPC.TL_messages_stickerSet>(sets.size)
++        result.addAll(head)
++        for (set in sets) if (set.set?.id !in pinned) result.add(set)
++        return result
++    }
++
++    /**
++     * A tab drag moved a set. The pinned ones only reorder among themselves, locally; the others reorder
++     * in the server list. Returns false when nothing is pinned and the stock reorder applies.
++     */
++    @JvmStatic
++    fun tabsMoved(account: Int, kind: Int, tabSets: List<TLRPC.TL_messages_stickerSet>, serverList: ArrayList<TLRPC.TL_messages_stickerSet>): Boolean {
++        if (!enabled()) return false
++        val s = state(account) ?: return false
++        if (!s.loaded) return false
++        val shownIds = shown(account, kind, s)
++        if (shownIds.isEmpty()) return false
++        val pinned = shownIds.toHashSet()
++
++        val tabPinned = tabSets.mapNotNull { it.set?.id }.filter { it in pinned }
++        val list = s.lists[kind]
++        var next = 0
++        for (i in list.indices) if (list[i] in pinned && next < tabPinned.size) list[i] = tabPinned[next++]
++        persist(s)
++
++        val tabOthers = tabSets.filter { it.set != null && it.set.id !in pinned }
++        val inServer = serverList.mapNotNull { it.set?.id }.toHashSet()
++        val others = tabOthers.filter { it.set.id in inServer }
++        val otherIds = others.map { it.set.id }.toHashSet()
++        val slots = serverList.indices.filter { i -> serverList[i].set?.id in otherIds }
++        for ((n, i) in slots.withIndex()) if (n < others.size) serverList[i] = others[n]
++        return true
++    }
++
++    /** The tab sets in the order the server keeps them, for the reorder request. */
++    @JvmStatic
++    fun serverOrder(account: Int, kind: Int, tabSets: ArrayList<TLRPC.TL_messages_stickerSet>): List<TLRPC.TL_messages_stickerSet> {
++        if (!enabled()) return tabSets
++        val s = state(account) ?: return tabSets
++        if (!s.loaded || shown(account, kind, s).isEmpty()) return tabSets
++        val index = HashMap<Long, Int>()
++        installed(account, kind).forEachIndexed { i, set -> set.set?.let { index[it.id] = i } }
++        // the sets the server list does not hold, like the group set, keep the front
++        return tabSets.sortedBy { set -> set.set?.let { index[it.id] } ?: -1 }
++    }
++
++    /** Pin menu of a set tab; false when the tab is no pinnable set. */
++    @JvmStatic
++    fun showMenu(fragment: BaseFragment?, anchor: View?, account: Int, kind: Int, setId: Long): Boolean {
++        if (fragment == null || anchor == null || setId == 0L || !enabled()) return false
++        val s = state(account) ?: return false
++        if (!s.loaded) return false
++        val list = shown(account, kind, s)
++        if (installed(account, kind).none { it.set?.id == setId }) return false
++        val index = list.indexOf(setId)
++        val pinned = index >= 0
++        val options = ItemOptions.makeOptions(fragment, anchor)
++        options.add(if (pinned) R.drawable.msg_unpin else R.drawable.msg_pin, TeleLowercase.lc(if (pinned) "Unpin" else "Pin")) {
++            toggle(account, kind, s, setId)
++        }
++        if (pinned && index > 0) {
++            options.add(R.drawable.msg_arrow_back, TeleLowercase.lc("Move left")) { move(account, kind, s, setId, -1) }
++        }
++        if (pinned && index + 1 < list.size) {
++            options.add(R.drawable.msg_arrow_forward, TeleLowercase.lc("Move right")) { move(account, kind, s, setId, 1) }
++        }
++        options.show()
++        return true
++    }
++
++    private fun toggle(account: Int, kind: Int, s: State, setId: Long) {
++        val list = s.lists[kind]
++        if (!list.remove(setId)) {
++            if (list.size >= MAX) return
++            list.add(setId)
++        }
++        persist(s)
++        notifyLists(account, kind)
++    }
++
++    private fun move(account: Int, kind: Int, s: State, setId: Long, delta: Int) {
++        val list = shown(account, kind, s)
++        val to = list.indexOf(setId) + delta
++        if (to !in list.indices || list.indexOf(setId) < 0) return
++        val pins = s.lists[kind]
++        val a = pins.indexOf(setId)
++        val b = pins.indexOf(list[to])
++        if (a < 0 || b < 0) return
++        pins[a] = list[to]
++        pins[b] = setId
++        persist(s)
++        notifyLists(account, kind)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index d01550237..489176d76 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -291,6 +291,8 @@ object TeleSearch {
+             section(1341, "Copy as HTML", "menus", TeleSettingsActivity.MODE_MENUS, "Copy as Markdown and HTML"),
+             section(1342, "Line numbers in code blocks", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1343, "Number the lines of code", "messages", TeleSettingsActivity.MODE_MESSAGES, "Line numbers in code blocks"),
++            section(1365, "Pin sticker and emoji sets", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1366, "Pin sticker sets", "chats", TeleSettingsActivity.MODE_CHATS, "Pin sticker and emoji sets"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index eba543f1e..a4ca8f3da 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -800,6 +800,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Message bookmarks" to "Bookmark messages and step through them. Stored locally.",
+             "Return to where you were reading" to "After sending while scrolled up, jump back to where you were.",
+             "Keep saved GIFs and favorite stickers past the limit" to "Keep the ones over the server limit on this device.",
++            "Pin sticker and emoji sets" to "Long-press a set tab to pin it to the front.",
+             "Pin chats past the limit" to "Pin more chats than Telegram allows; extras stay on this device.",
+             "Blurred photo as profile background" to "The header shows the blurred profile photo.",
+             "Fill the whole profile" to "The whole profile takes the color of the photo.",
+@@ -947,6 +948,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Saved GIFs and stickers"),
+                 toggle("Keep saved GIFs and favorite stickers past the limit", TeleConfig.KEEP_MEDIA_PAST_LIMIT),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Panels"),
++                toggle("Pin sticker and emoji sets", TeleConfig.PIN_SETS),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Backgrounds"),
+                 toggle("Backgrounds only for you", TeleConfig.LOCAL_CHAT_BACKGROUNDS),
+                 link(

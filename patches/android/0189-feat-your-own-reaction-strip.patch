@@ -1,0 +1,753 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 08:28:23 +0300
+Subject: [PATCH 189/194] feat: your own reaction strip
+
+---
+ .../Components/ReactionsContainerLayout.java  |   2 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/helpers/ReactionStrip.kt   | 206 +++++++++
+ .../java/tele/helpers/TeleSettingsLinks.kt    |   2 +
+ .../tele/ui/settings/TeleReactionsActivity.kt | 428 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +
+ 7 files changed, 648 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleReactionsActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactionsContainerLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactionsContainerLayout.java
+index cd93fdcea..a58c75090 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactionsContainerLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactionsContainerLayout.java
+@@ -581,6 +581,7 @@ public class ReactionsContainerLayout extends FrameLayout implements Notificatio
+ 
+     @SuppressLint("NotifyDataSetChanged")
+     private void setVisibleReactionsList(List<ReactionsLayoutInBubble.VisibleReaction> visibleReactionsList, boolean animated) {
++        visibleReactionsList = tele.helpers.ReactionStrip.apply(currentAccount, type, hitLimit, allReactionsAvailable, visibleReactionsList);
+         this.visibleReactionsList.clear();
+         if (showCustomEmojiReaction()) {
+             int i = 0;
+@@ -591,6 +592,7 @@ public class ReactionsContainerLayout extends FrameLayout implements Notificatio
+             if (n < 1) {
+                 n = 1;
+             }
++            n = tele.helpers.ReactionStrip.columns(n, type);
+             for (; i < Math.min(visibleReactionsList.size(), n); i++) {
+                 this.visibleReactionsList.add(visibleReactionsList.get(i));
+             }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 1f9d35acc..14cfc999b 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -59,6 +59,8 @@ object TeleConfig {
+     @JvmField
+     val HIDE_MENTION_REACTIONS = BoolItem("hide_mention_reactions", false)
+     @JvmField
++    val REACTIONS_STRIP_COUNT = StringItem("reactions_strip_count", "")
++    @JvmField
+     val STATIC_AVATARS = BoolItem("static_avatars", false)
+     @JvmField
+     val HIDE_STORIES = BoolItem("hide_stories", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt b/TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt
+new file mode 100644
+index 000000000..d5a80dc71
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt
+@@ -0,0 +1,206 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.UserConfig
++import org.telegram.ui.Components.ReactionsContainerLayout
++import org.telegram.ui.Components.Reactions.ReactionsLayoutInBubble.VisibleReaction
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++// tele 0235: the reactions you pin go first in the reaction strip, in the slots you chose
++object ReactionStrip {
++
++    const val MIN_COUNT = 4
++    const val MAX_COUNT = 12
++
++    private const val KEY = "reactions_order:"
++    private const val MAX_EMOJI_LENGTH = 32
++
++    // the slots of the pinned reactions per account, an empty id is a free slot; read once, kept in sync on write
++    private val cache = HashMap<Int, List<String>>()
++
++    private fun isCustom(id: String) = id.isNotEmpty() && id.all { it.isDigit() }
++
++    private fun parseOne(raw: String): String? {
++        val part = raw.trim()
++        if (part.isEmpty() || part.length > MAX_EMOJI_LENGTH || part.any { it.isWhitespace() }) return null
++        if (isCustom(part)) return part.toLongOrNull()?.takeIf { it > 0 }?.toString()
++        return part
++    }
++
++    fun parse(value: String?): List<String> {
++        if (value.isNullOrEmpty()) return emptyList()
++        val result = ArrayList<String>()
++        for (part in value.split(',')) {
++            val id = parseOne(part)
++            result.add(if (id != null && id !in result) id else "")
++        }
++        return trimmed(result)
++    }
++
++    fun serialize(list: List<String>): String = trimmed(list).joinToString(",")
++
++    fun trimmed(list: List<String>): List<String> {
++        var end = list.size
++        while (end > 0 && list[end - 1].isEmpty()) end--
++        return if (end == list.size) list else list.subList(0, end).toList()
++    }
++
++    @JvmStatic
++    fun pinned(account: Int): List<String> = synchronized(cache) {
++        cache.getOrPut(account) { parse(TeleDatabaseHelper.get(KEY + account)) }
++    }
++
++    fun setPinned(account: Int, list: List<String>) {
++        val fixed = parse(serialize(list))
++        synchronized(cache) { cache[account] = fixed }
++        TeleDatabaseHelper.put(KEY + account, fixed.takeIf { it.isNotEmpty() }?.let { serialize(it) })
++    }
++
++    fun pinnedCount(list: List<String>): Int = list.count { it.isNotEmpty() }
++
++    /** The count of reactions in the strip, 0 for the stock one. */
++    @JvmStatic
++    fun count(): Int = validCount(TeleConfig.REACTIONS_STRIP_COUNT.value)
++
++    fun validCount(value: String): Int =
++        value.toIntOrNull()?.takeIf { it in MIN_COUNT..MAX_COUNT } ?: 0
++
++    private fun supported(type: Int) =
++        type == ReactionsContainerLayout.TYPE_DEFAULT || type == ReactionsContainerLayout.TYPE_STORY
++
++    private fun matches(reaction: VisibleReaction, id: String): Boolean {
++        if (reaction.isStar || reaction.isEffect) return false
++        return if (isCustom(id)) reaction.documentId == id.toLong() else reaction.emojicon == id
++    }
++
++    fun idOf(reaction: VisibleReaction): String? = when {
++        reaction.isStar || reaction.isEffect -> null
++        reaction.documentId != 0L -> reaction.documentId.toString()
++        else -> reaction.emojicon?.takeIf { it.isNotEmpty() }
++    }
++
++    fun visible(id: String): VisibleReaction =
++        if (isCustom(id)) VisibleReaction.fromCustomEmoji(id.toLong()) else VisibleReaction.fromEmojicon(id)
++
++    /** The pinned reactions in their slots, the rest keep the chat's order. Only reactions the list allows are placed. */
++    fun order(list: List<VisibleReaction>, pins: List<String>, customAllowed: Boolean): List<VisibleReaction> {
++        if (pinnedCount(pins) == 0 || list.any { it.isEffect }) return list
++        val rest = ArrayList(list)
++        val starAt = rest.indexOfFirst { it.isStar }
++        val star = if (starAt >= 0) rest.removeAt(starAt) else null
++        val placed = arrayOfNulls<VisibleReaction>(pins.size)
++        for (i in pins.indices) {
++            val id = pins[i]
++            if (id.isEmpty()) continue
++            val at = rest.indexOfFirst { matches(it, id) }
++            if (at >= 0) {
++                placed[i] = rest.removeAt(at)
++            } else if (isCustom(id) && customAllowed) {
++                placed[i] = visible(id)
++            }
++        }
++        val merged = ArrayList<VisibleReaction>(list.size + pins.size)
++        var next = 0
++        for (reaction in placed) {
++            if (reaction != null) {
++                merged.add(reaction)
++            } else if (next < rest.size) {
++                merged.add(rest[next++])
++            }
++        }
++        while (next < rest.size) merged.add(rest[next++])
++        if (star != null) merged.add(minOf(starAt, merged.size), star)
++        return merged
++    }
++
++    /** The reactions of the strip, called when it fills; no pins or an unsupported strip give the same list back. */
++    @JvmStatic
++    fun apply(account: Int, type: Int, hitLimit: Boolean, allAvailable: Boolean, list: List<VisibleReaction>): List<VisibleReaction> {
++        if (hitLimit || !supported(type)) return list
++        val pins = pinned(account)
++        if (pins.isEmpty()) return list
++        val customAllowed = allAvailable && UserConfig.getInstance(account).isPremium
++        return order(list, pins, customAllowed)
++    }
++
++    /** The reactions shown before the expand button; the stock number when the count is auto. */
++    @JvmStatic
++    fun columns(stock: Int, type: Int): Int {
++        val count = count()
++        if (count == 0 || !supported(type)) return stock
++        // the strip, the premium button and the expand button have to fit the screen
++        val fit = (AndroidUtilities.displaySize.x - AndroidUtilities.dp(24f)) / AndroidUtilities.dp(36f) - 2
++        return count.coerceAtMost(fit).coerceAtLeast(1)
++    }
++
++    /** The reactions of a chat that allows all of them, as the strip lists them before pinning. */
++    fun base(account: Int): List<VisibleReaction> {
++        val data = MediaDataController.getInstance(account)
++        val premium = UserConfig.getInstance(account).isPremium
++        val result = LinkedHashSet<VisibleReaction>()
++        for (reaction in data.topReactions) {
++            val visible = VisibleReaction.fromTL(reaction)
++            if (premium || visible.documentId == 0L) result.add(visible)
++        }
++        if (premium) {
++            for (reaction in data.recentReactions) result.add(VisibleReaction.fromTL(reaction))
++        }
++        for (reaction in data.enabledReactionsList) result.add(VisibleReaction.fromEmojicon(reaction))
++        return result.toList()
++    }
++
++    /** The ids the editor shows, pinned first. */
++    fun shown(account: Int, pins: List<String>): List<String> {
++        val premium = UserConfig.getInstance(account).isPremium
++        return order(base(account), pins, premium).mapNotNull { idOf(it) }
++    }
++
++    private fun put(list: MutableList<String>, slot: Int, id: String) {
++        while (list.size <= slot) list.add("")
++        list[slot] = id
++    }
++
++    fun unpinned(pins: List<String>, id: String): List<String> =
++        trimmed(pins.map { if (it == id) "" else it })
++
++    fun pinnedAt(pins: List<String>, id: String, slot: Int): List<String> {
++        val result = unpinned(pins, id).toMutableList()
++        put(result, slot, id)
++        return result
++    }
++
++    fun appended(pins: List<String>, id: String): List<String> {
++        val without = unpinned(pins, id)
++        return pinnedAt(without, id, without.size)
++    }
++
++    fun replaced(account: Int, pins: List<String>, slot: Int, id: String): List<String> {
++        val current = shown(account, pins)
++        val base = if (slot < current.size) unpinned(pins, current[slot]) else pins
++        return pinnedAt(base, id, slot)
++    }
++
++    /** The pins after a reaction is dropped on a slot: it gets pinned there, the pinned ones keep their place. */
++    fun moved(account: Int, pins: List<String>, id: String, slot: Int): List<String> {
++        val current = shown(account, pins).toMutableList()
++        val from = current.indexOf(id)
++        if (from < 0) return pins
++        current.removeAt(from)
++        current.add(slot.coerceIn(0, current.size), id)
++        val result = ArrayList<String>()
++        for (i in current.indices) {
++            val value = current[i]
++            if (value == id || value in pins) put(result, i, value)
++        }
++        for (i in pins.indices) {
++            val value = pins[i]
++            if (value.isEmpty() || value in current) continue
++            var free = i
++            while (free < result.size && result[free].isNotEmpty()) free++
++            put(result, free, value)
++        }
++        return trimmed(result)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+index 7d327caae..9c0707ccd 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -50,6 +50,8 @@ object TeleSettingsLinks {
+         "tele-group-call-button" to optionId(TeleConfig.HIDE_CALL_BUTTONS.key),
+         "tele-hide-mentions-button" to optionId(TeleConfig.HIDE_MENTION_REACTIONS.key),
+         "tele-hide-reactions-button" to optionId(TeleConfig.HIDE_MENTION_REACTIONS.key),
++        "tele-reactions-strip-count" to optionId(TeleConfig.REACTIONS_STRIP_COUNT.key),
++        "tele-reactions-order" to optionId(TeleConfig.REACTIONS_STRIP_COUNT.key),
+         "tele-group-quick-replies" to optionId(TeleConfig.QUICK_REPLIES_IN_GROUPS.key),
+         "tele-media-past-limit" to optionId(TeleConfig.KEEP_MEDIA_PAST_LIMIT.key),
+         "tele-background-menu" to optionId(TeleConfig.LOCAL_CHAT_BACKGROUNDS.key),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleReactionsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleReactionsActivity.kt
+new file mode 100644
+index 000000000..e9e787586
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleReactionsActivity.kt
+@@ -0,0 +1,428 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.view.Gravity
++import android.view.MotionEvent
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.ImageView
++import android.widget.TextView
++import androidx.recyclerview.widget.ItemTouchHelper
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LiteMode
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.TextInfoPrivacyCell
++import org.telegram.ui.Cells.TextSettingsCell
++import org.telegram.ui.Components.AnimatedEmojiDrawable
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.Reactions.ReactionsLayoutInBubble
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.SelectAnimatedEmojiDialog
++import tele.TeleConfig
++import tele.TeleHooks
++import tele.helpers.ReactionStrip
++import tele.helpers.TeleLowercase
++
++/** The reactions of the message menu: the pinned ones in their slots and how many the strip shows. */
++class TeleReactionsActivity : BaseFragment(), NotificationCenter.NotificationCenterDelegate {
++
++    private var listView: RecyclerListView? = null
++    private var adapter: Adapter? = null
++    private var touchHelper: ItemTouchHelper? = null
++
++    private var pins: List<String> = emptyList()
++    private var shown: MutableList<String> = mutableListOf()
++    private var rows: List<Row> = emptyList()
++
++    private var dragId: String? = null
++    private var dragFrom = -1
++    private var dragTo = -1
++    private var picker: SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow? = null
++
++    private class Row(val type: Int, val index: Int = 0)
++
++    override fun onFragmentCreate(): Boolean {
++        notificationCenter.addObserver(this, NotificationCenter.reactionsDidLoad)
++        notificationCenter.addObserver(this, NotificationCenter.currentUserPremiumStatusChanged)
++        return super.onFragmentCreate()
++    }
++
++    override fun onFragmentDestroy() {
++        super.onFragmentDestroy()
++        notificationCenter.removeObserver(this, NotificationCenter.reactionsDidLoad)
++        notificationCenter.removeObserver(this, NotificationCenter.currentUserPremiumStatusChanged)
++        picker?.dismiss()
++    }
++
++    override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++        if (account != currentAccount || dragId != null) return
++        reload()
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc("Reactions in the menu"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment()
++            }
++        })
++
++        val frameLayout = FrameLayout(context)
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = frameLayout
++
++        val list = RecyclerListView(context)
++        list.setLayoutManager(LinearLayoutManager(context))
++        list.setVerticalScrollBarEnabled(false)
++        listView = list
++        adapter = Adapter(context)
++        list.setAdapter(adapter)
++
++        touchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
++            override fun isLongPressDragEnabled(): Boolean = false
++
++            override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
++                val row = rows.getOrNull(viewHolder.adapterPosition) ?: return 0
++                return if (row.type == TYPE_REACTION) makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) else 0
++            }
++
++            override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
++                val from = rows.getOrNull(viewHolder.adapterPosition) ?: return false
++                val to = rows.getOrNull(target.adapterPosition) ?: return false
++                if (from.type != TYPE_REACTION || to.type != TYPE_REACTION) return false
++                val id = shown.removeAt(from.index)
++                shown.add(to.index, id)
++                dragTo = to.index
++                adapter?.notifyItemMoved(viewHolder.adapterPosition, target.adapterPosition)
++                return true
++            }
++
++            override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
++                super.onSelectedChanged(viewHolder, actionState)
++                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
++                    val row = rows.getOrNull(viewHolder.adapterPosition) ?: return
++                    dragId = shown.getOrNull(row.index)
++                    dragFrom = row.index
++                    dragTo = row.index
++                }
++            }
++
++            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {}
++
++            override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
++                super.clearView(recyclerView, viewHolder)
++                finishDrag()
++            }
++        })
++        touchHelper?.attachToRecyclerView(list)
++
++        list.setOnItemClickListener { view, position ->
++            val row = rows.getOrNull(position) ?: return@setOnItemClickListener
++            when (row.type) {
++                TYPE_REACTION -> showReactionMenu(view, row.index)
++                TYPE_ADD -> pick(view) { id -> setPins(ReactionStrip.appended(pins, id)) }
++                TYPE_COUNT -> chooseCount()
++                TYPE_RESET -> {
++                    if (pins.isNotEmpty()) setPins(emptyList())
++                }
++            }
++        }
++
++        frameLayout.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        reload()
++        return fragmentView
++    }
++
++    private fun reload() {
++        pins = ReactionStrip.pinned(currentAccount)
++        shown = ReactionStrip.shown(currentAccount, pins).toMutableList()
++        rebuildRows()
++        adapter?.notifyDataSetChanged()
++    }
++
++    private fun rebuildRows() {
++        val list = ArrayList<Row>()
++        list.add(Row(TYPE_HEADER, 0))
++        for (i in shown.indices) list.add(Row(TYPE_REACTION, i))
++        list.add(Row(TYPE_ADD))
++        list.add(Row(TYPE_INFO, 0))
++        list.add(Row(TYPE_HEADER, 1))
++        list.add(Row(TYPE_COUNT))
++        list.add(Row(TYPE_INFO, 1))
++        list.add(Row(TYPE_RESET))
++        list.add(Row(TYPE_INFO, 2))
++        rows = list
++    }
++
++    private fun setPins(list: List<String>) {
++        ReactionStrip.setPinned(currentAccount, list)
++        reload()
++    }
++
++    /** The drop pins the reaction on its new slot; the list shows the result, not the raw drop. */
++    private fun finishDrag() {
++        val id = dragId
++        val from = dragFrom
++        val to = dragTo
++        dragId = null
++        dragFrom = -1
++        dragTo = -1
++        if (id != null && from != to) {
++            ReactionStrip.setPinned(currentAccount, ReactionStrip.moved(currentAccount, pins, id, to))
++        }
++        listView?.post { reload() }
++    }
++
++    private fun showReactionMenu(anchor: View, index: Int) {
++        val id = shown.getOrNull(index) ?: return
++        val pinned = id in pins
++        val items = if (pinned) {
++            arrayOf<CharSequence>(lc("Replace with another reaction"), lc("Unpin"))
++        } else {
++            arrayOf<CharSequence>(lc("Pin here"), lc("Replace with another reaction"))
++        }
++        val replace = if (pinned) 0 else 1
++        val builder = AlertDialog.Builder(parentActivity ?: return, resourceProvider)
++        builder.setItems(items) { _, which ->
++            when {
++                which == replace -> pick(anchor) { picked -> setPins(ReactionStrip.replaced(currentAccount, pins, index, picked)) }
++                pinned -> setPins(ReactionStrip.unpinned(pins, id))
++                else -> setPins(ReactionStrip.pinnedAt(pins, id, index))
++            }
++        }
++        showDialog(builder.create())
++    }
++
++    private fun chooseCount() {
++        val labels = ArrayList<CharSequence>()
++        labels.add(lc("Auto"))
++        for (n in ReactionStrip.MIN_COUNT..ReactionStrip.MAX_COUNT) labels.add(n.toString())
++        val builder = AlertDialog.Builder(parentActivity ?: return, resourceProvider)
++        builder.setTitle(lc("Shown in the strip"))
++        builder.setItems(labels.toTypedArray()) { _, which ->
++            val value = if (which == 0) "" else (ReactionStrip.MIN_COUNT + which - 1).toString()
++            if (value != TeleConfig.REACTIONS_STRIP_COUNT.value) {
++                TeleConfig.set(TeleConfig.REACTIONS_STRIP_COUNT, value)
++                TeleHooks.onConfigChanged(TeleConfig.REACTIONS_STRIP_COUNT)
++                adapter?.notifyDataSetChanged()
++            }
++        }
++        showDialog(builder.create())
++    }
++
++    /** The stock picker of the quick reaction: the reactions and the custom emoji. */
++    private fun pick(anchor: View, picked: (String) -> Unit) {
++        if (picker != null) return
++        val context = parentActivity ?: return
++        val window = arrayOfNulls<SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow>(1)
++        val done = { id: String ->
++            window[0]?.dismiss()
++            picked(id)
++        }
++        val layout = object : SelectAnimatedEmojiDialog(this, context, false, null, TYPE_SET_DEFAULT_REACTION, null) {
++            override fun onEmojiSelected(view: View?, documentId: Long?, document: TLRPC.Document?, gift: TL_stars.TL_starGiftUnique?, until: Int?) {
++                if (documentId != null) done(documentId.toString())
++            }
++
++            override fun onReactionClick(emoji: ImageViewEmoji?, reaction: ReactionsLayoutInBubble.VisibleReaction?) {
++                val id = reaction?.let { ReactionStrip.idOf(it) } ?: return
++                done(id)
++            }
++        }
++        layout.setRecentReactions(ReactionStrip.base(currentAccount))
++        window[0] = object : SelectAnimatedEmojiDialog.SelectAnimatedEmojiDialogWindow(layout, LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT) {
++            override fun dismiss() {
++                super.dismiss()
++                picker = null
++            }
++        }
++        picker = window[0]
++        window[0]?.showAsDropDown(anchor, 0, -(anchor.height / 2) - AndroidUtilities.dp(16f), Gravity.TOP or Gravity.RIGHT)
++        window[0]?.dimBehind()
++    }
++
++    private fun countLabel(): String {
++        val count = ReactionStrip.count()
++        return if (count == 0) lc("Auto") else count.toString()
++    }
++
++    private fun title(id: String): String {
++        if (id.all { it.isDigit() }) return lc("Custom emoji")
++        val reaction = MediaDataController.getInstance(currentAccount).reactionsMap[id]
++        return reaction?.title?.takeIf { it.isNotEmpty() } ?: id
++    }
++
++    private inner class ReactionRow(context: Context) : FrameLayout(context) {
++        private val titleView = TextView(context)
++        private val subtitleView = TextView(context)
++        private val handle = ImageView(context)
++        private val icon = AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable(this, AndroidUtilities.dp(28f))
++        private var line = false
++
++        init {
++            setWillNotDraw(false)
++            setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++            titleView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 16f)
++            titleView.setSingleLine()
++            subtitleView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 13f)
++            subtitleView.setSingleLine()
++            addView(titleView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.TOP, 72f, 8f, 64f, 0f))
++            addView(subtitleView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.TOP, 72f, 31f, 64f, 0f))
++            handle.setFocusable(false)
++            handle.setScaleType(ImageView.ScaleType.CENTER)
++            handle.setImageResource(R.drawable.list_reorder)
++            handle.setColorFilter(PorterDuffColorFilter(Theme.getColor(Theme.key_stickers_menu), PorterDuff.Mode.MULTIPLY))
++            handle.setOnTouchListener { _, event ->
++                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
++                    listView?.findContainingViewHolder(this)?.let { touchHelper?.startDrag(it) }
++                }
++                false
++            }
++            addView(handle, LayoutHelper.createFrame(48, 48f, Gravity.RIGHT or Gravity.CENTER_VERTICAL, 0f, 0f, 8f, 0f))
++        }
++
++        fun bind(id: String, pinned: Boolean, divider: Boolean) {
++            titleView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++            subtitleView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++            titleView.text = title(id)
++            subtitleView.text = if (pinned) lc("Pinned") else ""
++            subtitleView.visibility = if (pinned) View.VISIBLE else View.GONE
++            // a reaction without a subtitle sits centered
++            (titleView.layoutParams as LayoutParams).topMargin = AndroidUtilities.dp(if (pinned) 8f else 16f)
++            line = divider
++            if (id.all { it.isDigit() }) {
++                icon.set(id.toLong(), false)
++            } else {
++                val reaction = MediaDataController.getInstance(currentAccount).reactionsMap[id]
++                if (reaction != null) icon.set(reaction.static_icon, false) else icon.set(null as TLRPC.Document?, false)
++            }
++            if (!LiteMode.isEnabled(LiteMode.FLAG_ANIMATED_EMOJI_REACTIONS)) {
++                (icon.drawable as? AnimatedEmojiDrawable)?.imageReceiver?.stopAnimation()
++            }
++            invalidate()
++        }
++
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            super.onMeasure(
++                MeasureSpec.makeMeasureSpec(MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.EXACTLY),
++                MeasureSpec.makeMeasureSpec(AndroidUtilities.dp(56f), MeasureSpec.EXACTLY)
++            )
++        }
++
++        override fun dispatchDraw(canvas: Canvas) {
++            super.dispatchDraw(canvas)
++            val size = AndroidUtilities.dp(28f)
++            val left = AndroidUtilities.dp(22f)
++            icon.setBounds(left, (height - size) / 2, left + size, (height + size) / 2)
++            icon.draw(canvas)
++            if (line) {
++                canvas.drawLine(AndroidUtilities.dp(72f).toFloat(), height - 1f, width.toFloat(), height - 1f, Theme.dividerPaint)
++            }
++        }
++
++        override fun onAttachedToWindow() {
++            super.onAttachedToWindow()
++            icon.attach()
++        }
++
++        override fun onDetachedFromWindow() {
++            super.onDetachedFromWindow()
++            icon.detach()
++        }
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++
++        override fun getItemCount(): Int = rows.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean {
++            val type = rows.getOrNull(holder.adapterPosition)?.type ?: return false
++            return type == TYPE_REACTION || type == TYPE_ADD || type == TYPE_COUNT || type == TYPE_RESET
++        }
++
++        override fun getItemViewType(position: Int): Int = rows[position].type
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_HEADER -> HeaderCell(context)
++                TYPE_INFO -> TextInfoPrivacyCell(context)
++                TYPE_REACTION -> ReactionRow(context)
++                else -> TextSettingsCell(context)
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            val row = rows[position]
++            val view = holder.itemView
++            when (row.type) {
++                TYPE_HEADER -> (view as HeaderCell).setText(lc(if (row.index == 0) "Order" else "Shown in the strip"))
++                TYPE_INFO -> (view as TextInfoPrivacyCell).setText(
++                    when (row.index) {
++                        0 -> lc(
++                            if (UserConfig.getInstance(currentAccount).isPremium) "Tap a reaction to pin or replace it, drag the handle to move it. Pinned ones keep their place in every message menu, the rest keep the chat's order."
++                            else "Tap a reaction to pin or replace it, drag the handle to move it. Custom emoji reactions need Telegram Premium."
++                        )
++                        1 -> lc("How many reactions sit above the message menu. Auto keeps Telegram's number.")
++                        else -> ""
++                    }
++                )
++                TYPE_REACTION -> (view as ReactionRow).bind(shown[row.index], shown[row.index] in pins, true)
++                else -> {
++                    val cell = view as TextSettingsCell
++                    cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++                    when (row.type) {
++                        TYPE_ADD -> cell.setText(lc("Pin a reaction"), false)
++                        TYPE_COUNT -> cell.setTextAndValue(lc("Reactions in the strip"), countLabel(), false)
++                        else -> {
++                            cell.setText(lc("Reset the order"), false)
++                            cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular))
++                            cell.alpha = if (pins.isEmpty()) 0.5f else 1f
++                        }
++                    }
++                    if (row.type != TYPE_RESET) cell.alpha = 1f
++                }
++            }
++        }
++    }
++
++    private fun lc(text: String): String = TeleLowercase.lc(text)
++
++    companion object {
++        const val MODE_REACTIONS = "reactions_strip"
++
++        private const val TYPE_HEADER = 0
++        private const val TYPE_REACTION = 1
++        private const val TYPE_ADD = 2
++        private const val TYPE_INFO = 3
++        private const val TYPE_COUNT = 4
++        private const val TYPE_RESET = 5
++
++        @JvmStatic
++        fun summary(): String {
++            val count = ReactionStrip.validCount(TeleConfig.REACTIONS_STRIP_COUNT.value)
++            val pinned = ReactionStrip.pinnedCount(ReactionStrip.pinned(UserConfig.selectedAccount))
++            val shown = if (count == 0) "Auto" else count.toString()
++            return if (pinned > 0) "$shown, $pinned pinned" else shown
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 661641ecc..f4478e7dd 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -222,6 +222,9 @@ object TeleSearch {
+             section(1266, "Folder tab counters", "chats", TeleSettingsActivity.MODE_CHATS, "Folder tabs"),
+             section(1267, "App icon counter", "chats", TeleSettingsActivity.MODE_CHATS, "App icon"),
+             section(1268, "Leave the archive out of the count", "chats", TeleSettingsActivity.MODE_CHATS, "Leave out the archive"),
++            section(1360, "Reactions in the menu", "chats", TeleSettingsActivity.MODE_CHATS),
++            screen(1361, "Pinned reactions") { TeleReactionsActivity() },
++            section(1362, "Reaction strip", "chats", TeleSettingsActivity.MODE_CHATS, "Reactions in the menu"),
+             section(1269, "Compact icon folders", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1255, "Hide communities", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1256, "Jump to the first message", "chats", TeleSettingsActivity.MODE_CHATS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 7ca24fd9a..a60bface3 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -453,6 +453,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+                 TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
+                 TeleChatBackgroundsActivity.MODE_CHAT_BACKGROUNDS -> presentFragment(TeleChatBackgroundsActivity())
++                TeleReactionsActivity.MODE_REACTIONS -> presentFragment(TeleReactionsActivity())
+                 MODE_MENU -> if (row.type == TYPE_LINK) {
+                     presentFragment(TeleMenuActivity(tele.helpers.TeleMenuKind.MESSAGE))
+                 } else {
+@@ -697,6 +698,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Show names instead of phone numbers in chat headers" to "The header shows a person's name, not their number.",
+             "Reveal spoilers automatically" to "Show spoilers without a tap.",
+             "Hide mention and reaction badges" to "No jump buttons or badges; mentions stay unread.",
++            "Reactions in the menu" to "Pin your reactions and choose how many show above the message menu.",
+             "Turn off animated userpics" to "Keep video userpics still.",
+             "Show bot button payloads on long press" to "Long-press a bot button to see and copy its payload.",
+             "Badges next to names in messages" to "tele server checkmarks and icons by authors, forwards and replies.",
+@@ -932,6 +934,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Chat controls"),
+                 toggle("Hide mention and reaction badges", TeleConfig.HIDE_MENTION_REACTIONS),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Reactions"),
++                Row(TYPE_LINK, title = "Reactions in the menu", mode = TeleReactionsActivity.MODE_REACTIONS, value = TeleReactionsActivity.summary(), item = TeleConfig.REACTIONS_STRIP_COUNT),
++                Row(TYPE_SHADOW, DESCRIPTIONS["Reactions in the menu"]),
+                 Row(TYPE_HEADER, "Chat features"),
+                 toggle("Offer quick replies in groups", TeleConfig.QUICK_REPLIES_IN_GROUPS),
+                 toggle("Send quick replies by name", TeleConfig.QUICK_REPLIES_BY_NAME),

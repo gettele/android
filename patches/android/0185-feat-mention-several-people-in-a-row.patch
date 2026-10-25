@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 08:14:48 +0300
+Subject: [PATCH 185/194] feat: mention several people in a row
+
+---
+ .../ui/Components/MentionsContainerView.java  | 19 +++++++++
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../main/java/tele/helpers/ChainMentions.kt   | 40 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 5 files changed, 65 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
+index 9b025fd30..4e8a0671c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/MentionsContainerView.java
+@@ -429,6 +429,7 @@ public class MentionsContainerView extends FrameLayout implements NotificationCe
+                 }
+             }
+             setVisibility(View.VISIBLE);
++            tele.helpers.ChainMentions.bind(getListView(), tele_chainListener);
+         } else {
+             scrollToFirst = false;
+         }
+@@ -700,8 +701,26 @@ public class MentionsContainerView extends FrameLayout implements NotificationCe
+             }
+         });
+         getListView().setOnTouchListener((v, event) -> ContentPreviewViewer.getInstance().onTouch(event, getListView(), 0, mentionsOnItemClickListener, null, resourcesProvider));
++        tele.helpers.ChainMentions.bind(getListView(), tele_chainListener);
+     }
+ 
++    private final RecyclerListView.OnItemLongClickListener tele_chainListener = (view, position) -> {
++        if (position == 0 || getAdapter().isBannedInline() || delegate == null) {
++            return false;
++        }
++        Object object = getAdapter().getItem(position - 1);
++        if (!(object instanceof TLRPC.User)) {
++            return false;
++        }
++        TLRPC.User user = (TLRPC.User) object;
++        if (tele.helpers.ChainMentions.isInlineBot(user)) {
++            mentionsOnItemClickListener.onItemClick(view, position);
++            return true;
++        }
++        delegate.replaceText(getAdapter().getResultStartPosition(), getAdapter().getResultLength(), tele.helpers.ChainMentions.insertion(user), false);
++        return true;
++    };
++
+     public class MentionsListView extends RecyclerListView {
+         private boolean isScrolling, isDragging;
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index a28d3850f..b6f18bcd2 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -237,6 +237,8 @@ object TeleConfig {
+     @JvmField
+     val QUICK_REPLIES_BY_NAME = BoolItem("quick_replies_by_name", false)
+     @JvmField
++    val CHAIN_MENTIONS = BoolItem("chain_mentions", false)
++    @JvmField
+     val MULTI_QUOTE = BoolItem("multi_quote", false)
+     @JvmField
+     val SEND_OLDER_REPLIES = BoolItem("send_older_replies", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt b/TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt
+new file mode 100644
+index 000000000..b1b9293b8
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ChainMentions.kt
+@@ -0,0 +1,40 @@
++package tele.helpers
++
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.URLSpanUserMention
++import tele.TeleConfig
++
++/** Long-press on a mention suggestion inserts it and opens the list for the next one. */
++object ChainMentions {
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.CHAIN_MENTIONS.value
++
++    // inline bots keep the stock flow: the mention starts the inline query
++    @JvmStatic
++    fun isInlineBot(user: TLRPC.User): Boolean = user.bot && user.bot_inline_placeholder != null
++
++    /** Sets the listener only while the option is on, so a held tap stays a plain tap otherwise. */
++    @JvmStatic
++    fun bind(list: RecyclerListView, listener: RecyclerListView.OnItemLongClickListener) {
++        list.setOnItemLongClickListener(if (enabled()) listener else null)
++    }
++
++    /** The mention itself followed by an opening `@` for the next one. */
++    @JvmStatic
++    fun insertion(user: TLRPC.User): CharSequence {
++        val username = UserObject.getPublicUsername(user)
++        if (username != null) {
++            return "@$username @"
++        }
++        val name = UserObject.getFirstName(user, false) + " "
++        val result = SpannableStringBuilder(name)
++        result.setSpan(URLSpanUserMention("" + user.id, 3), 0, name.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        result.append("@")
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index b60571ad2..e43979b54 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -269,6 +269,8 @@ object TeleSearch {
+             section(1326, "Quote voice transcriptions", "messages", TeleSettingsActivity.MODE_MESSAGES, "Multiple quotes in one reply"),
+             section(1301, "Select more than 100 messages", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1302, "Send quick replies by name", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1350, "Mention several people in a row", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1351, "Chain mentions with a long press", "sending", TeleSettingsActivity.MODE_SENDING, "Mention several people in a row"),
+             section(1337, "Count typed emoji in recent emoji", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1338, "Recent emoji from the keyboard", "sending", TeleSettingsActivity.MODE_SENDING, "Count typed emoji in recent emoji"),
+             section(1335, "Rewrite only the link preview", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index b504237b3..9c25395c4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -803,6 +803,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Lowercase everything" to "Interface text in lowercase; messages and names stay as they are.",
+             "Show sticker captions" to "Captions show under stickers and in previews.",
+             "Send stickers with captions" to "Text in the field goes out as the caption of a sticker.",
++            "Mention several people in a row" to "Long-press a person in the mention list to add them and pick the next one.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1040,6 +1041,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Inline calcmula results after =", TeleConfig.CALCMULA_INLINE_RESULT),
+                 toggle("Hide the gift button in the message field", TeleConfig.HIDE_GIFT_BUTTON),
+                 toggle("Send stickers with captions", TeleConfig.STICKER_CAPTIONS_SEND),
++                toggle("Mention several people in a row", TeleConfig.CHAIN_MENTIONS),
+                 toggle("Count typed emoji in recent emoji", TeleConfig.RECENT_TYPED_EMOJI),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Markdown"),
