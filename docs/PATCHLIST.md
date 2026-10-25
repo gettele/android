@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Гайды исполнителей для оставшихся пачек: [20](batches/batch-20.md) · [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
+Гайды исполнителей для оставшихся пачек: [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
 
 инфраструктурные патчи (без номера tele) помечены `infra`: `0002`, `0003`, `0019`, `0065`, `0066`.
 
@@ -386,16 +386,16 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0208 | @username вместо невидимых имён | todo | `UserObject`, `putChat`, `DialogCell`, `ChatMessageCell`; M; зависит от android 0028 (LocalNames); реш.: 0208 users+chats, в памяти; чаты только в памяти, не в БД |
-| 0209 | показ скрытых символов | todo | `ProfileActivity`, `MessageObject`; M; зависит от 0208; общая таблица кодпоинтов с 0208 |
+| 0208 | @username вместо невидимых имён | built | `0195-feat-usernames-for-invisible-names`; `UserObject`, `putChat`, `DialogCell`, `ChatMessageCell`; M; зависит от android 0028 (LocalNames); реш.: 0208 users+chats, в памяти; чаты только в памяти, не в БД |
+| 0209 | показ скрытых символов | built | `0196-feat-show-hidden-characters`; `ProfileActivity`, `MessageObject`; M; зависит от 0208; общая таблица кодпоинтов с 0208 |
 | 0189 | DC чата по первому фото | built | `0118-feat-show-the-chat-dc-from-the-oldest-photo`; `PeerDc` грузит историю аватаров чата (`messages.search` с `inputMessagesFilterChatPhotos`, как `getDialogPhotos` на десктопе), при пустом ответе — фото-сообщения (`inputMessagesFilterPhotos`), до 500 фото; DC берётся у самого старого фото, пометка «uncertain» остаётся, когда история неполная, DC разные или текущий аватар с другим DC; запрос только при включённом `show_dc`, лог `PeerIdHistory` |
-| 0196 | DC медиа в просмотрщике | todo | `PhotoViewer`, `StoryViewer`; S; зависит от 0189, android 0024; тумблер SHOW_DC |
-| 0265 | дата загрузки медиа во вьюере | todo | `PhotoViewer`; S; зависит от 0196 (опц.); с DC через « · » при 0196 |
-| 0173 | подпись имени в цитате удалённого | todo | `DeletedReply`; S; зависит от android 0063; mention/ссылка, без превью |
-| 0237 | история изменений всех версий | todo | `TeleChangelog.kt`, `res/raw`; M; зависит от android 0077, android 0078; реш.: 0237/0241 в APK, CI; `changelog_history.json` генерирует CI |
-| 0241 | what's new с живыми тумблерами | todo | `TeleSettingsActivity(MODE_NEW)`, `TeleSearch.kt`; M; зависит от 0237, android 0078; реш.: 0169 структура настроек, 0237/0241; после 0237 |
-| 0244 | живые превью в настройках | todo | `TeleSettingsActivity` (`TYPE_PREVIEW`); L; зависит от 0208, 0209, ghost, android 0024; реш.: 0169; делать последним |
-| 0253 | копировать peer id голыми цифрами | todo | `ProfileActivity`, `tele/helpers/PeerId.kt` (`PeerId.copyText`); S; зависит от android 0024; влить в `0024`, не отдельный тумблер |
+| 0196 | DC медиа в просмотрщике | built | `0198-feat-media-data-center-in-the-viewer`; `PhotoViewer`, `StoryViewer`; S; зависит от 0189, android 0024; тумблер SHOW_DC |
+| 0265 | дата загрузки медиа во вьюере | built | `0199-feat-media-upload-date-in-the-viewer`; `PhotoViewer`; S; зависит от 0196 (опц.); с DC через « · » при 0196 |
+| 0173 | подпись имени в цитате удалённого | built | `0200-feat-quoted-names-of-deleted-messages`; `DeletedReply`; S; зависит от android 0063; mention/ссылка, без превью |
+| 0237 | история изменений всех версий | built | `0201-feat-every-version-s-changes`; `TeleChangelog.kt`, `res/raw`; M; зависит от android 0077, android 0078; реш.: 0237/0241 в APK, CI; `changelog_history.json` генерирует CI |
+| 0241 | what's new с живыми тумблерами | built | `0202-feat-what-s-new-with-live-toggles`; `TeleSettingsActivity(MODE_NEW)`, `TeleSearch.kt`; M; зависит от 0237, android 0078; реш.: 0169 структура настроек, 0237/0241; после 0237 |
+| 0244 | живые превью в настройках | built | `0197-feat-live-previews-in-settings`; `TeleSettingsActivity` (`TYPE_PREVIEW`); L; зависит от 0208, 0209, ghost, android 0024; реш.: 0169; делать последним |
+| 0253 | копировать peer id голыми цифрами | built | `0024-feat-show-the-peer-id-and-data-center-in-the-profile` (уже копировал голые цифры, правка не нужна)`; `ProfileActivity`, `tele/helpers/PeerId.kt` (`PeerId.copyText`); S; зависит от android 0024; влить в `0024`, не отдельный тумблер |
 
 ## пачка 21 — уведомления, загрузки и система
 

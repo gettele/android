@@ -1,0 +1,694 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 10:36:45 +0300
+Subject: [PATCH 202/202] feat: what's new with live toggles
+
+---
+ .../main/java/tele/helpers/TeleChangelog.kt   |   5 +-
+ .../java/tele/helpers/TeleChangelogHistory.kt |  40 +---
+ .../main/java/tele/helpers/TeleNewSettings.kt |   2 +-
+ .../java/tele/helpers/TeleSettingsLinks.kt    |   9 +-
+ .../tele/ui/settings/TeleChangelogActivity.kt | 196 ----------------
+ .../java/tele/ui/settings/TeleChatActivity.kt |   3 -
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   6 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 216 +++++++++++++++---
+ 8 files changed, 211 insertions(+), 266 deletions(-)
+ delete mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt b/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
+index 90b658786..454f96107 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
+@@ -136,7 +136,7 @@ object TeleChangelog {
+     private fun showMissing(fragment: BaseFragment, missing: Missing) {
+         TeleChangelogHistory.load { history ->
+             if (fragment.parentActivity == null || fragment.parentLayout == null) return@load
+-            if (history.isEmpty()) showMissingDialog(fragment, missing) else fragment.presentFragment(tele.ui.settings.TeleChangelogActivity())
++            if (history.isEmpty()) showMissingDialog(fragment, missing) else fragment.presentFragment(tele.ui.settings.TeleSettingsActivity(tele.ui.settings.TeleSettingsActivity.MODE_NEW))
+         }
+     }
+ 
+@@ -309,8 +309,7 @@ object TeleChangelog {
+     private fun buttons(notes: Notes): TLRPC.TL_replyInlineMarkup {
+         val row = TL_keyboard.TL_keyboardInlineButtonRow()
+         row.buttons.add(urlButton(TeleLowercase.lc("Full changelog"), notes.url))
+-        if (TeleNewSettings.fresh().isNotEmpty()) row.buttons.add(urlButton(TeleLowercase.lc("New settings"), tele.ui.settings.TeleChatActivity.NEW_SETTINGS_LINK))
+-        row.buttons.add(urlButton(TeleLowercase.lc("Versions"), tele.ui.settings.TeleChatActivity.HISTORY_LINK))
++        row.buttons.add(urlButton(TeleLowercase.lc("Versions"), tele.ui.settings.TeleChatActivity.NEW_SETTINGS_LINK))
+         return TLRPC.TL_replyInlineMarkup().apply { rows.add(row) }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt b/TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt
+index 59d1c7b8d..7731704e9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt
+@@ -1,17 +1,11 @@
+ package tele.helpers
+ 
+-import android.text.Spannable
+-import android.text.SpannableString
+-import android.text.Spanned
+-import android.text.style.ForegroundColorSpan
+-import android.text.style.StyleSpan
+ import org.json.JSONObject
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.ApplicationLoader
+ import org.telegram.messenger.DispatchQueue
+ import org.telegram.messenger.FileLog
+ import org.telegram.messenger.R
+-import org.telegram.ui.ActionBar.Theme
+ import tele.ui.settings.TeleSettingsActivity
+ 
+ // the changelog of every tele release (tele desktop 0237): res/raw/changelog_history.json is written by ci into the apk,
+@@ -131,33 +125,17 @@ object TeleChangelogHistory {
+         }
+     }
+ 
+-    /** The text with the found words in bold and blue. */
++    /** The ids of the settings an item is about: its own option ids first, else the name its place ends with; UI thread. */
+     @JvmStatic
+-    fun highlight(text: String, words: List<String>): CharSequence {
+-        if (words.isEmpty()) return text
+-        val spannable = SpannableString(text)
+-        var found = false
+-        for (word in words) {
+-            var from = 0
+-            while (true) {
+-                val index = text.indexOf(word, from, true)
+-                if (index < 0) break
+-                from = index + word.length
+-                found = true
+-                spannable.setSpan(StyleSpan(android.graphics.Typeface.BOLD), index, from, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+-                spannable.setSpan(ForegroundColorSpan(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText)), index, from, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+-            }
+-        }
+-        return if (found) spannable else text
+-    }
+-
+-    /** The id of the setting an item is about: its own option ids first, then the name its place ends with. */
+-    @JvmStatic
+-    fun settingId(item: Item): String? {
++    fun settingIds(item: Item): List<String> {
++        val ids = LinkedHashSet<String>()
+         for (option in item.options) {
+-            TeleSettingsLinks.resolve(option)?.let { return it }
++            TeleSettingsLinks.resolve(option)?.let { ids.add(it) }
++        }
++        if (ids.isEmpty() && item.options.isEmpty()) {
++            val last = item.where.substringAfterLast('→').trim()
++            if (last.isNotEmpty()) TeleSettingsActivity.idForTitle(last)?.let { ids.add(it) }
+         }
+-        val last = item.where.substringAfterLast('→').trim()
+-        return if (last.isEmpty()) null else TeleSettingsActivity.idForTitle(last)
++        return ids.toList()
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt
+index 076efd10b..8bcbd4d23 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNewSettings.kt
+@@ -97,7 +97,7 @@ object TeleNewSettings {
+     }
+ 
+     @JvmStatic
+-    fun title(): String = TeleLowercase.lc(if (TeleBuild.BUILD > 0) "New in tele ${TeleBuild.BUILD}" else "New in tele")
++    fun title(): String = TeleLowercase.lc("What's new")
+ 
+     // the stock "NEW" pill of folder settings
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+index 102eb85e4..38a1a1871 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -146,9 +146,12 @@ object TeleSettingsLinks {
+ 
+     private val resolved = HashMap<String, String?>()
+ 
+-    /** The canonical id of a row that exists in this build, or null; UI thread. */
++    /** The canonical id of a row that exists in this build, or null; the rows are fixed per build, so misses are cached too. UI thread. */
+     @JvmStatic
+-    fun resolve(raw: String): String? = resolved.getOrPut(raw) {
+-        canonicalId(raw).takeIf { TeleSettingsActivity.pageOf(it, null) != null }
++    fun resolve(raw: String): String? {
++        if (resolved.containsKey(raw)) return resolved[raw]
++        val id = canonicalId(raw).takeIf { TeleSettingsActivity.pageOf(it, null) != null }
++        resolved[raw] = id
++        return id
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt
+deleted file mode 100644
+index e7da313ab..000000000
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt
++++ /dev/null
+@@ -1,196 +0,0 @@
+-package tele.ui.settings
+-
+-import android.content.Context
+-import android.util.TypedValue
+-import android.view.Gravity
+-import android.view.View
+-import android.view.ViewGroup
+-import android.widget.EditText
+-import android.widget.FrameLayout
+-import android.widget.LinearLayout
+-import android.widget.TextView
+-import androidx.recyclerview.widget.LinearLayoutManager
+-import androidx.recyclerview.widget.RecyclerView
+-import org.telegram.messenger.AndroidUtilities
+-import org.telegram.messenger.LocaleController
+-import org.telegram.messenger.R
+-import org.telegram.messenger.browser.Browser
+-import org.telegram.ui.ActionBar.ActionBar
+-import org.telegram.ui.ActionBar.ActionBarMenuItem
+-import org.telegram.ui.ActionBar.BaseFragment
+-import org.telegram.ui.ActionBar.Theme
+-import org.telegram.ui.Cells.HeaderCell
+-import org.telegram.ui.Cells.ShadowSectionCell
+-import org.telegram.ui.Components.LayoutHelper
+-import org.telegram.ui.Components.RecyclerListView
+-import tele.helpers.TeleChangelogHistory
+-import tele.helpers.TeleLowercase
+-import tele.helpers.TeleSettingsLinks
+-
+-// the changelog of every tele release from the apk, with a search (tele desktop 0237); works offline
+-class TeleChangelogActivity : BaseFragment() {
+-
+-    private sealed class Row {
+-        class Title(val text: String) : Row()
+-        class Entry(val release: TeleChangelogHistory.Release, val item: TeleChangelogHistory.Item) : Row()
+-        object Gap : Row()
+-        class Note(val text: String) : Row()
+-    }
+-
+-    private var releases: List<TeleChangelogHistory.Release>? = null
+-    private var rows: List<Row> = emptyList()
+-    private var words: List<String> = emptyList()
+-    private var adapter: Adapter? = null
+-
+-    private fun lc(text: String): String = TeleLowercase.lc(text)
+-
+-    override fun createView(context: Context): View {
+-        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
+-        actionBar.setAllowOverlayTitle(true)
+-        actionBar.setTitle(lc("What's new"))
+-        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
+-            override fun onItemClick(id: Int) {
+-                if (id == -1) finishFragment()
+-            }
+-        })
+-        actionBar.createMenu().addItem(SEARCH_ID, R.drawable.outline_header_search)
+-            .setIsSearchField(true, false)
+-            .setActionBarMenuItemSearchListener(object : ActionBarMenuItem.ActionBarMenuItemSearchListener() {
+-                override fun onSearchExpand() {
+-                    search("")
+-                }
+-
+-                override fun onSearchCollapse() {
+-                    search("")
+-                }
+-
+-                override fun onTextChanged(editText: EditText) {
+-                    search(editText.text.toString())
+-                }
+-            })
+-            .setSearchFieldHint(LocaleController.getString(R.string.Search))
+-
+-        val root = FrameLayout(context)
+-        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+-        fragmentView = root
+-        val list = RecyclerListView(context)
+-        list.setLayoutManager(LinearLayoutManager(context))
+-        adapter = Adapter(context)
+-        list.adapter = adapter
+-        list.setOnItemClickListener { _, position -> open(rows.getOrNull(position)) }
+-        root.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+-
+-        // parsed off the main thread; the rows appear when it is done
+-        rows = listOf(Row.Note(lc("Loading…")))
+-        TeleChangelogHistory.load { loaded ->
+-            releases = loaded
+-            rebuild()
+-        }
+-        return root
+-    }
+-
+-    private fun search(query: String) {
+-        val now = TeleChangelogHistory.words(query)
+-        if (now == words) return
+-        words = now
+-        rebuild()
+-    }
+-
+-    private fun rebuild() {
+-        val loaded = releases ?: return
+-        val result = ArrayList<Row>()
+-        for (release in loaded) {
+-            val found = release.items.filter { TeleChangelogHistory.matches(it, words) }
+-            if (found.isEmpty()) continue
+-            if (result.isNotEmpty()) result.add(Row.Gap)
+-            result.add(Row.Title(lc(release.title)))
+-            found.forEach { result.add(Row.Entry(release, it)) }
+-        }
+-        if (result.isEmpty()) {
+-            result.add(Row.Note(lc(if (loaded.isEmpty()) "There is no changelog history in this build." else "Nothing found.")))
+-        }
+-        rows = result
+-        adapter?.notifyDataSetChanged()
+-    }
+-
+-    private fun open(row: Row?) {
+-        val entry = row as? Row.Entry ?: return
+-        val id = TeleChangelogHistory.settingId(entry.item)
+-        if (id != null) {
+-            presentFragment(TeleSettingsLinks.fragment("tg://settings/tele?highlight=$id"))
+-        } else {
+-            Browser.openUrl(parentActivity, entry.release.url)
+-        }
+-    }
+-
+-    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
+-        override fun getItemCount(): Int = rows.size
+-
+-        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = holder.itemViewType == TYPE_ENTRY
+-
+-        override fun getItemViewType(position: Int): Int = when (rows[position]) {
+-            is Row.Title -> TYPE_TITLE
+-            is Row.Entry -> TYPE_ENTRY
+-            is Row.Gap -> TYPE_GAP
+-            is Row.Note -> TYPE_NOTE
+-        }
+-
+-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+-            val view: View = when (viewType) {
+-                TYPE_TITLE -> HeaderCell(context).apply { setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite)) }
+-                TYPE_ENTRY -> EntryCell(context)
+-                TYPE_GAP -> ShadowSectionCell(context)
+-                else -> TextView(context).apply {
+-                    gravity = Gravity.CENTER
+-                    setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
+-                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
+-                    setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(48f), AndroidUtilities.dp(24f), AndroidUtilities.dp(48f))
+-                }
+-            }
+-            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+-            return RecyclerListView.Holder(view)
+-        }
+-
+-        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+-            // recycled cells are fully reset by every bind
+-            when (val row = rows[position]) {
+-                is Row.Title -> (holder.itemView as HeaderCell).setText(row.text)
+-                is Row.Entry -> (holder.itemView as EntryCell).bind(row.item, words)
+-                is Row.Note -> (holder.itemView as TextView).text = row.text
+-                is Row.Gap -> {}
+-            }
+-        }
+-    }
+-
+-    private class EntryCell(context: Context) : LinearLayout(context) {
+-        private val body = TextView(context)
+-        private val details = TextView(context)
+-
+-        init {
+-            orientation = VERTICAL
+-            setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
+-            setPadding(AndroidUtilities.dp(21f), AndroidUtilities.dp(10f), AndroidUtilities.dp(21f), AndroidUtilities.dp(10f))
+-            body.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
+-            body.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+-            details.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
+-            details.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
+-            addView(body, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+-            addView(details, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = AndroidUtilities.dp(2f) })
+-        }
+-
+-        fun bind(item: TeleChangelogHistory.Item, words: List<String>) {
+-            body.text = TeleChangelogHistory.highlight(item.text, words)
+-            val place = listOf(item.category, item.where).filter { it.isNotEmpty() }.distinct().joinToString(" · ")
+-            details.visibility = if (place.isEmpty()) GONE else VISIBLE
+-            details.text = TeleChangelogHistory.highlight(place, words)
+-        }
+-    }
+-
+-    companion object {
+-        private const val SEARCH_ID = 1
+-        private const val TYPE_TITLE = 0
+-        private const val TYPE_ENTRY = 1
+-        private const val TYPE_GAP = 2
+-        private const val TYPE_NOTE = 3
+-    }
+-}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
+index 12ccea41b..8ec404a4d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
+@@ -115,8 +115,6 @@ class TeleChatActivity : BaseFragment(), NotificationCenter.NotificationCenterDe
+         if (url.isNullOrEmpty()) return
+         if (url == NEW_SETTINGS_LINK) {
+             presentFragment(TeleSettingsActivity(TeleSettingsActivity.MODE_NEW))
+-        } else if (url == HISTORY_LINK) {
+-            presentFragment(TeleChangelogActivity())
+         } else {
+             Browser.openUrl(parentActivity, url)
+         }
+@@ -184,7 +182,6 @@ class TeleChatActivity : BaseFragment(), NotificationCenter.NotificationCenterDe
+ 
+     companion object {
+         const val NEW_SETTINGS_LINK = "tg://settings/tele/new"
+-        const val HISTORY_LINK = "tg://settings/tele/history"
+         private const val MENU_ABOUT = 1
+         private const val MENU_DELETE = 2
+         private const val TYPE_DATE = 0
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 27c2174c9..d08237b3f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -319,8 +319,10 @@ object TeleSearch {
+             section(GUID_UPDATES + 1, "Check for updates", "updates", TeleSettingsActivity.MODE_UPDATES),
+             section(GUID_UPDATES + 2, "Show what's new after updates", "updates", TeleSettingsActivity.MODE_UPDATES),
+             ProfileActivity.SearchAdapter.SearchResult(GUID_UPDATES + 3, lc("What's new"), icon) { tele.helpers.TeleChangelog.open(fragment) },
+-            screen(1387, "Version history") { TeleChangelogActivity() },
+-            section(1388, "Release notes of every version", "updates", TeleSettingsActivity.MODE_UPDATES, "Version history")
++            screen(1387, "What's new in every version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
++            screen(1388, "Release notes of every version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
++            screen(1389, "New settings") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
++            screen(1390, "Settings added in a version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) }
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4201ba378..6642b1002 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -14,6 +14,7 @@ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.UserConfig
+ import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.ActionBarMenuItem
+ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+@@ -59,6 +60,16 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+     private var rows: List<Row> = emptyList()
+     private var screenContext: Context? = null
+ 
++    /** The selected version and the query of the what's new page: UI state, not a setting. */
++    private class NewState {
++        var version = 0
++        var picked = false
++        var query = ""
++    }
++
++    private val newState = NewState()
++    private var newTabs: android.widget.HorizontalScrollView? = null
++
+     /** The expanded groups are transient: they are not a setting and not exported. */
+     private val expandedGroups = HashSet<String>()
+ 
+@@ -392,6 +403,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 if (id == -1) finishFragment()
+             }
+         })
++        if (canonicalMode(mode) == MODE_NEW) setupNewPage()
+ 
+         val frameLayout = FrameLayout(context)
+         frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+@@ -414,7 +426,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         return fragmentView
+     }
+     private fun fillItems(items: ArrayList<UItem>, adapter: UniversalAdapter) {
+-        rows = withGroups(buildRows(mode))
++        rows = pageRows()
+         rows.forEachIndexed { position, row ->
+             val title = row.title.orEmpty()
+             val shown = lc(displayTitle(title))
+@@ -489,6 +501,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     if (switchArea) setGroupValue(row, !(row.item!!.value as Boolean)) else toggleExpanded(row)
+                     return
+                 }
++                if (GROUPS.containsKey(row.item.key)) {
++                    // a group parent on the what's new page turns its children on like on its own page
++                    setGroupValue(row, !(row.item.value as Boolean))
++                    return
++                }
+                 val checked = !item.checked
+                 item.checked = checked
+                 (view as TextCheckCell2).setChecked(checked)
+@@ -545,7 +562,6 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
+                 MODE_UPDATE_ACTION -> if (tele.helpers.TeleUpdater.isReady()) tele.helpers.TeleUpdater.install(parentActivity) else tele.helpers.TeleUpdater.checkNow()
+                 MODE_WHATS_NEW -> tele.helpers.TeleChangelog.open(this)
+-                MODE_HISTORY -> presentFragment(TeleChangelogActivity())
+                 else -> presentFragment(TeleSettingsActivity(row.mode ?: MODE_ROOT))
+             }
+         }
+@@ -569,6 +585,70 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         listView?.adapter?.update(true)
+      }
+ 
++    private fun pageRows(): List<Row> =
++        if (canonicalMode(mode) == MODE_NEW) newRows(newState) else withGroups(buildRows(mode))
++
++    private fun setupNewPage() {
++        actionBar.createMenu().addItem(SEARCH_ITEM, R.drawable.outline_header_search)
++            .setIsSearchField(true, false)
++            .setActionBarMenuItemSearchListener(object : ActionBarMenuItem.ActionBarMenuItemSearchListener() {
++                override fun onSearchExpand() {
++                    searchNew("")
++                }
++
++                override fun onSearchCollapse() {
++                    searchNew("")
++                }
++
++                override fun onTextChanged(editText: android.widget.EditText) {
++                    searchNew(editText.text.toString())
++                }
++            })
++            .setSearchFieldHint(LocaleController.getString(R.string.Search))
++        // the history is parsed off the main thread; the page fills in when it is ready
++        tele.helpers.TeleChangelogHistory.load { refresh() }
++    }
++
++    private fun searchNew(query: String) {
++        val now = query.trim()
++        if (newState.query == now) return
++        newState.query = now
++        refresh()
++    }
++
++    /** The version chips: one scroll view that is kept, so a scrolled strip stays where it is when a toggle refreshes the page. */
++    private fun newTabsView(context: Context): View {
++        val releases = tele.helpers.TeleChangelogHistory.loaded() ?: emptyList()
++        val selected = newVersionOf(newState, releases)
++        val scroll = newTabs ?: android.widget.HorizontalScrollView(context).also {
++            it.isHorizontalScrollBarEnabled = false
++            newTabs = it
++        }
++        val strip = android.widget.LinearLayout(context)
++        strip.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(4f), AndroidUtilities.dp(12f), AndroidUtilities.dp(8f))
++        for (release in releases) {
++            val active = release.version == selected
++            val chip = TextView(context)
++            chip.text = lc("tele ${release.version}")
++            chip.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            chip.gravity = android.view.Gravity.CENTER
++            chip.setPadding(AndroidUtilities.dp(14f), AndroidUtilities.dp(7f), AndroidUtilities.dp(14f), AndroidUtilities.dp(7f))
++            chip.setTextColor(Theme.getColor(if (active) Theme.key_featuredStickers_buttonText else Theme.key_windowBackgroundWhiteBlackText))
++            chip.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(16f), Theme.getColor(if (active) Theme.key_featuredStickers_addButton else Theme.key_windowBackgroundWhite))
++            chip.setOnClickListener {
++                newState.version = release.version
++                newState.picked = true
++                refresh()
++            }
++            val params = android.widget.LinearLayout.LayoutParams(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT)
++            params.rightMargin = AndroidUtilities.dp(8f)
++            strip.addView(chip, params)
++        }
++        scroll.removeAllViews()
++        scroll.addView(strip, android.widget.FrameLayout.LayoutParams(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
++        return scroll
++    }
++
+     /** The live previews of the settings pages: the ghost mode with its caption, the names, the ids and the hidden characters. */
+     private fun customView(row: Row): View? {
+         val context = screenContext ?: return null
+@@ -586,6 +666,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 caption.setPadding(AndroidUtilities.dp(21f), AndroidUtilities.dp(4f), AndroidUtilities.dp(21f), AndroidUtilities.dp(8f))
+                 caption
+             }
++            "new_tabs" -> newTabsView(context)
+             "names_preview" -> TelePreviews.namesView(context, resourceProvider)
+             "ids_preview" -> TelePreviews.idsView(context, resourceProvider)
+             "hidden_chars_preview" -> TelePreviews.hiddenCharsView(context, resourceProvider)
+@@ -600,7 +681,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         tele.helpers.TeleUpdater.addListener(updaterListener)
+         if (mode == MODE_NEW) tele.helpers.TeleNewSettings.markSeen()
+         // the counts of the privacy lists change after the pickers
+-        rows = buildRows(mode)
++        rows = pageRows()
+         refresh()
+     }
+ 
+@@ -714,7 +795,6 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         const val MODE_RULES = "rules"
+         const val MODE_UPDATE_ACTION = "update_action"
+         const val MODE_WHATS_NEW = "whats_new"
+-        const val MODE_HISTORY = "history"
+         const val MODE_NEW = "new"
+ 
+         // the old pages open their new home
+@@ -972,25 +1052,110 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             return ids
+         }
+ 
+-        private fun newRows(): List<Row> {
+-            val fresh = tele.helpers.TeleNewSettings.fresh().toHashSet()
+-            if (fresh.isEmpty()) return listOf(Row(TYPE_SHADOW, title = "Nothing new in this tele build."))
+-            val rows = ArrayList<Row>()
+-            val pages = SECTION_SPECS.filter { "tele/${it.mode}" in fresh }
+-            if (pages.isNotEmpty()) {
+-                rows.add(Row(TYPE_HEADER, "New pages"))
+-                pages.forEach { rows.add(sectionLink(it)) }
+-                rows.add(Row(TYPE_SHADOW))
++        private const val SEARCH_ITEM = 1
++
++        /** The shown version: the picked one, else this build's, else the newest. */
++        private fun newVersionOf(state: NewState, releases: List<tele.helpers.TeleChangelogHistory.Release>): Int {
++            if (state.picked && releases.any { it.version == state.version }) return state.version
++            val build = tele.TeleBuild.BUILD
++            return if (build > 0 && releases.any { it.version == build }) build else releases.firstOrNull()?.version ?: 0
++        }
++
++        /** The group parent of a child setting, so a child shown outside its page is gated by it like on its page. */
++        private fun groupParent(key: String?): Item<*>? {
++            if (key == null) return null
++            val parentKey = GROUPS.entries.firstOrNull { key in it.value }?.key ?: return null
++            return tele.configItems.firstOrNull { it.key == parentKey }
++        }
++
++        // the rows of the canonical pages by id: the what's new page shows these very rows, so a toggle there is the same setting
++        private fun newRowIndex(): Map<String, Row> {
++            val index = HashMap<String, Row>()
++            for (mode in SECTION_SPECS.map { it.mode } + MODE_ROOT) {
++                for (row in buildRows(mode, true)) {
++                    if (row.type != TYPE_TOGGLE && row.type != TYPE_VALUE && row.type != TYPE_LINK) continue
++                    val id = idOf(row) ?: continue
++                    if (!index.containsKey(id)) index[id] = row
++                }
+             }
+-            for ((mode, title) in SECTION_SPECS.map { it.mode to it.title } + (MODE_ROOT to "tele")) {
+-                val picked = buildRows(mode).filter { (it.type == TYPE_TOGGLE || it.type == TYPE_VALUE) && it.item?.key in fresh }
+-                if (picked.isEmpty()) continue
+-                rows.add(Row(TYPE_HEADER, title))
+-                rows.addAll(picked)
+-                rows.add(link("Open $title", mode))
+-                rows.add(Row(TYPE_SHADOW))
++            return index
++        }
++
++        private fun newRows(state: NewState): List<Row> {
++            val releases = tele.helpers.TeleChangelogHistory.loaded() ?: return listOf(Row(TYPE_SHADOW, title = "Loading…"))
++            val words = tele.helpers.TeleChangelogHistory.words(state.query)
++            val current = newVersionOf(state, releases)
++            val result = ArrayList<Row>()
++            if (words.isEmpty() && releases.isNotEmpty()) result.add(Row(TYPE_CUSTOM, mode = "new_tabs"))
++            val index = if (releases.isEmpty()) emptyMap<String, Row>() else newRowIndex()
++            val covered = HashSet<String>()
++            var listed = false
++            for (release in releases) {
++                if (words.isEmpty() && release.version != current) continue
++                val found = release.items.filter { tele.helpers.TeleChangelogHistory.matches(it, words) }
++                if (found.isEmpty()) continue
++                // the items that point at the same settings share their rows
++                val blocks = ArrayList<Pair<List<String>, ArrayList<tele.helpers.TeleChangelogHistory.Item>>>()
++                val plain = ArrayList<tele.helpers.TeleChangelogHistory.Item>()
++                for (item in found) {
++                    val ids = tele.helpers.TeleChangelogHistory.settingIds(item).filter { index.containsKey(it) }
++                    if (ids.isEmpty()) {
++                        plain.add(item)
++                        continue
++                    }
++                    val block = blocks.firstOrNull { it.first == ids }
++                    if (block != null) block.second.add(item) else blocks.add(Pair(ids, arrayListOf(item)))
++                }
++                val prefix = if (words.isEmpty()) "" else "${release.title}, "
++                if (blocks.isNotEmpty()) {
++                    result.add(Row(TYPE_HEADER, prefix + "settings"))
++                    for ((ids, items) in blocks) {
++                        for (id in ids) {
++                            val row = index[id] ?: continue
++                            result.add(row.copy(parent = groupParent(row.item?.key)))
++                            row.item?.key?.let { covered.add(it) }
++                        }
++                        items.forEach { result.add(Row(TYPE_SHADOW, title = it.text)) }
++                    }
++                    result.add(Row(TYPE_SHADOW))
++                }
++                if (plain.isNotEmpty()) {
++                    result.add(Row(TYPE_HEADER, prefix + "other changes"))
++                    plain.forEach { result.add(Row(TYPE_SHADOW, title = it.text)) }
++                    result.add(Row(TYPE_SHADOW))
++                }
++                listed = true
+             }
+-            return rows
++            // what this build added and the notes of the shown version don't mention
++            var rest = false
++            if (words.isEmpty() && current == newVersionOf(NewState(), releases)) {
++                val fresh = tele.helpers.TeleNewSettings.fresh().filter { it !in covered }.toHashSet()
++                if (fresh.isNotEmpty()) {
++                    rest = true
++                    val pages = SECTION_SPECS.filter { "tele/${it.mode}" in fresh }
++                    if (pages.isNotEmpty()) {
++                        result.add(Row(TYPE_HEADER, "New pages"))
++                        pages.forEach { result.add(sectionLink(it)) }
++                        result.add(Row(TYPE_SHADOW))
++                    }
++                    for ((mode, title) in SECTION_SPECS.map { it.mode to it.title } + (MODE_ROOT to "tele")) {
++                        val picked = buildRows(mode).filter { (it.type == TYPE_TOGGLE || it.type == TYPE_VALUE) && it.item?.key in fresh }
++                        if (picked.isEmpty()) continue
++                        result.add(Row(TYPE_HEADER, title))
++                        picked.forEach { result.add(it.copy(parent = groupParent(it.item?.key))) }
++                        result.add(link("Open $title", mode))
++                        result.add(Row(TYPE_SHADOW))
++                    }
++                }
++            }
++            if (!listed && !rest) {
++                result.add(Row(TYPE_SHADOW, title = when {
++                    releases.isEmpty() -> "There is no changelog history in this build."
++                    words.isNotEmpty() -> "Nothing found."
++                    else -> "There are no release notes for this version."
++                }))
++            }
++            return result
+         }
+ 
+         private fun buildRows(mode: String, all: Boolean = false): List<Row> = when (canonicalMode(mode)) {
+@@ -1285,7 +1450,6 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Show what's new after updates", TeleConfig.SHOW_CHANGELOG),
+                 Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION, id = "tele-check-updates"),
+                 Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW, id = "tele-changelog"),
+-                Row(TYPE_LINK, title = "Version history", mode = MODE_HISTORY, id = "tele-changelog-history"),
+                 Row(TYPE_SHADOW, title = tele.helpers.TeleUpdater.statusText())
+             )
+             MODE_PRIVACY -> {
+@@ -1374,14 +1538,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_LINK, title = "Paste all layouts", mode = "menu_import", id = "tele-menu-layouts-paste"),
+                 Row(TYPE_SHADOW)
+             )
+-            MODE_NEW -> newRows()
+-            else -> listOf(Row(TYPE_HEADER, "tele")) + (if (tele.helpers.TeleNewSettings.fresh().isEmpty()) emptyList() else listOf(
+-                Row(TYPE_LINK_ICON, title = tele.helpers.TeleNewSettings.title(), mode = MODE_NEW, icon = R.drawable.msg_fave, badge = !tele.helpers.TeleNewSettings.isSeen())
+-            )) + SECTION_SPECS.map { sectionLink(it) } + listOf(
++            MODE_NEW -> newRows(NewState())
++            // the what's new row is always there: the page lists every version, the badge says when settings are new
++            else -> listOf(Row(TYPE_HEADER, "tele"), Row(TYPE_LINK_ICON, title = tele.helpers.TeleNewSettings.title(), mode = MODE_NEW, icon = R.drawable.msg_fave, badge = tele.helpers.TeleNewSettings.fresh().isNotEmpty() && !tele.helpers.TeleNewSettings.isSeen())) + SECTION_SPECS.map { sectionLink(it) } + listOf(
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Updates"),
+                 Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION, id = "tele-check-updates"),
+-                Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW, id = "tele-changelog"),
+                 Row(TYPE_SHADOW, title = tele.helpers.TeleUpdater.statusText() + "\n\ntele for Android ${BuildVars.BUILD_VERSION_STRING} with tele patches, ${tele.TeleBuild.label()}.")
+             )
+         }

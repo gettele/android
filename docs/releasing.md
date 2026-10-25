@@ -39,7 +39,7 @@ build.yml runs in two ways:
 the run:
 
 1. fetches [DrKLO/Telegram](https://github.com/DrKLO/Telegram) at the `UPSTREAM` commit and the submodules, and applies `patches/android/*.patch` with `git am` as `github-actions[bot]`.
-2. picks `N`, builds the tag, and checks `ci/changelog.json` before the long part starts.
+2. picks `N`, builds the tag, and checks `ci/changelog.json` before the long part starts. it then runs `ci/changelog_history.py`, which merges the `tele-changelog.json` of every published release with this one into `res/raw/changelog_history.json` of the build, so the app lists every version offline, and after the build checks that the apk carries it.
 3. installs the sdk packages pinned in `TMessagesProj/build.gradle` (platform, build tools, ndk, cmake) and builds `:TMessagesProj_App:assembleAfatRelease`: the universal apk (`afat` flavor, all four abis, `minApi` 23), release build type, minified and signed.
 4. checks that the apk verifies and is signed by the certificate pinned in `ci/release-cert-sha256.txt`: a build signed by any other key fails here, before anything is published.
 5. writes the update feed and the changelog, attests the apk, uploads everything as the `release` artifact.

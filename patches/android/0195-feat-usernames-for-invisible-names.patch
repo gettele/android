@@ -1,0 +1,426 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 10:28:44 +0300
+Subject: [PATCH 195/202] feat: usernames for invisible names
+
+---
+ .../messenger/MessagesController.java         |   1 +
+ .../telegram/messenger/MessagesStorage.java   |   1 +
+ .../org/telegram/messenger/UserObject.java    |  12 ++
+ .../src/main/java/tele/TeleConfig.kt          |   7 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/InvisibleNames.kt  | 203 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   4 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  53 ++++-
+ 8 files changed, 283 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index bba5f7518..51f92ff97 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -7018,6 +7018,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             return;
+         }
+         try { tele.helpers.TeleBadges.applyChat(currentAccount, chat); } catch (Throwable ignore) {}
++        tele.helpers.InvisibleNames.applyChat(currentAccount, chat);
+         TLRPC.Chat oldChat = chats.get(chat.id);
+         if (oldChat != null) {
+             tele.helpers.DeletedChats.chatReplacing(currentAccount, oldChat, chat);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index ff39a9f74..3a4344dae 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -10890,6 +10890,7 @@ public class MessagesStorage extends BaseController {
+             return;
+         }
+         chats = tele.helpers.TeleBadges.stockChats(chats);
++        chats = tele.helpers.InvisibleNames.stockChats(currentAccount, chats);
+         SQLitePreparedStatement state = database.executeFast("REPLACE INTO chats VALUES(?, ?, ?)");
+         for (int a = 0; a < chats.size(); a++) {
+             TLRPC.Chat chat = chats.get(a);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
+index 862a37f59..2b71bddaa 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/UserObject.java
+@@ -85,6 +85,12 @@ public class UserObject {
+                 return local;
+             }
+         }
++        if (tele.TeleConfig.INVISIBLE_NAMES.getValue()) {
++            final String invisible = tele.helpers.InvisibleNames.user(user);
++            if (invisible != null) {
++                return invisible;
++            }
++        }
+         String name = AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(ContactsController.formatName(user.first_name, user.last_name)));
+         if (name.length() != 0 || TextUtils.isEmpty(user.phone)) {
+             return name;
+@@ -150,6 +156,12 @@ public class UserObject {
+                 return local;
+             }
+         }
++        if (tele.TeleConfig.INVISIBLE_NAMES.getValue()) {
++            final String invisible = tele.helpers.InvisibleNames.shortUser(user);
++            if (invisible != null) {
++                return invisible;
++            }
++        }
+         String name = user.first_name;
+         if (TextUtils.isEmpty(name)) {
+             name = user.last_name;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index c4024bb4d..569325df1 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -189,6 +189,13 @@ object TeleConfig {
+     @JvmField
+     val VIEW_AS_TL = BoolItem("view_as_tl", false)
+     @JvmField
++    val INVISIBLE_NAMES = BoolItem("invisible_names", false)
++    // "" is the phrase, "id" the peer id
++    @JvmField
++    val INVISIBLE_NAMES_FALLBACK = StringItem("invisible_names_fallback", "")
++    @JvmField
++    val INVISIBLE_NAMES_PHRASE = StringItem("invisible_names_phrase", "")
++    @JvmField
+     val HIDE_SPONSORED = BoolItem("hide_sponsored", false)
+     @JvmField
+     val HIDE_PROXY_SPONSOR = BoolItem("hide_proxy_sponsor", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index f9e33d8ea..b2c8caadb 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -206,6 +206,9 @@ object TeleHooks {
+         if (item === TeleConfig.REGEX_SEARCH || item === TeleConfig.SEARCH_TYPES) {
+             tele.helpers.ChatSearch.onToggled()
+         }
++        if (tele.helpers.InvisibleNames.isNameItem(item)) {
++            tele.helpers.InvisibleNames.onNamesChanged()
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt b/TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt
+new file mode 100644
+index 000000000..f5cd17993
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt
+@@ -0,0 +1,203 @@
++package tele.helpers
++
++import org.telegram.messenger.AccountInstance
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.SerializedData
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++import tele.TeleHooks
++
++/**
++ * Desktop 0208: @username instead of invisible names.
++ * Replacements are display-only: chat titles are swapped in memory and put back before they reach the DB.
++ */
++object InvisibleNames {
++
++    private const val MAX_PHRASE = 64
++
++    private class Entry(val real: String, val shown: String)
++
++    // per account: chat id -> real and shown title of the chats whose title is blank
++    private val chats = Array(UserConfig.MAX_ACCOUNT_COUNT) { HashMap<Long, Entry>() }
++
++    // the exact set of the desktop table
++    @JvmStatic
++    fun isInvisibleChar(ch: Int): Boolean {
++        if (isSpace(ch)) return true
++        when (ch) {
++            0x00AD, 0x034F, 0x061C, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x2800, 0x3164, 0xFEFF, 0xFFA0, 0x1D159 -> return true
++        }
++        return ch in 0x180B..0x180F ||
++            ch in 0x200B..0x200F ||
++            ch in 0x2028..0x202E ||
++            ch in 0x2060..0x2064 ||
++            ch in 0x2066..0x206F ||
++            ch in 0xFE00..0xFE0F ||
++            ch in 0x1D173..0x1D17A ||
++            ch in 0xE0000..0xE007F ||
++            ch in 0xE0100..0xE01EF
++    }
++
++    // QChar::isSpace: the Latin-1 whitespace plus the space, line and paragraph separators
++    private fun isSpace(ch: Int): Boolean {
++        if (ch in 0x09..0x0D || ch == 0x85) return true
++        val type = Character.getType(ch)
++        return type == Character.SPACE_SEPARATOR.toInt() ||
++            type == Character.LINE_SEPARATOR.toInt() ||
++            type == Character.PARAGRAPH_SEPARATOR.toInt()
++    }
++
++    /** Not empty and made only of invisible code points; broken surrogates are not invisible. */
++    @JvmStatic
++    fun isInvisibleText(text: CharSequence?): Boolean {
++        if (text.isNullOrEmpty()) return false
++        var i = 0
++        while (i < text.length) {
++            val ch = Character.codePointAt(text, i)
++            val size = Character.charCount(ch)
++            if (Character.isSurrogate(text[i]) && size == 1) return false
++            if (!isInvisibleChar(ch)) return false
++            i += size
++        }
++        return true
++    }
++
++    private fun isBlank(text: String?): Boolean = text.isNullOrEmpty() || isInvisibleText(text)
++
++    private fun phrase(): String {
++        val value = TeleConfig.INVISIBLE_NAMES_PHRASE.value.replace(Regex("\\s+"), " ").trim().take(MAX_PHRASE)
++        return value.ifEmpty { defaultPhrase() }
++    }
++
++    @JvmStatic
++    fun defaultPhrase(): String = TeleLowercase.lc("Unknown name")
++
++    private fun replacement(account: Int, username: String?, peerId: Long, chat: Boolean): String {
++        if (!username.isNullOrEmpty()) return "@$username"
++        if (TeleConfig.INVISIBLE_NAMES_FALLBACK.value == "id") {
++            val id = if (chat) PeerId.format(account, 0L, peerId) else PeerId.format(account, peerId, 0L)
++            return TeleLowercase.lc("ID $id")
++        }
++        return phrase()
++    }
++
++    /** The display name of a user whose whole name is blank, null for the stock name. */
++    @JvmStatic
++    fun user(user: TLRPC.User?): String? {
++        if (!TeleConfig.INVISIBLE_NAMES.value || user == null || UserObject.isUserSelf(user) || UserObject.isDeleted(user)) return null
++        val first = user.first_name
++        val last = user.last_name
++        if (!isBlank(first) || !isBlank(last)) return null
++        val username = UserObject.getPublicUsername(user)
++        // a completely empty name with a phone number keeps the stock phone
++        if (username.isNullOrEmpty() && first.isNullOrEmpty() && last.isNullOrEmpty() && !user.phone.isNullOrEmpty()) return null
++        return replacement(UserConfig.selectedAccount, username, user.id, false)
++    }
++
++    /** The short name: the visible part of the name when only one part is blank. */
++    @JvmStatic
++    fun shortUser(user: TLRPC.User?): String? {
++        if (!TeleConfig.INVISIBLE_NAMES.value || user == null || UserObject.isUserSelf(user) || UserObject.isDeleted(user)) return null
++        val first = user.first_name
++        val last = user.last_name
++        if (!isBlank(if (first.isNullOrEmpty()) last else first)) return null
++        if (!isBlank(last)) return last
++        return user(user)
++    }
++
++    /** Called from MessagesController.putChat: swaps a blank title for the display value in memory. */
++    @JvmStatic
++    fun applyChat(account: Int, chat: TLRPC.Chat?) {
++        chat ?: return
++        val title = chat.title ?: return
++        synchronized(chats[account]) {
++            val map = chats[account]
++            val entry = map[chat.id]
++            val real = if (entry != null && entry.shown.isNotEmpty() && title == entry.shown) entry.real else title
++            if (!isBlank(real)) {
++                map.remove(chat.id)
++                chat.title = real
++                return
++            }
++            val shown = if (TeleConfig.INVISIBLE_NAMES.value) replacement(account, ChatObject.getPublicUsername(chat), chat.id, true) else ""
++            map[chat.id] = Entry(real, shown)
++            chat.title = shown.ifEmpty { real }
++        }
++    }
++
++    /** The chats for the DB: copies with their real titles, the live objects stay as they are. */
++    @JvmStatic
++    fun stockChats(account: Int, list: List<TLRPC.Chat?>): List<TLRPC.Chat?> {
++        val map = chats[account]
++        var result: ArrayList<TLRPC.Chat?>? = null
++        for (i in list.indices) {
++            val chat = list[i] ?: continue
++            val real = synchronized(map) {
++                val entry = map[chat.id]
++                if (entry != null && entry.shown.isNotEmpty() && chat.title == entry.shown) entry.real else null
++            } ?: continue
++            val copy = copyOf(chat) ?: continue
++            copy.title = real
++            if (result == null) result = ArrayList(list)
++            result[i] = copy
++        }
++        return result ?: list
++    }
++
++    private fun copyOf(chat: TLRPC.Chat): TLRPC.Chat? {
++        val out = SerializedData(chat.objectSize)
++        return try {
++            chat.serializeToStream(out)
++            val input = SerializedData(out.toByteArray())
++            try {
++                TLRPC.Chat.TLdeserialize(input, input.readInt32(false), false)
++            } finally {
++                input.cleanup()
++            }
++        } catch (e: Exception) {
++            FileLog.e(e)
++            null
++        } finally {
++            out.cleanup()
++        }
++    }
++
++    @JvmStatic
++    fun isNameItem(item: tele.Item<*>): Boolean =
++        item === TeleConfig.INVISIBLE_NAMES || item === TeleConfig.INVISIBLE_NAMES_FALLBACK || item === TeleConfig.INVISIBLE_NAMES_PHRASE
++
++    /** The name settings changed: recompute the titles, then rebind the lists, headers and cells of every account. */
++    @JvmStatic
++    fun onNamesChanged() {
++        AndroidUtilities.runOnUIThread {
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                val ids = synchronized(chats[account]) { chats[account].keys.toList() }
++                if (ids.isEmpty()) continue
++                val controller = MessagesController.getInstance(account)
++                for (id in ids) {
++                    applyChat(account, controller.getChat(id))
++                }
++            }
++            refreshAll()
++        }
++    }
++
++    private fun refreshAll() {
++        TeleHooks.bumpUiRevision()
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (!UserConfig.getInstance(account).isClientActivated) continue
++            val center = AccountInstance.getInstance(account).notificationCenter
++            center.postNotificationName(
++                NotificationCenter.updateInterfaces,
++                MessagesController.UPDATE_MASK_NAME or MessagesController.UPDATE_MASK_CHAT_NAME
++            )
++            center.postNotificationName(NotificationCenter.dialogsNeedReload)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 8f004bb18..b622c5beb 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -296,6 +296,10 @@ object TeleSearch {
+             section(1367, "Filter stickers and emoji by format", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1368, "Filter stickers by format", "chats", TeleSettingsActivity.MODE_CHATS, "Filter stickers and emoji by format"),
+             section(1369, "Filter emoji by format", "chats", TeleSettingsActivity.MODE_CHATS, "Filter stickers and emoji by format"),
++            section(1370, "Show usernames for invisible names", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1371, "Without a username", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show usernames for invisible names"),
++            section(1372, "Phrase", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show usernames for invisible names"),
++            section(1374, "Blank name placeholder", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show usernames for invisible names"),
+             section(1345, "Regex search in chats", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1346, "Regular expression search", "chats", TeleSettingsActivity.MODE_CHATS, "Regex search in chats"),
+             section(1347, "Message type filter in chat search", "chats", TeleSettingsActivity.MODE_CHATS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 3ec5f941d..482233b9b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -201,6 +201,44 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         showDialog(builder.create())
+     }
+ 
++    private fun chooseInvisibleFallback() {
++        val activity = parentActivity ?: return
++        val values = arrayOf("", "id")
++        val labels = arrayOf(lc("Phrase"), lc("ID"))
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle(lc("Without a username"))
++        builder.setItems(labels) { _, which ->
++            TeleConfig.set(TeleConfig.INVISIBLE_NAMES_FALLBACK, values[which])
++            TeleHooks.onConfigChanged(TeleConfig.INVISIBLE_NAMES_FALLBACK)
++            refresh()
++        }
++        showDialog(builder.create())
++    }
++
++    private fun chooseInvisiblePhrase() {
++        val activity = parentActivity ?: return
++        val input = android.widget.EditText(activity)
++        input.setText(TeleConfig.INVISIBLE_NAMES_PHRASE.value)
++        input.setSingleLine(true)
++        input.filters = arrayOf(android.text.InputFilter.LengthFilter(64))
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle(lc("Phrase"))
++        builder.setMessage(lc("Shown instead of a blank name that has no username. Up to 64 characters."))
++        builder.setView(input)
++        builder.setPositiveButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.OK)) { _, _ ->
++            setInvisiblePhrase(input.text.toString().replace(Regex("\\s+"), " ").trim())
++        }
++        builder.setNeutralButton(lc("Reset")) { _, _ -> setInvisiblePhrase("") }
++        builder.setNegativeButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Cancel), null)
++        showDialog(builder.create())
++    }
++
++    private fun setInvisiblePhrase(phrase: String) {
++        TeleConfig.set(TeleConfig.INVISIBLE_NAMES_PHRASE, phrase)
++        TeleHooks.onConfigChanged(TeleConfig.INVISIBLE_NAMES_PHRASE)
++        refresh()
++    }
++
+     private fun chooseServerUrl() {
+         val activity = parentActivity ?: return
+         val input = android.widget.EditText(activity)
+@@ -448,6 +486,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_RETENTION -> chooseDeletedRetention()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_REPLY -> chooseDeletedReply()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TELE_SERVER_URL -> chooseServerUrl()
++            row.type == TYPE_VALUE && row.item == TeleConfig.INVISIBLE_NAMES_FALLBACK -> chooseInvisibleFallback()
++            row.type == TYPE_VALUE && row.item == TeleConfig.INVISIBLE_NAMES_PHRASE -> chooseInvisiblePhrase()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TITLE_TEMPLATE -> TeleTitleEditor.show(this) { refresh() }
+             row.type == TYPE_LINK || row.type == TYPE_LINK_ICON -> when (row.mode) {
+                 TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+@@ -542,7 +582,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+     private fun shownValue(row: Row): String {
+         val value = row.value.orEmpty()
+         val own = (row.item === TeleConfig.TITLE_TEMPLATE && TeleConfig.TITLE_TEMPLATE.value.isNotEmpty()) ||
+-            (row.item === TeleConfig.TELE_SERVER_URL && TeleConfig.TELE_SERVER_URL.value.isNotBlank())
++            (row.item === TeleConfig.TELE_SERVER_URL && TeleConfig.TELE_SERVER_URL.value.isNotBlank()) ||
++            (row.item === TeleConfig.INVISIBLE_NAMES_PHRASE && TeleConfig.INVISIBLE_NAMES_PHRASE.value.isNotBlank())
+         return if (own) value else lc(value)
+     }
+ 
+@@ -602,6 +643,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             ),
+             TeleConfig.PROFILE_PHOTO_BACKGROUND.key to listOf(
+                 TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.key
++            ),
++            TeleConfig.INVISIBLE_NAMES.key to listOf(
++                TeleConfig.INVISIBLE_NAMES_FALLBACK.key,
++                TeleConfig.INVISIBLE_NAMES_PHRASE.key
+             )
+         )
+ 
+@@ -771,6 +816,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Restrict in message and userpic menus" to "For group admins, without deleting the message.",
+             "Line numbers in code blocks" to "Number the lines of code blocks of five lines or more.",
+             "Local names for people" to "Names for people that only you see.",
++            "Show usernames for invisible names" to "Blank names show @username, or a phrase or the id; only on this device.",
+             "Keep deleted messages" to "Messages deleted for everyone stay in the chat.",
+             "Keep messages you delete yourself" to "Your own deletions are kept too.",
+             "In bot chats" to "Also in chats with bots.",
+@@ -1128,6 +1174,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Local names for people", TeleConfig.LOCAL_NAMES),
+                 link("Local names", TeleNamesActivity.MODE_LOCAL, id = "tele-local-names-list"),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Invisible names"),
++                toggle("Show usernames for invisible names", TeleConfig.INVISIBLE_NAMES),
++                Row(TYPE_VALUE, "Without a username", value = if (TeleConfig.INVISIBLE_NAMES_FALLBACK.value == "id") "ID" else "Phrase", item = TeleConfig.INVISIBLE_NAMES_FALLBACK),
++                Row(TYPE_VALUE, "Phrase", value = TeleConfig.INVISIBLE_NAMES_PHRASE.value.ifBlank { tele.helpers.InvisibleNames.defaultPhrase() }, item = TeleConfig.INVISIBLE_NAMES_PHRASE),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Aliases"),
+                 toggle("Username aliases", TeleConfig.USERNAME_ALIASES),
+                 link("Aliases", TeleNamesActivity.MODE_ALIAS, id = "tele-username-aliases-list"),

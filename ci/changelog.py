@@ -6,18 +6,23 @@ the source is written by hand for the next release:
   {"categories": ["interface", "chats"],
    "items": [{"text": "what changed, one sentence", "where": "settings → tele → chats", "category": "chats"}]}
 
-`categories` is the order of the groups (every item's category has to be listed), `where` may be empty. the optional
+`categories` is the order of the groups (every item's category has to be listed), `where` may be empty. an item may
+list `options`: the `tele-…` ids of its settings (the ids of `tg://settings/tele?highlight=<id>` links), which the
+app's what's new page shows as live toggles; without them the page matches `where` to a setting's name. the optional
 `header` and `footer` are lines put around the release notes and the channel post of this release only; the app skips
 them. without --json and --notes this only validates. the limits are the app's: TeleChangelog drops what is above them."""
 
 import argparse
 import json
+import re
 import sys
 
 MAX_ITEMS = 100
 MAX_CATEGORIES = 16
 MAX_TITLE = 64
 MAX_ITEM = 1024
+MAX_OPTIONS = 16
+OPTION = re.compile(r'^tele-[a-z0-9][a-z0-9-]{0,63}$')
 MAX_SIZE = 256 * 1024
 
 
@@ -51,13 +56,20 @@ def load(path):
         fail(f'more than {MAX_ITEMS} items')
     items = []
     for number, raw in enumerate(raw_items, 1):
-        if not isinstance(raw, dict) or set(raw) - {'text', 'where', 'category'}:
-            fail(f'item {number} has to be an object with text, where and category')
-        items.append({
+        if not isinstance(raw, dict) or set(raw) - {'text', 'where', 'category', 'options'}:
+            fail(f'item {number} has to be an object with text, where, category and optionally options')
+        item = {
             'text': text_of(raw.get('text'), f'item {number} text', MAX_ITEM, True),
             'where': text_of(raw.get('where', ''), f'item {number} where', MAX_ITEM, False),
             'category': text_of(raw.get('category'), f'item {number} category', MAX_TITLE, True),
-        })
+        }
+        options = raw.get('options', [])
+        if not isinstance(options, list) or len(options) > MAX_OPTIONS or not all(
+                isinstance(option, str) and OPTION.match(option) for option in options):
+            fail(f'item {number} options have to be a list of up to {MAX_OPTIONS} tele-… ids')
+        if options:
+            item['options'] = options
+        items.append(item)
     raw_categories = source.get('categories', [])
     if not isinstance(raw_categories, list):
         fail('categories has to be a list')

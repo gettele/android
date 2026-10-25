@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 10:23:52 +0300
+Subject: [PATCH 198/202] feat: media data center in the viewer
+
+---
+ .../java/org/telegram/ui/PhotoViewer.java     |  4 +-
+ .../telegram/ui/Stories/PeerStoriesView.java  |  3 +
+ .../main/java/tele/helpers/MediaViewerInfo.kt | 56 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +-
+ .../src/main/res/values/strings_tele.xml      |  1 +
+ 6 files changed, 65 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MediaViewerInfo.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+index 94dfaa53e..57a1f560e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+@@ -14574,7 +14574,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+             if (!newMessageObject.isQuickReply() && !newMessageObject.isSponsored() && newMessageObject.messageOwner != null) {
+                 subtitle = LocaleController.formatDateAudio(newMessageObject.messageOwner.date, false);
+             }
+-            actionBarContainer.setSubtitle(subtitle, animated);
++            actionBarContainer.setSubtitle(tele.helpers.MediaViewerInfo.subtitle(subtitle, newMessageObject), animated);
+ 
+             boolean isInvoice = newMessageObject.isInvoice();
+             boolean noforwards = tele.helpers.ProtectedMessages.peerNoForwards(currentAccount, newMessageObject.getDialogId()) || (newMessageObject.messageOwner != null && tele.helpers.ProtectedMessages.forbidsForward(newMessageObject)) || newMessageObject.hasRevealedExtendedMedia();
+@@ -14876,7 +14876,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                 title = DialogObject.getName(avatarsDialogId);
+                 ImageLocation imageLocation = imagesArrLocations.get(index);
+                 if (imageLocation != null && imageLocation.photo != null) {
+-                    actionBarContainer.setSubtitle(LocaleController.formatDateTime(imageLocation.photo.date, true), animated);
++                    actionBarContainer.setSubtitle(tele.helpers.MediaViewerInfo.photoSubtitle(LocaleController.formatDateTime(imageLocation.photo.date, true), imageLocation.photo), animated);
+                 } else {
+                     actionBarContainer.setSubtitle("", animated);
+                 }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stories/PeerStoriesView.java b/TMessagesProj/src/main/java/org/telegram/ui/Stories/PeerStoriesView.java
+index 200ae0cd5..e24943e07 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stories/PeerStoriesView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stories/PeerStoriesView.java
+@@ -5330,6 +5330,9 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
+                     subtitle = string;
+                 }
+             }
++            if (subtitle != null && currentStory.uploadingStory == null && currentStory.storyItem != null && currentStory.storyItem.date != -1) {
++                subtitle = tele.helpers.MediaViewerInfo.storySubtitle(subtitle, currentStory.storyItem.media);
++            }
+             if (subtitle != null) {
+                 if (storyViewer != null && storyViewer.storiesList != null && currentStory.storyItem != null && storyViewer.storiesList.isPinned(currentStory.storyItem.id)) {
+                     if (!(subtitle instanceof SpannableStringBuilder)) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MediaViewerInfo.kt b/TMessagesProj/src/main/java/tele/helpers/MediaViewerInfo.kt
+new file mode 100644
+index 000000000..1e212c6b3
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MediaViewerInfo.kt
+@@ -0,0 +1,56 @@
++package tele.helpers
++
++import android.text.SpannableStringBuilder
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.R
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++// the data center of the shown media, appended to the viewer subtitle like on the desktop
++object MediaViewerInfo {
++
++    private const val SEPARATOR = " · "
++
++    /** The subtitle of a chat media: the message date, then the media data center. */
++    @JvmStatic
++    fun subtitle(base: CharSequence?, message: MessageObject?): CharSequence? {
++        if (message == null || !TeleConfig.SHOW_DC.value) return base
++        val document = message.getDocument()
++        return append(base, dcLabel(if (document != null) document.dc_id else photoDc(message.getPhoto())))
++    }
++
++    /** The subtitle of a profile photo, whose own date is already shown. */
++    @JvmStatic
++    fun photoSubtitle(base: CharSequence?, photo: TLRPC.Photo?): CharSequence? {
++        if (photo == null || !TeleConfig.SHOW_DC.value) return base
++        return append(base, dcLabel(photoDc(photo)))
++    }
++
++    /** The story header subtitle with the data center of its media. */
++    @JvmStatic
++    fun storySubtitle(base: CharSequence?, media: TLRPC.MessageMedia?): CharSequence? {
++        if (media == null || base == null || !TeleConfig.SHOW_DC.value) return base
++        val document = media.document
++        return append(base, dcLabel(if (document != null) document.dc_id else photoDc(media.photo)))
++    }
++
++    private fun dcLabel(dc: Int): String? = if (dc == 0) null else LocaleController.formatString(R.string.TeleMediaDc, dc)
++
++    private fun append(text: CharSequence?, label: CharSequence?): CharSequence? {
++        if (label.isNullOrEmpty()) return text
++        if (text.isNullOrEmpty()) return label
++        if (text is String) return text + SEPARATOR + label
++        return SpannableStringBuilder(text).append(SEPARATOR).append(label)
++    }
++
++    private fun photoDc(photo: TLRPC.Photo?): Int {
++        if (photo == null) return 0
++        if (photo.dc_id != 0) return photo.dc_id
++        for (size in photo.sizes) {
++            val dc = size.location?.dc_id ?: 0
++            if (dc != 0) return dc
++        }
++        return 0
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index e5e688295..60bc38972 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -307,6 +307,8 @@ object TeleSearch {
+             section(1347, "Message type filter in chat search", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1348, "Search by sender and type", "chats", TeleSettingsActivity.MODE_CHATS, "Message type filter in chat search"),
+             section(1349, "Filter chat search by photos, videos and links", "chats", TeleSettingsActivity.MODE_CHATS, "Message type filter in chat search"),
++            section(1382, "Media data center in the viewer", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show data center"),
++            section(1383, "Data center of photos and videos", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show data center"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index a59003c19..919dab72b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -795,7 +795,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Show peer id in profile" to "Show the numeric ID in profiles.",
+             "Ids without spaces" to "Show IDs without spaces.",
+             "Bot api style ids" to "Write chat IDs like the Bot API: -100…",
+-            "Show data center" to "Show the data center in profiles.",
++            "Show data center" to "Show the data center in profiles and the media viewer.",
+             "Id and dc in one row" to "Put the ID and data center in one row.",
+             "Show message id in the message menu" to "Show the message ID in its menu.",
+             "Show gift id" to "Show gift IDs.",
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index ed4072cf8..1a650a1dd 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -3,6 +3,7 @@
+     <string name="TeleProfileId">ID</string>
+     <string name="TeleProfileDc">DC</string>
+     <string name="TeleDcUncertain">uncertain</string>
++    <string name="TeleMediaDc">DC %1$d</string>
+     <string name="TeleGiftId">Gift ID</string>
+     <string name="TeleEmojiIdCopied">Emoji ID copied to clipboard</string>
+     <string name="TeleCopyMarkdown">Copy as Markdown</string>

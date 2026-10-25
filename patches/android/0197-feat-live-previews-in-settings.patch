@@ -1,0 +1,421 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 10:38:31 +0300
+Subject: [PATCH 197/202] feat: live previews in settings
+
+---
+ .../main/java/tele/helpers/InvisibleNames.kt  |  17 +-
+ .../src/main/java/tele/helpers/PeerId.kt      |  52 ++++-
+ .../java/tele/ui/settings/TelePreviews.kt     | 211 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  24 +-
+ 4 files changed, 288 insertions(+), 16 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TelePreviews.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt b/TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt
+index 405430709..60b90e7d7 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/InvisibleNames.kt
+@@ -89,8 +89,8 @@ object InvisibleNames {
+ 
+     private fun isBlank(text: String?): Boolean = text.isNullOrEmpty() || isInvisibleText(text)
+ 
+-    private fun phrase(): String {
+-        val value = TeleConfig.INVISIBLE_NAMES_PHRASE.value.replace(Regex("\\s+"), " ").trim().take(MAX_PHRASE)
++    private fun phrase(raw: String = TeleConfig.INVISIBLE_NAMES_PHRASE.value): String {
++        val value = raw.replace(Regex("\\s+"), " ").trim().take(MAX_PHRASE)
+         return value.ifEmpty { defaultPhrase() }
+     }
+ 
+@@ -106,6 +106,19 @@ object InvisibleNames {
+         return phrase()
+     }
+ 
++    /**
++     * What the settings preview shows for a made-up user with a blank name; null while the option is off.
++     * [typedPhrase] is the phrase being edited, not yet saved.
++     */
++    @JvmStatic
++    @JvmOverloads
++    fun sampleName(username: String?, typedPhrase: String? = null): String? {
++        if (!TeleConfig.INVISIBLE_NAMES.value) return null
++        if (!username.isNullOrEmpty()) return "@$username"
++        if (TeleConfig.INVISIBLE_NAMES_FALLBACK.value == "id") return TeleLowercase.lc("ID ${PeerId.sampleId(false)}")
++        return if (typedPhrase != null) phrase(typedPhrase) else phrase()
++    }
++
+     /** The display name of a user whose whole name is blank, null for the stock name. */
+     @JvmStatic
+     fun user(user: TLRPC.User?): String? {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PeerId.kt b/TMessagesProj/src/main/java/tele/helpers/PeerId.kt
+index af85cf564..bd21bc902 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/PeerId.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/PeerId.kt
+@@ -10,15 +10,16 @@ object PeerId {
+     private const val CHANNEL_SHIFT = 1000000000000L
+     private const val GROUP_SEPARATOR = ' '
+ 
++    // made up on purpose: the preview never shows a real id
++    private const val SAMPLE_USER = 1234567890L
++    private const val SAMPLE_CHANNEL = 1987654321L
++
+     @JvmStatic
+-    fun format(account: Int, userId: Long, chatId: Long): String {
+-        val id = botApiAdjusted(account, userId, chatId)
+-        return if (TeleConfig.PEER_IDS_WITHOUT_SPACES.value) {
+-            id.toString()
+-        } else {
+-            groupDigits(id)
+-        }
+-    }
++    fun format(account: Int, userId: Long, chatId: Long): String =
++        render(botApiAdjusted(account, userId, chatId))
++
++    private fun render(id: Long): String =
++        if (TeleConfig.PEER_IDS_WITHOUT_SPACES.value) id.toString() else groupDigits(id)
+ 
+     // the data center of a chat comes from its oldest photo, like on the desktop
+     @JvmStatic
+@@ -43,8 +44,7 @@ object PeerId {
+     fun dcText(account: Int, userId: Long, chatId: Long): String {
+         val info = PeerDc.info(account, userId, chatId)
+         if (info.dc == 0) return ""
+-        val text = dcValue(info.dc)
+-        return if (info.uncertain) "$text (${uncertainText()})" else text
++        return dcLine(info.dc, info.uncertain)
+     }
+ 
+     @JvmStatic
+@@ -55,8 +55,36 @@ object PeerId {
+         }
+         val info = PeerDc.info(account, userId, chatId)
+         if (info.dc == 0) return id
+-        val suffix = if (info.uncertain) ", ${uncertainText()}" else ""
+-        return "$id (DC${dcValue(info.dc)}$suffix)"
++        return mergedLine(id, info.dc, info.uncertain)
++    }
++
++    private fun dcLine(dc: Int, uncertain: Boolean): String {
++        val text = dcValue(dc)
++        return if (uncertain) "$text (${uncertainText()})" else text
++    }
++
++    private fun mergedLine(id: String, dc: Int, uncertain: Boolean): String {
++        val suffix = if (uncertain) ", ${uncertainText()}" else ""
++        return "$id (DC${dcValue(dc)}$suffix)"
++    }
++
++    /** The rows of a made-up peer for the settings preview. [dc] is null when the row is off. */
++    class Sample(val id: String, val dc: String?)
++
++    /** The plain made-up id, formatted by the current settings. */
++    @JvmStatic
++    fun sampleId(channel: Boolean): String {
++        val raw = if (channel) SAMPLE_CHANNEL else SAMPLE_USER
++        return render(if (channel && TeleConfig.BOT_API_PEER_IDS.value) -(CHANNEL_SHIFT + raw) else raw)
++    }
++
++    // no account, no cache, no network: the preview must work before anything is loaded
++    @JvmStatic
++    fun sample(channel: Boolean, dc: Int, uncertain: Boolean): Sample {
++        val id = sampleId(channel)
++        if (!TeleConfig.SHOW_DC.value) return Sample(id, null)
++        if (TeleConfig.MERGE_ID_DC.value) return Sample(mergedLine(id, dc, uncertain), null)
++        return Sample(id, dcLine(dc, uncertain))
+     }
+ 
+     private fun dcValue(dc: Int): String {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TelePreviews.kt b/TMessagesProj/src/main/java/tele/ui/settings/TelePreviews.kt
+new file mode 100644
+index 000000000..2c4821eed
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TelePreviews.kt
+@@ -0,0 +1,211 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.drawable.GradientDrawable
++import android.text.SpannableStringBuilder
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.TextDetailCell
++import org.telegram.ui.Components.AvatarDrawable
++import tele.TeleConfig
++import tele.helpers.InvisibleNames
++import tele.helpers.PeerId
++import tele.helpers.TeleLowercase
++
++/**
++ * Desktop 0244: live previews inside the settings pages for the peer ids, the invisible names and the
++ * hidden characters. They show made-up examples built from the current config each time the page
++ * rebinds: no account, no network and no real data. The ghost mode has its own [TeleGhostPreview].
++ */
++object TelePreviews {
++
++    private const val BLANK = "\u3164"
++
++    // the desktop sample: hangul filler, variation selector, zero width space, variation selector
++    private const val SAMPLE_BIO = "\u3164\uFE0E\u200B\uFE0E"
++    private const val SAMPLE_USERNAME = "username"
++
++    /** The invisible names of the "Phrase" dialog and of the page: two blank-named examples. */
++    class NamesPreview(context: Context, private val provider: Theme.ResourcesProvider?, private val dialog: Boolean) : LinearLayout(context) {
++
++        private class Entry(val username: String?, val name: TextView)
++
++        private val entries = ArrayList<Entry>()
++        private val note: TextView
++
++        init {
++            orientation = LinearLayout.VERTICAL
++            layoutDirection = direction()
++            if (dialog) {
++                setPadding(0, dp(12f), 0, 0)
++            } else {
++                background = round(Theme.getColor(Theme.key_windowBackgroundGray, provider), 12f)
++                setPadding(dp(12f), dp(6f), dp(12f), 0)
++            }
++            addEntry(1L, SAMPLE_USERNAME, "Blank name, has a username")
++            addEntry(4L, null, "Blank name, no username")
++            note = noteView(context, provider, dialog, 0)
++            addView(note, LinearLayout.LayoutParams(-1, -2))
++            update(null)
++        }
++
++        /** [typedPhrase] is the phrase being edited in the dialog, null shows the saved one. */
++        fun update(typedPhrase: String?) {
++            for (entry in entries) {
++                // the stock name stays blank while the option is off
++                entry.name.text = InvisibleNames.sampleName(entry.username, typedPhrase) ?: BLANK
++            }
++            note.text = lc(if (TeleConfig.INVISIBLE_NAMES.value) NOTE_NAMES else NOTE_NAMES_OFF)
++        }
++
++        private fun addEntry(id: Long, username: String?, status: String) {
++            val row = LinearLayout(context)
++            row.orientation = LinearLayout.HORIZONTAL
++            row.gravity = Gravity.CENTER_VERTICAL
++            row.setPadding(0, dp(6f), 0, dp(6f))
++
++            val avatar = AvatarDrawable()
++            avatar.setTextSize(dp(16f))
++            avatar.setInfo(id, BLANK, null)
++            row.addView(AvatarView(context, avatar), LinearLayout.LayoutParams(dp(40f), dp(40f)))
++
++            val texts = LinearLayout(context)
++            texts.orientation = LinearLayout.VERTICAL
++            val name = TextView(context)
++            name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++            name.typeface = AndroidUtilities.bold()
++            name.setTextColor(Theme.getColor(if (dialog) Theme.key_dialogTextBlack else Theme.key_windowBackgroundWhiteBlackText, provider))
++            name.maxLines = 1
++            name.ellipsize = TextUtils.TruncateAt.END
++            texts.addView(name, LinearLayout.LayoutParams(-1, -2))
++            val state = TextView(context)
++            state.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            state.setTextColor(Theme.getColor(if (dialog) Theme.key_dialogTextGray2 else Theme.key_windowBackgroundWhiteGrayText2, provider))
++            state.maxLines = 1
++            state.ellipsize = TextUtils.TruncateAt.END
++            state.text = lc(status)
++            texts.addView(state, LinearLayout.LayoutParams(-1, -2))
++            val textParams = LinearLayout.LayoutParams(0, -2, 1f)
++            textParams.marginStart = dp(12f)
++            row.addView(texts, textParams)
++
++            addView(row, LinearLayout.LayoutParams(-1, -2))
++            entries.add(Entry(username, name))
++        }
++    }
++
++    /** The avatar drawable has no view of its own: a plain circle on the card. */
++    private class AvatarView(context: Context, private val avatar: AvatarDrawable) : View(context) {
++        override fun onDraw(canvas: Canvas) {
++            avatar.setBounds(0, 0, width, height)
++            avatar.draw(canvas)
++        }
++    }
++
++    /** The names preview of the page: under the phrase row, inside its group. */
++    @JvmStatic
++    fun namesView(context: Context, provider: Theme.ResourcesProvider?): View =
++        framed(context, NamesPreview(context, provider, false))
++
++    /** The peer id rows of a made-up user and a made-up channel, formatted by the current settings. */
++    @JvmStatic
++    fun idsView(context: Context, provider: Theme.ResourcesProvider?): View {
++        val card = card(context, provider)
++        if (TeleConfig.SHOW_PEER_ID.value) {
++            addPeer(card, provider, "Example user", PeerId.sample(false, 2, false))
++            addPeer(card, provider, "Example channel", PeerId.sample(true, 5, true))
++        }
++        card.addView(noteView(context, provider, false, dp(12f)).apply {
++            text = lc(if (TeleConfig.SHOW_PEER_ID.value) NOTE_IDS else NOTE_IDS_OFF)
++        }, LinearLayout.LayoutParams(-1, -2))
++        return framed(context, card)
++    }
++
++    /** A bio made only of hidden characters: chips with the code points while the option is on. */
++    @JvmStatic
++    fun hiddenCharsView(context: Context, provider: Theme.ResourcesProvider?): View {
++        val card = card(context, provider)
++        val cell = TextDetailCell(context, 12, provider, false, false)
++        // the same call as the profile bio: stale chips are dropped and the new ones set by the option
++        val bio = InvisibleNames.withHiddenChars(SpannableStringBuilder(SAMPLE_BIO))
++        cell.setTextAndValue(bio, LocaleController.getString(R.string.UserBio), false)
++        card.addView(cell, LinearLayout.LayoutParams(-1, -2))
++        card.addView(noteView(context, provider, false, dp(12f)).apply {
++            text = lc(if (TeleConfig.SHOW_HIDDEN_CHARS.value) NOTE_CHARS else NOTE_CHARS_OFF)
++        }, LinearLayout.LayoutParams(-1, -2))
++        return framed(context, card)
++    }
++
++    private fun addPeer(card: LinearLayout, provider: Theme.ResourcesProvider?, title: String, sample: PeerId.Sample) {
++        val context = card.context
++        val header = TextView(context)
++        header.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++        header.typeface = AndroidUtilities.bold()
++        header.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader, provider))
++        header.setPadding(dp(12f), dp(10f), dp(12f), dp(0f))
++        header.text = lc(title)
++        card.addView(header, LinearLayout.LayoutParams(-1, -2))
++
++        val id = TextDetailCell(context, 12, provider, false, false)
++        id.setTextAndValue(sample.id, LocaleController.getString(R.string.TeleProfileId), sample.dc != null)
++        card.addView(id, LinearLayout.LayoutParams(-1, -2))
++        val dc = sample.dc ?: return
++        val row = TextDetailCell(context, 12, provider, false, false)
++        row.setTextAndValue(dc, LocaleController.getString(R.string.TeleProfileDc), false)
++        card.addView(row, LinearLayout.LayoutParams(-1, -2))
++    }
++
++    private const val NOTE_NAMES = "Examples with made-up names. Nothing is loaded or sent."
++    private const val NOTE_NAMES_OFF = "The option is off: blank names stay blank."
++    private const val NOTE_IDS = "Examples with made-up ids and data centers. Nothing is loaded or sent."
++    private const val NOTE_IDS_OFF = "The ID row is off: profiles show no ID."
++    private const val NOTE_CHARS = "An example bio made only of hidden characters. Nothing is loaded or sent."
++    private const val NOTE_CHARS_OFF = "The option is off: such a bio looks empty."
++
++    private fun noteView(context: Context, provider: Theme.ResourcesProvider?, dialog: Boolean, left: Int): TextView {
++        val view = TextView(context)
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        view.setTextColor(Theme.getColor(if (dialog) Theme.key_dialogTextGray2 else Theme.key_windowBackgroundWhiteGrayText2, provider))
++        view.setPadding(left, dp(6f), left, dp(10f))
++        return view
++    }
++
++    private fun card(context: Context, provider: Theme.ResourcesProvider?): LinearLayout {
++        val card = LinearLayout(context)
++        card.orientation = LinearLayout.VERTICAL
++        card.layoutDirection = direction()
++        card.background = round(Theme.getColor(Theme.key_windowBackgroundGray, provider), 12f)
++        return card
++    }
++
++    // the adapter replaces the layout params of a custom row, so the margins live in a frame
++    private fun framed(context: Context, content: View): View {
++        val frame = FrameLayout(context)
++        frame.setPadding(dp(9f), dp(4f), dp(9f), dp(4f))
++        frame.addView(content, FrameLayout.LayoutParams(-1, -2))
++        return frame
++    }
++
++    private fun direction(): Int = if (LocaleController.isRTL) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
++
++    private fun round(color: Int, radius: Float): GradientDrawable {
++        val drawable = GradientDrawable()
++        drawable.setColor(color)
++        drawable.cornerRadius = dp(radius).toFloat()
++        return drawable
++    }
++
++    private fun lc(text: String): String = TeleLowercase.lc(text)
++
++    private fun dp(value: Float): Int = AndroidUtilities.dp(value)
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 392dcc229..a59003c19 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -77,6 +77,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         }
+         val result = ArrayList<Row>()
+         for (row in page) {
++            if (row.type == TYPE_CUSTOM && row.parent != null) continue // added under its group
+             val key = row.item?.key
+             val parentKey = if (key != null) childParent[key] else null
+             if (parentKey != null && page.any { it.item?.key == parentKey }) {
+@@ -97,6 +98,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 val child = page.firstOrNull { it.item?.key == childKey } ?: continue
+                 result.add(child.copy(parent = row.item, indent = 1))
+             }
++            // the previews of the group go last and hide together with it
++            page.filterTo(result) { it.type == TYPE_CUSTOM && it.parent === row.item }
+         }
+         return result
+     }
+@@ -224,7 +227,18 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
+         builder.setTitle(lc("Phrase"))
+         builder.setMessage(lc("Shown instead of a blank name that has no username. Up to 64 characters."))
+-        builder.setView(input)
++        // the example below the field follows the typed phrase, like in the desktop client
++        val preview = TelePreviews.NamesPreview(activity, resourceProvider, true)
++        input.addTextChangedListener(object : android.text.TextWatcher {
++            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {}
++            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) {}
++            override fun afterTextChanged(text: android.text.Editable?) = preview.update(text?.toString().orEmpty())
++        })
++        val box = android.widget.LinearLayout(activity)
++        box.orientation = android.widget.LinearLayout.VERTICAL
++        box.addView(input, android.widget.LinearLayout.LayoutParams(-1, -2))
++        box.addView(preview, android.widget.LinearLayout.LayoutParams(-1, -2))
++        builder.setView(box)
+         builder.setPositiveButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.OK)) { _, _ ->
+             setInvisiblePhrase(input.text.toString().replace(Regex("\\s+"), " ").trim())
+         }
+@@ -539,7 +553,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         listView?.adapter?.update(true)
+      }
+ 
+-    /** The live preview of the ghost mode with the caption under it, like in the desktop client. */
++    /** The live previews of the settings pages: the ghost mode with its caption, the names, the ids and the hidden characters. */
+     private fun customView(row: Row): View? {
+         val context = screenContext ?: return null
+         return when (row.mode) {
+@@ -556,6 +570,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 caption.setPadding(AndroidUtilities.dp(21f), AndroidUtilities.dp(4f), AndroidUtilities.dp(21f), AndroidUtilities.dp(8f))
+                 caption
+             }
++            "names_preview" -> TelePreviews.namesView(context, resourceProvider)
++            "ids_preview" -> TelePreviews.idsView(context, resourceProvider)
++            "hidden_chars_preview" -> TelePreviews.hiddenCharsView(context, resourceProvider)
+             else -> null
+         }
+     }
+@@ -1157,6 +1174,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Bot api style ids", TeleConfig.BOT_API_PEER_IDS),
+                 toggle("Show data center", TeleConfig.SHOW_DC),
+                 toggle("Id and dc in one row", TeleConfig.MERGE_ID_DC),
++                Row(TYPE_CUSTOM, mode = "ids_preview", parent = TeleConfig.SHOW_PEER_ID),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Gifts and IDs"),
+                 toggle("Show gift id", TeleConfig.SHOW_GIFT_IDS),
+@@ -1179,7 +1197,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Show usernames for invisible names", TeleConfig.INVISIBLE_NAMES),
+                 Row(TYPE_VALUE, "Without a username", value = if (TeleConfig.INVISIBLE_NAMES_FALLBACK.value == "id") "ID" else "Phrase", item = TeleConfig.INVISIBLE_NAMES_FALLBACK),
+                 Row(TYPE_VALUE, "Phrase", value = TeleConfig.INVISIBLE_NAMES_PHRASE.value.ifBlank { tele.helpers.InvisibleNames.defaultPhrase() }, item = TeleConfig.INVISIBLE_NAMES_PHRASE),
++                Row(TYPE_CUSTOM, mode = "names_preview", parent = TeleConfig.INVISIBLE_NAMES),
+                 toggle("Show hidden characters", TeleConfig.SHOW_HIDDEN_CHARS),
++                Row(TYPE_CUSTOM, mode = "hidden_chars_preview"),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Aliases"),
+                 toggle("Username aliases", TeleConfig.USERNAME_ALIASES),

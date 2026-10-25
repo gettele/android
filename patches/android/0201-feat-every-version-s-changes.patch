@@ -1,0 +1,1371 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 10:28:51 +0300
+Subject: [PATCH 201/202] feat: every version's changes
+
+---
+ .../main/java/tele/helpers/TeleChangelog.kt   |   9 +
+ .../java/tele/helpers/TeleChangelogHistory.kt | 163 ++++
+ .../java/tele/helpers/TeleSettingsLinks.kt    |   8 +
+ .../tele/ui/settings/TeleChangelogActivity.kt | 196 ++++
+ .../java/tele/ui/settings/TeleChatActivity.kt |   3 +
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   4 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  24 +
+ .../src/main/res/raw/changelog_history.json   | 838 ++++++++++++++++++
+ 8 files changed, 1244 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt
+ create mode 100644 TMessagesProj/src/main/res/raw/changelog_history.json
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt b/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
+index a7e7fc445..90b658786 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleChangelog.kt
+@@ -132,7 +132,15 @@ object TeleChangelog {
+         }
+     }
+ 
++    // the history in the apk answers when this build has no notes of its own
+     private fun showMissing(fragment: BaseFragment, missing: Missing) {
++        TeleChangelogHistory.load { history ->
++            if (fragment.parentActivity == null || fragment.parentLayout == null) return@load
++            if (history.isEmpty()) showMissingDialog(fragment, missing) else fragment.presentFragment(tele.ui.settings.TeleChangelogActivity())
++        }
++    }
++
++    private fun showMissingDialog(fragment: BaseFragment, missing: Missing) {
+         val activity = fragment.parentActivity ?: return
+         val text = when (missing) {
+             Missing.UNPUBLISHED -> TeleLowercase.lc("There are no release notes for this tele version.")
+@@ -302,6 +310,7 @@ object TeleChangelog {
+         val row = TL_keyboard.TL_keyboardInlineButtonRow()
+         row.buttons.add(urlButton(TeleLowercase.lc("Full changelog"), notes.url))
+         if (TeleNewSettings.fresh().isNotEmpty()) row.buttons.add(urlButton(TeleLowercase.lc("New settings"), tele.ui.settings.TeleChatActivity.NEW_SETTINGS_LINK))
++        row.buttons.add(urlButton(TeleLowercase.lc("Versions"), tele.ui.settings.TeleChatActivity.HISTORY_LINK))
+         return TLRPC.TL_replyInlineMarkup().apply { rows.add(row) }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt b/TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt
+new file mode 100644
+index 000000000..59d1c7b8d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleChangelogHistory.kt
+@@ -0,0 +1,163 @@
++package tele.helpers
++
++import android.text.Spannable
++import android.text.SpannableString
++import android.text.Spanned
++import android.text.style.ForegroundColorSpan
++import android.text.style.StyleSpan
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.DispatchQueue
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import tele.ui.settings.TeleSettingsActivity
++
++// the changelog of every tele release (tele desktop 0237): res/raw/changelog_history.json is written by ci into the apk,
++// so it's read offline and never fetched
++object TeleChangelogHistory {
++    private const val MAX_SIZE = 4 * 1024 * 1024
++    private const val MAX_RELEASES = 200
++    private const val MAX_ITEMS = 100
++    private const val MAX_OPTIONS = 16
++    private const val MAX_TITLE = 64
++    private const val MAX_ITEM = 1024
++    private val TAG = Regex("^v[0-9][0-9.]*-tele\\.([1-9][0-9]*)$")
++    private val OPTION = Regex("^tele-[a-z0-9][a-z0-9-]{0,63}$")
++
++    class Item(@JvmField val text: String, @JvmField val where: String, @JvmField val category: String, @JvmField val options: List<String>)
++    class Release(@JvmField val version: Int, @JvmField val tag: String, @JvmField val title: String, @JvmField val url: String, @JvmField val items: List<Item>)
++
++    private val queue by lazy { DispatchQueue("teleChangelogHistory") }
++    // UI thread only; the list is immutable once published
++    private var releases: List<Release>? = null
++    private var loading = false
++    private val waiting = ArrayList<(List<Release>) -> Unit>()
++
++    /** Newest first; empty when the build has no history or it is malformed. The callback runs on the UI thread. */
++    @JvmStatic
++    fun load(callback: (List<Release>) -> Unit) {
++        AndroidUtilities.runOnUIThread {
++            val known = releases
++            if (known != null) {
++                callback(known)
++                return@runOnUIThread
++            }
++            waiting.add(callback)
++            if (loading) return@runOnUIThread
++            loading = true
++            queue.postRunnable {
++                val parsed = readAsset()
++                AndroidUtilities.runOnUIThread {
++                    releases = parsed
++                    loading = false
++                    val callbacks = ArrayList(waiting)
++                    waiting.clear()
++                    callbacks.forEach { it(parsed) }
++                }
++            }
++        }
++    }
++
++    /** The parsed history when it has been loaded already, else null. */
++    @JvmStatic
++    fun loaded(): List<Release>? = releases
++
++    private fun readAsset(): List<Release> {
++        return try {
++            val bytes = ApplicationLoader.applicationContext.resources.openRawResource(R.raw.changelog_history).use { input ->
++                val out = java.io.ByteArrayOutputStream()
++                val buffer = ByteArray(16 * 1024)
++                while (true) {
++                    val read = input.read(buffer)
++                    if (read < 0) break
++                    out.write(buffer, 0, read)
++                    if (out.size() > MAX_SIZE) throw Exception("The history is too large")
++                }
++                out.toByteArray()
++            }
++            parse(String(bytes, Charsets.UTF_8))
++        } catch (e: Exception) {
++            FileLog.e("TeleChangelogHistory: ${e.javaClass.simpleName}")
++            emptyList()
++        }
++    }
++
++    private fun text(value: Any?, limit: Int): String = (value as? String)?.trim().orEmpty().take(limit)
++
++    private fun parse(source: String): List<Release> {
++        val array = JSONObject(source).optJSONArray("releases") ?: return emptyList()
++        val byVersion = HashMap<Int, Release>()
++        for (i in 0 until minOf(array.length(), MAX_RELEASES)) {
++            val o = array.optJSONObject(i) ?: continue
++            val tag = o.optString("tag")
++            val version = TAG.matchEntire(tag)?.groupValues?.get(1)?.toIntOrNull() ?: o.optInt("version")
++            if (version <= 0 || byVersion.containsKey(version)) continue
++            val list = o.optJSONArray("items") ?: continue
++            val items = ArrayList<Item>()
++            for (j in 0 until minOf(list.length(), MAX_ITEMS)) {
++                val item = list.optJSONObject(j) ?: continue
++                val body = text(item.opt("text"), MAX_ITEM)
++                if (body.isEmpty()) continue
++                val options = ArrayList<String>()
++                val raw = item.optJSONArray("options")
++                if (raw != null) {
++                    for (k in 0 until minOf(raw.length(), MAX_OPTIONS)) {
++                        val id = raw.optString(k)
++                        if (OPTION.matches(id) && id !in options) options.add(id)
++                    }
++                }
++                items.add(Item(body, text(item.opt("where"), MAX_ITEM), text(item.opt("category"), MAX_TITLE), options))
++            }
++            if (items.isEmpty()) continue
++            val title = text(o.opt("title"), MAX_TITLE).ifEmpty { "tele $version" }
++            val url = o.optString("url").takeIf { it.startsWith(TeleUpdater.RELEASES + "/") } ?: "${TeleUpdater.RELEASES}/tag/$tag"
++            byVersion[version] = Release(version, tag, title, url, items)
++        }
++        return byVersion.values.sortedByDescending { it.version }
++    }
++
++    /** The words of a search query. */
++    @JvmStatic
++    fun words(query: String): List<String> = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
++
++    /** Every word is in the text, the place or the category of the item; no words match everything. */
++    @JvmStatic
++    fun matches(item: Item, words: List<String>): Boolean {
++        if (words.isEmpty()) return true
++        return words.all { word ->
++            item.text.contains(word, true) || item.where.contains(word, true) || item.category.contains(word, true)
++        }
++    }
++
++    /** The text with the found words in bold and blue. */
++    @JvmStatic
++    fun highlight(text: String, words: List<String>): CharSequence {
++        if (words.isEmpty()) return text
++        val spannable = SpannableString(text)
++        var found = false
++        for (word in words) {
++            var from = 0
++            while (true) {
++                val index = text.indexOf(word, from, true)
++                if (index < 0) break
++                from = index + word.length
++                found = true
++                spannable.setSpan(StyleSpan(android.graphics.Typeface.BOLD), index, from, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
++                spannable.setSpan(ForegroundColorSpan(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText)), index, from, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++            }
++        }
++        return if (found) spannable else text
++    }
++
++    /** The id of the setting an item is about: its own option ids first, then the name its place ends with. */
++    @JvmStatic
++    fun settingId(item: Item): String? {
++        for (option in item.options) {
++            TeleSettingsLinks.resolve(option)?.let { return it }
++        }
++        val last = item.where.substringAfterLast('→').trim()
++        return if (last.isEmpty()) null else TeleSettingsActivity.idForTitle(last)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+index 9c0707ccd..102eb85e4 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -143,4 +143,12 @@ object TeleSettingsLinks {
+         if (!id.startsWith("tele-")) id = "tele-$id"
+         return ALIASES[id] ?: id
+     }
++
++    private val resolved = HashMap<String, String?>()
++
++    /** The canonical id of a row that exists in this build, or null; UI thread. */
++    @JvmStatic
++    fun resolve(raw: String): String? = resolved.getOrPut(raw) {
++        canonicalId(raw).takeIf { TeleSettingsActivity.pageOf(it, null) != null }
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt
+new file mode 100644
+index 000000000..e7da313ab
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleChangelogActivity.kt
+@@ -0,0 +1,196 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.EditText
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.browser.Browser
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.ActionBarMenuItem
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.ShadowSectionCell
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.helpers.TeleChangelogHistory
++import tele.helpers.TeleLowercase
++import tele.helpers.TeleSettingsLinks
++
++// the changelog of every tele release from the apk, with a search (tele desktop 0237); works offline
++class TeleChangelogActivity : BaseFragment() {
++
++    private sealed class Row {
++        class Title(val text: String) : Row()
++        class Entry(val release: TeleChangelogHistory.Release, val item: TeleChangelogHistory.Item) : Row()
++        object Gap : Row()
++        class Note(val text: String) : Row()
++    }
++
++    private var releases: List<TeleChangelogHistory.Release>? = null
++    private var rows: List<Row> = emptyList()
++    private var words: List<String> = emptyList()
++    private var adapter: Adapter? = null
++
++    private fun lc(text: String): String = TeleLowercase.lc(text)
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc("What's new"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment()
++            }
++        })
++        actionBar.createMenu().addItem(SEARCH_ID, R.drawable.outline_header_search)
++            .setIsSearchField(true, false)
++            .setActionBarMenuItemSearchListener(object : ActionBarMenuItem.ActionBarMenuItemSearchListener() {
++                override fun onSearchExpand() {
++                    search("")
++                }
++
++                override fun onSearchCollapse() {
++                    search("")
++                }
++
++                override fun onTextChanged(editText: EditText) {
++                    search(editText.text.toString())
++                }
++            })
++            .setSearchFieldHint(LocaleController.getString(R.string.Search))
++
++        val root = FrameLayout(context)
++        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = root
++        val list = RecyclerListView(context)
++        list.setLayoutManager(LinearLayoutManager(context))
++        adapter = Adapter(context)
++        list.adapter = adapter
++        list.setOnItemClickListener { _, position -> open(rows.getOrNull(position)) }
++        root.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++
++        // parsed off the main thread; the rows appear when it is done
++        rows = listOf(Row.Note(lc("Loading…")))
++        TeleChangelogHistory.load { loaded ->
++            releases = loaded
++            rebuild()
++        }
++        return root
++    }
++
++    private fun search(query: String) {
++        val now = TeleChangelogHistory.words(query)
++        if (now == words) return
++        words = now
++        rebuild()
++    }
++
++    private fun rebuild() {
++        val loaded = releases ?: return
++        val result = ArrayList<Row>()
++        for (release in loaded) {
++            val found = release.items.filter { TeleChangelogHistory.matches(it, words) }
++            if (found.isEmpty()) continue
++            if (result.isNotEmpty()) result.add(Row.Gap)
++            result.add(Row.Title(lc(release.title)))
++            found.forEach { result.add(Row.Entry(release, it)) }
++        }
++        if (result.isEmpty()) {
++            result.add(Row.Note(lc(if (loaded.isEmpty()) "There is no changelog history in this build." else "Nothing found.")))
++        }
++        rows = result
++        adapter?.notifyDataSetChanged()
++    }
++
++    private fun open(row: Row?) {
++        val entry = row as? Row.Entry ?: return
++        val id = TeleChangelogHistory.settingId(entry.item)
++        if (id != null) {
++            presentFragment(TeleSettingsLinks.fragment("tg://settings/tele?highlight=$id"))
++        } else {
++            Browser.openUrl(parentActivity, entry.release.url)
++        }
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        override fun getItemCount(): Int = rows.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = holder.itemViewType == TYPE_ENTRY
++
++        override fun getItemViewType(position: Int): Int = when (rows[position]) {
++            is Row.Title -> TYPE_TITLE
++            is Row.Entry -> TYPE_ENTRY
++            is Row.Gap -> TYPE_GAP
++            is Row.Note -> TYPE_NOTE
++        }
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_TITLE -> HeaderCell(context).apply { setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite)) }
++                TYPE_ENTRY -> EntryCell(context)
++                TYPE_GAP -> ShadowSectionCell(context)
++                else -> TextView(context).apply {
++                    gravity = Gravity.CENTER
++                    setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
++                    setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(48f), AndroidUtilities.dp(24f), AndroidUtilities.dp(48f))
++                }
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            // recycled cells are fully reset by every bind
++            when (val row = rows[position]) {
++                is Row.Title -> (holder.itemView as HeaderCell).setText(row.text)
++                is Row.Entry -> (holder.itemView as EntryCell).bind(row.item, words)
++                is Row.Note -> (holder.itemView as TextView).text = row.text
++                is Row.Gap -> {}
++            }
++        }
++    }
++
++    private class EntryCell(context: Context) : LinearLayout(context) {
++        private val body = TextView(context)
++        private val details = TextView(context)
++
++        init {
++            orientation = VERTICAL
++            setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++            setPadding(AndroidUtilities.dp(21f), AndroidUtilities.dp(10f), AndroidUtilities.dp(21f), AndroidUtilities.dp(10f))
++            body.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++            body.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++            details.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            details.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++            addView(body, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++            addView(details, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = AndroidUtilities.dp(2f) })
++        }
++
++        fun bind(item: TeleChangelogHistory.Item, words: List<String>) {
++            body.text = TeleChangelogHistory.highlight(item.text, words)
++            val place = listOf(item.category, item.where).filter { it.isNotEmpty() }.distinct().joinToString(" · ")
++            details.visibility = if (place.isEmpty()) GONE else VISIBLE
++            details.text = TeleChangelogHistory.highlight(place, words)
++        }
++    }
++
++    companion object {
++        private const val SEARCH_ID = 1
++        private const val TYPE_TITLE = 0
++        private const val TYPE_ENTRY = 1
++        private const val TYPE_GAP = 2
++        private const val TYPE_NOTE = 3
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
+index 8ec404a4d..12ccea41b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleChatActivity.kt
+@@ -115,6 +115,8 @@ class TeleChatActivity : BaseFragment(), NotificationCenter.NotificationCenterDe
+         if (url.isNullOrEmpty()) return
+         if (url == NEW_SETTINGS_LINK) {
+             presentFragment(TeleSettingsActivity(TeleSettingsActivity.MODE_NEW))
++        } else if (url == HISTORY_LINK) {
++            presentFragment(TeleChangelogActivity())
+         } else {
+             Browser.openUrl(parentActivity, url)
+         }
+@@ -182,6 +184,7 @@ class TeleChatActivity : BaseFragment(), NotificationCenter.NotificationCenterDe
+ 
+     companion object {
+         const val NEW_SETTINGS_LINK = "tg://settings/tele/new"
++        const val HISTORY_LINK = "tg://settings/tele/history"
+         private const val MENU_ABOUT = 1
+         private const val MENU_DELETE = 2
+         private const val TYPE_DATE = 0
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index e49303ae6..27c2174c9 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -318,7 +318,9 @@ object TeleSearch {
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+             section(GUID_UPDATES + 1, "Check for updates", "updates", TeleSettingsActivity.MODE_UPDATES),
+             section(GUID_UPDATES + 2, "Show what's new after updates", "updates", TeleSettingsActivity.MODE_UPDATES),
+-            ProfileActivity.SearchAdapter.SearchResult(GUID_UPDATES + 3, lc("What's new"), icon) { tele.helpers.TeleChangelog.open(fragment) }
++            ProfileActivity.SearchAdapter.SearchResult(GUID_UPDATES + 3, lc("What's new"), icon) { tele.helpers.TeleChangelog.open(fragment) },
++            screen(1387, "Version history") { TeleChangelogActivity() },
++            section(1388, "Release notes of every version", "updates", TeleSettingsActivity.MODE_UPDATES, "Version history")
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4bbcb6f0e..4201ba378 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -545,6 +545,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
+                 MODE_UPDATE_ACTION -> if (tele.helpers.TeleUpdater.isReady()) tele.helpers.TeleUpdater.install(parentActivity) else tele.helpers.TeleUpdater.checkNow()
+                 MODE_WHATS_NEW -> tele.helpers.TeleChangelog.open(this)
++                MODE_HISTORY -> presentFragment(TeleChangelogActivity())
+                 else -> presentFragment(TeleSettingsActivity(row.mode ?: MODE_ROOT))
+             }
+         }
+@@ -713,6 +714,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         const val MODE_RULES = "rules"
+         const val MODE_UPDATE_ACTION = "update_action"
+         const val MODE_WHATS_NEW = "whats_new"
++        const val MODE_HISTORY = "history"
+         const val MODE_NEW = "new"
+ 
+         // the old pages open their new home
+@@ -740,6 +742,27 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             return pages.firstOrNull { page -> buildRows(page, true).any { idOf(it) == id } }
+         }
+ 
++        // the lowercase names of the rows that have an id: a changelog item names its setting at the end of its place
++        private val titleIds: Map<String, String> by lazy {
++            val map = HashMap<String, String>()
++            for (mode in SECTION_SPECS.map { it.mode } + MODE_ROOT) {
++                for (row in buildRows(mode, true)) {
++                    val title = row.title ?: continue
++                    if (row.type == TYPE_HEADER || row.type == TYPE_SHADOW || row.type == TYPE_CUSTOM) continue
++                    val id = idOf(row) ?: continue
++                    val key = plainTitle(title)
++                    if (!map.containsKey(key)) map[key] = id
++                }
++            }
++            map
++        }
++
++        private fun plainTitle(title: String): String = title.lowercase().replace(Regex(" \\(.*\\)$"), "").trim()
++
++        /** The id of the row with this name, or null; UI thread. */
++        @JvmStatic
++        fun idForTitle(title: String): String? = titleIds[plainTitle(title)]
++
+         private const val TYPE_HEADER = 0
+         private const val TYPE_VALUE = 1
+         private const val TYPE_TOGGLE = 2
+@@ -1262,6 +1285,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Show what's new after updates", TeleConfig.SHOW_CHANGELOG),
+                 Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION, id = "tele-check-updates"),
+                 Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW, id = "tele-changelog"),
++                Row(TYPE_LINK, title = "Version history", mode = MODE_HISTORY, id = "tele-changelog-history"),
+                 Row(TYPE_SHADOW, title = tele.helpers.TeleUpdater.statusText())
+             )
+             MODE_PRIVACY -> {
+diff --git a/TMessagesProj/src/main/res/raw/changelog_history.json b/TMessagesProj/src/main/res/raw/changelog_history.json
+new file mode 100644
+index 000000000..59fcb1470
+--- /dev/null
++++ b/TMessagesProj/src/main/res/raw/changelog_history.json
+@@ -0,0 +1,838 @@
++{
++ "releases": [
++  {
++   "categories": [
++    "messages",
++    "chats",
++    "sending",
++    "menus",
++    "interface",
++    "everywhere"
++   ],
++   "items": [
++    {
++     "category": "messages",
++     "text": "deleted messages list their chats like the chat list, and a chat shows them as bubbles",
++     "where": "settings → tele → messages → deleted messages"
++    },
++    {
++     "category": "messages",
++     "text": "choose which deleted messages to keep: in bot chats, in saved messages, the ones you delete",
++     "where": "settings → tele → messages → keep deleted messages"
++    },
++    {
++     "category": "messages",
++     "text": "deleted messages and edit history can be forgotten after 1, 7 or 30 days, and their media survives cache cleaning",
++     "where": "settings → tele → messages → keep deleted for"
++    },
++    {
++     "category": "messages",
++     "text": "deleted and left chats and topics stay readable in deleted messages",
++     "where": "settings → tele → messages → deleted chats and topics"
++    },
++    {
++     "category": "messages",
++     "text": "a deleted channel post is rebuilt from its forward when you open it from there",
++     "where": "settings → tele → messages → recover channel posts from forwards"
++    },
++    {
++     "category": "messages",
++     "text": "bookmark messages and step through them with a button, a long press lists them",
++     "where": "settings → tele → messages → message bookmarks"
++    },
++    {
++     "category": "messages",
++     "text": "after sending while scrolled up, a button jumps back to where you were reading",
++     "where": "settings → tele → messages → return to where you were reading"
++    },
++    {
++     "category": "messages",
++     "text": "tele logs when private chats read your messages and shows it in the message menu",
++     "where": "settings → tele → messages → remember read times"
++    },
++    {
++     "category": "chats",
++     "text": "saved gifs and favorite stickers over the server limit stay on this device",
++     "where": "settings → tele → chats → keep saved gifs and favorite stickers past the limit"
++    },
++    {
++     "category": "sending",
++     "text": "closing the picker with a selection docks it above the field: tap a tile to edit it, + to pick more",
++     "where": "settings → tele → sending → attach media above the field"
++    },
++    {
++     "category": "menus",
++     "text": "remove all your messages from a chat or topic, waiting out flood limits",
++     "where": "settings → tele → menus → remove my messages"
++    },
++    {
++     "category": "interface",
++     "text": "setting descriptions are shorter",
++     "where": "settings → tele"
++    },
++    {
++     "category": "everywhere",
++     "text": "messages the server refuses to delete come back in the chat",
++     "where": ""
++    }
++   ],
++   "tag": "v13.0.3-tele.5",
++   "title": "tele 5",
++   "url": "https://github.com/gettele/android/releases/tag/v13.0.3-tele.5",
++   "version": 5
++  },
++  {
++   "categories": [
++    "drafts",
++    "interface",
++    "menus",
++    "messages",
++    "tele"
++   ],
++   "items": [
++    {
++     "category": "drafts",
++     "text": "the drafts page lists the chats like the chat list, and a chat opens its drafts as outgoing bubbles, with its own field to write new ones and attach photos and videos.",
++     "where": "settings → tele → messages → saved drafts"
++    },
++    {
++     "category": "drafts",
++     "text": "a draft is edited in place: an editing draft bar sits over the field, the send button saves it, and the send menu can send it and remove the draft or save it as a new one.",
++     "where": "drafts → edit"
++    },
++    {
++     "category": "drafts",
++     "text": "a draft can be sent right away or to another chat, without sound, scheduled or deleted after sending, and several drafts can be selected at once.",
++     "where": "drafts → send now"
++    },
++    {
++     "category": "drafts",
++     "text": "a long text you erase or replace, a local draft that a cloud draft overwrites and the media you clear from the tray are kept for a week as recently discarded drafts, up to 5 per chat, to restore or keep.",
++     "where": "send button menu → recently discarded"
++    },
++    {
++     "category": "drafts",
++     "text": "the drafts button by the field opens the drafts of the chat, a long tap edits the latest one.",
++     "where": ""
++    },
++    {
++     "category": "interface",
++     "text": "the title above the chat list is a live template: build, version, time and date, your name, the unread count, the connection status and more, with an editor, a live preview and presets.",
++     "where": "settings → tele → interface → chat list title"
++    },
++    {
++     "category": "interface",
++     "text": "the tele settings follow the desktop pages: interface, chats, messages, sending, notifications, menus, privacy, profiles and ids, bots, debug, server, backup and updates, and the tele row has its own block above telegram premium.",
++     "where": "settings → tele"
++    },
++    {
++     "category": "interface",
++     "text": "a setting with children folds them under its switch, which counts the enabled ones and keeps their values.",
++     "where": "settings → tele"
++    },
++    {
++     "category": "menus",
++     "text": "every tele menu can be rearranged: the order, the hidden items, the separators and the submenus, with presets and a text layout to copy and import.",
++     "where": "settings → tele → menus → menu editor"
++    },
++    {
++     "category": "menus",
++     "text": "the menu items of a feature stay hidden until the feature is on.",
++     "where": "settings → tele → menus"
++    },
++    {
++     "category": "menus",
++     "text": "the message menu can copy the text of a service message.",
++     "where": "settings → tele → menus → copy the text of service messages"
++    },
++    {
++     "category": "menus",
++     "text": "the message menu can copy the path of a downloaded file.",
++     "where": "settings → tele → menus → copy the path of a downloaded file"
++    },
++    {
++     "category": "menus",
++     "text": "the TL view of a message opens inside the app.",
++     "where": "settings → tele → menus → view messages as TL"
++    },
++    {
++     "category": "menus",
++     "text": "the menu of a message with an alias can copy or delete the alias.",
++     "where": "settings → tele → profiles and ids → username aliases"
++    },
++    {
++     "category": "menus",
++     "text": "the menu of a sticker set or an emoji pack can copy the id of its owner.",
++     "where": "settings → tele → profiles and ids → copy sticker set owner id"
++    },
++    {
++     "category": "messages",
++     "text": "service messages that you can delete can be selected too.",
++     "where": "settings → tele → messages → select service messages"
++    },
++    {
++     "category": "tele",
++     "text": "tele checks for updates when it starts, not only after the settings are opened.",
++     "where": "settings → tele → updates"
++    },
++    {
++     "category": "tele",
++     "text": "the test backend checkbox is on the login screen in every build, so an added account can live on the telegram test server.",
++     "where": "login screen"
++    }
++   ],
++   "tag": "v13.0.3-tele.4",
++   "title": "tele 4",
++   "url": "https://github.com/gettele/android/releases/tag/v13.0.3-tele.4",
++   "version": 4
++  },
++  {
++   "categories": [
++    "updates",
++    "interface",
++    "links",
++    "privacy",
++    "tele"
++   ],
++   "items": [
++    {
++     "category": "updates",
++     "text": "the new in tele page lists the settings that came with the new build, also for a user who updated from tele 1.",
++     "where": "settings → tele → updates"
++    },
++    {
++     "category": "updates",
++     "text": "an interrupted update download continues where it stopped, and a failed check waits longer before the next attempt.",
++     "where": "settings → tele → updates"
++    },
++    {
++     "category": "updates",
++     "text": "a scheduled message that the server delayed is sent on time, with a bounded number of retries.",
++     "where": "settings → tele → sending → send scheduled messages on time"
++    },
++    {
++     "category": "interface",
++     "text": "service messages show their time too, like joins and pins.",
++     "where": "settings → tele → interface → show seconds in message times"
++    },
++    {
++     "category": "interface",
++     "text": "the similar channels block and the request behind it can be turned off.",
++     "where": "settings → tele → interface → hide similar channels"
++    },
++    {
++     "category": "interface",
++     "text": "the tooltip of the collectible status can be hidden.",
++     "where": "settings → tele → interface → hide the collectible status hint"
++    },
++    {
++     "category": "interface",
++     "text": "the animations are limited while the chat is open, and the previous state comes back when the option is turned off.",
++     "where": "settings → tele → interface → reduce motion"
++    },
++    {
++     "category": "interface",
++     "text": "the edited mark is not shown on the messages of a bot.",
++     "where": "settings → tele → interface → no edited mark on bot messages"
++    },
++    {
++     "category": "interface",
++     "text": "a long tap on the start button shows the start parameter of the bot.",
++     "where": "settings → tele → interface → show the start parameter"
++    },
++    {
++     "category": "links",
++     "text": "the link rewrite presets follow the new targets: TikTok goes to tnktok.com only, X adds samekosabax.com, and the old vxtiktok.com target is migrated silently.",
++     "where": "settings → tele → sending → rewrite rules"
++    },
++    {
++     "category": "privacy",
++     "text": "the phone number can be hidden in the profiles.",
++     "where": "settings → tele → privacy → hide phone numbers in profiles"
++    },
++    {
++     "category": "tele",
++     "text": "the gift button in the message field and the gift entry of a channel can be hidden.",
++     "where": "settings → tele → sending → hide the gift button in the message field"
++    },
++    {
++     "category": "tele",
++     "text": "the copied peer id is the plain number, without the spaces and without the data center.",
++     "where": "profile → the id and data center rows"
++    },
++    {
++     "category": "tele",
++     "text": "the data center of a chat comes from the oldest photo of its avatar history, and the row says uncertain when the data centers differ.",
++     "where": "settings → tele → ids → show data center"
++    }
++   ],
++   "tag": "v13.0.3-tele.3",
++   "title": "tele 3",
++   "url": "https://github.com/gettele/android/releases/tag/v13.0.3-tele.3",
++   "version": 3
++  },
++  {
++   "categories": [
++    "tele",
++    "privacy",
++    "links"
++   ],
++   "items": [
++    {
++     "category": "tele",
++     "text": "the tele pages get section rows in a rounded card with explanatory text, and a search result opens the page scrolled to the setting.",
++     "where": "settings → tele, settings search"
++    },
++    {
++     "category": "tele",
++     "text": "the onboarding and permission prompts name the app too.",
++     "where": "launcher, onboarding, settings"
++    },
++    {
++     "category": "tele",
++     "text": "the fork's own texts are capitalized, like telegram's.",
++     "where": "settings → tele"
++    },
++    {
++     "category": "privacy",
++     "text": "pick the people whose messages tele hides in the chat and in the chat list: every peer is hidden completely or faded.",
++     "where": "settings → tele → privacy → ignored → ignored users"
++    },
++    {
++     "category": "privacy",
++     "text": "the profile of a person gets an \"Ignore messages\" row that hides their messages for you.",
++     "where": "settings → tele → privacy → ignored → show the ignore button in the profile"
++    },
++    {
++     "category": "privacy",
++     "text": "the ignored users picker is its own screen with the stock chat rows, a search and a done button.",
++     "where": "settings → tele → privacy → ignored → ignored users"
++    },
++    {
++     "category": "privacy",
++     "text": "the master switch of the ghost options: nothing is hidden while it is off.",
++     "where": "settings → tele → privacy → ghost → ghost mode"
++    },
++    {
++     "category": "privacy",
++     "text": "the live preview of the ghost mode: the card shows what you show and what the peers see.",
++     "where": "settings → tele → privacy → ghost"
++    },
++    {
++     "category": "privacy",
++     "text": "ghost a chat even when the global ghost switches are off, or keep a chat visible while they are on.",
++     "where": "settings → tele → privacy → ghost → always ghost in / never ghost in"
++    },
++    {
++     "category": "privacy",
++     "text": "messages of ghosted chats go out as scheduled, so the server delivers them without marking you online, and tele goes offline again right after the send.",
++     "where": "settings → tele → privacy → ghost → send messages as scheduled"
++    },
++    {
++     "category": "privacy",
++     "text": "the scheduled message shows up in the chat right away, before the server sends it.",
++     "where": "settings → tele → privacy → ghost → show waiting messages in the chat"
++    },
++    {
++     "category": "privacy",
++     "text": "the ghost preview shows the read mark in the outgoing bubble instead of the word read, and the stealth icon sits on a circle.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "incoming messages that match a word or a java regex are faded.",
++     "where": "settings → tele → privacy → hidden words"
++    },
++    {
++     "category": "privacy",
++     "text": "the messages that match a word are hidden instead of faded.",
++     "where": "settings → tele → privacy → hidden words → hide the messages completely"
++    },
++    {
++     "category": "privacy",
++     "text": "ignored people and hidden words stay quiet: no notification, no toast, no mention badge.",
++     "where": "settings → tele → privacy → hidden words → mute ignored messages"
++    },
++    {
++     "category": "privacy",
++     "text": "briefly show the last seen of a peer that hides it, then restore your own rule.",
++     "where": "settings → tele → privacy → peek at hidden last seen"
++    },
++    {
++     "category": "privacy",
++     "text": "block screen capture in every window and hide the sender and the message of the notifications.",
++     "where": "settings → tele → privacy → streamer mode"
++    },
++    {
++     "category": "privacy",
++     "text": "the phone number is hidden in the chat header and in the profile while the streamer mode is on.",
++     "where": "settings → tele → privacy → streamer mode"
++    },
++    {
++     "category": "links",
++     "text": "the rewrite shows a telegram bulletin with what changed instead of a toast, and every rewrite with a random target picks another one.",
++     "where": "settings → tele → privacy → links"
++    }
++   ],
++   "tag": "v13.0.3-tele.2",
++   "title": "tele 2",
++   "url": "https://github.com/gettele/android/releases/tag/v13.0.3-tele.2",
++   "version": 2
++  },
++  {
++   "categories": [
++    "tele",
++    "interface",
++    "privacy",
++    "links",
++    "ids",
++    "sending",
++    "your data",
++    "server",
++    "updates",
++    "everywhere"
++   ],
++   "items": [
++    {
++     "category": "tele",
++     "text": "a tele row in the main settings list opens the fork's own pages: interface, privacy, ids, sending, your data and server.",
++     "where": "settings → tele"
++    },
++    {
++     "category": "tele",
++     "text": "every page has its own icon row, and the main settings search finds every tele page and setting.",
++     "where": "settings → tele, settings search"
++    },
++    {
++     "category": "tele",
++     "text": "the chat list header says which tele build you're on instead of the telegram wordmark, and so does the version line in settings.",
++     "where": "chat list header, settings → version"
++    },
++    {
++     "category": "tele",
++     "text": "its own name, launcher icon (round and themed variants included), notification icon and settings icons, and the texts that name the app say tele.",
++     "where": "launcher, settings"
++    },
++    {
++     "category": "interface",
++     "text": "message times show seconds, like 14:03:21.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "the all chats folder disappears from the folder tabs, the list opens on your first folder.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "no call buttons in private chats and profiles.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "starting a call asks first and names who you're calling.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "links open right away, without the \"open this link?\" box.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "people who aren't in your contacts keep their name in the chat header instead of their phone number.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "text and media spoilers are shown without a tap.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "hides the jump to mention and jump to reaction buttons in chats and the @ and reaction badges in the chat list.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "video userpics stay still.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "long-press a bot button to see what it carries (callback data, switch-inline query, web app url) and copy it.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "the tele server's checkmark and custom icon also show next to sender names in message bubbles.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "collectible username and number cards show their dollar price at the purchase date instead of today's.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "view as TL in the message menu and in the profile menu of users, groups and channels: fetches the object fresh from telegram and opens it on schema.jppgr.am in the browser.",
++     "where": "settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "shot: save one message or a selection as a picture, over the chat background, at 1x to 4x.",
++     "where": "message menu → shot, selection bar; settings → tele → interface"
++    },
++    {
++     "category": "interface",
++     "text": "a one-tap eyedropper button by the palette in the photo editor picks the color from the picture with its strokes, stickers and text.",
++     "where": "settings → tele → interface → editor"
++    },
++    {
++     "category": "interface",
++     "text": "hide and reorder items of the message menu: drag a row by its handle, items the editor doesn't list stay after the others in stock order.",
++     "where": "settings → tele → interface → message menu → editor"
++    },
++    {
++     "category": "privacy",
++     "text": "hides stories everywhere they show, and the share to story option.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "watch stories without showing up among the viewers.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "tele doesn't tell telegram you're online.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "tele doesn't send typing actions.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "opening a chat doesn't mark it as read for the other side.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "playing voice and round messages or opening media doesn't send the viewed mark.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "screenshots and screen recording work in the photo viewer, stories, secret chats, protected chats, voice once and on the passcode screen.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "view-once and timed media can be screenshotted and recorded.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "view-once and timed media open without burning, and the sender still sees them unopened.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "message menu → mark as viewed burns a disappearing media you kept unopened.",
++     "where": "message menu"
++    },
++    {
++     "category": "privacy",
++     "text": "drafts never go to the cloud.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "inline bot results go out as your own messages, without via @bot.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "no sponsored messages in channels and bots.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "privacy",
++     "text": "no sponsor channel pinned to the chat list when you connect through an mtproxy.",
++     "where": "settings → tele → privacy"
++    },
++    {
++     "category": "links",
++     "text": "opened links lose their tracking parameters (utm, fbclid, gclid, si and more), by the same rules as the desktop link cleaner.",
++     "where": "settings → tele → privacy → links"
++    },
++    {
++     "category": "links",
++     "text": "links in the messages you send are cleaned too, the rest of the text stays as it is.",
++     "where": "settings → tele → privacy → links"
++    },
++    {
++     "category": "links",
++     "text": "links you paste are rewritten by your own rules, like x.com to fixupx.com.",
++     "where": "settings → tele → privacy → links"
++    },
++    {
++     "category": "links",
++     "text": "an editor for the rules: domain rules (from to, www and m are kept, several targets are picked at random) and regex rules (find, replace with $1..$9), plus presets for x, instagram, tiktok, reddit, bluesky and pixiv.",
++     "where": "settings → tele → privacy → links → rewrite rules"
++    },
++    {
++     "category": "links",
++     "text": "typed and pasted links get no preview, and the message is sent with no preview even from a draft.",
++     "where": "settings → tele → privacy → links"
++    },
++    {
++     "category": "links",
++     "text": "choose when links get previews: for all links, not for pasted links, or only the ones you add.",
++     "where": "settings → tele → privacy → links"
++    },
++    {
++     "category": "links",
++     "text": "with only the ones you add, the text selection menu of the field gets an add a link preview action for any link.",
++     "where": "field selection menu"
++    },
++    {
++     "category": "ids",
++     "text": "a row with the id of the user, group or channel in its profile, tap it to copy.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "ids show as plain digits.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "ids in bot api style: -100… for channels and supergroups.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "a DC row in profiles: the data center the account or chat lives in, with its city.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "when both are shown, the dc goes next to the id in one row.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "the message menu starts with ID: N, tap to copy.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "a Gift ID row on the card of a collectible gift.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "regular gifts get the Gift ID row too, not only collectible ones.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "an open in see.tg link under the table of a collectible gift, which opens it in the see.tg mini app.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "ids",
++     "text": "long-press a custom emoji in a message to copy its id.",
++     "where": "settings → tele → ids"
++    },
++    {
++     "category": "sending",
++     "text": "photos go out in hd unless you pick otherwise for a photo.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "photos and videos from the attach menu dock in a strip above the field instead of sending right away: remove one with ×, hide it with a spoiler, caption them in the field and send them as one album.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "tele sends your scheduled messages itself at the set time while it's open and online.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "messages sent while a media is uploading wait for it and go out after it, in order.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "replies to messages older than the uploading media don't wait in the queue.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "sending twice sends a queued message right away.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "business quick replies show in the / suggestions of groups and channels too, and are posted as ordinary messages (telegram only sends them in private chats).",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "forward messages from chats that forbid it: tele sends fresh copies and uploads their media again.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "a message or caption that starts with = is computed with calcmula and sent as the quoted query with = result below it.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "sending",
++     "text": "the calcmula result shows in a card above the field while you type, tap it to send.",
++     "where": "settings → tele → sending"
++    },
++    {
++     "category": "your data",
++     "text": "give people a name only you see: profile menu → set a name for me.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "your own @alias for any chat, in any letters, only for you: tapping an @alias opens the chat, typing @ suggests aliases first, and an alias in a sent message goes out as the real @username or a mention.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "chat search finds chats by their aliases, yours and the tele server's, and shows them as name @alias.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "@alias query asks the real bot.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "two lists, local names and aliases: tap to edit or delete, long-press to open the profile.",
++     "where": "settings → tele → your data → manage"
++    },
++    {
++     "category": "your data",
++     "text": "messages deleted by others or from your other devices stay in the chat, marked as deleted, and survive a restart.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "messages you delete yourself are kept too, not only ones deleted by others.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "kept deleted messages look faded, get a deleted label by the time, or a trash icon.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "a page listing the chats that have kept deleted messages, with their messages as full bubbles and a clear button.",
++     "where": "settings → tele → your data → deleted messages"
++    },
++    {
++     "category": "your data",
++     "text": "remembers what edited messages looked like: message menu → edit history opens every version as a full message in a chat-like page.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "when the message you're replying to gets deleted, the reply is dropped or quotes the deleted text.",
++     "where": "settings → tele → your data"
++    },
++    {
++     "category": "your data",
++     "text": "keep several drafts per chat with text, entities, reply, link preview and files: save as draft in the send button's menu or from the photo picker, and insert them later or send them to another chat from the drafts page.",
++     "where": "send button menu, settings → tele → your data → saved drafts"
++    },
++    {
++     "category": "server",
++     "text": "checkmarks, custom verification icons, scam, fake and support marks from the tele server, drawn like telegram's own.",
++     "where": "settings → tele → server"
++    },
++    {
++     "category": "server",
++     "text": "point tele at your own server, or leave the field empty to turn the server off.",
++     "where": "settings → tele → server → server url"
++    },
++    {
++     "category": "server",
++     "text": "forgets the saved server data, badges included, and fetches it again.",
++     "where": "settings → tele → server → clear cached data"
++    },
++    {
++     "category": "server",
++     "text": "tap a custom icon in a profile to see its description, which also replaces the bot verification line at the bottom of the profile.",
++     "where": "profiles"
++    },
++    {
++     "category": "server",
++     "text": "the tele server can give accounts extra @usernames: they show in the usernames of profiles, open the real chat, and are offered in @ suggestions.",
++     "where": "settings → tele → server"
++    },
++    {
++     "category": "server",
++     "text": "when tele crashed, the next start asks whether to send the report (version, build, device) to the tele server.",
++     "where": "settings → tele → server"
++    },
++    {
++     "category": "updates",
++     "text": "checks the releases 15 seconds after start and every 3 hours, downloads the apk in the background, checks its sha256 and offers to install it with the system installer, which refuses an apk signed with another key.",
++     "where": "settings → tele → update automatically"
++    },
++    {
++     "category": "updates",
++     "text": "check now, or install a downloaded update, and see the update status.",
++     "where": "settings → tele → check for updates"
++    },
++    {
++     "category": "updates",
++     "text": "after an update, a local tele chat in the chat list tells you what's new, grouped by settings page, once for every account.",
++     "where": "settings → tele → show what's new after updates, settings → tele → what's new"
++    },
++    {
++     "category": "updates",
++     "text": "after an update, a new in tele row with a NEW badge lists the pages and settings that version added.",
++     "where": "tele"
++    },
++    {
++     "category": "everywhere",
++     "text": "up to 8 accounts instead of 4.",
++     "where": ""
++    },
++    {
++     "category": "everywhere",
++     "text": "scheduled messages don't show a reply count.",
++     "where": ""
++    },
++    {
++     "category": "everywhere",
++     "text": "typing @username into the link box of the field turns it into a t.me link.",
++     "where": "link box of the field"
++    },
++    {
++     "category": "everywhere",
++     "text": "interface switches take effect without restarting the app.",
++     "where": ""
++    }
++   ],
++   "tag": "v13.0.2-tele.1",
++   "title": "tele 1",
++   "url": "https://github.com/gettele/android/releases/tag/v13.0.2-tele.1",
++   "version": 1
++  }
++ ]
++}

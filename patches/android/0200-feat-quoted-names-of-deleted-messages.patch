@@ -1,0 +1,192 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 10:22:47 +0300
+Subject: [PATCH 200/202] feat: quoted names of deleted messages
+
+---
+ .../messenger/SendMessagesHelper.java         |  3 ++
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../main/java/tele/helpers/DeletedReply.kt    | 37 ++++++++++++++++++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 25 ++++++++++++-
+ 5 files changed, 66 insertions(+), 3 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 300e47c62..9b0ca6e38 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -4617,6 +4617,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     }
+                     entities = teleQuote.entities;
+                     tele.helpers.DeletedReply.markQuoted(teleKey);
++                    if (teleQuote.noWebPage && message != null && webPage == null) {
++                        searchLinks = false;
++                    }
+                 }
+             }
+             replyToMsg = null;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 7c4b64cd5..95dd16cbf 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -147,6 +147,8 @@ object TeleConfig {
+     val DELETED_MARKER = StringItem("deleted_marker", "fade")
+     @JvmField
+     val DELETED_REPLY = StringItem("deleted_reply", "skip")
++    @JvmField
++    val DELETED_QUOTE_NAME = StringItem("deleted_quote_name", "")
+ 
+     @JvmField
+     val EDIT_HISTORY = BoolItem("edit_history", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
+index 0a70a02a7..549a72255 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedReply.kt
+@@ -2,17 +2,19 @@ package tele.helpers
+ 
+ import android.text.TextUtils
+ import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ChatObject
+ import org.telegram.messenger.ContactsController
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MessageObject
+ import org.telegram.messenger.MessagesController
++import org.telegram.messenger.UserObject
+ import org.telegram.messenger.R
+ import org.telegram.tgnet.TLRPC
+ import tele.TeleConfig
+ import java.util.concurrent.ConcurrentHashMap
+ 
+ object DeletedReply {
+-    class QuoteResult(@JvmField val text: String, @JvmField val entities: ArrayList<TLRPC.MessageEntity>)
++    class QuoteResult(@JvmField val text: String, @JvmField val entities: ArrayList<TLRPC.MessageEntity>, @JvmField val noWebPage: Boolean = false)
+     private val quotedKeys = ConcurrentHashMap<String, Boolean>()
+ 
+     @JvmStatic
+@@ -64,6 +66,30 @@ object DeletedReply {
+         return null
+     }
+ 
++    // Style of the quoted author name; the default and unknown values keep the plain bold name.
++    private fun nameEntity(account: Int, message: TLRPC.Message?): TLRPC.MessageEntity? {
++        val mode = TeleConfig.DELETED_QUOTE_NAME.value
++        if (message == null || (mode != "link" && mode != "mention")) return null
++        val controller = MessagesController.getInstance(account)
++        val userId = message.from_id?.user_id ?: 0L
++        val user = if (userId != 0L) controller.getUser(userId) else null
++        if (user != null && mode == "mention") {
++            val input = controller.getInputUser(user)
++            // an input user without access hash is rejected by the server
++            if (input !is TLRPC.TL_inputUser || input.access_hash != 0L) {
++                return TLRPC.TL_inputMessageEntityMentionName().also { it.user_id = input }
++            }
++        }
++        val username = if (user != null) {
++            UserObject.getPublicUsername(user)
++        } else {
++            val chatId = message.from_id?.channel_id ?: message.from_id?.chat_id ?: 0L
++            if (chatId != 0L) ChatObject.getPublicUsername(controller.getChat(chatId)) else null
++        }
++        if (username.isNullOrEmpty()) return null
++        return TLRPC.TL_messageEntityTextUrl().also { it.url = "https://t.me/$username" }
++    }
++
+     internal fun copyEntity(entity: TLRPC.MessageEntity, shift: Int): TLRPC.MessageEntity {
+         val copy = when (entity) {
+             is TLRPC.TL_messageEntityBold -> TLRPC.TL_messageEntityBold()
+@@ -117,17 +143,24 @@ object DeletedReply {
+         blockquote.offset = 0
+         blockquote.length = prefix.length
+         entities.add(blockquote)
++        var linked = false
+         if (!name.isNullOrEmpty()) {
+             val bold = TLRPC.TL_messageEntityBold()
+             bold.offset = 0
+             bold.length = name.length
+             entities.add(bold)
++            nameEntity(account, stored)?.let { link ->
++                link.offset = 0
++                link.length = name.length
++                entities.add(link)
++                linked = link is TLRPC.TL_messageEntityTextUrl
++            }
+         }
+         if (!own.isEmpty()) {
+             val shift = prefix.length + 1
+             ownEntities?.forEach { entity -> entities.add(copyEntity(entity, shift)) }
+         }
+         entities.sortBy { it.offset }
+-        return QuoteResult(text, entities)
++        return QuoteResult(text, entities, linked)
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index ccd55c04e..e49303ae6 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -155,6 +155,8 @@ object TeleSearch {
+             screen(GUID_DATA + 9, "Manage aliases") { TeleNamesActivity(TeleNamesActivity.MODE_ALIAS) },
+             section(GUID_DATA + 10, "Mark deleted messages with", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(GUID_DATA + 12, "Reply to deleted messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1385, "Name in quotes", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1386, "Quoted author link", "messages", TeleSettingsActivity.MODE_MESSAGES, "Name in quotes"),
+             section(GUID_SENDING, "tele sending", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 1, "Send photos in HD by default", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(GUID_SENDING + 2, "Send scheduled messages on time", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 319c8425d..4bbcb6f0e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -218,6 +218,20 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         showDialog(builder.create())
+     }
+ 
++    private fun chooseDeletedQuoteName() {
++        val activity = parentActivity ?: return
++        val values = arrayOf("", "link", "mention")
++        val labels = arrayOf(lc("Bold"), lc("Link"), lc("Mention"))
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle(lc("Name in quotes"))
++        builder.setMessage(lc("How the author's name is shown in a quote of a deleted message. A link needs a username; a mention notifies the author."))
++        builder.setItems(labels) { _, which ->
++            TeleConfig.set(TeleConfig.DELETED_QUOTE_NAME, values[which])
++            refresh()
++        }
++        showDialog(builder.create())
++    }
++
+     private fun chooseInvisiblePhrase() {
+         val activity = parentActivity ?: return
+         val input = android.widget.EditText(activity)
+@@ -499,6 +513,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_MARKER -> chooseDeletedMarker()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_RETENTION -> chooseDeletedRetention()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_REPLY -> chooseDeletedReply()
++            row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_QUOTE_NAME -> chooseDeletedQuoteName()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TELE_SERVER_URL -> chooseServerUrl()
+             row.type == TYPE_VALUE && row.item == TeleConfig.INVISIBLE_NAMES_FALLBACK -> chooseInvisibleFallback()
+             row.type == TYPE_VALUE && row.item == TeleConfig.INVISIBLE_NAMES_PHRASE -> chooseInvisiblePhrase()
+@@ -628,7 +643,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.DELETED_RETENTION.key,
+                 TeleConfig.RECOVER_FORWARDED_POSTS.key,
+                 TeleConfig.DELETED_MARKER.key,
+-                TeleConfig.DELETED_REPLY.key
++                TeleConfig.DELETED_REPLY.key,
++                TeleConfig.DELETED_QUOTE_NAME.key
+             ),
+             TeleConfig.SHOW_PEER_ID.key to listOf(
+                 TeleConfig.PEER_IDS_WITHOUT_SPACES.key,
+@@ -1074,6 +1090,13 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Recover channel posts from forwards", TeleConfig.RECOVER_FORWARDED_POSTS),
+                 Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
+                 Row(TYPE_VALUE, "Reply to deleted messages", value = if (TeleConfig.DELETED_REPLY.value == "quote") "Quote them" else "Skip them", item = TeleConfig.DELETED_REPLY),
++                *(if (all || TeleConfig.DELETED_REPLY.value == "quote") arrayOf(
++                    Row(TYPE_VALUE, "Name in quotes", value = when (TeleConfig.DELETED_QUOTE_NAME.value) {
++                        "link" -> "Link"
++                        "mention" -> "Mention"
++                        else -> "Bold"
++                    }, item = TeleConfig.DELETED_QUOTE_NAME)
++                ) else emptyArray<Row>()),
+                 link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE, id = "tele-deleted-messages"),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Edited history"),
