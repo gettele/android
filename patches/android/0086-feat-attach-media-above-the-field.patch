@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Mon, 19 Oct 2026 06:54:33 +0300
-Subject: [PATCH 086/132] feat: attach media above the field
+Subject: [PATCH 086/184] feat: attach media above the field
 
 ---
  .../messenger/MediaDataController.java        |   2 +-
@@ -12,12 +12,12 @@ Subject: [PATCH 086/132] feat: attach media above the field
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
  .../main/java/tele/db/TeleDatabaseHelper.kt   |  29 +-
- .../src/main/java/tele/helpers/DockedMedia.kt | 531 ++++++++++++++++++
+ .../src/main/java/tele/helpers/DockedMedia.kt | 532 ++++++++++++++++++
  .../src/main/java/tele/helpers/DockedStore.kt | 137 +++++
- .../src/main/java/tele/ui/TeleDockedStrip.kt  | 248 ++++++++
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 292 ++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
- 13 files changed, 1030 insertions(+), 5 deletions(-)
+ 13 files changed, 1075 insertions(+), 5 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
@@ -334,10 +334,10 @@ index 625c52f92..28820e85f 100644
  
 diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
 new file mode 100644
-index 000000000..2e96b8536
+index 000000000..a83b257c0
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
-@@ -0,0 +1,531 @@
+@@ -0,0 +1,532 @@
 +package tele.helpers
 +
 +import android.text.TextUtils
@@ -489,7 +489,8 @@ index 000000000..2e96b8536
 +    @JvmStatic
 +    fun onClose(topView: ChatActivityEnterTopView?): Boolean {
 +        val strip = topView?.findViewWithTag<TeleDockedStrip>(TeleDockedStrip.TAG) ?: return false
-+        if (strip.visibility != android.view.View.VISIBLE) return false
++        // under a reply the panel's button closes the reply, the tray has its own
++        if (strip.visibility != android.view.View.VISIBLE || strip.panelShown) return false
 +        clearTray(strip.key)
 +        return true
 +    }
@@ -1014,10 +1015,10 @@ index 000000000..5dd182279
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
 new file mode 100644
-index 000000000..716c476a9
+index 000000000..c4cf449fd
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,292 @@
 +package tele.ui
 +
 +import android.content.Context
@@ -1060,6 +1061,16 @@ index 000000000..716c476a9
 +    private val row = LinearLayout(context)
 +    private val scroll = HorizontalScrollView(context)
 +
++    // with a reply above, the panel's close button belongs to the reply, so the tray gets its own
++    private val close = android.widget.ImageView(context).apply {
++        setColorFilter(android.graphics.PorterDuffColorFilter(Theme.getColor(Theme.key_glass_defaultIcon, fragment.resourceProvider), android.graphics.PorterDuff.Mode.MULTIPLY))
++        setImageResource(R.drawable.input_clear)
++        scaleType = android.widget.ImageView.ScaleType.CENTER
++        background = Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector, fragment.resourceProvider), 1, AndroidUtilities.dp(19f))
++        visibility = GONE
++        setOnClickListener { DockedMedia.clearTray(key) }
++    }
++
 +    // a thin bar under the tiles: the strip scrolls, the bar shows where
 +    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 +    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -1079,6 +1090,7 @@ index 000000000..716c476a9
 +        row.setPadding(0, 0, AndroidUtilities.dp(4f), 0)
 +        scroll.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
 +        addView(scroll, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat(), Gravity.NO_GRAVITY, INSET, 0f, 0f, BAR_SPACE))
++        addView(close, LayoutHelper.createFrame(52, 46f, Gravity.RIGHT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, BAR_SPACE))
 +    }
 +
 +    override fun dispatchDraw(canvas: Canvas) {
@@ -1129,13 +1141,15 @@ index 000000000..716c476a9
 +    fun sync(animated: Boolean) {
 +        val tray = DockedMedia.tray(key)
 +        val has = DockedMedia.enabled() && tray != null && tray.items.isNotEmpty() && !enter.isEditingMessage
-+        val show = has && !panelShown
-+        if (show && tray != null) {
++        // a reply or forward panel stays on top and the tray goes under it
++        val stacked = has && panelShown
++        if (has && tray != null) {
 +            rebuild(tray.items)
 +        }
-+        visibility = if (show) VISIBLE else GONE
++        visibility = if (has) VISIBLE else GONE
++        place(stacked)
 +        val replyView = topView.replyView
-+        if (show) {
++        if (has && !panelShown) {
 +            if (replyView != null && replyView.visibility != GONE) {
 +                replyView.visibility = GONE
 +                replyHidden = true
@@ -1149,9 +1163,11 @@ index 000000000..716c476a9
 +                replyHidden = false
 +                replyView?.visibility = if (topView.isEditMode) GONE else VISIBLE
 +            }
-+            enter.tele_setTopViewHeight(AndroidUtilities.dp(PANEL_HEIGHT))
++            enter.tele_setTopViewHeight(AndroidUtilities.dp(if (stacked) PANEL_HEIGHT + TRAY_HEIGHT else PANEL_HEIGHT))
 +            centerClose(false)
-+            if (forced) {
++            if (stacked) {
++                forced = true
++            } else if (forced) {
 +                forced = false
 +                if (!panelShown) enter.tele_showTopView(false, animated)
 +            }
@@ -1163,6 +1179,35 @@ index 000000000..716c476a9
 +        } else if (hintOwned) {
 +            hintOwned = false
 +            enter.setOverrideHint(null)
++        }
++    }
++
++    /** Alone the tray fills the panel; under a reply it takes the lower part and its own close button. */
++    private fun place(stacked: Boolean) {
++        val panel = AndroidUtilities.dp(PANEL_HEIGHT)
++        (layoutParams as? FrameLayout.LayoutParams)?.let { params ->
++            val top = if (stacked) panel else 0
++            val right = if (stacked) 0 else AndroidUtilities.dp(52f)
++            if (params.topMargin != top || params.rightMargin != right) {
++                params.topMargin = top
++                params.rightMargin = right
++                layoutParams = params
++            }
++        }
++        val scrollParams = scroll.layoutParams as FrameLayout.LayoutParams
++        val scrollRight = if (stacked) AndroidUtilities.dp(52f) else 0
++        if (scrollParams.rightMargin != scrollRight) {
++            scrollParams.rightMargin = scrollRight
++            scroll.layoutParams = scrollParams
++        }
++        close.visibility = if (stacked) VISIBLE else GONE
++        // the reply keeps its own height instead of stretching over the tray
++        val reply = topView.replyView ?: return
++        val replyParams = reply.layoutParams ?: return
++        val height = if (stacked) panel else ViewGroup.LayoutParams.MATCH_PARENT
++        if (replyParams.height != height) {
++            replyParams.height = height
++            reply.layoutParams = replyParams
 +        }
 +    }
 +
