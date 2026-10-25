@@ -7,18 +7,18 @@ Subject: [PATCH 178/183] feat: calcmula suggestions
  .../messenger/SendMessagesHelper.java         |   2 +-
  .../ui/Components/ChatActivityEnterView.java  |  16 +++
  .../src/main/java/tele/TeleConfig.kt          |   2 +
- .../src/main/java/tele/helpers/Calcmula.kt    | 114 +++++++++++++++---
- .../src/main/java/tele/ui/CalcmulaPreview.kt  |  95 +++++++++++++--
+ .../src/main/java/tele/helpers/Calcmula.kt    | 134 +++++++++++++++---
+ .../src/main/java/tele/ui/CalcmulaPreview.kt  |  95 +++++++++++--
  .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +-
  .../src/main/res/values/strings_tele.xml      |   1 +
- 8 files changed, 211 insertions(+), 27 deletions(-)
+ 8 files changed, 229 insertions(+), 29 deletions(-)
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-index 24b187b0b..2133be239 100644
+index 34af4a783..14c97358b 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-@@ -10956,7 +10956,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -10968,7 +10968,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
          final long forcedPollGroupId = pollSendParams != null ? pollSendParams.groupId : 0;
          final boolean forceDisableCheckSentMedia = forcedPollGroupId != 0;
          final boolean groupMediaFinal = groupMedia;
@@ -75,10 +75,10 @@ index 0d41a647a..58b83d785 100644
      @JvmField
      val COPY_SERVICE_TEXT = BoolItem("copy_service_text", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt b/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
-index 9c29c0a61..a4fcb4cf4 100644
+index 9c29c0a61..1b1e68e51 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/Calcmula.kt
-@@ -31,10 +31,20 @@ object Calcmula {
+@@ -31,10 +31,22 @@ object Calcmula {
      private const val MAX_BODY = 64 * 1024
      private const val CACHE_SIZE = 32
      private const val CACHE_LIFETIME = 5 * 60 * 1000L
@@ -98,10 +98,12 @@ index 9c29c0a61..a4fcb4cf4 100644
 +
 +    // an armed one-shot choice for the next send, see armRaw and armSuggestion
 +    private class Pending(val account: Int, val query: String, val replacement: String?, val time: Long)
++
++    private val DID_YOU_MEAN = Regex("\"([^\"]+)\"[^\"]*did you mean \"([^\"]+)\"")
  
      private val cache = LinkedHashMap<String, Entry>()
  
-@@ -55,6 +65,9 @@ object Calcmula {
+@@ -55,6 +67,9 @@ object Calcmula {
          return if (trimmed.startsWith("= ")) trimmed.substring(2).trim() else ""
      }
  
@@ -111,7 +113,7 @@ index 9c29c0a61..a4fcb4cf4 100644
      // the single network choke point: gate any future offline switch here
      private fun fetch(query: String): Result {
          var connection: HttpURLConnection? = null
-@@ -100,7 +113,26 @@ object Calcmula {
+@@ -100,7 +115,26 @@ object Calcmula {
          val result = json.optJSONObject("result")
          val value = result?.optString("formatted", "")?.trim().orEmpty()
              .ifEmpty { result?.optJSONObject("doc")?.optString("summary", "")?.trim().orEmpty() }
@@ -139,9 +141,22 @@ index 9c29c0a61..a4fcb4cf4 100644
      }
  
      private fun fail(error: String): Result {
-@@ -109,34 +141,34 @@ object Calcmula {
+@@ -108,35 +142,49 @@ object Calcmula {
+         return Result(null, error)
      }
  
++    // the server never pairs an error with a suggestion, but names the fix in the error text
++    private fun repair(query: String, failed: Result): Result {
++        val error = failed.error ?: return failed
++        val match = DID_YOU_MEAN.find(error) ?: return failed
++        val (word, fix) = match.destructured
++        val at = query.indexOf(word, ignoreCase = true)
++        if (at < 0) return failed
++        val expression = query.replaceRange(at, at + word.length, fix)
++        val value = fetch(expression).value ?: return failed
++        return Result(null, error, null, expression, value)
++    }
++
      @JvmStatic
 -    fun cached(query: String): String? {
 +    fun cached(query: String): Result? {
@@ -154,8 +169,10 @@ index 9c29c0a61..a4fcb4cf4 100644
 +        return entry.result
      }
  
++    // repair: also offer the fix the server names in an error, see repair
      @JvmStatic
-     fun compute(query: String, done: (Result) -> Unit) {
+-    fun compute(query: String, done: (Result) -> Unit) {
++    fun compute(query: String, repair: Boolean = false, done: (Result) -> Unit) {
          val hit = cached(query)
          if (hit != null) {
 -            AndroidUtilities.runOnUIThread { done(Result(hit, null)) }
@@ -163,10 +180,12 @@ index 9c29c0a61..a4fcb4cf4 100644
              return
          }
          pool.execute {
-             val result = fetch(query)
+-            val result = fetch(query)
++            val fetched = fetch(query)
++            val result = if (repair && fetched.value == null && suggestionsEnabled()) repair(query, fetched) else fetched
              AndroidUtilities.runOnUIThread {
 -                if (result.value != null) remember(query, result.value)
-+                if (result.value != null) remember(query, result)
++                if (result.value != null || result.suggestion != null) remember(query, result)
                  done(result)
              }
          }
@@ -180,7 +199,7 @@ index 9c29c0a61..a4fcb4cf4 100644
          if (cache.size > CACHE_SIZE) cache.remove(cache.keys.first())
      }
  
-@@ -160,15 +192,55 @@ object Calcmula {
+@@ -160,15 +208,55 @@ object Calcmula {
          return true
      }
  
@@ -240,7 +259,7 @@ index 9c29c0a61..a4fcb4cf4 100644
          }
          return true
      }
-@@ -191,16 +263,24 @@ object Calcmula {
+@@ -191,16 +279,24 @@ object Calcmula {
      }
  
      @JvmStatic
@@ -270,7 +289,7 @@ index 9c29c0a61..a4fcb4cf4 100644
                  if (result.value != null) {
                      val composed = compose(query, result.value)
 diff --git a/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt b/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
-index 395f2fae6..9f6b50c01 100644
+index 395f2fae6..ac89c9cfe 100644
 --- a/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/CalcmulaPreview.kt
 @@ -3,7 +3,10 @@ package tele.ui
@@ -362,16 +381,18 @@ index 395f2fae6..9f6b50c01 100644
          description.text = query.replace('\n', ' ')
 +        showSuggestion(null)
          val cached = Calcmula.cached(query)
--        if (cached != null) {
+         if (cached != null) {
 -            apply(cached, State.VALUE)
-+        if (cached?.value != null) {
 +            applyResult(cached)
              return
          }
          AndroidUtilities.runOnUIThread(debounce, 350)
-@@ -101,12 +143,48 @@ class CalcmulaPreview private constructor(
+@@ -99,14 +141,50 @@ class CalcmulaPreview private constructor(
+ 
+     private fun request() {
          val id = requestId
-         Calcmula.compute(currentQuery) { result ->
+-        Calcmula.compute(currentQuery) { result ->
++        Calcmula.compute(currentQuery, true) { result ->
              if (id != requestId || !isAttachedToWindow) return@compute
 -            if (result.value != null) apply(result.value, State.VALUE)
 -            else apply((result.error ?: "Unknown error").lowercase(), State.ERROR)
@@ -380,12 +401,12 @@ index 395f2fae6..9f6b50c01 100644
 +    }
 +
 +    private fun applyResult(result: Calcmula.Result) {
++        val suggestions = Calcmula.suggestionsEnabled()
 +        if (result.value == null) {
-+            showSuggestion(null)
 +            apply((result.error ?: "Unknown error").lowercase(), State.ERROR)
++            showSuggestion(result.suggestion?.takeIf { suggestions }, result.suggestionValue)
 +            return
 +        }
-+        val suggestions = Calcmula.suggestionsEnabled()
 +        val hint = result.warning?.takeIf { suggestions && result.suggestion == null }?.lowercase()
 +        if (hint != null) {
 +            val text = SpannableStringBuilder(result.value).append(" \u00B7 ").append(hint.replace('\n', ' '))
@@ -430,7 +451,7 @@ index 395f2fae6..9f6b50c01 100644
      }
  
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
-index 05c1f596c..d8c300237 100644
+index 924731233..9b9076dbf 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
 @@ -180,6 +180,9 @@ object TeleSearch {
@@ -441,7 +462,7 @@ index 05c1f596c..d8c300237 100644
 +            section(1331, "Send without calculating", "sending", TeleSettingsActivity.MODE_SENDING, "Calcmula suggestions and sending without calculating"),
 +            section(1332, "Calcmula suggestions", "sending", TeleSettingsActivity.MODE_SENDING, "Calcmula suggestions and sending without calculating"),
              section(1102, "Save messages as a picture", "menus", TeleSettingsActivity.MODE_MENUS),
-             section(1103, "shot", "menus", TeleSettingsActivity.MODE_MENUS, "Save messages as a picture"),
+             section(1103, "Shot", "menus", TeleSettingsActivity.MODE_MENUS, "Save messages as a picture"),
              section(1104, "Messages as an image", "menus", TeleSettingsActivity.MODE_MENUS),
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 index 914c1e722..a361f509a 100644

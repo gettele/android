@@ -1,42 +1,97 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Tue, 20 Oct 2026 08:04:37 +0300
-Subject: [PATCH 094/143] feat: show pending ghost scheduled messages
+Subject: [PATCH 094/183] feat: show pending ghost scheduled messages
 
 ---
- .../java/org/telegram/messenger/SendMessagesHelper.java  | 9 +++++----
- TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt | 5 +++++
- .../main/java/tele/ui/settings/TeleSettingsActivity.kt   | 3 +++
- 3 files changed, 13 insertions(+), 4 deletions(-)
+ .../messenger/MessagesController.java         |   1 +
+ .../messenger/SendMessagesHelper.java         |  23 ++-
+ .../main/java/tele/helpers/GhostPending.kt    | 173 ++++++++++++++++++
+ .../main/java/tele/helpers/PrivacyRules.kt    |   5 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   3 +
+ 5 files changed, 200 insertions(+), 5 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GhostPending.kt
 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index c3e996cc4..0b8e717df 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -18903,6 +18903,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                     scheduledDeletedMessages = new LongSparseArray<>();
+                 }
+                 long id = MessageObject.getPeerId(update.peer);
++                tele.helpers.GhostPending.fired(currentAccount, id, update.messages);
+                 ArrayList<Integer> arrayList = scheduledDeletedMessages.get(id);
+                 if (arrayList == null) {
+                     arrayList = new ArrayList<>();
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-index d281e6953..5a428d6c8 100644
+index d281e6953..3956af159 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
-@@ -5385,7 +5385,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -4505,11 +4505,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         int scheduleDate = sendMessageParams.scheduleDate;
+         int scheduleRepeatPeriod = sendMessageParams.scheduleRepeatPeriod;
+         int ttl = sendMessageParams.ttl;
++        boolean teleGhostPending = false;
+         if (scheduleDate == 0 && ttl == 0 && sendMessageParams.replyToStoryItem == null && sendMessageParams.sendingStory == null &&
+                 peer != UserConfig.getInstance(currentAccount).getClientUserId() &&
+                 tele.helpers.PrivacyRules.ghostSchedule(currentAccount, peer)) {
+             scheduleDate = (int) (System.currentTimeMillis() / 1000) + 12;
+             tele.helpers.PrivacyRules.markGhostSend(currentAccount);
++            teleGhostPending = tele.helpers.PrivacyRules.showPendingInChat(currentAccount, peer);
+         }
+         Object parentObject = sendMessageParams.parentObject;
+         MessageObject.SendAnimationData sendAnimationData = sendMessageParams.sendAnimationData;
+@@ -5385,7 +5387,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
              newMsgObj.sendAnimationData = sendAnimationData;
              newMsgObj.wasJustSent = true;
              newMsgObj.sentHighQuality = sendMessageParams.sendingHighQuality;
 -            newMsgObj.scheduled = scheduleDate != 0;
-+            newMsgObj.scheduled = scheduleDate != 0 && !tele.helpers.PrivacyRules.showPendingInChat(currentAccount, peer);
++            // only a plain ghost send is shown as waiting: albums and quick replies keep the stock scheduled lists
++            final boolean telePending = teleGhostPending && groupId == 0 && quick_reply_shortcut == null && !isWelcomeMessageTemplate;
++            newMsgObj.scheduled = scheduleDate != 0 && !telePending;
++            if (telePending) {
++                tele.helpers.GhostPending.track(currentAccount, newMsgObj);
++            }
              if (!newMsgObj.isForwarded() && (newMsgObj.type == MessageObject.TYPE_VIDEO || videoEditedInfo != null || newMsgObj.type == MessageObject.TYPE_VOICE) && !TextUtils.isEmpty(newMsg.attachPath)) {
                  newMsgObj.attachPathExists = true;
              }
-@@ -5404,7 +5404,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -5404,7 +5411,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                  final int mode;
                  if (isWelcomeMessageTemplate) {
                      mode = ChatActivity.MODE_WELCOME_MESSAGES;
 -                } else if (scheduleDate != 0) {
-+                } else if (scheduleDate != 0 && !tele.helpers.PrivacyRules.showPendingInChat(currentAccount, peer)) {
++                } else if (scheduleDate != 0 && !telePending) {
                      mode = ChatActivity.MODE_SCHEDULED;
                  } else if (quick_reply_shortcut != null) {
                      mode = ChatActivity.MODE_QUICK_REPLIES;
-@@ -8589,13 +8589,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+@@ -8372,6 +8379,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     boolean currentSchedule = scheduled;
+                     boolean isSentError = false;
+                     if (error == null) {
++                        if (tele.helpers.GhostPending.sent(currentAccount, msgObj, response)) {
++                            processSentMessage(newMsgObj.id);
++                            removeFromSendingMessages(newMsgObj.id, scheduled);
++                            return;
++                        }
+                         final int oldId = newMsgObj.id;
+                         final ArrayList<TLRPC.Message> sentMessages = new ArrayList<>();
+                         final String attachPath = newMsgObj.attachPath;
+@@ -8578,7 +8590,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                                     getMessagesStorage().putMessages(sentMessages, true, false, false, 0, false, !scheduled ? ChatActivity.MODE_SCHEDULED : ChatActivity.MODE_DEFAULT, 0);
+                                     AndroidUtilities.runOnUIThread(() -> {
+                                         final int scheduledMessageId = finalCurrentSchedule && newMsgObj != null ? newMsgObj.id : 0;
+-                                        getMessagesController().deleteMessages(messageIds, null, null, newMsgObj.dialog_id, false, scheduled ? ChatActivity.MODE_SCHEDULED : ChatActivity.MODE_DEFAULT, false, 0, null, 0, !scheduled && finalCurrentSchedule, scheduledMessageId);
++                                        getMessagesController().deleteMessages(messageIds, null, null, newMsgObj.dialog_id, false, scheduled && !tele.helpers.GhostPending.isTracked(newMsgObj) ? ChatActivity.MODE_SCHEDULED : ChatActivity.MODE_DEFAULT, false, 0, null, 0, !scheduled && finalCurrentSchedule, scheduledMessageId);
+                                         getMessagesController().updateInterfaceWithMessages(newMsgObj.dialog_id, messageObjects, finalCurrentSchedule ? ChatActivity.MODE_SCHEDULED : ChatActivity.MODE_DEFAULT);
+                                         getMediaDataController().increasePeerRaiting(newMsgObj.dialog_id);
+                                         processSentMessage(oldId);
+@@ -8589,13 +8601,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                  getNotificationCenter().postNotificationName(NotificationCenter.messageReceivedByServer, oldId, newMsgObj.id, newMsgObj, newMsgObj.dialog_id, 0L, existFlags, scheduled);
                                  getNotificationCenter().postNotificationName(NotificationCenter.messageReceivedByServer2, oldId, newMsgObj.id, newMsgObj, newMsgObj.dialog_id, 0L, existFlags, scheduled);
                                  getMessagesStorage().getStorageQueue().postRunnable(() -> {
 -                                    int mode = scheduled ? ChatActivity.MODE_SCHEDULED : 0;
-+                                    final boolean telePending = scheduled && tele.helpers.PrivacyRules.showPendingInChat(currentAccount, MessageObject.getDialogId(newMsgObj));
++                                    final boolean telePending = scheduled && tele.helpers.GhostPending.isTracked(newMsgObj);
 +                                    int mode = scheduled && !telePending ? ChatActivity.MODE_SCHEDULED : 0;
                                      if (MessageObject.isWelcomeMessage(newMsgObj)) {
                                          mode = ChatActivity.MODE_WELCOME_MESSAGES;
@@ -48,6 +103,185 @@ index d281e6953..5a428d6c8 100644
                                      getMessagesStorage().putMessages(sentMessages, true, false, false, 0, mode, newMsgObj.quick_reply_shortcut_id);
                                      if (MessageObject.isEphemeralAndNotWelcome(newMsgObj)) {
                                          final long dialogId = MessageObject.getPeerId(newMsgObj.peer_id);
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GhostPending.kt b/TMessagesProj/src/main/java/tele/helpers/GhostPending.kt
+new file mode 100644
+index 000000000..e109e27e7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GhostPending.kt
+@@ -0,0 +1,173 @@
++package tele.helpers
++
++import android.os.SystemClock
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.StatsController
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_update
++import tele.db.TeleDatabaseHelper
++import java.util.Collections
++import java.util.WeakHashMap
++
++/**
++ * The waiting copy of a ghost scheduled message. It keeps its local (negative) id the whole time:
++ * the server's scheduled id lives in its own id space and may equal the id of a real message.
++ * The copy goes when the server reports the scheduled message as sent or deleted.
++ */
++object GhostPending {
++
++    private const val KEY = "ghost_pending"
++    private const val MAX_ENTRIES = 200
++    private const val RECENT_MS = 10 * 60_000L
++
++    private class Local(val account: Int, val dialogId: Long) {
++        @Volatile
++        var sent = false
++    }
++
++    private class Entry(val account: Int, val dialogId: Long, val localId: Int, val sentId: Int)
++
++    // weak: a message that never gets its response must not stay here
++    private val local = Collections.synchronizedMap(WeakHashMap<TLRPC.Message, Local>())
++    private val lock = Any()
++    private val entries = ArrayList<Entry>()
++    // scheduled ids reported sent before the send response was handled
++    private val recent = LinkedHashMap<String, Long>()
++    private var loaded = false
++
++    @JvmStatic
++    fun track(account: Int, msgObj: MessageObject) {
++        val message = msgObj.messageOwner ?: return
++        local[message] = Local(account, msgObj.dialogId)
++    }
++
++    @JvmStatic
++    fun isTracked(message: TLRPC.Message?): Boolean = message != null && local.containsKey(message)
++
++    /** Handles the response of a tracked message; false leaves it to the stock handler. */
++    @JvmStatic
++    fun sent(account: Int, msgObj: MessageObject, response: TLObject?): Boolean {
++        val message = msgObj.messageOwner ?: return false
++        val own = local[message] ?: return false
++        val updates = response as? TLRPC.Updates ?: return false
++        val sentId = updates.updates.filterIsInstance<TL_update.TL_updateNewScheduledMessage>().firstOrNull()?.message?.id ?: 0
++        if (sentId == 0) return false
++        // the stock id update would rename the local row to the scheduled id
++        updates.updates.removeAll {
++            it is TL_update.TL_updateNewScheduledMessage || it is TL_update.TL_updateMessageID && it.random_id == message.random_id
++        }
++        val dialogId = msgObj.dialogId
++        message.send_state = MessageObject.MESSAGE_SEND_STATE_SENT
++        MessagesStorage.getInstance(account).updateMessageStateAndId(message.random_id, dialogId, message.id, message.id, message.date, true, 0, 0)
++        StatsController.getInstance(account).incrementSentItemsCount(ApplicationLoader.getCurrentNetworkType(), StatsController.TYPE_MESSAGES, 1)
++        MediaDataController.getInstance(account).increasePeerRaiting(dialogId)
++        Utilities.stageQueue.postRunnable { MessagesController.getInstance(account).processUpdates(updates, false) }
++        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.messageReceivedByAck, message.id)
++
++        var late = false
++        synchronized(lock) {
++            ensureLoaded()
++            if (recent.remove(key(account, dialogId, sentId)) != null) {
++                late = true
++            } else {
++                entries.add(Entry(account, dialogId, message.id, sentId))
++                while (entries.size > MAX_ENTRIES) entries.removeAt(0)
++            }
++            // after the entry exists: a send that is still in flight records the ids fired in the meantime
++            own.sent = true
++        }
++        if (late) {
++            drop(account, dialogId, arrayListOf(message.id))
++        } else {
++            persist()
++        }
++        return true
++    }
++
++    /** The server sent or deleted these scheduled messages; runs on the stage queue before the sent message is posted. */
++    @JvmStatic
++    fun fired(account: Int, dialogId: Long, ids: List<Int>) {
++        if (ids.isEmpty()) return
++        val gone = ArrayList<Int>()
++        synchronized(lock) {
++            ensureLoaded()
++            val now = SystemClock.elapsedRealtime()
++            recent.values.removeAll { now - it > RECENT_MS }
++            val waiting = inFlight(account, dialogId)
++            for (id in ids) {
++                val entry = entries.firstOrNull { it.account == account && it.dialogId == dialogId && it.sentId == id }
++                if (entry != null) {
++                    entries.remove(entry)
++                    gone.add(entry.localId)
++                } else if (waiting) {
++                    recent[key(account, dialogId, id)] = now
++                }
++            }
++        }
++        if (gone.isEmpty()) return
++        persist()
++        drop(account, dialogId, gone)
++    }
++
++    private fun inFlight(account: Int, dialogId: Long): Boolean = synchronized(local) {
++        local.values.any { it.account == account && it.dialogId == dialogId && !it.sent }
++    }
++
++    // like the stock local delete, but flagged as sent: the chat then removes the copy without the dust effect
++    private fun drop(account: Int, dialogId: Long, ids: ArrayList<Int>) {
++        AndroidUtilities.runOnUIThread {
++            val controller = MessagesController.getInstance(account)
++            val storage = MessagesStorage.getInstance(account)
++            val channelId = if (DialogObject.isChatDialog(dialogId)) controller.getChat(-dialogId).let { if (ChatObject.isChannel(it)) it.id else 0L } else 0L
++            if (channelId == 0L) {
++                for (id in ids) controller.dialogMessagesByIds.get(id)?.deleted = true
++            } else {
++                controller.markDialogMessageAsDeleted(dialogId, ids)
++            }
++            storage.markMessagesAsDeleted(dialogId, ids, true, false, 0, 0)
++            storage.updateDialogsWithDeletedMessages(dialogId, channelId, ids, null)
++            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.messagesDeleted, ids, channelId, false, true, false, 0, null, false)
++        }
++    }
++
++    private fun key(account: Int, dialogId: Long, sentId: Int) = "$account:$dialogId:$sentId"
++
++    // under [lock]
++    private fun ensureLoaded() {
++        if (loaded) return
++        loaded = true
++        val raw = runCatching { TeleDatabaseHelper.get(KEY) }.getOrNull() ?: return
++        runCatching {
++            val array = JSONArray(raw)
++            for (i in 0 until array.length()) {
++                val o = array.getJSONObject(i)
++                entries.add(Entry(o.getInt("a"), o.getLong("d"), o.getInt("l"), o.getInt("s")))
++            }
++        }.onFailure { FileLog.e(it) }
++    }
++
++    // survives a restart: the waiting copy is stored in the chat, so its scheduled id must not be lost
++    private fun persist() {
++        Utilities.globalQueue.postRunnable {
++            val json = synchronized(lock) {
++                if (entries.isEmpty()) null else JSONArray().also { array ->
++                    for (e in entries) array.put(JSONObject().put("a", e.account).put("d", e.dialogId).put("l", e.localId).put("s", e.sentId))
++                }.toString()
++            }
++            runCatching { TeleDatabaseHelper.put(KEY, json) }.onFailure { FileLog.e(it) }
++        }
++    }
++}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
 index 46499dbd4..c937ff0fb 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
