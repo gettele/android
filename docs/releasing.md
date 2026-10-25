@@ -83,12 +83,13 @@ set under settings → secrets and variables → actions.
 | `KEY_PASSWORD` | the key password |
 | `TELE_BOT_TOKEN` | token of the bot that posts announcements, an admin of the channel that may post messages |
 | `TELE_CHANNEL` | the channel's chat id (`-100…`) |
+| `GOOGLE_SERVICES_JSON` | optional: the `google-services.json` of tele's firebase project, with the `org.telegram.messenger.tele` and `org.telegram.messenger.tele.dev` apps. the build writes it to `TMessagesProj_App/google-services.json`, which turns on the google services plugin and fcm pushes. telegram only sends pushes to it when the firebase project's credentials are set for tele's api id on [my.telegram.org](https://my.telegram.org); the service account key never goes into the repository or its secrets |
 
 | variable | what it is |
 |---|---|
 | `KEY_ALIAS` | the alias of the release key (`tele`). a variable, not a secret: github masks every secret value in logs and outputs, and a secret `tele` would mask the release tag itself |
 
-every run needs all of them except the two announcement secrets, including pushes: the signature check compares with the pinned certificate.
+every run needs all of them except the two announcement secrets and `GOOGLE_SERVICES_JSON`, including pushes: the signature check compares with the pinned certificate.
 
 ## new upstream releases
 
