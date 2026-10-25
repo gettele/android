@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 15:16:57 +0300
+Subject: [PATCH] fix: retry dropped update downloads
+
+---
+ .../src/main/java/tele/helpers/TeleUpdater.kt | 46 ++++++++++++++-----
+ 1 file changed, 35 insertions(+), 11 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+index 65d2e5ea2..7da7c8845 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+@@ -31,6 +31,8 @@ object TeleUpdater {
+     private const val FIRST_CHECK_DELAY = 15_000L
+     private const val CHECK_INTERVAL = 3 * 60 * 60_000L
+     private val NETWORK_RETRY_MS = longArrayOf(60_000L, 5 * 60_000L, 15 * 60_000L, 60 * 60_000L)
++    // a dropped connection (network switch, doze) usually recovers within seconds
++    private val QUICK_RETRY_MS = longArrayOf(2_000L, 5_000L, 15_000L)
+     private const val TIMEOUT = 60_000
+     private const val MAX_FEED_SIZE = 64 * 1024L
+     private const val MAX_APK_SIZE = 512 * 1024 * 1024L
+@@ -125,8 +127,11 @@ object TeleUpdater {
+         queue.cancelRunnable(scheduledCheck)
+         publish(Status(State.CHECKING))
+         try {
+-            val feed = java.io.ByteArrayOutputStream()
+-            get(FEED_URL, MAX_FEED_SIZE, feed, null)
++            val feed = retrying {
++                val out = java.io.ByteArrayOutputStream()
++                get(FEED_URL, MAX_FEED_SIZE, out, null)
++                out
++            }
+             val release = parse(feed.toString("UTF-8"))
+             if (release == null) {
+                 fail(TeleLowercase.lc("Malformed feed"))
+@@ -172,14 +177,17 @@ object TeleUpdater {
+         publish(Status(State.DOWNLOADING, release.tag))
+         target.parentFile?.mkdirs()
+         val temp = File(target.parentFile, target.name + ".part")
+-        // the part of an interrupted download stays, the next check resumes it
+-        var offset = if (temp.exists()) temp.length() else 0L
+-        if (offset >= MAX_APK_SIZE) {
+-            temp.delete()
+-            offset = 0L
+-        }
+-        val code = ranged(release.url, MAX_APK_SIZE, temp, offset) { ready, total ->
+-            publish(Status(State.DOWNLOADING, release.tag, ready, total))
++        var offset = 0L
++        // the part of an interrupted download stays: each retry and the next check resume it
++        val code = retrying {
++            offset = if (temp.exists()) temp.length() else 0L
++            if (offset >= MAX_APK_SIZE) {
++                temp.delete()
++                offset = 0L
++            }
++            ranged(release.url, MAX_APK_SIZE, temp, offset) { ready, total ->
++                publish(Status(State.DOWNLOADING, release.tag, ready, total))
++            }
+         }
+         android.util.Log.d("TeleUpdater", "state=${State.DOWNLOADING} tag=${release.tag} offset=$offset http=${code / 100}xx")
+         if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL && code != 416) {
+@@ -261,6 +269,19 @@ object TeleUpdater {
+ 
+     private fun userAgent(): String = "tele/${BuildVars.BUILD_VERSION_STRING}-tele.${TeleBuild.BUILD}"
+ 
++    private fun <T> retrying(block: () -> T): T {
++        var attempt = 0
++        while (true) {
++            try {
++                return block()
++            } catch (e: java.io.IOException) {
++                if (attempt >= QUICK_RETRY_MS.size) throw e
++                FileLog.e("TeleUpdater: retrying after " + (e.message ?: e.javaClass.simpleName))
++                Thread.sleep(QUICK_RETRY_MS[attempt++])
++            }
++        }
++    }
++
+     private class HttpStatusException(val code: Int) : Exception()
+     private class TooLargeException : Exception()
+     private class WrongOffsetException : Exception()
+@@ -323,7 +344,10 @@ object TeleUpdater {
+         }
+         val index = networkFailures.coerceAtMost(NETWORK_RETRY_MS.size - 1)
+         networkFailures++
+-        finish(Status(State.FAILED, error = error), NETWORK_RETRY_MS[index])
++        val delay = NETWORK_RETRY_MS[index]
++        // without this the error looks final, though the check comes back on its own
++        val shown = if (TeleConfig.AUTO_UPDATE.value) error + TeleLowercase.lc(". Retrying in ") + (delay / 60_000) + TeleLowercase.lc(" min") else error
++        finish(Status(State.FAILED, error = shown), delay)
+     }
+ 
+     private fun finish(value: Status, delay: Long = CHECK_INTERVAL) {
