@@ -1,0 +1,478 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 15:56:04 +0300
+Subject: [PATCH 205/209] feat: download folders per chat
+
+---
+ .../telegram/messenger/MediaController.java   | 55 ++++++++++------
+ .../telegram/ui/ChannelAdminLogActivity.java  |  6 +-
+ .../java/org/telegram/ui/ChatActivity.java    | 10 +--
+ .../ui/Components/AudioPlayerAlert.java       |  2 +-
+ .../java/org/telegram/ui/PhotoViewer.java     | 16 ++---
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../main/java/tele/helpers/DownloadFolders.kt | 63 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  5 ++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  4 ++
+ 9 files changed, 128 insertions(+), 35 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DownloadFolders.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
+index f1e54d16d..fdfee2b4f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
+@@ -5515,7 +5515,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                                 FileLog.d("saving file: correcting path from " + path + " to " + (sourceFile == null ? null : sourceFile.getAbsolutePath()));
+                             }
+                             if (sourceFile != null && sourceFile.exists()) {
+-                                saveFileInternal(isMusic ? 3 : 2, sourceFile, name);
++                                saveFileInternal(isMusic ? 3 : 2, sourceFile, name, chatFolder(message));
+                                 copiedFiles++;
+                             }
+                         }
+@@ -5537,7 +5537,13 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                                 document = message.qualityToSave;
+                             }
+                             String name = FileLoader.getDocumentFileName(document);
+-                            File destFile = new File(dir, name);
++                            final String chat = chatFolder(message);
++                            File messageDir = dir;
++                            if (chat != null) {
++                                messageDir = new File(dir, tele.helpers.DownloadFolders.path(chat));
++                                messageDir.mkdirs();
++                            }
++                            File destFile = new File(messageDir, name);
+                             if (destFile.exists()) {
+                                 int idx = name.lastIndexOf('.');
+                                 for (int a = 0; a < 10; a++) {
+@@ -5547,7 +5553,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                                     } else {
+                                         newName = name + "(" + (a + 1) + ")";
+                                     }
+-                                    destFile = new File(dir, newName);
++                                    destFile = new File(messageDir, newName);
+                                     if (!destFile.exists()) {
+                                         break;
+                                     }
+@@ -5680,7 +5686,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+             if (Build.VERSION.SDK_INT >= 29) {
+                 final ContentValues cv = new ContentValues();
+                 final Uri uriToInsert = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+-                final File dirDest = new File(Environment.DIRECTORY_DOWNLOADS, "Telegram");
++                final File dirDest = new File(Environment.DIRECTORY_DOWNLOADS, tele.helpers.DownloadFolders.path(chatFolder(messageObject)));
+                 cv.put(MediaStore.MediaColumns.RELATIVE_PATH, dirDest + File.separator);
+                 cv.put(MediaStore.Downloads.DISPLAY_NAME, filename);
+                 cv.put(MediaStore.MediaColumns.MIME_TYPE, outputMime);
+@@ -5702,7 +5708,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                     }
+                 }
+             } else {
+-                final File destDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Telegram");
++                final File destDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), tele.helpers.DownloadFolders.path(chatFolder(messageObject)));
+                 destDir.mkdirs();
+                 File destFile = new File(destDir, filename);
+                 if (!destFile.exists()) {
+@@ -5731,6 +5737,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+             return true;
+         }
+ 
++        private String chatFolder(MessageObject messageObject) {
++            return tele.helpers.DownloadFolders.folder(currentAccount.getCurrentAccount(), messageObject.getDialogId());
++        }
++
+         private void addMessageToLoad(MessageObject messageObject) {
+             AndroidUtilities.runOnUIThread(() -> {
+                 TLRPC.Document document = messageObject.getDocument();
+@@ -5866,10 +5876,15 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+     }
+ 
+     public static void saveFile(String fullPath, Context context, final int type, final String name, final String mime, final Utilities.Callback<Uri> onSaved) {
+-        saveFile(fullPath, context, type, name, mime, onSaved, true);
++        saveFile(fullPath, context, type, name, mime, onSaved, true, null);
+     }
+ 
+     public static void saveFile(String fullPath, Context context, final int type, final String name, final String mime, final Utilities.Callback<Uri> onSaved, boolean showProgress) {
++        saveFile(fullPath, context, type, name, mime, onSaved, showProgress, null);
++    }
++
++    // chatFolder: per-chat subfolder of Telegram/ (null saves where stock does)
++    public static void saveFile(String fullPath, Context context, final int type, final String name, final String mime, final Utilities.Callback<Uri> onSaved, boolean showProgress, final String chatFolder) {
+         if (fullPath == null || context == null) {
+             return;
+         }
+@@ -5917,16 +5932,16 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                     Uri uri;
+                     boolean result = true;
+                     if (Build.VERSION.SDK_INT >= 29) {
+-                        uri = saveFileInternal(type, sourceFile, null);
++                        uri = saveFileInternal(type, sourceFile, null, chatFolder);
+                         result = uri != null;
+                     } else {
+                         File destFile;
+                         if (type == 0) {
+-                            destFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Telegram");
++                            destFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), tele.helpers.DownloadFolders.path(chatFolder));
+                             destFile.mkdirs();
+                             destFile = new File(destFile, AndroidUtilities.generateFileName(0, FileLoader.getFileExtension(sourceFile)));
+                         } else if (type == 1) {
+-                            destFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "Telegram");
++                            destFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), tele.helpers.DownloadFolders.path(chatFolder));
+                             destFile.mkdirs();
+                             destFile = new File(destFile, AndroidUtilities.generateFileName(1, FileLoader.getFileExtension(sourceFile)));
+                         } else {
+@@ -5936,7 +5951,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                             } else {
+                                 dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC);
+                             }
+-                            dir = new File(dir, "Telegram");
++                            dir = new File(dir, tele.helpers.DownloadFolders.path(chatFolder));
+                             dir.mkdirs();
+                             destFile = new File(dir, name);
+                             if (destFile.exists()) {
+@@ -6040,13 +6055,17 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+     }
+ 
+     public static void saveFile(String fullPath, String liveVideoPath, Context context, final Utilities.Callback<Uri> onSaved) {
++        saveFile(fullPath, liveVideoPath, context, onSaved, null);
++    }
++
++    public static void saveFile(String fullPath, String liveVideoPath, Context context, final Utilities.Callback<Uri> onSaved, final String chatFolder) {
+         if (TextUtils.isEmpty(fullPath) || TextUtils.isEmpty(liveVideoPath) || context == null) {
+             return;
+         }
+         final File photoFile = new File(fullPath);
+         final File videoFile = new File(liveVideoPath);
+         if (!photoFile.exists() || !videoFile.exists()) {
+-            saveFile(fullPath, context, 0, null, null, onSaved);
++            saveFile(fullPath, context, 0, null, null, onSaved, true, chatFolder);
+             return;
+         }
+         if (AndroidUtilities.isInternalUri(Uri.fromFile(photoFile)) || AndroidUtilities.isInternalUri(Uri.fromFile(videoFile))) {
+@@ -6081,7 +6100,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                     final String filename = AndroidUtilities.generateFileName(0, "jpg");
+                     final ContentValues cv = new ContentValues();
+                     final Uri uriToInsert = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+-                    final File dirDest = new File(Environment.DIRECTORY_PICTURES, "Telegram");
++                    final File dirDest = new File(Environment.DIRECTORY_PICTURES, tele.helpers.DownloadFolders.path(chatFolder));
+                     cv.put(MediaStore.MediaColumns.RELATIVE_PATH, dirDest + File.separator);
+                     cv.put(MediaStore.Images.Media.DISPLAY_NAME, filename);
+                     cv.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+@@ -6103,7 +6122,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                         }
+                     }
+                 } else {
+-                    final File destDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Telegram");
++                    final File destDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), tele.helpers.DownloadFolders.path(chatFolder));
+                     destDir.mkdirs();
+                     File destFile = new File(destDir, AndroidUtilities.generateFileName(0, "jpg"));
+                     if (!destFile.exists()) {
+@@ -6211,7 +6230,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                 "<?xpacket end=\"w\"?>";
+     }
+ 
+-    private static Uri saveFileInternal(int type, File sourceFile, String filename) {
++    private static Uri saveFileInternal(int type, File sourceFile, String filename, String chatFolder) {
+         try {
+             int selectedType = type;
+             ContentValues contentValues = new ContentValues();
+@@ -6234,7 +6253,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                     filename = AndroidUtilities.generateFileName(0, extension);
+                 }
+                 uriToInsert = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+-                File dirDest = new File(Environment.DIRECTORY_PICTURES, "Telegram");
++                File dirDest = new File(Environment.DIRECTORY_PICTURES, tele.helpers.DownloadFolders.path(chatFolder));
+                 contentValues.put(MediaStore.MediaColumns.RELATIVE_PATH, dirDest + File.separator);
+                 contentValues.put(MediaStore.Images.Media.DISPLAY_NAME, filename);
+                 contentValues.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
+@@ -6242,7 +6261,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                 if (filename == null) {
+                     filename = AndroidUtilities.generateFileName(1, extension);
+                 }
+-                File dirDest = new File(Environment.DIRECTORY_MOVIES, "Telegram");
++                File dirDest = new File(Environment.DIRECTORY_MOVIES, tele.helpers.DownloadFolders.path(chatFolder));
+                 contentValues.put(MediaStore.MediaColumns.RELATIVE_PATH, dirDest + File.separator);
+                 uriToInsert = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                 contentValues.put(MediaStore.Video.Media.DISPLAY_NAME, filename);
+@@ -6250,7 +6269,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                 if (filename == null) {
+                     filename = sourceFile.getName();
+                 }
+-                File dirDest = new File(Environment.DIRECTORY_DOWNLOADS, "Telegram");
++                File dirDest = new File(Environment.DIRECTORY_DOWNLOADS, tele.helpers.DownloadFolders.path(chatFolder));
+                 contentValues.put(MediaStore.MediaColumns.RELATIVE_PATH, dirDest + File.separator);
+                 uriToInsert = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                 contentValues.put(MediaStore.Downloads.DISPLAY_NAME, filename);
+@@ -6258,7 +6277,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                 if (filename == null) {
+                     filename = sourceFile.getName();
+                 }
+-                File dirDest = new File(Environment.DIRECTORY_MUSIC, "Telegram");
++                File dirDest = new File(Environment.DIRECTORY_MUSIC, tele.helpers.DownloadFolders.path(chatFolder));
+                 contentValues.put(MediaStore.MediaColumns.RELATIVE_PATH, dirDest + File.separator);
+                 uriToInsert = MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                 contentValues.put(MediaStore.Audio.Media.DISPLAY_NAME, filename);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java
+index 58ea80347..5d6e9fbd3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java
+@@ -2120,7 +2120,7 @@ public class ChannelAdminLogActivity extends BaseFragment implements Notificatio
+                         selectedParticipant = null;
+                         return;
+                     }
+-                    MediaController.saveFile(path, getParentActivity(), selectedObject.type == MessageObject.TYPE_VIDEO ? 1 : 0, null, null);
++                    MediaController.saveFile(path, getParentActivity(), selectedObject.type == MessageObject.TYPE_VIDEO ? 1 : 0, null, null, null, true, tele.helpers.DownloadFolders.folder(selectedObject));
+                 }
+                 break;
+             }
+@@ -2236,7 +2236,7 @@ public class ChannelAdminLogActivity extends BaseFragment implements Notificatio
+                     selectedParticipant = null;
+                     return;
+                 }
+-                MediaController.saveFile(path, getParentActivity(), 0, null, null);
++                MediaController.saveFile(path, getParentActivity(), 0, null, null, null, true, tele.helpers.DownloadFolders.folder(selectedObject));
+                 break;
+             }
+             case OPTION_SAVE_STICKER: {
+@@ -2264,7 +2264,7 @@ public class ChannelAdminLogActivity extends BaseFragment implements Notificatio
+                 if (path == null || path.length() == 0) {
+                     path = getFileLoader().getPathToMessage(selectedObject.messageOwner).toString();
+                 }
+-                MediaController.saveFile(path, getParentActivity(), selectedObject.isMusic() ? 3 : 2, fileName, selectedObject.getDocument() != null ? selectedObject.getDocument().mime_type : "");
++                MediaController.saveFile(path, getParentActivity(), selectedObject.isMusic() ? 3 : 2, fileName, selectedObject.getDocument() != null ? selectedObject.getDocument().mime_type : "", null, true, tele.helpers.DownloadFolders.folder(selectedObject));
+                 break;
+             }
+             case OPTION_SAVE_TO_GIFS: {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index bc8287c5d..469bd6925 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -34426,11 +34426,11 @@ public class ChatActivity extends BaseFragment implements
+                 }
+             }
+             if (!TextUtils.isEmpty(videoPath)) {
+-                MediaController.saveFile(path, videoPath, getParentActivity(), null);
++                MediaController.saveFile(path, videoPath, getParentActivity(), null, tele.helpers.DownloadFolders.folder(messageObject));
+                 return;
+             }
+         }
+-        MediaController.saveFile(path, getParentActivity(), messageObject.isVideo() ? 1 : 0, null, null);
++        MediaController.saveFile(path, getParentActivity(), messageObject.isVideo() ? 1 : 0, null, null, null, true, tele.helpers.DownloadFolders.folder(messageObject));
+     }
+ 
+     private void processSelectedOption(int option) {
+@@ -34851,12 +34851,12 @@ public class ChatActivity extends BaseFragment implements
+                         }
+                     }
+                     if (!TextUtils.isEmpty(videoPath)) {
+-                        MediaController.saveFile(path, videoPath, getParentActivity(), null);
++                        MediaController.saveFile(path, videoPath, getParentActivity(), null, tele.helpers.DownloadFolders.folder(selectedObject));
+                         BulletinFactory.createSaveToGalleryBulletin(this, false, true, themeDelegate).show();
+                         break;
+                     }
+                 }
+-                MediaController.saveFile(path, getParentActivity(), 0, null, null);
++                MediaController.saveFile(path, getParentActivity(), 0, null, null, null, true, tele.helpers.DownloadFolders.folder(selectedObject));
+                 BulletinFactory.createSaveToGalleryBulletin(this, selectedObject.isVideo() && !selectedObject.isLivePhoto(), selectedObject.isLivePhoto(), themeDelegate).show();
+                 break;
+             }
+@@ -35023,7 +35023,7 @@ public class ChatActivity extends BaseFragment implements
+                             fileType = BulletinFactory.FileType.UNKNOWN;
+                         }
+                         BulletinFactory.of(this).createDownloadBulletin(fileType, themeDelegate).show();
+-                    });
++                    }, true, tele.helpers.DownloadFolders.folder(selectedObject));
+                 }
+                 break;
+             }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java
+index 88fe6a168..ad38ddd9a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java
+@@ -3066,7 +3066,7 @@ public class AudioPlayerAlert extends BottomSheet implements NotificationCenter.
+         if (path == null || path.length() == 0) {
+             path = FileLoader.getInstance(currentAccount).getPathToMessage(messageObject.messageOwner).toString();
+         }
+-        MediaController.saveFile(path, parentActivity, 3, fileName, messageObject.getDocument() != null ? messageObject.getDocument().mime_type : "", uri -> BulletinFactory.of((FrameLayout) containerView, resourcesProvider).createDownloadBulletin(BulletinFactory.FileType.AUDIO).show());
++        MediaController.saveFile(path, parentActivity, 3, fileName, messageObject.getDocument() != null ? messageObject.getDocument().mime_type : "", uri -> BulletinFactory.of((FrameLayout) containerView, resourcesProvider).createDownloadBulletin(BulletinFactory.FileType.AUDIO).show(), true, tele.helpers.DownloadFolders.folder(messageObject));
+     }
+ 
+     private void share(MessageObject messageObject) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+index 2bb05cd28..6133131a9 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+@@ -5014,12 +5014,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                         }
+                         if (isLivePhoto) {
+                             if (f != null && f.exists() && videoFileForLivePhoto != null && videoFileForLivePhoto.exists()) {
+-                                MediaController.saveFile(f.toString(), videoFileForLivePhoto.toString(), parentActivity, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, false, true, 0xf9222222, 0xffffffff).show());
++                                MediaController.saveFile(f.toString(), videoFileForLivePhoto.toString(), parentActivity, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, false, true, 0xf9222222, 0xffffffff).show(), tele.helpers.DownloadFolders.folder(currentMessageObject));
+                             } else {
+                                 showDownloadAlert();
+                             }
+                         } else if (f != null && f.exists()) {
+-                            MediaController.saveFile(f.toString(), parentActivity, isVideo ? 1 : 0, null, null, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, isVideo, 0xf9222222, 0xffffffff).show());
++                            MediaController.saveFile(f.toString(), parentActivity, isVideo ? 1 : 0, null, null, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, isVideo, 0xf9222222, 0xffffffff).show(), true, tele.helpers.DownloadFolders.folder(currentMessageObject));
+                         } else {
+                             showDownloadAlert();
+                         }
+@@ -5072,12 +5072,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+ 
+                                     if (isThisLivePhoto) {
+                                         if (f != null && f.exists() && videoFileForLivePhoto != null && videoFileForLivePhoto.exists()) {
+-                                            MediaController.saveFile(f.toString(), videoFileForLivePhoto.toString(), parentActivity, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, false, true, 0xf9222222, 0xffffffff).show());
++                                            MediaController.saveFile(f.toString(), videoFileForLivePhoto.toString(), parentActivity, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, false, true, 0xf9222222, 0xffffffff).show(), tele.helpers.DownloadFolders.folder(currentMessageObject));
+                                         } else {
+                                             showDownloadAlert();
+                                         }
+                                     } else if (f != null && f.exists()) {
+-                                        MediaController.saveFile(f.toString(), parentActivity, isThisVideo ? 1 : 0, null, null, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, isThisVideo, 0xf9222222, 0xffffffff).show());
++                                        MediaController.saveFile(f.toString(), parentActivity, isThisVideo ? 1 : 0, null, null, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, isThisVideo, 0xf9222222, 0xffffffff).show(), true, tele.helpers.DownloadFolders.folder(currentMessageObject));
+                                     } else {
+                                         showDownloadAlert();
+                                     }
+@@ -5121,13 +5121,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                                         if (isThisLivePhoto && f != null && f.exists()) {
+                                             count[0]++;
+                                             if (videoFileForLivePhoto != null && videoFileForLivePhoto.exists()) {
+-                                                MediaController.saveFile(f.toString(), videoFileForLivePhoto.toString(), parentActivity, uri -> AndroidUtilities.runOnUIThread(bulletin));
++                                                MediaController.saveFile(f.toString(), videoFileForLivePhoto.toString(), parentActivity, uri -> AndroidUtilities.runOnUIThread(bulletin), tele.helpers.DownloadFolders.folder(msg));
+                                             } else {
+-                                                MediaController.saveFile(f.toString(), parentActivity, 0, null, null, uri -> AndroidUtilities.runOnUIThread(bulletin));
++                                                MediaController.saveFile(f.toString(), parentActivity, 0, null, null, uri -> AndroidUtilities.runOnUIThread(bulletin), true, tele.helpers.DownloadFolders.folder(msg));
+                                             }
+                                         } else if (!isThisLivePhoto && f != null && f.exists()) {
+                                             count[0]++;
+-                                            MediaController.saveFile(f.toString(), parentActivity, isThisVideo ? 1 : 0, null, null, uri -> AndroidUtilities.runOnUIThread(bulletin));
++                                            MediaController.saveFile(f.toString(), parentActivity, isThisVideo ? 1 : 0, null, null, uri -> AndroidUtilities.runOnUIThread(bulletin), true, tele.helpers.DownloadFolders.folder(msg));
+                                         }
+                                     }
+                                 })
+@@ -5908,7 +5908,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                 f = FileLoader.getInstance(currentAccount).getPathToAttach(document, null, true, true);
+             }
+             if (f != null && f.exists()) {
+-                MediaController.saveFile(f.toString(), parentActivity, 1, null, null, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, true, 0xf9222222, 0xffffffff).show());
++                MediaController.saveFile(f.toString(), parentActivity, 1, null, null, uri -> BulletinFactory.createSaveToGalleryBulletin(containerView, true, 0xf9222222, 0xffffffff).show(), true, tele.helpers.DownloadFolders.folder(messageObject));
+             } else {
+                 ArrayList<MessageObject> messageObjects = new ArrayList<>();
+                 messageObject.qualityToSave = document;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index a6632c489..2ca73fe43 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -358,6 +358,8 @@ object TeleConfig {
+     @JvmField
+     val HIDE_BIRTHDAYS = BoolItem("hide_birthdays", false)
+     @JvmField
++    val DOWNLOADS_PER_CHAT = BoolItem("downloads_per_chat", false)
++    @JvmField
+     val PROFILE_PHOTO_BACKGROUND = BoolItem("profile_photo_background", false)
+     @JvmField
+     val PROFILE_PHOTO_BACKGROUND_COLOR = BoolItem("profile_photo_background_color", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DownloadFolders.kt b/TMessagesProj/src/main/java/tele/helpers/DownloadFolders.kt
+new file mode 100644
+index 000000000..cc1cf5984
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DownloadFolders.kt
+@@ -0,0 +1,63 @@
++package tele.helpers
++
++import org.telegram.messenger.ContactsController
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import tele.TeleConfig
++
++// per-chat subfolders of the public Telegram folders for saved media, like the desktop download folders
++object DownloadFolders {
++
++    private const val MAX_NAME = 64
++    private const val ILLEGAL = "<>:\"/\\|?*"
++    private val SPACES = Regex(" +")
++
++    /** The folder name under `Telegram/` for the chat, or null to save where stock does. */
++    @JvmStatic
++    fun folder(account: Int, dialogId: Long): String? {
++        if (!TeleConfig.DOWNLOADS_PER_CHAT.value) return null
++        if (dialogId == 0L || DialogObject.isEncryptedDialog(dialogId) || DialogObject.isFolderDialogId(dialogId)) return null
++        val name = sanitize(title(account, dialogId))
++        return name.ifEmpty { "chat_" + Math.abs(dialogId) }
++    }
++
++    /** Same, for the chat a message belongs to. */
++    @JvmStatic
++    fun folder(message: MessageObject?): String? =
++        if (message == null) null else folder(message.currentAccount, message.getDialogId())
++
++    /** `Telegram` or `Telegram/<chat>` as a path under the public Pictures/Movies/Downloads/Music folder. */
++    @JvmStatic
++    fun path(chat: String?): String = if (chat == null) "Telegram" else "Telegram/$chat"
++
++    private fun title(account: Int, dialogId: Long): String {
++        val controller = MessagesController.getInstance(account)
++        if (DialogObject.isUserDialog(dialogId)) {
++            if (dialogId == UserConfig.getInstance(account).getClientUserId()) {
++                return LocaleController.getString(R.string.SavedMessages)
++            }
++            val user = controller.getUser(dialogId) ?: return ""
++            return ContactsController.formatName(user.first_name, user.last_name)
++        }
++        return controller.getChat(-dialogId)?.title ?: ""
++    }
++
++    private fun sanitize(name: String): String {
++        val out = StringBuilder(name.length)
++        for (ch in name) {
++            val type = Character.getType(ch)
++            if (type == Character.CONTROL.toInt() || type == Character.FORMAT.toInt() || ILLEGAL.indexOf(ch) >= 0) continue
++            out.append(if (Character.isWhitespace(ch)) ' ' else ch)
++        }
++        var result = out.toString().trim().replace(SPACES, " ")
++        if (result.length > MAX_NAME) {
++            result = result.substring(0, MAX_NAME)
++            if (Character.isHighSurrogate(result.last())) result = result.dropLast(1)
++        }
++        return result.trimStart('.').trimEnd('.', ' ').trim()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index c8a7ccdfd..0ea226c76 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -313,6 +313,11 @@ object TeleSearch {
+             section(1381, "Upload date in the media viewer", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show when media was uploaded"),
+             section(1382, "Media data center in the viewer", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show data center"),
+             section(1383, "Data center of photos and videos", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show data center"),
++            section(1405, "Save downloads in a folder per chat", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1406, "Download folder per chat", "chats", TeleSettingsActivity.MODE_CHATS, "Save downloads in a folder per chat"),
++            section(1407, "Downloads directory", "chats", TeleSettingsActivity.MODE_CHATS, "Save downloads in a folder per chat"),
++            section(1408, "Telegram folder path for files", "chats", TeleSettingsActivity.MODE_CHATS, "Save downloads in a folder per chat"),
++            section(1409, "Saved files by chat name", "chats", TeleSettingsActivity.MODE_CHATS, "Save downloads in a folder per chat"),
+             section(1190, "Export settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(1191, "Import settings", "backup", TeleSettingsActivity.MODE_BACKUP),
+             section(GUID_UPDATES, "Update automatically", "updates", TeleSettingsActivity.MODE_UPDATES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4b3e74f9b..00ddf67a0 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1017,6 +1017,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Mention several people in a row" to "Long-press a person in the mention list to add them and pick the next one.",
+             "Regex search in chats" to "A .* chip in chat search; matches only the messages already loaded.",
+             "Message type filter in chat search" to "Chips for photos, videos, links and more; an empty query lists them all.",
++            "Save downloads in a folder per chat" to "Saved media goes to Telegram/<chat name> in the public folders.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1254,6 +1255,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     "tele-chat-backgrounds"
+                 ),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Downloads"),
++                toggle("Save downloads in a folder per chat", TeleConfig.DOWNLOADS_PER_CHAT),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Sponsored"),
+                 toggle("Hide sponsored messages", TeleConfig.HIDE_SPONSORED),
+                 toggle("Hide the proxy sponsor channel", TeleConfig.HIDE_PROXY_SPONSOR),

@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Гайды исполнителей для оставшихся пачек: [21](batches/batch-21.md) · [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
+Гайды исполнителей для оставшихся пачек: [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
 
 инфраструктурные патчи (без номера tele) помечены `infra`: `0002`, `0003`, `0019`, `0065`, `0066`.
 
@@ -405,12 +405,12 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0155 | уведомление «пришёл в онлайн» | todo | `MessagesController`, свой канал, `keep-alive`; M; реш.: 0155 keep-alive; без FCM нужен сервис |
-| 0158 | папка загрузок на чат (частично) | todo | `MediaController.saveFile`; M; реш.: 0158 подпапка Telegram/<чат>; без SAF |
-| 0138 | выбор веб-карт для локаций | todo | `LocationActivity`; S; реш.: 0138 веб-карты; Яндекс/2ГИС/OSM/Google |
-| 0137 | выключить AI-функции | todo | `AIEditorAlert`, `TranslateController`, `AiTonesController`; M; реш.: 0137 транскрипция остаётся; расшифровка голосовых не гасится |
-| 0262 | тонкая кисть в редакторе | todo | `Paint/RenderView`; S; формула веса кисти |
-| 0222 | журнал звонков: ретрай загрузки | todo | `CallLogActivity`; S; только ретрай |
+| 0155 | уведомление «пришёл в онлайн» | built | `0204-feat-notify-when-people-come-online`; `MessagesController`, свой канал, `keep-alive`; M; реш.: 0155 keep-alive; без FCM нужен сервис |
+| 0158 | папка загрузок на чат (частично) | built | `0205-feat-download-folders-per-chat`; `MediaController.saveFile`; M; реш.: 0158 подпапка Telegram/<чат>; без SAF |
+| 0138 | выбор веб-карт для локаций | built | `0207-feat-choose-the-map-service`; `LocationActivity`; S; реш.: 0138 веб-карты; Яндекс/2ГИС/OSM/Google |
+| 0137 | выключить AI-функции | built | `0206-feat-turn-off-ai-features`; `AIEditorAlert`, `TranslateController`, `AiTonesController`; M; реш.: 0137 транскрипция остаётся; расшифровка голосовых не гасится |
+| 0262 | тонкая кисть в редакторе | built | `0208-feat-thinner-brush-in-the-editor`; `Paint/RenderView`; S; формула веса кисти |
+| 0222 | журнал звонков: ретрай загрузки | built | `0209-fix-retry-loading-the-call-log`; `CallLogActivity`; S; только ретрай |
 | 0070 | аккаунты test-сервера | built | `0129-feat-always-offer-the-test-backend`; стоковый чекбокс «Test Backend» на экране входа (и при добавлении аккаунта) показывается во всех сборках, а не только в debug/beta; per-account бэкенд уже есть в стоке (`ConnectionsManager.switchBackend`), JNI не нужен; вместо правого клика десктопа — чекбокс |
 
 ## пачка 22 — центр уведомлений

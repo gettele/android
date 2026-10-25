@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 15:53:56 +0300
+Subject: [PATCH 209/209] fix: retry loading the call log
+
+---
+ .../java/org/telegram/ui/CallLogActivity.java  | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CallLogActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CallLogActivity.java
+index 993294285..3cb0ce0f6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/CallLogActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/CallLogActivity.java
+@@ -715,6 +715,10 @@ public class CallLogActivity extends BaseFragment implements NotificationCenter.
+ 	@Override
+ 	public void onFragmentDestroy() {
+ 		super.onFragmentDestroy();
++		if (retryRunnable != null) {
++			AndroidUtilities.cancelRunOnUIThread(retryRunnable);
++			retryRunnable = null;
++		}
+ 		getNotificationCenter().removeObserver(this, NotificationCenter.didReceiveNewMessages);
+ 		getNotificationCenter().removeObserver(this, NotificationCenter.messagesDeleted);
+ 		getNotificationCenter().removeObserver(this, NotificationCenter.activeGroupCallsUpdated);
+@@ -1308,8 +1312,11 @@ public class CallLogActivity extends BaseFragment implements NotificationCenter.
+ 		selectedDialogsCountTextView.setNumber(selectedIds.size(), updateAnimated);
+ 	}
+ 
++	private Runnable retryRunnable;
++	private long retryDelay;
++
+ 	private void getCalls(int max_id, final int count) {
+-		if (loading) {
++		if (loading || retryRunnable != null) {
+ 			return;
+ 		}
+ 		loading = true;
+@@ -1434,8 +1441,15 @@ public class CallLogActivity extends BaseFragment implements NotificationCenter.
+ 				if (currentRow != null && !currentRow.calls.isEmpty() && !calls.contains(currentRow)) {
+ 					calls.add(currentRow);
+ 				}
++				retryDelay = 0;
+ 			} else {
+-				endReached = true;
++				// keep the rows and retry with a bounded backoff instead of ending the list
++				retryDelay = retryDelay == 0 ? 1000 : Math.min(retryDelay * 2, 30000);
++				retryRunnable = () -> {
++					retryRunnable = null;
++					getCalls(max_id, count);
++				};
++				AndroidUtilities.runOnUIThread(retryRunnable, retryDelay);
+ 			}
+ 			loading = false;
+ 			if (!firstLoaded) {

@@ -1,0 +1,471 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 15:58:10 +0300
+Subject: [PATCH 204/209] feat: notify when people come online
+
+---
+ .../telegram/messenger/ApplicationLoader.java |   3 +
+ .../messenger/MessagesController.java         |   6 +
+ .../java/org/telegram/ui/ProfileActivity.java |  12 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/OnlineNotify.kt    | 210 ++++++++++++++++++
+ .../tele/ui/settings/TelePeersActivity.kt     |  14 +-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   7 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  25 ++-
+ .../src/main/res/values/strings_tele.xml      |   4 +
+ 10 files changed, 277 insertions(+), 9 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index 0af4b4579..a4a25a464 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -375,6 +375,9 @@ public class ApplicationLoader extends Application {
+         } else {
+             enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", false);
+         }
++        if (!enabled && tele.helpers.OnlineNotify.keepAlive()) {
++            enabled = true;
++        }
+         if (enabled) {
+             try {
+                 applicationContext.startService(new Intent(applicationContext, NotificationsService.class));
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 51f92ff97..19ba73911 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -6948,6 +6948,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                     getUserConfig().saveConfig(true);
+                 }
+                 getUserNameResolver().update(oldUser, user);
++                if (tele.TeleConfig.ONLINE_NOTIFY.getValue()) {
++                    tele.helpers.OnlineNotify.onUserLoaded(currentAccount, user, oldUser);
++                }
+                 if (oldUser != null && user.status != null && oldUser.status != null && user.status.expires != oldUser.status.expires) {
+                     return true;
+                 }
+@@ -20039,6 +20042,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                         } else if (update.status instanceof TLRPC.TL_userStatusLastMonth) {
+                             update.status.expires = -102;
+                         }
++                        if (tele.TeleConfig.ONLINE_NOTIFY.getValue()) {
++                            tele.helpers.OnlineNotify.onUserStatus(currentAccount, currentUser, update.status);
++                        }
+                         if (currentUser != null) {
+                             currentUser.id = update.user_id;
+                             currentUser.status = update.status;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index b83b97696..2caa02149 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -579,6 +579,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private final static int tele_set_username_alias = 91;
+     private final static int tele_set_chat_alias = 92;
+     private final static int tele_view_as_tl = 93;
++    private final static int tele_online_notify = 9600;
+     private final static int call_item = 15;
+     private final static int video_call_item = 16;
+     private final static int search_members = 17;
+@@ -2823,6 +2824,13 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     showAliasDialog();
+                 } else if (id == tele_view_as_tl) {
+                     tele.helpers.ViewAsTl.viewPeer(ProfileActivity.this, userId, chatId);
++                } else if (id == tele_online_notify) {
++                    boolean watch = !tele.helpers.OnlineNotify.isWatched(currentAccount, userId);
++                    tele.helpers.OnlineNotify.setWatched(currentAccount, userId, watch);
++                    View watchItem = otherItem != null ? otherItem.getSubItem(id) : null;
++                    if (watchItem instanceof ActionBarMenuSubItem) {
++                        ((ActionBarMenuSubItem) watchItem).setChecked(watch);
++                    }
+                 } else if (id == tele_set_chat_alias) {
+                     showChatAliasDialog();
+                 } else if (id == call_item || id == video_call_item) {
+@@ -12410,6 +12418,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
+                     otherItem.addSubItem(tele_set_username_alias, R.drawable.msg_addcontact, tele.helpers.TeleLowercase.lc("Set an alias for me"));
+                 }
++                if (tele.TeleConfig.ONLINE_NOTIFY.getValue() && tele.helpers.OnlineNotify.canWatch(user)) {
++                    otherItem.addSubItem(tele_online_notify, R.drawable.msg_notifications, tele.helpers.TeleLowercase.lc(getString(R.string.TeleOnlineMenu)), true)
++                        .setChecked(tele.helpers.OnlineNotify.isWatched(currentAccount, userId));
++                }
+ 
+             }
+         } else if (chatId != 0) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 95dd16cbf..a6632c489 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -367,6 +367,8 @@ object TeleConfig {
+     val REGEX_SEARCH = BoolItem("regex_search", false)
+     @JvmField
+     val SEARCH_TYPES = BoolItem("search_types", false)
++    @JvmField
++    val ONLINE_NOTIFY = BoolItem("online_notify", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 2c8da2b42..b7bedbf48 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -164,6 +164,9 @@ object TeleHooks {
+         if (item === TeleConfig.HIDE_BIRTHDAYS) {
+             tele.helpers.TeleBirthdays.onToggled()
+         }
++        if (item === TeleConfig.ONLINE_NOTIFY) {
++            tele.helpers.OnlineNotify.onToggled()
++        }
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt b/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
+new file mode 100644
+index 000000000..ff39ce290
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
+@@ -0,0 +1,210 @@
++package tele.helpers
++
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.PendingIntent
++import android.content.Context
++import android.content.Intent
++import android.os.Build
++import android.os.Process
++import android.os.SystemClock
++import androidx.core.app.NotificationCompat
++import androidx.core.app.NotificationManagerCompat
++import org.json.JSONArray
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.BuildVars
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.LaunchActivity
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++
++/**
++ * A local notification when a watched person comes online. The watch list is kept per account in
++ * tele_kv. The connection stays alive through the stock keep-alive service, see [keepAlive].
++ */
++object OnlineNotify {
++
++    private const val KEY = "online_notify_users"
++    private const val CHANNEL = "tele_online"
++    private const val MAX_USERS = 65536
++    private const val COOLDOWN_MS = 10 * 60 * 1000L
++
++    // users loaded from the server right after the start are not "came online" events
++    private const val START_GRACE_MS = 30 * 1000L
++
++    private val lock = Any()
++    private val watched = arrayOfNulls<LinkedHashSet<Long>>(UserConfig.MAX_ACCOUNT_COUNT)
++    private val notified = HashMap<String, Long>()
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.ONLINE_NOTIFY.value
++
++    /** Desktop skips yourself, bots and service users. */
++    @JvmStatic
++    fun canWatch(user: TLRPC.User?): Boolean =
++        user != null && !user.self && !user.bot && !UserObject.isDeleted(user) &&
++            !UserObject.isService(user.id) && user.id > 0
++
++    @JvmStatic
++    fun isWatched(account: Int, userId: Long): Boolean = synchronized(lock) { set(account).contains(userId) }
++
++    @JvmStatic
++    fun list(account: Int): List<Long> = synchronized(lock) { set(account).toList() }
++
++    @JvmStatic
++    fun count(account: Int): Int = synchronized(lock) { set(account).size }
++
++    @JvmStatic
++    fun setWatched(account: Int, ids: Collection<Long>) {
++        synchronized(lock) {
++            val next = LinkedHashSet<Long>()
++            for (id in ids) {
++                if (id > 0 && next.size < MAX_USERS) next.add(id)
++            }
++            watched[account] = next
++            save(account, next)
++        }
++        refreshService()
++    }
++
++    @JvmStatic
++    fun setWatched(account: Int, userId: Long, on: Boolean) {
++        synchronized(lock) {
++            val current = set(account)
++            if (on) {
++                if (userId <= 0 || current.size >= MAX_USERS || !current.add(userId)) return
++            } else if (!current.remove(userId)) {
++                return
++            }
++            save(account, current)
++        }
++        refreshService()
++    }
++
++    /** The stock keep-alive service is wanted while somebody is watched. */
++    @JvmStatic
++    fun keepAlive(): Boolean {
++        if (!enabled()) return false
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (UserConfig.getInstance(account).isClientActivated && count(account) > 0) return true
++        }
++        return false
++    }
++
++    @JvmStatic
++    fun onToggled() = refreshService()
++
++    private fun refreshService() {
++        // the stock decision starts or stops the service, with the watch list taken into account
++        AndroidUtilities.runOnUIThread { ApplicationLoader.startPushService() }
++    }
++
++    /** A status update arrived: [user] still holds the previous status. */
++    @JvmStatic
++    fun onUserStatus(account: Int, user: TLRPC.User?, newStatus: TLRPC.UserStatus?) {
++        if (!enabled() || user == null) return
++        transition(account, user, user.status, newStatus)
++    }
++
++    /** The user object was replaced by a loaded one. */
++    @JvmStatic
++    fun onUserLoaded(account: Int, user: TLRPC.User?, oldUser: TLRPC.User?) {
++        if (!enabled() || user == null || oldUser == null || oldUser.status == null) return
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime() < START_GRACE_MS) return
++        transition(account, user, oldUser.status, user.status)
++    }
++
++    private fun transition(account: Int, user: TLRPC.User, old: TLRPC.UserStatus?, new: TLRPC.UserStatus?) {
++        val now = ConnectionsManager.getInstance(account).currentTime
++        // only a switch from not online to online counts
++        if (!online(new, now) || online(old, now)) return
++        if (!canWatch(user) || !isWatched(account, user.id)) return
++        val key = "$account:${user.id}"
++        val ms = SystemClock.elapsedRealtime()
++        synchronized(lock) {
++            val last = notified[key]
++            if (last != null && ms - last < COOLDOWN_MS) return
++            notified[key] = ms
++        }
++        log("account $account user ${user.id} online")
++        show(account, user)
++    }
++
++    private fun online(status: TLRPC.UserStatus?, now: Int): Boolean =
++        status is TLRPC.TL_userStatusOnline && status.expires > now
++
++    private fun show(account: Int, user: TLRPC.User) {
++        val context = ApplicationLoader.applicationContext ?: return
++        // without the system permission there is nothing to show
++        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
++        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(CHANNEL) == null) {
++            manager.createNotificationChannel(NotificationChannel(
++                CHANNEL, LocaleController.getString(R.string.TeleOnlineChannel), NotificationManager.IMPORTANCE_DEFAULT))
++        }
++        // the name is hidden when the stock notifications hide the previews
++        val preview = MessagesController.getNotificationsSettings(account).getBoolean("EnablePreviewAll", true)
++        val text = if (preview) {
++            LocaleController.formatString(R.string.TeleOnlineText, UserObject.getUserName(user))
++        } else {
++            LocaleController.getString(R.string.TeleOnlineHidden)
++        }
++        val intent = Intent(context, LaunchActivity::class.java)
++        intent.action = "com.tmessages.openchat" + Math.random() + Integer.MAX_VALUE
++        intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
++        intent.addCategory(Intent.CATEGORY_LAUNCHER)
++        intent.putExtra("userId", user.id)
++        intent.putExtra("currentAccount", account)
++        val id = "$KEY:$account:${user.id}".hashCode()
++        val content = PendingIntent.getActivity(context, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
++        val notification = NotificationCompat.Builder(context, CHANNEL)
++            .setSmallIcon(R.drawable.tele_stat_notification)
++            .setContentTitle(LocaleController.getString(R.string.AppName))
++            .setContentText(text)
++            .setCategory(NotificationCompat.CATEGORY_STATUS)
++            .setAutoCancel(true)
++            .setContentIntent(content)
++            .build()
++        manager.notify(id, notification)
++    }
++
++    private fun set(account: Int): LinkedHashSet<Long> {
++        var current = watched[account]
++        if (current == null) {
++            current = load(account)
++            watched[account] = current
++        }
++        return current
++    }
++
++    private fun load(account: Int): LinkedHashSet<Long> {
++        val result = LinkedHashSet<Long>()
++        val raw = TeleDatabaseHelper.get("$KEY:$account") ?: return result
++        runCatching {
++            val array = JSONArray(raw)
++            for (i in 0 until array.length()) {
++                val id = array.optLong(i, 0L)
++                if (id > 0 && result.size < MAX_USERS) result.add(id)
++            }
++        }
++        return result
++    }
++
++    private fun save(account: Int, ids: Set<Long>) {
++        val array = JSONArray()
++        for (id in ids) array.put(id)
++        TeleDatabaseHelper.put("$KEY:$account", array.toString())
++    }
++
++    private fun log(text: String) {
++        if (BuildVars.LOGS_ENABLED) FileLog.d("TeleOnline: $text")
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+index 49acd371f..51ff19207 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TelePeersActivity.kt
+@@ -123,6 +123,7 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+     }
+ 
+     private fun title(): String = when (mode) {
++        MODE_ONLINE -> lc("Online notifications")
+         MODE_IGNORE -> lc("Ignored users")
+         MODE_GHOST_ALWAYS -> lc("Always ghost in")
+         else -> lc("Never ghost in")
+@@ -133,7 +134,9 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+         val savedMessagesId = UserConfig.getInstance(account).clientUserId
+         val all = messagesController.getDialogs(0) ?: emptyList()
+         allItems = all.filter { dialog ->
+-            if (mode != MODE_IGNORE) {
++            if (mode == MODE_ONLINE) {
++                dialog.id != savedMessagesId && isUser(dialog) && tele.helpers.OnlineNotify.canWatch(messagesController.getUser(dialog.id))
++            } else if (mode != MODE_IGNORE) {
+                 !DialogObject.isFolderDialogId(dialog.id)
+             } else {
+                 dialog.id != savedMessagesId && isUser(dialog)
+@@ -183,6 +186,9 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+     }
+ 
+     private fun currentSelection(): List<Long> {
++        if (mode == MODE_ONLINE) {
++            return tele.helpers.OnlineNotify.list(account)
++        }
+         val peers = if (mode == MODE_IGNORE) {
+             PrivacyRules.ignoredPeers(account)
+         } else {
+@@ -197,6 +203,11 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+     }
+ 
+     private fun applySelection() {
++        if (mode == MODE_ONLINE) {
++            tele.helpers.OnlineNotify.setWatched(account, selected.toList())
++            finishFragment()
++            return
++        }
+         val picked = selected.toSet()
+         for (did in currentSelection()) {
+             if (did !in picked) {
+@@ -237,6 +248,7 @@ class TelePeersActivity(private val account: Int, private val mode: String) : Ba
+         const val MODE_IGNORE = "ignore"
+         const val MODE_GHOST_ALWAYS = "ghost_always"
+         const val MODE_GHOST_NEVER = "ghost_never"
++        const val MODE_ONLINE = "online"
+     }
+ }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index d08237b3f..c8a7ccdfd 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -322,7 +322,12 @@ object TeleSearch {
+             screen(1387, "What's new in every version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
+             screen(1388, "Release notes of every version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
+             screen(1389, "New settings") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
+-            screen(1390, "Settings added in a version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) }
++            screen(1390, "Settings added in a version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
++            section(1400, "Notify when people come online", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            screen(1401, "Online notifications") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_ONLINE) },
++            section(1402, "Presence alerts", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online"),
++            section(1403, "Watch the online status of people", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online"),
++            section(1404, "Came online", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online")
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 06597e54e..4b3e74f9b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -567,6 +567,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "peers_ignore" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_IGNORE))
+                 "peers_ghost_always" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_ALWAYS))
+                 "peers_ghost_never" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_GHOST_NEVER))
++                "peers_online" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_ONLINE))
+                 "words_global" -> presentFragment(TeleWordsActivity(UserConfig.selectedAccount, 0L))
+                 TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
+                 TeleDraftsActivity.MODE_DRAFTS -> presentFragment(TeleDraftsActivity())
+@@ -890,6 +891,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Unsorted folder" to "A folder for chats that aren't in any other folder; archived ones stay out.",
+             "Mute folders" to "Mute every chat in a folder from its menu, only on this device.",
+             "Silence chats completely" to "A mute menu switch: no notifications at all, mentions included.",
++            "Notify when people come online" to "A local alert when someone you watch comes online; keeps the app connected.",
+             "Hide call buttons" to "No call buttons in private chats and profiles.",
+             "Confirm calls before starting" to "Ask before a call, naming who you're calling.",
+             "Open links without confirmation" to "Skip the link confirmation dialog.",
+@@ -1366,13 +1368,22 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Forward messages one by one", TeleConfig.FORWARD_ONE_BY_ONE),
+                 Row(TYPE_SHADOW)
+             )
+-            MODE_NOTIFICATIONS -> listOf(
+-                Row(TYPE_HEADER, "notifications"),
+-                Row(TYPE_HEADER, "Muting"),
+-                toggle("Mute folders", TeleConfig.MUTE_FOLDERS),
+-                toggle("Silence chats completely", TeleConfig.SILENCE_COMPLETELY),
+-                Row(TYPE_SHADOW)
+-            )
++            MODE_NOTIFICATIONS -> {
++                val rows = ArrayList<Row>()
++                rows.add(Row(TYPE_HEADER, "notifications"))
++                rows.add(Row(TYPE_HEADER, "Muting"))
++                rows.add(toggle("Mute folders", TeleConfig.MUTE_FOLDERS))
++                rows.add(toggle("Silence chats completely", TeleConfig.SILENCE_COMPLETELY))
++                rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "Presence"))
++                rows.add(toggle("Notify when people come online", TeleConfig.ONLINE_NOTIFY))
++                if (all || TeleConfig.ONLINE_NOTIFY.value) {
++                    val watched = tele.helpers.OnlineNotify.count(UserConfig.selectedAccount)
++                    rows.add(link("Online notifications", "peers_online", if (watched > 0) watched.toString() else "None", "tele-online-notify-people"))
++                }
++                rows.add(Row(TYPE_SHADOW))
++                rows
++            }
+             MODE_MENUS -> listOf(
+                 Row(TYPE_HEADER, "menus"),
+                 Row(TYPE_HEADER, "Message menu items"),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 55ce59912..ac314b631 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -169,4 +169,8 @@
+     <string name="TeleSearchLinks">Links</string>
+     <string name="TeleSearchCountMore">%1$d of %2$d+</string>
+     <string name="TeleSearchCountMoreList">%1$d+ results</string>
++    <string name="TeleOnlineChannel">Online notifications</string>
++    <string name="TeleOnlineText">%1$s is online</string>
++    <string name="TeleOnlineHidden">Someone you watch is online</string>
++    <string name="TeleOnlineMenu">Notify when online</string>
+ </resources>

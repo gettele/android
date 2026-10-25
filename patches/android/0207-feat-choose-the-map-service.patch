@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 15:52:43 +0300
+Subject: [PATCH 207/209] feat: choose the map service
+
+---
+ .../java/org/telegram/ui/ArticleViewer.java   |  3 ++
+ .../ui/Business/ProfileLocationCell.java      |  3 ++
+ .../org/telegram/ui/LocationActivity.java     |  6 +++
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/MapService.kt  | 43 +++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  5 +++
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 19 ++++++++
+ 7 files changed, 81 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MapService.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ArticleViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/ArticleViewer.java
+index 9200a5ed4..355e76ba9 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ArticleViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ArticleViewer.java
+@@ -13004,6 +13004,9 @@ public class ArticleViewer extends IArticleViewer implements NotificationCenter.
+                 try {
+                     double lat = currentBlock.geo.lat;
+                     double lon = currentBlock.geo._long;
++                    if (tele.helpers.MapService.open(getContext(), lat, lon, null)) {
++                        return true;
++                    }
+                     getContext().startActivity(new Intent(android.content.Intent.ACTION_VIEW, Uri.parse("geo:" + lat + "," + lon + "?q=" + lat + "," + lon)));
+                 } catch (Exception e) {
+                     FileLog.e(e);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Business/ProfileLocationCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Business/ProfileLocationCell.java
+index 12f38d2d8..3e239e55f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Business/ProfileLocationCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Business/ProfileLocationCell.java
+@@ -128,6 +128,9 @@ public class ProfileLocationCell extends LinearLayout {
+         if (activity == null || location == null) return;
+         if (location.geo_point != null && !(location.geo_point instanceof TLRPC.TL_geoPointEmpty)) {
+             try {
++                if (tele.helpers.MapService.open(activity, location.geo_point.lat, location.geo_point._long, location.address)) {
++                    return;
++                }
+                 String uri = String.format(Locale.ENGLISH, "geo:%f,%f", location.geo_point.lat, location.geo_point._long);
+                 if (!TextUtils.isEmpty(location.address)) {
+                     uri += "?q=" + location.address;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LocationActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LocationActivity.java
+index 06d99117e..a8cf183eb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LocationActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LocationActivity.java
+@@ -581,6 +581,9 @@ public class LocationActivity extends BaseFragment implements NotificationCenter
+                     try {
+                         double lat = messageObject.messageOwner.media.geo.lat;
+                         double lon = messageObject.messageOwner.media.geo._long;
++                        if (tele.helpers.MapService.open(getParentActivity(), lat, lon, messageObject.messageOwner.media.title)) {
++                            return;
++                        }
+                         getParentActivity().startActivity(new Intent(android.content.Intent.ACTION_VIEW, Uri.parse("geo:" + lat + "," + lon + "?q=" + lat + "," + lon)));
+                     } catch (Exception e) {
+                         FileLog.e(e);
+@@ -735,6 +738,9 @@ public class LocationActivity extends BaseFragment implements NotificationCenter
+                     try {
+                         double lat = messageObject.messageOwner.media.geo.lat;
+                         double lon = messageObject.messageOwner.media.geo._long;
++                        if (tele.helpers.MapService.open(getParentActivity(), lat, lon, messageObject.messageOwner.media.title)) {
++                            return;
++                        }
+                         getParentActivity().startActivity(new Intent(android.content.Intent.ACTION_VIEW, Uri.parse("geo:" + lat + "," + lon + "?q=" + lat + "," + lon)));
+                     } catch (Exception e) {
+                         FileLog.e(e);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index cce623bf5..3f6026279 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -148,6 +148,8 @@ object TeleConfig {
+     @JvmField
+     val DELETED_MARKER = StringItem("deleted_marker", "fade")
+     @JvmField
++    val MAP_SERVICE = StringItem("map_service", "")
++    @JvmField
+     val DELETED_REPLY = StringItem("deleted_reply", "skip")
+     @JvmField
+     val DELETED_QUOTE_NAME = StringItem("deleted_quote_name", "")
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MapService.kt b/TMessagesProj/src/main/java/tele/helpers/MapService.kt
+new file mode 100644
+index 000000000..f60463325
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MapService.kt
+@@ -0,0 +1,43 @@
++package tele.helpers
++
++import android.content.Context
++import android.content.Intent
++import android.net.Uri
++import org.telegram.messenger.FileLog
++import tele.TeleConfig
++import java.util.Locale
++
++// opens a location in the picked web map instead of the system "geo:" handler
++object MapService {
++
++    class Site(val id: String, val name: String, val url: String)
++
++    @JvmField
++    val SITES = listOf(
++        Site("google", "Google Maps", "https://maps.google.com/maps?q={lat},{lon}&ll={lat},{lon}&z=16"),
++        Site("osm", "OpenStreetMap", "https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=16/{lat}/{lon}"),
++        Site("yandex", "Yandex Maps", "https://yandex.ru/maps/?ll={lon},{lat}&z=16&pt={lon},{lat}"),
++        Site("2gis", "2GIS", "https://2gis.ru/geo/{lon},{lat}?m={lon},{lat}/16"),
++        Site("apple", "Apple Maps", "https://maps.apple.com/?ll={lat},{lon}&q={title}&z=16")
++    )
++
++    fun label(id: String): String = SITES.firstOrNull { it.id == id }?.name ?: "System default"
++
++    /** True when the location was opened in the picked site; false means the caller keeps the stock flow. */
++    @JvmStatic
++    fun open(context: Context?, lat: Double, lon: Double, title: String?): Boolean {
++        val site = SITES.firstOrNull { it.id == TeleConfig.MAP_SERVICE.value }
++        if (site == null || context == null) return false
++        return try {
++            val url = site.url
++                .replace("{lat}", String.format(Locale.ENGLISH, "%.6f", lat))
++                .replace("{lon}", String.format(Locale.ENGLISH, "%.6f", lon))
++                .replace("{title}", Uri.encode(if (title.isNullOrEmpty()) "Point" else title))
++            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
++            true
++        } catch (e: Exception) {
++            FileLog.e(e)
++            false
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 77965ac14..b392513c6 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -314,6 +314,11 @@ object TeleSearch {
+             section(1347, "Message type filter in chat search", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(1348, "Search by sender and type", "chats", TeleSettingsActivity.MODE_CHATS, "Message type filter in chat search"),
+             section(1349, "Filter chat search by photos, videos and links", "chats", TeleSettingsActivity.MODE_CHATS, "Message type filter in chat search"),
++            section(1410, "Map service", "messages", TeleSettingsActivity.MODE_MESSAGES),
++            section(1411, "Open locations in another map", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
++            section(1412, "Google Maps, OpenStreetMap, Yandex, 2GIS, Apple Maps", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
++            section(1413, "Location links", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
++            section(1414, "Open in maps", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
+             section(1380, "Show when media was uploaded", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1381, "Upload date in the media viewer", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show when media was uploaded"),
+             section(1382, "Media data center in the viewer", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Show data center"),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 47d5be5a9..70f30a433 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -202,6 +202,20 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         showDialog(builder.create())
+     }
+ 
++    private fun chooseMapService() {
++        val activity = parentActivity ?: return
++        val sites = tele.helpers.MapService.SITES
++        val values = arrayOf("") + sites.map { it.id }
++        val labels = arrayOf(lc("System default")) + sites.map { lc(it.name) }
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle(lc("Map service"))
++        builder.setItems(labels) { _, which ->
++            TeleConfig.set(TeleConfig.MAP_SERVICE, values[which])
++            refresh()
++        }
++        showDialog(builder.create())
++    }
++
+     private fun chooseDeletedReply() {
+         val activity = parentActivity ?: return
+         val values = arrayOf("skip", "quote")
+@@ -546,6 +560,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             row.type == TYPE_VALUE && row.item == TeleConfig.LINK_PREVIEW_MODE -> chooseLinkPreviewMode()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_MARKER -> chooseDeletedMarker()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_RETENTION -> chooseDeletedRetention()
++            row.type == TYPE_VALUE && row.item == TeleConfig.MAP_SERVICE -> chooseMapService()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_REPLY -> chooseDeletedReply()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_QUOTE_NAME -> chooseDeletedQuoteName()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TELE_SERVER_URL -> chooseServerUrl()
+@@ -936,6 +951,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Bot api style ids" to "Write chat IDs like the Bot API: -100…",
+             "Show data center" to "Show the data center in profiles and the media viewer.",
+             "Id and dc in one row" to "Put the ID and data center in one row.",
++            "Map service" to "Open locations in this map instead of the system one.",
+             "Show when media was uploaded" to "In the media viewer, when it differs from the message date.",
+             "Show message id in the message menu" to "Show the message ID in its menu.",
+             "Show gift id" to "Show gift IDs.",
+@@ -1325,6 +1341,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Links"),
+                 toggle("Disable link previews", TeleConfig.NO_LINK_PREVIEWS),
+                 choice("Automatic link previews", TeleConfig.LINK_PREVIEW_MODE),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Maps"),
++                Row(TYPE_VALUE, "Map service", value = tele.helpers.MapService.label(TeleConfig.MAP_SERVICE.value), item = TeleConfig.MAP_SERVICE),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_SENDING -> listOf(
