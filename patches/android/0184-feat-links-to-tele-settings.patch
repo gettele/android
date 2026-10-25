@@ -1,0 +1,553 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 25 Oct 2026 06:59:02 +0300
+Subject: [PATCH] feat: links to tele settings
+
+---
+ .../java/org/telegram/ui/LaunchActivity.java  |   6 +
+ .../java/org/telegram/ui/LinkManager.java     |   7 +-
+ .../java/tele/helpers/TeleSettingsLinks.kt    | 144 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 127 ++++++++++-----
+ 4 files changed, 244 insertions(+), 40 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index e098e9c64..da89bb9e0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -1563,6 +1563,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+         int push_enc_id = 0;
+         int push_msg_id = 0;
+         int open_settings = 0;
++        String teleSettingsLink = null;
+         int open_widget_edit = -1;
+         int open_widget_edit_type = -1;
+         int open_new_dialog = 0;
+@@ -2607,6 +2608,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+                                         url = url.replace("tg:addtheme", "tg://telegram.org").replace("tg://addtheme", "tg://telegram.org");
+                                         data = Uri.parse(url);
+                                         theme = data.getQueryParameter("slug");
++                                    } else if (tele.helpers.TeleSettingsLinks.isLink(url)) {
++                                        open_settings = 100;
++                                        teleSettingsLink = url;
+                                     } else if (url.startsWith("tg:settings") || url.startsWith("tg://settings")) {
+                                         if (url.contains("themes") || url.contains("theme")) {
+                                             open_settings = 2;
+@@ -3174,6 +3178,8 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+                     }, ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
+ 
+                     fragment = null;
++                } else if (open_settings == 100) {
++                    fragment = tele.helpers.TeleSettingsLinks.fragment(teleSettingsLink);
+                 } else if (ApplicationLoader.applicationLoaderInstance != null) {
+                     fragment = ApplicationLoader.applicationLoaderInstance.openSettings(open_settings);
+                 } else {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
+index ac4800587..c50687973 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
+@@ -203,8 +203,13 @@ public class LinkManager {
+         if ("oauth".equalsIgnoreCase(first))
+             return handleOAuth(uri, uri.getQueryParameter("token"));
+ 
+-        if ("settings".equalsIgnoreCase(first))
++        if ("settings".equalsIgnoreCase(first)) {
++            if (tele.helpers.TeleSettingsLinks.isLink(uri.toString())) {
++                presentFragment(tele.helpers.TeleSettingsLinks.fragment(uri.toString()));
++                return true;
++            }
+             return handleSettings(segments.subList(1, segments.size()));
++        }
+ 
+         if ("chats".equalsIgnoreCase(first)) {
+             if ("search".equalsIgnoreCase(second)) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+new file mode 100644
+index 000000000..7d327caae
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -0,0 +1,144 @@
++package tele.helpers
++
++import android.net.Uri
++import org.telegram.ui.ActionBar.BaseFragment
++import tele.TeleConfig
++import tele.ui.settings.TeleSettingsActivity
++
++// tg://settings/tele[/<page>[/<id>]][?highlight=<id>]: the desktop deep links of the tele settings
++object TeleSettingsLinks {
++
++    private const val BASE = "tg://settings/tele"
++
++    private val SLUGS = mapOf(
++        "interface" to TeleSettingsActivity.MODE_INTERFACE,
++        "chats" to TeleSettingsActivity.MODE_CHATS,
++        "messages" to TeleSettingsActivity.MODE_MESSAGES,
++        "sending" to TeleSettingsActivity.MODE_SENDING,
++        "notifications" to TeleSettingsActivity.MODE_NOTIFICATIONS,
++        "menus" to TeleSettingsActivity.MODE_MENUS,
++        "privacy" to TeleSettingsActivity.MODE_PRIVACY,
++        "profiles" to TeleSettingsActivity.MODE_PROFILES_IDS,
++        "profiles-ids" to TeleSettingsActivity.MODE_PROFILES_IDS,
++        "ids" to TeleSettingsActivity.MODE_PROFILES_IDS,
++        "bots" to TeleSettingsActivity.MODE_BOTS,
++        "debug" to TeleSettingsActivity.MODE_DEBUG,
++        "server" to TeleSettingsActivity.MODE_SERVER,
++        "backup" to TeleSettingsActivity.MODE_BACKUP,
++        "data" to TeleSettingsActivity.MODE_BACKUP,
++        "updates" to TeleSettingsActivity.MODE_UPDATES,
++        "new" to TeleSettingsActivity.MODE_NEW
++    )
++
++    // the slug a page is copied with: the first one of each page
++    private val PAGE_SLUGS: Map<String, String> = SLUGS.entries.groupBy({ it.value }, { it.key }).mapValues { it.value.first() }
++
++    // desktop option id -> our row id, for the options that are named differently; the first id of a row is the one that gets copied
++    private val DESKTOP_IDS: List<Pair<String, String>> = listOf(
++        "tele-title" to optionId(TeleConfig.TITLE_TEMPLATE.key),
++        "tele-lowercase" to optionId(TeleConfig.LOWERCASE_INTERFACE.key),
++        "tele-hide-all-chats" to optionId(TeleConfig.HIDE_ALL_CHATS_FOLDER.key),
++        "tele-hide-similar" to optionId(TeleConfig.HIDE_SIMILAR_CHANNELS.key),
++        "tele-hide-similar-join" to optionId(TeleConfig.HIDE_SIMILAR_CHANNELS.key),
++        "tele-hide-similar-profile" to optionId(TeleConfig.HIDE_SIMILAR_CHANNELS.key),
++        "tele-chat-list-no-reorder-animation" to optionId(TeleConfig.INSTANT_CHAT_MOVE.key),
++        "tele-no-phone-in-header" to optionId(TeleConfig.NAME_INSTEAD_OF_PHONE.key),
++        "tele-static-userpics-chats" to optionId(TeleConfig.STATIC_AVATARS.key),
++        "tele-static-userpics-list" to optionId(TeleConfig.STATIC_AVATARS.key),
++        "tele-hide-calls" to optionId(TeleConfig.HIDE_CALL_BUTTONS.key),
++        "tele-call-button" to optionId(TeleConfig.HIDE_CALL_BUTTONS.key),
++        "tele-group-call-button" to optionId(TeleConfig.HIDE_CALL_BUTTONS.key),
++        "tele-hide-mentions-button" to optionId(TeleConfig.HIDE_MENTION_REACTIONS.key),
++        "tele-hide-reactions-button" to optionId(TeleConfig.HIDE_MENTION_REACTIONS.key),
++        "tele-group-quick-replies" to optionId(TeleConfig.QUICK_REPLIES_IN_GROUPS.key),
++        "tele-media-past-limit" to optionId(TeleConfig.KEEP_MEDIA_PAST_LIMIT.key),
++        "tele-background-menu" to optionId(TeleConfig.LOCAL_CHAT_BACKGROUNDS.key),
++        "tele-message-seconds" to optionId(TeleConfig.SHOW_SECONDS.key),
++        "tele-keep-secret-media" to optionId(TeleConfig.KEEP_DISAPPEARING_MEDIA.key),
++        "tele-keep-deleted" to optionId(TeleConfig.KEEP_DELETED_MESSAGES.key),
++        "tele-keep-deleted-persist" to optionId(TeleConfig.KEEP_DELETED_MESSAGES.key),
++        "tele-edit-history-persist" to optionId(TeleConfig.EDIT_HISTORY.key),
++        "tele-saved-history-period" to optionId(TeleConfig.DELETED_RETENTION.key),
++        "tele-recover-forwarded" to optionId(TeleConfig.RECOVER_FORWARDED_POSTS.key),
++        "tele-deleted-icon" to optionId(TeleConfig.DELETED_MARKER.key),
++        "tele-link-previews" to optionId(TeleConfig.LINK_PREVIEW_MODE.key),
++        "tele-audio-voice" to optionId(TeleConfig.AUDIO_AS_VOICE.key),
++        "tele-docked-attachments" to optionId(TeleConfig.DOCKED_MEDIA.key),
++        "tele-calcmula-inline" to optionId(TeleConfig.CALCMULA_INLINE_RESULT.key),
++        "tele-silence-chats" to optionId(TeleConfig.SILENCE_COMPLETELY.key),
++        "tele-sticker-set-owner" to optionId(TeleConfig.COPY_STICKER_OWNER.key),
++        "tele-nft-purchase-price" to optionId(TeleConfig.PURCHASE_PRICE.key),
++        "tele-profile-photo-bg" to optionId(TeleConfig.PROFILE_PHOTO_BACKGROUND.key),
++        "tele-profile-photo-bg-whole" to optionId(TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.key),
++        "tele-button-payloads" to optionId(TeleConfig.BOT_BUTTON_PAYLOADS.key),
++        "tele-inline-without-via" to optionId(TeleConfig.INLINE_NO_VIA.key),
++        "tele-allow-screen-capture" to optionId(TeleConfig.NEVER_BLOCK_SCREENSHOTS.key),
++        "tele-screenshot-secret-media" to optionId(TeleConfig.ALLOW_SCREENSHOTS_DISAPPEARING.key),
++        "tele-no-link-warning" to optionId(TeleConfig.OPEN_LINKS_DIRECTLY.key),
++        "tele-link-rewrites" to optionId(TeleConfig.REWRITE_PASTED_LINKS.key),
++        "tele-ghost" to optionId(TeleConfig.GHOST_MODE.key),
++        "tele-ghost-schedule-pending" to optionId(TeleConfig.GHOST_SCHEDULED_MESSAGES.key),
++        "tele-ghost-chats" to optionId(TeleConfig.GHOST_PER_CHAT.key),
++        "tele-hide-ignored" to optionId(TeleConfig.IGNORE_USERS.key),
++        "tele-ignore-in-menu" to optionId(TeleConfig.IGNORE_BUTTON.key),
++        "tele-peek-last-seen" to optionId(TeleConfig.LAST_SEEN_RESTORE.key),
++        "tele-hide-phone-in-profile" to optionId(TeleConfig.HIDE_PHONE_IN_PROFILES.key),
++        "tele-server-url" to optionId(TeleConfig.TELE_SERVER_URL.key)
++    )
++
++    private val ALIASES: Map<String, String> = DESKTOP_IDS.toMap()
++    private val DESKTOP_OF: Map<String, String> = DESKTOP_IDS.groupBy({ it.second }, { it.first }).mapValues { it.value.first() }
++
++    @JvmStatic
++    fun optionId(key: String): String = "tele-" + key.replace('_', '-')
++
++    /** The link of a row, with the desktop id where there is one. */
++    @JvmStatic
++    fun link(id: String): String = "$BASE?highlight=${DESKTOP_OF[id] ?: id}"
++
++    @JvmStatic
++    fun pageLink(mode: String): String? = PAGE_SLUGS[TeleSettingsActivity.canonicalMode(mode)]?.let { "$BASE/$it" }
++
++    @JvmStatic
++    fun isLink(url: String?): Boolean = parse(url) != null
++
++    /** The settings screen a link opens: the row's page when the link names a row. */
++    @JvmStatic
++    fun fragment(url: String): BaseFragment {
++        val parsed = parse(url) ?: return TeleSettingsActivity()
++        val fallback = parsed.page ?: TeleSettingsActivity.MODE_ROOT
++        val id = parsed.id?.let(::canonicalId) ?: return TeleSettingsActivity(fallback)
++        val page = TeleSettingsActivity.pageOf(id, parsed.page) ?: return TeleSettingsActivity(fallback)
++        return TeleSettingsActivity(page, null, id)
++    }
++
++    private class Parsed(val page: String?, val id: String?)
++
++    private fun parse(url: String?): Parsed? {
++        if (url == null) return null
++        // tg:settings/tele is the same link as tg://settings/tele
++        val fixed = if (url.startsWith("tg:settings", true)) "tg://settings" + url.substring("tg:settings".length) else url
++        val uri = runCatching { Uri.parse(fixed) }.getOrNull() ?: return null
++        if (!"tg".equals(uri.scheme, true) || !"settings".equals(uri.host, true)) return null
++        val segments = uri.pathSegments
++        if (segments.isEmpty() || !"tele".equals(segments[0], true)) return null
++        var page: String? = null
++        var id: String? = null
++        var next = 1
++        if (segments.size > next) {
++            page = SLUGS[segments[next].lowercase()]
++            // a lone id after tele/ works too
++            if (page != null) next++
++        }
++        if (segments.size > next) id = segments[next]
++        if (id.isNullOrEmpty()) id = uri.getQueryParameter("highlight")
++        return Parsed(page, id?.takeIf { it.isNotBlank() })
++    }
++
++    /** The id of our row: the desktop ids, our keys and the ids without the prefix all work. */
++    private fun canonicalId(raw: String): String {
++        var id = raw.trim().lowercase().replace('_', '-')
++        if (!id.startsWith("tele-")) id = "tele-$id"
++        return ALIASES[id] ?: id
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index a1c6a0ef6..b504237b3 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -6,9 +6,11 @@ import android.view.View
+ import android.widget.FrameLayout
+ import android.widget.TextView
+ import java.util.ArrayList
++import androidx.recyclerview.widget.LinearLayoutManager
+ import org.telegram.messenger.Utilities
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.BuildVars
++import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.UserConfig
+ import org.telegram.ui.ActionBar.ActionBar
+@@ -17,6 +19,7 @@ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Cells.TextCheckCell2
+ import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.ItemOptions
+ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.UItem
+ import org.telegram.ui.Components.UniversalAdapter
+@@ -26,8 +29,9 @@ import tele.Item
+ import tele.TeleHooks
+ import tele.TeleConfig
+ import tele.helpers.TeleLowercase
++import tele.helpers.TeleSettingsLinks
+ 
+-class TeleSettingsActivity @JvmOverloads constructor(private val mode: String = MODE_ROOT, private val jumpTo: String? = null) : BaseFragment() {
++class TeleSettingsActivity @JvmOverloads constructor(private val mode: String = MODE_ROOT, private val jumpTo: String? = null, private val jumpId: String? = null) : BaseFragment() {
+ 
+     private data class Row(
+         val type: Int,
+@@ -46,7 +50,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         /** The row is a parent toggle with children. */
+         val expandable: Boolean = false,
+         /** The number of the enabled children of a parent toggle. */
+-        val childCount: Int = 0
++        val childCount: Int = 0,
++        /** The id of a row that isn't an option: links and buttons. */
++        val id: String? = null
+     )
+ 
+     private var listView: UniversalRecyclerView? = null
+@@ -301,13 +307,17 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         screenContext = context
+         // the search opens the section on the row it points to
+         val page = buildRows(mode)
+-        val target = jumpTo?.let { title -> page.firstOrNull { it.title == title } }
++        val target = if (jumpId != null) page.firstOrNull { idOf(it) == jumpId } else jumpTo?.let { title -> page.firstOrNull { it.title == title } }
+         val targetKey = target?.item?.key
+         if (targetKey != null) {
+             // a child of a group is shown when its group is expanded
+             parentKeyOf(targetKey)?.let { expandedGroups.add(it) }
+         }
+-        teleSearchRow = jumpTo?.let { title -> withGroups(page).indexOfFirst { it.title == title } } ?: -1
++        teleSearchRow = when {
++            jumpId != null -> withGroups(page).indexOfFirst { idOf(it) == jumpId }
++            jumpTo != null -> withGroups(page).indexOfFirst { it.title == jumpTo }
++            else -> -1
++        }
+         actionBar.setBackButtonImage(R.drawable.ic_ab_back)
+         actionBar.setAllowOverlayTitle(true)
+         actionBar.setTitle(lc(sectionTitle()))
+@@ -320,13 +330,21 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         val frameLayout = FrameLayout(context)
+         frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+         fragmentView = frameLayout
+-        listView = UniversalRecyclerView(this, this::fillItems, this::onItemClick, null)
++        listView = UniversalRecyclerView(this, this::fillItems, this::onItemClick, this::onItemLongClick)
+         listView!!.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+         listView!!.setSections()
+         listView!!.adapter.setApplyBackground(false)
+         listView!!.setPadding(0, AndroidUtilities.dp(12f), 0, AndroidUtilities.dp(12f))
+         listView!!.setClipToPadding(false)
+         frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        // a link scrolls to its row and highlights it, like the search does
++        if (jumpId != null && teleSearchRow >= 0) {
++            val list = listView!!
++            list.highlightRow(RecyclerListView.IntReturnCallback {
++                (list.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(teleSearchRow, AndroidUtilities.dp(60f))
++                teleSearchRow
++            })
++        }
+         return fragmentView
+     }
+     private fun fillItems(items: ArrayList<UItem>, adapter: UniversalAdapter) {
+@@ -462,6 +480,20 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         }
+     }
+ 
++    /** Long-press on a row with an id: copy its link. */
++    private fun onItemLongClick(item: UItem, view: View, position: Int, x: Float, y: Float): Boolean {
++        val row = rows.getOrNull(item.id) ?: return false
++        if (row.type == TYPE_HEADER || row.type == TYPE_SHADOW || row.type == TYPE_CUSTOM) return false
++        val url = linkOf(row) ?: return false
++        ItemOptions.makeOptions(this, view)
++            .add(R.drawable.msg_link, LocaleController.getString(R.string.CopyLink), Runnable {
++                AndroidUtilities.addToClipboard(url)
++                BulletinFactory.of(this).createCopyLinkBulletin().show()
++            })
++            .show()
++        return true
++    }
++
+     private fun refresh() {
+         listView?.adapter?.update(true)
+      }
+@@ -613,6 +645,22 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         @JvmStatic
+         fun canonicalMode(mode: String): String = ALIASES[mode] ?: mode
+ 
++        /** The id of a row for the links: an option's own, or the one of a button. */
++        private fun idOf(row: Row): String? = row.id ?: row.item?.let { TeleSettingsLinks.optionId(it.key) }
++
++        /** The link of a row: its id, or the page of a section button. */
++        private fun linkOf(row: Row): String? =
++            idOf(row)?.let { TeleSettingsLinks.link(it) }
++                ?: if (row.type == TYPE_LINK_ICON) row.mode?.let { TeleSettingsLinks.pageLink(it) } else null
++
++        /** The page that holds the row: the preferred one first, then the root and the sections. */
++        @JvmStatic
++        fun pageOf(id: String, preferred: String?): String? {
++            val pages = listOfNotNull(preferred) + MODE_ROOT + SECTION_SPECS.map { it.mode } + MODE_MENU
++            // the rows hidden behind a parent toggle count: the link opens their page
++            return pages.firstOrNull { page -> buildRows(page, true).any { idOf(it) == id } }
++        }
++
+         private const val TYPE_HEADER = 0
+         private const val TYPE_VALUE = 1
+         private const val TYPE_TOGGLE = 2
+@@ -765,7 +813,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             else -> "For all links"
+         }, item = item)
+ 
+-        private fun link(title: String, mode: String, value: String? = null) = Row(TYPE_LINK, title = title, mode = mode, value = value)
++        private fun link(title: String, mode: String, value: String? = null, id: String? = null) = Row(TYPE_LINK, title = title, mode = mode, value = value, id = id)
+ 
+         private data class Section(val mode: String, val title: String, val icon: Int)
+ 
+@@ -776,8 +824,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             icon = section.icon
+         )
+ 
+-        private fun sectionLink(title: String, mode: String, icon: Int) =
+-            Row(TYPE_LINK_ICON, title = title, mode = mode, icon = icon)
++        private fun sectionLink(title: String, mode: String, icon: Int, id: String? = null) =
++            Row(TYPE_LINK_ICON, title = title, mode = mode, icon = icon, id = id)
+ 
+         private val SECTION_SPECS = listOf(
+             Section(MODE_INTERFACE, "interface", R.drawable.msg2_animations),
+@@ -830,7 +878,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             return rows
+         }
+ 
+-        private fun buildRows(mode: String): List<Row> = when (canonicalMode(mode)) {
++        private fun buildRows(mode: String, all: Boolean = false): List<Row> = when (canonicalMode(mode)) {
+             MODE_INTERFACE -> listOf(
+                 Row(TYPE_HEADER, "interface"),
+                 Row(TYPE_HEADER, "Chat list title"),
+@@ -893,7 +941,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 link(
+                     "Chat backgrounds",
+                     TeleChatBackgroundsActivity.MODE_CHAT_BACKGROUNDS,
+-                    tele.helpers.LocalBackgrounds.count(UserConfig.selectedAccount).let { if (it == 0) "none" else it.toString() }
++                    tele.helpers.LocalBackgrounds.count(UserConfig.selectedAccount).let { if (it == 0) "none" else it.toString() },
++                    "tele-chat-backgrounds"
+                 ),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Sponsored"),
+@@ -923,7 +972,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Drafts and privacy"),
+                 toggle("Keep drafts on this device", TeleConfig.LOCAL_DRAFTS),
+-                tele.helpers.SavedDrafts.count(UserConfig.selectedAccount).let { link("Saved drafts", TeleDraftsActivity.MODE_DRAFTS, if (it > 0) it.toString() else "None") },
++                tele.helpers.SavedDrafts.count(UserConfig.selectedAccount).let { link("Saved drafts", TeleDraftsActivity.MODE_DRAFTS, if (it > 0) it.toString() else "None", "tele-saved-drafts") },
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Disappearing media"),
+                 toggle("Don't burn disappearing media on view", TeleConfig.KEEP_DISAPPEARING_MEDIA),
+@@ -939,7 +988,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Recover channel posts from forwards", TeleConfig.RECOVER_FORWARDED_POSTS),
+                 Row(TYPE_VALUE, "Mark deleted messages with", value = TeleConfig.DELETED_MARKER.value, item = TeleConfig.DELETED_MARKER),
+                 Row(TYPE_VALUE, "Reply to deleted messages", value = if (TeleConfig.DELETED_REPLY.value == "quote") "Quote them" else "Skip them", item = TeleConfig.DELETED_REPLY),
+-                link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE),
++                link("Deleted messages", TeleDeletedMessagesActivity.MODE_ARCHIVE, id = "tele-deleted-messages"),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Edited history"),
+                 toggle("Keep edit history", TeleConfig.EDIT_HISTORY),
+@@ -947,7 +996,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Bookmarks"),
+                 toggle("Message bookmarks", TeleConfig.BOOKMARKS),
+                 toggle("Return to where you were reading", TeleConfig.RETURN_POINT),
+-                link("Bookmarks", TeleBookmarksActivity.MODE_BOOKMARKS),
++                link("Bookmarks", TeleBookmarksActivity.MODE_BOOKMARKS, id = "tele-bookmarks-list"),
+                 Row(TYPE_HEADER, "Read times"),
+                 toggle("Remember read times", TeleConfig.READ_LOG),
+                 Row(TYPE_SHADOW),
+@@ -1026,7 +1075,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Save messages as a picture", TeleConfig.SHOT),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Menu editor"),
+-                sectionLink("Message menu", MODE_MENU, R.drawable.msg2_permissions),
++                sectionLink("Message menu", MODE_MENU, R.drawable.msg2_permissions, "tele-message-menu"),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_PROFILES_IDS -> listOf(
+@@ -1053,11 +1102,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Local names"),
+                 toggle("Local names for people", TeleConfig.LOCAL_NAMES),
+-                link("Local names", TeleNamesActivity.MODE_LOCAL),
++                link("Local names", TeleNamesActivity.MODE_LOCAL, id = "tele-local-names-list"),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Aliases"),
+                 toggle("Username aliases", TeleConfig.USERNAME_ALIASES),
+-                link("Aliases", TeleNamesActivity.MODE_ALIAS),
++                link("Aliases", TeleNamesActivity.MODE_ALIAS, id = "tele-username-aliases-list"),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_BOTS -> listOf(
+@@ -1076,16 +1125,16 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             MODE_BACKUP -> listOf(
+                 Row(TYPE_HEADER, "backup"),
+                 Row(TYPE_HEADER, "Settings"),
+-                Row(TYPE_LINK, title = "Export settings", mode = "backup_export"),
+-                Row(TYPE_LINK, title = "Import settings", mode = "backup_import"),
++                Row(TYPE_LINK, title = "Export settings", mode = "backup_export", id = "tele-export-settings"),
++                Row(TYPE_LINK, title = "Import settings", mode = "backup_import", id = "tele-import-settings"),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_UPDATES -> listOf(
+                 Row(TYPE_HEADER, "updates"),
+                 toggle("Update automatically", TeleConfig.AUTO_UPDATE),
+                 toggle("Show what's new after updates", TeleConfig.SHOW_CHANGELOG),
+-                Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION),
+-                Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW),
++                Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION, id = "tele-check-updates"),
++                Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW, id = "tele-changelog"),
+                 Row(TYPE_SHADOW, title = tele.helpers.TeleUpdater.statusText())
+             )
+             MODE_PRIVACY -> {
+@@ -1106,39 +1155,39 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(toggle("Clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
+                 rows.add(toggle("Clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS))
+                 rows.add(toggle("Rewrite pasted links by rules", TeleConfig.REWRITE_PASTED_LINKS))
+-                if (TeleConfig.REWRITE_PASTED_LINKS.value) {
++                if (all || TeleConfig.REWRITE_PASTED_LINKS.value) {
+                     rows.add(toggle("Rewrite only the link preview", TeleConfig.REWRITE_PREVIEW_ONLY))
+                 }
+-                rows.add(sectionLink("Rewrite rules", MODE_RULES, R.drawable.msg2_link2))
++                rows.add(sectionLink("Rewrite rules", MODE_RULES, R.drawable.msg2_link2, "tele-link-rewrite-rules"))
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "ghost"))
+                 rows.add(Row(TYPE_CUSTOM, mode = "ghost_preview"))
+                 rows.add(Row(TYPE_CUSTOM, mode = "ghost_caption"))
+                 rows.add(toggle("Ghost mode", TeleConfig.GHOST_MODE))
+-                if (TeleConfig.GHOST_MODE.value) {
++                if (all || TeleConfig.GHOST_MODE.value) {
+                     rows.add(toggle("Hide online status", TeleConfig.GHOST_ONLINE))
+                     rows.add(toggle("Hide typing status", TeleConfig.GHOST_TYPING))
+                     rows.add(toggle("Hide read receipts", TeleConfig.GHOST_READ))
+                     rows.add(toggle("Hide viewed receipts", TeleConfig.GHOST_CONTENTS_READ))
+                     rows.add(toggle("Send messages as scheduled", TeleConfig.GHOST_SCHEDULE))
+-                    if (TeleConfig.GHOST_SCHEDULE.value) {
++                    if (all || TeleConfig.GHOST_SCHEDULE.value) {
+                         rows.add(toggle("Show waiting messages in the chat", TeleConfig.GHOST_SCHEDULED_MESSAGES))
+                     }
+                 }
+                 rows.add(toggle("Ghost mode exceptions", TeleConfig.GHOST_PER_CHAT))
+-                if (TeleConfig.GHOST_PER_CHAT.value) {
++                if (all || TeleConfig.GHOST_PER_CHAT.value) {
+                     val ghosts = tele.helpers.PrivacyRules.ghostPeers(UserConfig.selectedAccount)
+                     val always = ghosts.count { it.value == tele.helpers.PrivacyRules.GHOST_ALWAYS }
+                     val never = ghosts.count { it.value == tele.helpers.PrivacyRules.GHOST_NEVER }
+-                    rows.add(link("Always ghost in ($always)", "peers_ghost_always"))
+-                    rows.add(link("Never ghost in ($never)", "peers_ghost_never"))
++                    rows.add(link("Always ghost in ($always)", "peers_ghost_always", id = "tele-ghost-always"))
++                    rows.add(link("Never ghost in ($never)", "peers_ghost_never", id = "tele-ghost-never"))
+                 }
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "ignored"))
+                 rows.add(toggle("Ignore users", TeleConfig.IGNORE_USERS))
+-                if (TeleConfig.IGNORE_USERS.value) {
++                if (all || TeleConfig.IGNORE_USERS.value) {
+                     val ignored = tele.helpers.PrivacyRules.ignoredPeers(UserConfig.selectedAccount).size
+-                    rows.add(link("Ignored users", "peers_ignore", if (ignored > 0) ignored.toString() else "None"))
++                    rows.add(link("Ignored users", "peers_ignore", if (ignored > 0) ignored.toString() else "None", "tele-ignored-users"))
+                     rows.add(toggle("Fade the messages of the ignored users", TeleConfig.IGNORE_FADE))
+                     rows.add(toggle("Mute ignored messages", TeleConfig.MUTE_IGNORED))
+                     rows.add(toggle("Show the ignore button in the profile", TeleConfig.IGNORE_BUTTON))
+@@ -1146,8 +1195,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "Hidden words"))
+                 rows.add(toggle("Hide messages by words", TeleConfig.HIDDEN_WORDS))
+-                if (TeleConfig.HIDDEN_WORDS.value) {
+-                    rows.add(link("Hidden words", "words_global"))
++                if (all || TeleConfig.HIDDEN_WORDS.value) {
++                    rows.add(link("Hidden words", "words_global", id = "tele-hidden-words-list"))
+                     rows.add(toggle("Hide the messages completely", TeleConfig.HIDE_WORDS))
+                 }
+                 rows.add(toggle("Peek at hidden last seen", TeleConfig.LAST_SEEN_RESTORE))
+@@ -1159,19 +1208,19 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             MODE_SERVER -> listOf(
+                 Row(TYPE_HEADER, "server"),
+                 Row(TYPE_VALUE, "Server url", value = if (TeleConfig.TELE_SERVER_URL.value.isBlank()) "Empty (disabled)" else TeleConfig.TELE_SERVER_URL.value, item = TeleConfig.TELE_SERVER_URL),
+-                Row(TYPE_LINK, title = "Refresh now", mode = "server_refresh"),
+-                Row(TYPE_LINK, title = "Clear cached data", mode = "server_clear"),
++                Row(TYPE_LINK, title = "Refresh now", mode = "server_refresh", id = "tele-refresh-badges"),
++                Row(TYPE_LINK, title = "Clear cached data", mode = "server_clear", id = "tele-clear-badges"),
+                 toggle("Usernames from the server", TeleConfig.SERVER_USERNAMES),
+                 toggle("Send crash reports", TeleConfig.SEND_CRASH_REPORTS),
+-                Row(TYPE_LINK, title = "Send pending crash report", mode = "server_send_crash"),
++                Row(TYPE_LINK, title = "Send pending crash report", mode = "server_send_crash", id = "tele-send-pending-crash"),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_MENU -> listOf(
+                 Row(TYPE_HEADER, "Message menu"),
+-                Row(TYPE_LINK, title = "Editor", mode = MODE_MENU),
++                Row(TYPE_LINK, title = "Editor", mode = MODE_MENU, id = "tele-message-menu-editor"),
+                 Row(TYPE_HEADER, "All menus"),
+-                Row(TYPE_LINK, title = "Copy all layouts", mode = "menu_export"),
+-                Row(TYPE_LINK, title = "Paste all layouts", mode = "menu_import"),
++                Row(TYPE_LINK, title = "Copy all layouts", mode = "menu_export", id = "tele-menu-layouts-copy"),
++                Row(TYPE_LINK, title = "Paste all layouts", mode = "menu_import", id = "tele-menu-layouts-paste"),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_NEW -> newRows()
+@@ -1180,8 +1229,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             )) + SECTION_SPECS.map { sectionLink(it) } + listOf(
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Updates"),
+-                Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION),
+-                Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW),
++                Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION, id = "tele-check-updates"),
++                Row(TYPE_LINK, title = "What's new", mode = MODE_WHATS_NEW, id = "tele-changelog"),
+                 Row(TYPE_SHADOW, title = tele.helpers.TeleUpdater.statusText() + "\n\ntele for Android ${BuildVars.BUILD_VERSION_STRING} with tele patches, ${tele.TeleBuild.label()}.")
+             )
+         }
