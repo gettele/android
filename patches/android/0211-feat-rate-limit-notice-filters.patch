@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 01:52:45 +0300
+Subject: [PATCH 211/216] feat: rate limit notice filters
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |  2 ++
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |  2 +-
+ .../main/java/tele/helpers/TeleFloodWait.kt   | 28 ++++++++++++++++---
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  6 +++-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  8 ++++--
+ 5 files changed, 38 insertions(+), 8 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 00993df8f..48b575d1f 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -381,6 +381,8 @@ object TeleConfig {
+     val NOTICES = BoolItem("notices", false)
+     @JvmField
+     val NOTICES_LIMITS = BoolItem("notices_limits", false)
++    @JvmField
++    val NOTICES_LOG_LIMITS = BoolItem("notices_log_limits", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 410a6cc3d..e1331f67a 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -170,7 +170,7 @@ object TeleHooks {
+         if (item === TeleConfig.ONLINE_NOTIFY) {
+             tele.helpers.OnlineNotify.onToggled()
+         }
+-        if (item === TeleConfig.NOTICES || item === TeleConfig.NOTICES_LIMITS) {
++        if (item === TeleConfig.NOTICES || item === TeleConfig.NOTICES_LIMITS || item === TeleConfig.NOTICES_LOG_LIMITS) {
+             tele.helpers.TeleFloodWait.refresh()
+         }
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt b/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
+index 14ce582b1..7c9eac34d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
+@@ -95,11 +95,31 @@ object TeleFloodWait {
+         return classes.firstOrNull { it.first.isAssignableFrom(request) }?.second
+     }
+ 
+-    /** The toasts and the bar. */
+-    private fun shown(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_LIMITS.value
++    private val transfers: List<Class<*>> by lazy {
++        listOf(
++            TLRPC.TL_upload_getFile::class.java,
++            TLRPC.TL_upload_getWebFile::class.java,
++            TLRPC.TL_upload_getCdnFile::class.java,
++            TLRPC.TL_upload_getFileHashes::class.java,
++            TLRPC.TL_upload_getCdnFileHashes::class.java,
++            TLRPC.TL_upload_reuploadCdnFile::class.java,
++            TLRPC.TL_upload_saveFilePart::class.java,
++            TLRPC.TL_upload_saveBigFilePart::class.java
++        )
++    }
++
++    // slow mode is the chat's own rule and the premium wait of file transfers has its stock bulletin: neither is a rate limit notice
++    private fun tracked(request: Class<*>?, error: String): Boolean = when {
++        error.startsWith("SLOWMODE_WAIT_") -> false
++        error.startsWith("FLOOD_PREMIUM_WAIT_") -> request == null || transfers.none { it.isAssignableFrom(request) }
++        else -> true
++    }
++
++    /** The toasts and the bar; they don't need the center. */
++    private fun shown(): Boolean = TeleConfig.NOTICES_LIMITS.value
+ 
+     /** The entries of the center. */
+-    private fun logged(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_LIMITS.value
++    private fun logged(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_LOG_LIMITS.value
+ 
+     /** Whether tgnet should send the events; the Java side asks it before every request too. */
+     @JvmStatic
+@@ -126,7 +146,7 @@ object TeleFloodWait {
+     }
+ 
+     private fun onWait(account: Int, token: Int, request: Class<*>?, seconds: Int, error: String) {
+-        if (!enabled() || seconds <= 0) return
++        if (!enabled() || seconds <= 0 || !tracked(request, error)) return
+         val action = classify(request) ?: return
+         val key = key(account, action)
+         val now = SystemClock.elapsedRealtime()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index d087cba12..e61dcbc83 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -350,7 +350,11 @@ object TeleSearch {
+             screen(1431, "Notifications of tele") { TeleNoticesActivity() },
+             section(1432, "Rate-limit toasts and bar", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
+             section(1433, "Flood wait countdown", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Rate-limit toasts and bar"),
+-            section(1434, "Too many requests", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Rate-limit toasts and bar")
++            section(1434, "Too many requests", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Rate-limit toasts and bar"),
++            section(1435, "Log rate limits", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            section(1436, "Slow mode waits", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log rate limits"),
++            section(1437, "File download speed limits", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log rate limits"),
++            section(1438, "Flood wait history", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log rate limits")
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 273ee8141..25852dba2 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -796,7 +796,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.key
+             ),
+             TeleConfig.NOTICES.key to listOf(
+-                TeleConfig.NOTICES_LIMITS.key
++                TeleConfig.NOTICES_LOG_LIMITS.key
+             ),
+             TeleConfig.INVISIBLE_NAMES.key to listOf(
+                 TeleConfig.INVISIBLE_NAMES_FALLBACK.key,
+@@ -1043,6 +1043,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Message type filter in chat search" to "Chips for photos, videos, links and more; an empty query lists them all.",
+             "Save downloads in a folder per chat" to "Saved media goes to Telegram/<chat name> in the public folders.",
+             "Notification center" to "Keeps rate limits, updates and other notices of tele in a list on this device.",
++            "Log rate limits" to "Adds each wait of Telegram and the moment it ends to the list; slow mode and file speed limits stay out.",
+             "Rate-limit toasts and bar" to "Counts down Telegram's waits when you send, react, join, search or pay too fast; a bar shows above the chats from a minute.",
+         )
+ 
+@@ -1430,12 +1431,15 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "Notification center"))
+                 rows.add(toggle("Notification center", TeleConfig.NOTICES))
+-                rows.add(toggle("Rate-limit toasts and bar", TeleConfig.NOTICES_LIMITS))
++                rows.add(toggle("Log rate limits", TeleConfig.NOTICES_LOG_LIMITS))
+                 if (all || TeleConfig.NOTICES.value) {
+                     val unread = tele.helpers.TeleNotices.unread(UserConfig.selectedAccount)
+                     rows.add(link("Notifications", TeleNoticesActivity.MODE_NOTICES, if (unread > 0) "$unread new" else "None", "tele-notices-open"))
+                 }
+                 rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "Rate limits"))
++                rows.add(toggle("Rate-limit toasts and bar", TeleConfig.NOTICES_LIMITS))
++                rows.add(Row(TYPE_SHADOW))
+                 rows
+             }
+             MODE_MENUS -> listOf(

@@ -1,0 +1,1835 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 01:51:40 +0300
+Subject: [PATCH 210/216] feat: notifications center
+
+---
+ TMessagesProj/jni/TgNetWrapper.cpp            |  16 +
+ .../jni/tgnet/ConnectionsManager.cpp          |  18 +
+ TMessagesProj/jni/tgnet/ConnectionsManager.h  |   2 +
+ TMessagesProj/jni/tgnet/Defines.h             |   1 +
+ TMessagesProj/jni/tgnet/Request.h             |   1 +
+ .../telegram/tgnet/ConnectionsManager.java    |  22 ++
+ .../java/org/telegram/ui/DialogsActivity.java |   6 +
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  76 +++-
+ .../main/java/tele/helpers/OnlineNotify.kt    |   1 +
+ .../src/main/java/tele/helpers/TeleCrash.kt   |   1 +
+ .../main/java/tele/helpers/TeleFloodWait.kt   | 321 ++++++++++++++++
+ .../java/tele/helpers/TeleNoticeSources.kt    |  56 +++
+ .../src/main/java/tele/helpers/TeleNotices.kt | 348 ++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleUpdater.kt |   1 +
+ .../src/main/java/tele/ui/TeleCountBadge.kt   |  62 ++++
+ .../src/main/java/tele/ui/TeleNoticeCell.kt   | 133 +++++++
+ .../tele/ui/settings/TeleNoticesActivity.kt   | 264 +++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   7 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  33 +-
+ .../src/main/res/values/strings_tele.xml      |  37 ++
+ 22 files changed, 1408 insertions(+), 5 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleNoticeSources.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleCountBadge.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
+
+diff --git a/TMessagesProj/jni/TgNetWrapper.cpp b/TMessagesProj/jni/TgNetWrapper.cpp
+index e8ba9f4fd..d4c95c151 100644
+--- a/TMessagesProj/jni/TgNetWrapper.cpp
++++ b/TMessagesProj/jni/TgNetWrapper.cpp
+@@ -37,6 +37,7 @@ jmethodID jclass_ConnectionsManager_onProxyError;
+ jmethodID jclass_ConnectionsManager_getHostByName;
+ jmethodID jclass_ConnectionsManager_getInitFlags;
+ jmethodID jclass_ConnectionsManager_onPremiumFloodWait;
++jmethodID jclass_ConnectionsManager_onTeleFloodWait;
+ jmethodID jclass_ConnectionsManager_onIntegrityCheckClassic;
+ jmethodID jclass_ConnectionsManager_onCaptchaCheck;
+ 
+@@ -290,6 +291,10 @@ void setPushConnectionEnabled(JNIEnv *env, jclass c, jint instanceNum, jboolean
+     ConnectionsManager::getInstance(instanceNum).setPushConnectionEnabled(value);
+ }
+ 
++void setTeleFloodWait(JNIEnv *env, jclass c, jint instanceNum, jboolean value) {
++    ConnectionsManager::getInstance(instanceNum).setTeleFloodWait(value);
++}
++
+ void applyDnsConfig(JNIEnv *env, jclass c, jint instanceNum, jlong address, jstring phone, jint date) {
+     const char *phoneStr = env->GetStringUTFChars(phone, 0);
+ 
+@@ -398,6 +403,12 @@ class Delegate : public ConnectiosManagerDelegate {
+         jniEnv[instanceNum]->CallStaticVoidMethod(jclass_ConnectionsManager, jclass_ConnectionsManager_onPremiumFloodWait, instanceNum, requestToken, isUpload);
+     }
+ 
++    void onTeleFloodWait(int32_t instanceNum, int32_t requestToken, int32_t seconds, bool resent, std::string error) {
++        jstring errorStr = jniEnv[instanceNum]->NewStringUTF(error.c_str());
++        jniEnv[instanceNum]->CallStaticVoidMethod(jclass_ConnectionsManager, jclass_ConnectionsManager_onTeleFloodWait, instanceNum, requestToken, seconds, resent, errorStr);
++        jniEnv[instanceNum]->DeleteLocalRef(errorStr);
++    }
++
+     void onIntegrityCheckClassic(int32_t instanceNum, int32_t requestToken, std::string project, std::string nonce) {
+         jstring projectStr = jniEnv[instanceNum]->NewStringUTF(project.c_str());
+         jstring nonceStr = jniEnv[instanceNum]->NewStringUTF(nonce.c_str());
+@@ -552,6 +563,7 @@ static JNINativeMethod ConnectionsManagerMethods[] = {
+         {"native_setIpStrategy", "(IB)V", (void *) setIpStrategy},
+         {"native_setNetworkAvailable", "(IZIZ)V", (void *) setNetworkAvailable},
+         {"native_setPushConnectionEnabled", "(IZ)V", (void *) setPushConnectionEnabled},
++        {"native_setTeleFloodWait", "(IZ)V", (void *) setTeleFloodWait},
+         {"native_setJava", "(Z)V", (void *) setJava},
+         {"native_applyDnsConfig", "(IJLjava/lang/String;I)V", (void *) applyDnsConfig},
+         {"native_checkProxy", "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Lorg/telegram/tgnet/RequestTimeDelegate;)J", (void *) checkProxy},
+@@ -685,6 +697,10 @@ extern "C" int registerNativeTgNetFunctions(JavaVM *vm, JNIEnv *env) {
+     if (jclass_ConnectionsManager_onPremiumFloodWait == 0) {
+         return JNI_FALSE;
+     }
++    jclass_ConnectionsManager_onTeleFloodWait = env->GetStaticMethodID(jclass_ConnectionsManager, "onTeleFloodWait", "(IIIZLjava/lang/String;)V");
++    if (jclass_ConnectionsManager_onTeleFloodWait == 0) {
++        return JNI_FALSE;
++    }
+     jclass_ConnectionsManager_onIntegrityCheckClassic = env->GetStaticMethodID(jclass_ConnectionsManager, "onIntegrityCheckClassic", "(IILjava/lang/String;Ljava/lang/String;)V");
+     if (jclass_ConnectionsManager_onIntegrityCheckClassic == 0) {
+         return JNI_FALSE;
+diff --git a/TMessagesProj/jni/tgnet/ConnectionsManager.cpp b/TMessagesProj/jni/tgnet/ConnectionsManager.cpp
+index ec0b2f0eb..a8766ee96 100644
+--- a/TMessagesProj/jni/tgnet/ConnectionsManager.cpp
++++ b/TMessagesProj/jni/tgnet/ConnectionsManager.cpp
+@@ -1395,21 +1395,25 @@ void ConnectionsManager::processServerResponse(TLObject *message, int64_t messag
+                                 static std::string premiumFloodWait = "FLOOD_PREMIUM_WAIT_";
+                                 static std::string slowmodeWait = "SLOWMODE_WAIT_";
+                                 bool isPremiumFloodWait = false;
++                                const char *teleFloodKind = nullptr;
+                                 discardResponse = true;
+                                 if (error->error_message.find(premiumFloodWait) != std::string::npos) {
+                                     isPremiumFloodWait = true;
++                                    teleFloodKind = "FLOOD_PREMIUM_WAIT_";
+                                     std::string num = error->error_message.substr(premiumFloodWait.size(), error->error_message.size() - premiumFloodWait.size());
+                                     waitTime = atoi(num.c_str());
+                                     if (waitTime <= 0) {
+                                         waitTime = 2;
+                                     }
+                                 } else if (error->error_message.find(floodWait) != std::string::npos) {
++                                    teleFloodKind = "FLOOD_WAIT_";
+                                     std::string num = error->error_message.substr(floodWait.size(), error->error_message.size() - floodWait.size());
+                                     waitTime = atoi(num.c_str());
+                                     if (waitTime <= 0) {
+                                         waitTime = 2;
+                                     }
+                                 } else if (error->error_message.find(slowmodeWait) != std::string::npos) {
++                                    teleFloodKind = "SLOWMODE_WAIT_";
+                                     std::string num = error->error_message.substr(slowmodeWait.size(), error->error_message.size() - slowmodeWait.size());
+                                     waitTime = atoi(num.c_str());
+                                     if (waitTime <= 0) {
+@@ -1425,6 +1429,10 @@ void ConnectionsManager::processServerResponse(TLObject *message, int64_t messag
+                                 if (isPremiumFloodWait && delegate != nullptr) {
+                                     delegate->onPremiumFloodWait(instanceNum, request->requestToken, (request->connectionType & ConnectionTypeUpload) != 0);
+                                 }
++                                if (teleFloodKind != nullptr && teleFloodWait.load() && delegate != nullptr) {
++                                    request->teleFloodReported = discardResponse;
++                                    delegate->onTeleFloodWait(instanceNum, request->requestToken, waitTime, false, std::string(teleFloodKind) + std::to_string(waitTime));
++                                }
+                             } else if (failServerErrors && error->error_code == 400) {
+                                 static std::string waitFailed = "MSG_WAIT_FAILED";
+                                 static std::string bindFailed = "ENCRYPTED_MESSAGE_INVALID";
+@@ -2671,6 +2679,12 @@ void ConnectionsManager::processRequestQueue(uint32_t connectionTypes, uint32_t
+             }
+             request->startTime = currentTime;
+             request->startTimeMillis = currentTimeMillis;
++            if (request->teleFloodReported) {
++                request->teleFloodReported = false;
++                if (teleFloodWait.load() && delegate != nullptr) {
++                    delegate->onTeleFloodWait(instanceNum, request->requestToken, 0, true, std::string());
++                }
++            }
+ 
+             auto networkMessage = new NetworkMessage();
+             networkMessage->forceContainer = request->isResending;
+@@ -3580,6 +3594,10 @@ void ConnectionsManager::setDelegate(ConnectiosManagerDelegate *connectiosManage
+     delegate = connectiosManagerDelegate;
+ }
+ 
++void ConnectionsManager::setTeleFloodWait(bool value) {
++    teleFloodWait = value;
++}
++
+ void ConnectionsManager::setPushConnectionEnabled(bool value) {
+     pushConnectionEnabled = value;
+     Datacenter *datacenter = getDatacenterWithId(currentDatacenterId);
+diff --git a/TMessagesProj/jni/tgnet/ConnectionsManager.h b/TMessagesProj/jni/tgnet/ConnectionsManager.h
+index 2347770dd..16b43cb53 100644
+--- a/TMessagesProj/jni/tgnet/ConnectionsManager.h
++++ b/TMessagesProj/jni/tgnet/ConnectionsManager.h
+@@ -74,6 +74,7 @@ public:
+     void setSystemLangCode(std::string langCode);
+     void updateDcSettings(uint32_t datacenterId, bool workaround, bool ifLoadingTryAgain);
+     void setPushConnectionEnabled(bool value);
++    void setTeleFloodWait(bool value);
+     void applyDnsConfig(NativeByteBuffer *buffer, std::string phone, int32_t date);
+     int64_t checkProxy(std::string address, uint16_t port, std::string username, std::string password, std::string secret, onRequestTimeFunc requestTimeFunc, jobject ptr1);
+ 
+@@ -242,6 +243,7 @@ private:
+     bool currentUserPremium = false;
+     bool registeredForInternalPush = false;
+     bool pushConnectionEnabled = true;
++    std::atomic<bool> teleFloodWait{false};
+     int32_t currentPerformanceClass = -1;
+ 
+     std::map<uint32_t, std::vector<std::unique_ptr<NetworkMessage>>> genericMessagesToDatacenters;
+diff --git a/TMessagesProj/jni/tgnet/Defines.h b/TMessagesProj/jni/tgnet/Defines.h
+index c6fdd0af0..0ad39d588 100644
+--- a/TMessagesProj/jni/tgnet/Defines.h
++++ b/TMessagesProj/jni/tgnet/Defines.h
+@@ -154,6 +154,7 @@ typedef struct ConnectiosManagerDelegate {
+     virtual void getHostByName(std::string domain, int32_t instanceNum, ConnectionSocket *socket) = 0;
+     virtual int32_t getInitFlags(int32_t instanceNum) = 0;
+     virtual void onPremiumFloodWait(int32_t instanceNum, int32_t requestToken, bool isUpload) = 0;
++    virtual void onTeleFloodWait(int32_t instanceNum, int32_t requestToken, int32_t seconds, bool resent, std::string error) = 0;
+     virtual void onIntegrityCheckClassic(int32_t instanceNum, int32_t requestToken, std::string project, std::string nonce) = 0;
+     virtual void onCaptchaCheck(int32_t instanceNum, int32_t requestToken, std::string action, std::string key_id) = 0;
+ } ConnectiosManagerDelegate;
+diff --git a/TMessagesProj/jni/tgnet/Request.h b/TMessagesProj/jni/tgnet/Request.h
+index bfb31e2be..233060bbc 100644
+--- a/TMessagesProj/jni/tgnet/Request.h
++++ b/TMessagesProj/jni/tgnet/Request.h
+@@ -38,6 +38,7 @@ public:
+     bool awaitingIntegrityCheck = false;
+     bool awaitingCaptchaCheck = false;
+     bool premiumFloodWait = false;
++    bool teleFloodReported = false;
+     ConnectionType connectionType;
+     uint32_t requestFlags;
+     bool completedSent = false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java b/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
+index 778af4856..a8f33936e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
++++ b/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
+@@ -477,6 +477,12 @@ public class ConnectionsManager extends BaseController {
+                     FileLog.e(e);
+                 }
+             }, onQuickAck, onWriteToSocket);
++            if (tele.helpers.TeleFloodWait.enabled()) {
++                RequestCallbacks teleCallbacks = requestCallbacks.get(requestToken);
++                if (teleCallbacks != null) {
++                    teleCallbacks.teleRequest = object.getClass();
++                }
++            }
+             int downloadSize = 0;
+             // Only FileLoadOperation opts in. Live call segments retain their existing scheduling.
+             if ((flags & RequestFlagDownloadByteBudget) != 0 && (connectionType & 0xffff) == ConnectionTypeDownload) {
+@@ -500,6 +506,7 @@ public class ConnectionsManager extends BaseController {
+         public QuickAckDelegate onQuickAck;
+         public WriteToSocketDelegate onWriteToSocket;
+         public Runnable onCancelled;
++        public Class<?> teleRequest;
+         public RequestCallbacks(RequestDelegateInternal onComplete, QuickAckDelegate onQuickAck, WriteToSocketDelegate onWriteToSocket) {
+             this.onComplete = onComplete;
+             this.onQuickAck = onQuickAck;
+@@ -689,6 +696,9 @@ public class ConnectionsManager extends BaseController {
+         }
+ 
+         native_init(currentAccount, version, layer, apiId, deviceModel, systemVersion, appVersion, langCode, systemLangCode, configPath, logPath, regId, cFingerprint, installer, packageId, timezoneOffset, userId, userPremium, enablePushConnection, ApplicationLoader.isNetworkOnline(), ApplicationLoader.getCurrentNetworkType(), SharedConfig.measureDevicePerformanceClass());
++        if (tele.helpers.TeleFloodWait.enabled()) {
++            native_setTeleFloodWait(currentAccount, true);
++        }
+         checkConnection();
+     }
+ 
+@@ -1027,6 +1037,7 @@ public class ConnectionsManager extends BaseController {
+     public static native void native_setSystemLangCode(int currentAccount, String langCode);
+     public static native void native_setJava(boolean useJavaByteBuffers);
+     public static native void native_setPushConnectionEnabled(int currentAccount, boolean value);
++    public static native void native_setTeleFloodWait(int currentAccount, boolean value);
+     public static native void native_applyDnsConfig(int currentAccount, long address, String phone, int date);
+     public static native long native_checkProxy(int currentAccount, String address, int port, String username, String password, String secret, RequestTimeDelegate requestTimeDelegate);
+     public static native void native_onHostNameResolved(String host, long address, String ip);
+@@ -1488,6 +1499,17 @@ public class ConnectionsManager extends BaseController {
+         }
+     }
+ 
++    // the native flood wait events: only sent while a tele option asks for them
++    @Keep
++    public static void onTeleFloodWait(final int currentAccount, final int requestToken, final int seconds, final boolean resent, final String error) {
++        tele.helpers.TeleFloodWait.onEvent(currentAccount, requestToken, seconds, resent, error);
++    }
++
++    public Class<?> teleRequestClass(int requestToken) {
++        RequestCallbacks callbacks = requestCallbacks.get(requestToken);
++        return callbacks != null ? callbacks.teleRequest : null;
++    }
++
+     public static long lastPremiumFloodWaitShown = 0;
+     @Keep
+     public static void onPremiumFloodWait(final int currentAccount, final int requestToken, boolean isUpload) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 363293c38..88af4a712 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -621,6 +621,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     private DialogsActivityTopBubblesFadeView topBubblesFadeView;
+     private ActiveGiftAuctionsHintCell activeGiftAuctionsHintCell;
+     private DialogsHintCell dialogsHintCell;
++    private final Runnable teleLimitBar = this::updateDialogsHint;
+     private UnconfirmedAuthHintCell authHintCell;
+     private Long cacheSize, deviceSize;
+     private CommunityRequestsCell communityPendingRequests;
+@@ -6045,6 +6046,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 false,
+                 true
+             );
++        } else if (folderId == 0 && communityId == 0 && tele.helpers.TeleFloodWait.hasBar(currentAccount)) {
++            dialogsHintCellVisible = true;
++            tele.helpers.TeleFloodWait.fillBar(dialogsHintCell, this, currentAccount, teleLimitBar);
+         } else if (folderId == 0 && communityId == 0 && getMessagesController().pendingSuggestions.contains("SETUP_PASSKEY")) {
+             dialogsHintCellVisible = true;
+             dialogsHintCell.setOnClickListener(v -> {
+@@ -7066,6 +7070,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     @Override
+     public void onResume() {
+         super.onResume();
++        tele.helpers.TeleFloodWait.attachBar(currentAccount, teleLimitBar);
+         if (dialogStoriesCell != null) {
+             dialogStoriesCell.onResume();
+         }
+@@ -7284,6 +7289,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     @Override
+     public void onPause() {
+         super.onPause();
++        tele.helpers.TeleFloodWait.detachBar(teleLimitBar);
+         if (storiesBulletin != null) {
+             storiesBulletin.hide();
+             storiesBulletin = null;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 17c910f65..00993df8f 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -377,6 +377,10 @@ object TeleConfig {
+     val SEARCH_TYPES = BoolItem("search_types", false)
+     @JvmField
+     val ONLINE_NOTIFY = BoolItem("online_notify", false)
++    @JvmField
++    val NOTICES = BoolItem("notices", false)
++    @JvmField
++    val NOTICES_LIMITS = BoolItem("notices_limits", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 15c49b472..410a6cc3d 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -170,6 +170,9 @@ object TeleHooks {
+         if (item === TeleConfig.ONLINE_NOTIFY) {
+             tele.helpers.OnlineNotify.onToggled()
+         }
++        if (item === TeleConfig.NOTICES || item === TeleConfig.NOTICES_LIMITS) {
++            tele.helpers.TeleFloodWait.refresh()
++        }
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index 43e69b1d7..a07797656 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -639,7 +639,79 @@ object TeleDatabaseHelper {
+         )
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 11) {
++    /** A row of the notification center; [buttons] and [extra] are JSON that the notice model reads. */
++    class NoticeRow(
++        val id: Long,
++        val kind: String,
++        val tone: String,
++        val date: Int,
++        val key: String,
++        val rev: Int,
++        val title: String,
++        val text: String,
++        val buttons: String,
++        val photo: String,
++        val peer: Long,
++        val messageId: Int,
++        val topicId: Long,
++        val extra: String,
++        val unread: Boolean
++    )
++
++    fun getNotices(account: Int): List<NoticeRow> {
++        val db = helper?.readableDatabase ?: return emptyList()
++        val result = ArrayList<NoticeRow>()
++        db.rawQuery("SELECT id, kind, tone, date, key, rev, title, text, buttons, photo, peer, message_id, topic_id, extra, unread FROM tele_notices WHERE account = ? ORDER BY date DESC, id DESC", arrayOf(account.toString())).use { c ->
++            while (c.moveToNext()) {
++                result.add(NoticeRow(c.getLong(0), c.getString(1), c.getString(2), c.getInt(3), c.getString(4), c.getInt(5), c.getString(6), c.getString(7), c.getString(8), c.getString(9), c.getLong(10), c.getInt(11), c.getLong(12), c.getString(13), c.getInt(14) != 0))
++            }
++        }
++        return result
++    }
++
++    fun putNotice(account: Int, row: NoticeRow) {
++        val db = helper?.writableDatabase ?: return
++        val values = ContentValues().apply {
++            put("account", account)
++            put("id", row.id)
++            put("kind", row.kind)
++            put("tone", row.tone)
++            put("date", row.date)
++            put("key", row.key)
++            put("rev", row.rev)
++            put("title", row.title)
++            put("text", row.text)
++            put("buttons", row.buttons)
++            put("photo", row.photo)
++            put("peer", row.peer)
++            put("message_id", row.messageId)
++            put("topic_id", row.topicId)
++            put("extra", row.extra)
++            put("unread", if (row.unread) 1 else 0)
++        }
++        db.insertWithOnConflict("tele_notices", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++    }
++
++    fun removeNotices(account: Int, ids: Collection<Long>) {
++        val db = helper?.writableDatabase ?: return
++        for (id in ids) db.delete("tele_notices", "account = ? AND id = ?", arrayOf(account.toString(), id.toString()))
++    }
++
++    fun markNoticesRead(account: Int, ids: Collection<Long>?) {
++        val db = helper?.writableDatabase ?: return
++        if (ids == null) {
++            db.execSQL("UPDATE tele_notices SET unread = 0 WHERE account = ?", arrayOf<Any>(account.toString()))
++            return
++        }
++        for (id in ids) db.execSQL("UPDATE tele_notices SET unread = 0 WHERE account = ? AND id = ?", arrayOf<Any>(account.toString(), id.toString()))
++    }
++
++    fun clearNotices(account: Int) {
++        val db = helper?.writableDatabase ?: return
++        db.delete("tele_notices", "account = ?", arrayOf(account.toString()))
++    }
++
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 12) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -666,6 +738,8 @@ object TeleDatabaseHelper {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_deleted_chats (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, topic_id INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL, own INTEGER NOT NULL DEFAULT 0, whole INTEGER NOT NULL DEFAULT 0, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, topic_id))")
+             // the message a saved GIF was seen in: its file reference is refreshed from there once the GIF is kept past the limit
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_gif_origin (account INTEGER NOT NULL, doc_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY (account, doc_id))")
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_notices (account INTEGER NOT NULL, id INTEGER NOT NULL, kind TEXT NOT NULL, tone TEXT NOT NULL, date INTEGER NOT NULL, key TEXT NOT NULL, rev INTEGER NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, buttons TEXT NOT NULL, photo TEXT NOT NULL, peer INTEGER NOT NULL, message_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, extra TEXT NOT NULL, unread INTEGER NOT NULL, PRIMARY KEY (account, id))")
++            db.execSQL("CREATE INDEX IF NOT EXISTS tele_notices_date ON tele_notices(account, date DESC)")
+         }
+ 
+         // the retention stamp of the edit versions and the media file names of the kept messages
+diff --git a/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt b/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
+index ff39ce290..cdc96dba7 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
+@@ -135,6 +135,7 @@ object OnlineNotify {
+             notified[key] = ms
+         }
+         log("account $account user ${user.id} online")
++        TeleNoticeSources.cameOnline(account, user)
+         show(account, user)
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+index 88a85a26a..6176221e3 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+@@ -121,6 +121,7 @@ object TeleCrash {
+                 FileLog.d("TeleCrash: server response ${connection.responseCode}")
+                 val sent = connection.responseCode in 200..299
+                 if (sent) clearPending(context)
++                if (sent) TeleNoticeSources.crashSent(runCatching { connection?.inputStream?.bufferedReader()?.use { it.readText() } }.getOrNull())
+                 toast(appContext, TeleLowercase.lc(if (sent) "Crash report sent" else "Couldn't send the crash report"))
+             } catch (e: Exception) {
+                 FileLog.e(e)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt b/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
+new file mode 100644
+index 000000000..14ce582b1
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
+@@ -0,0 +1,321 @@
++package tele.helpers
++
++import android.os.SystemClock
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.tgnet.tl.TL_stories
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.Cells.DialogsHintCell
++import org.telegram.ui.Components.Bulletin
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.LaunchActivity
++import tele.TeleConfig
++import tele.ui.settings.TeleNoticesActivity
++import java.lang.ref.WeakReference
++
++/**
++ * The rate limits of Telegram (tele 0205): a countdown toast from [TOAST_FROM] seconds, a bar above
++ * the chat list from [BAR_FROM], and entries of the notification center. The events come from
++ * tgnet ([ConnectionsManager.onTeleFloodWait]), which only sends them while [enabled].
++ */
++object TeleFloodWait {
++
++    private const val TOAST_FROM = 5
++    private const val BAR_FROM = 60
++    private const val EXPIRY_TOAST_FROM = 30
++    private const val TOAST_DURATION = 10_000L
++    private const val EPISODE_GAP = 60_000L
++    private const val RESEND_SLACK = 1_000L
++    private const val TICK = 250L
++
++    private enum class Action(val limited: Int, val again: Int) {
++        SEND(R.string.TeleLimitSend, R.string.TeleAgainSend),
++        REACT(R.string.TeleLimitReact, R.string.TeleAgainReact),
++        JOIN(R.string.TeleLimitJoin, R.string.TeleAgainJoin),
++        SEARCH(R.string.TeleLimitSearch, R.string.TeleAgainSearch),
++        CONTACTS(R.string.TeleLimitContacts, R.string.TeleAgainContacts),
++        PAYMENT(R.string.TeleLimitPayment, R.string.TeleAgainPayment)
++    }
++
++    private class Limit(val account: Int, val action: Action, val episode: String, val started: Long) {
++        var deadline = 0L
++        val requests = HashSet<Int>()
++        var bulletin: Bulletin? = null
++        var label: TextView? = null
++        var shown = ""
++        var dismissed = false
++    }
++
++    private class Ended(val episode: String, val at: Long)
++
++    private class Host(val account: Int, val refresh: Runnable) {
++        var visible = false
++    }
++
++    // everything below runs on the UI thread
++    private val limits = ArrayList<Limit>()
++    private val ended = HashMap<String, Ended>()
++    private val hosts = ArrayList<Host>()
++    private val barCells = HashMap<Int, WeakReference<DialogsHintCell>>()
++    private var ticking = false
++    private val ticker = Runnable { tick() }
++
++    private val classes: List<Pair<Class<*>, Action>> by lazy {
++        listOf(
++            TLRPC.TL_messages_sendMessage::class.java to Action.SEND,
++            TLRPC.TL_messages_sendMedia::class.java to Action.SEND,
++            TLRPC.TL_messages_sendMultiMedia::class.java to Action.SEND,
++            TLRPC.TL_messages_forwardMessages::class.java to Action.SEND,
++            TLRPC.TL_messages_sendInlineBotResult::class.java to Action.SEND,
++            TLRPC.TL_messages_sendReaction::class.java to Action.REACT,
++            TLRPC.TL_messages_sendPaidReaction::class.java to Action.REACT,
++            TL_stories.TL_stories_sendReaction::class.java to Action.REACT,
++            TLRPC.TL_channels_joinChannel::class.java to Action.JOIN,
++            TLRPC.TL_messages_importChatInvite::class.java to Action.JOIN,
++            TLRPC.TL_contacts_search::class.java to Action.SEARCH,
++            TLRPC.TL_messages_search::class.java to Action.SEARCH,
++            TLRPC.TL_messages_searchGlobal::class.java to Action.SEARCH,
++            TLRPC.TL_contacts_resolveUsername::class.java to Action.SEARCH,
++            TLRPC.TL_contacts_importContacts::class.java to Action.CONTACTS,
++            TLRPC.TL_contacts_addContact::class.java to Action.CONTACTS,
++            TLRPC.TL_payments_getPaymentForm::class.java to Action.PAYMENT,
++            TLRPC.TL_payments_sendPaymentForm::class.java to Action.PAYMENT,
++            TL_stars.TL_payments_sendStarsForm::class.java to Action.PAYMENT
++        )
++    }
++
++    private fun classify(request: Class<*>?): Action? {
++        if (request == null) return null
++        return classes.firstOrNull { it.first.isAssignableFrom(request) }?.second
++    }
++
++    /** The toasts and the bar. */
++    private fun shown(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_LIMITS.value
++
++    /** The entries of the center. */
++    private fun logged(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_LIMITS.value
++
++    /** Whether tgnet should send the events; the Java side asks it before every request too. */
++    @JvmStatic
++    fun enabled(): Boolean = shown() || logged()
++
++    /** Tells every native connection about the option. Call it when an option of the center flips. */
++    @JvmStatic
++    fun refresh() {
++        val on = enabled()
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            ConnectionsManager.native_setTeleFloodWait(account, on)
++        }
++        if (!on) AndroidUtilities.runOnUIThread { reset() }
++    }
++
++    /** Called by tgnet on its own thread: a request got a wait ([resent] false) or went out again. */
++    @JvmStatic
++    fun onEvent(account: Int, token: Int, seconds: Int, resent: Boolean, error: String?) {
++        if (!enabled() || account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return
++        val request = ConnectionsManager.getInstance(account).teleRequestClass(token)
++        AndroidUtilities.runOnUIThread {
++            if (resent) onResent(account, token) else onWait(account, token, request, seconds, error.orEmpty())
++        }
++    }
++
++    private fun onWait(account: Int, token: Int, request: Class<*>?, seconds: Int, error: String) {
++        if (!enabled() || seconds <= 0) return
++        val action = classify(request) ?: return
++        val key = key(account, action)
++        val now = SystemClock.elapsedRealtime()
++        val deadline = now + seconds * 1000L
++        var limit = limits.firstOrNull { it.account == account && it.action == action }
++        if (limit == null) {
++            val last = ended.remove(key)
++            val recent = last != null && now - last.at < EPISODE_GAP
++            limit = Limit(account, action, if (recent) last!!.episode else (System.currentTimeMillis() / 1000L).toString(), now)
++            limit.deadline = deadline
++            limits.add(limit)
++        } else if (deadline > limit.deadline) {
++            limit.deadline = deadline
++        }
++        limit.requests.add(token)
++        if (logged()) log(limit)
++        val total = limit.deadline - limit.started
++        if (shown() && total >= TOAST_FROM * 1000L) toast(limit, now)
++        if (shown() && total >= BAR_FROM * 1000L) notifyHosts()
++        startTicking()
++    }
++
++    private fun onResent(account: Int, token: Int) {
++        val limit = limits.firstOrNull { it.account == account && token in it.requests } ?: return
++        limit.requests.remove(token)
++        if (SystemClock.elapsedRealtime() + RESEND_SLACK >= limit.deadline) {
++            limits.remove(limit)
++            finish(limit)
++        }
++    }
++
++    private fun startTicking() {
++        if (!ticking) {
++            ticking = true
++            AndroidUtilities.runOnUIThread(ticker, TICK)
++        }
++    }
++
++    private fun tick() {
++        ticking = false
++        val now = SystemClock.elapsedRealtime()
++        val finished = ArrayList<Limit>()
++        val iterator = limits.iterator()
++        while (iterator.hasNext()) {
++            val limit = iterator.next()
++            if (now >= limit.deadline) {
++                finished.add(limit)
++                iterator.remove()
++                continue
++            }
++            val bulletin = limit.bulletin
++            val label = limit.label
++            if (bulletin != null && label != null && bulletin.isShowing) {
++                val text = countdown(limit, now)
++                if (limit.shown != text) {
++                    limit.shown = text
++                    label.text = text
++                }
++            }
++        }
++        for (limit in finished) finish(limit)
++        notifyHosts()
++        if (limits.isNotEmpty()) startTicking()
++    }
++
++    private fun finish(limit: Limit) {
++        ended[key(limit.account, limit.action)] = Ended(limit.episode, SystemClock.elapsedRealtime())
++        limit.bulletin?.let { if (it.isShowing) it.hide() }
++        notifyHosts()
++        val total = seconds(limit.deadline - limit.started)
++        if (logged()) {
++            TeleNotices.add(limit.account, TeleNotice(
++                kind = NoticeKind.LIMIT,
++                key = "limit-end:${limit.episode}:${limit.action.ordinal}",
++                title = LocaleController.getString(limit.action.again),
++                text = LocaleController.formatString(R.string.TeleLimitAfter, duration(total))
++            ))
++        }
++        if (shown() && total >= EXPIRY_TOAST_FROM && limit.account == UserConfig.selectedAccount && LaunchActivity.isActive) {
++            BulletinFactory.global().createSimpleBulletin(R.raw.timer_3, LocaleController.getString(limit.action.again)).show()
++        }
++    }
++
++    private fun log(limit: Limit) {
++        TeleNotices.add(limit.account, TeleNotice(
++            kind = NoticeKind.LIMIT,
++            key = "limit:${limit.episode}:${limit.action.ordinal}",
++            title = LocaleController.getString(limit.action.limited),
++            text = LocaleController.formatString(R.string.TeleLimitFor, duration(seconds(limit.deadline - limit.started)))
++        ))
++    }
++
++    private fun toast(limit: Limit, now: Long) {
++        if (limit.bulletin?.isShowing == true) return
++        if (limit.account != UserConfig.selectedAccount || !LaunchActivity.isActive) return
++        limit.shown = countdown(limit, now)
++        val bulletin = BulletinFactory.global().createSimpleBulletin(
++            R.raw.timer_3, limit.shown, 1, minOf(limit.deadline - now, TOAST_DURATION).toInt()
++        )
++        limit.bulletin = bulletin
++        limit.label = (bulletin.layout as? Bulletin.LottieLayout)?.textView
++        bulletin.show()
++    }
++
++    private fun reset() {
++        if (enabled()) return
++        for (limit in limits) limit.bulletin?.let { if (it.isShowing) it.hide() }
++        limits.clear()
++        ended.clear()
++        notifyHosts()
++    }
++
++    private fun key(account: Int, action: Action) = "$account:${action.ordinal}"
++
++    private fun seconds(ms: Long): Int = ((maxOf(ms, 0L) + 999L) / 1000L).toInt()
++
++    private fun countdown(limit: Limit, now: Long): String =
++        LocaleController.formatString(R.string.TeleLimitCountdown, LocaleController.getString(limit.action.limited), duration(seconds(limit.deadline - now)))
++
++    private fun duration(total: Int): String = when {
++        total >= 3600 -> {
++            val minutes = (total % 3600) / 60
++            if (minutes > 0) LocaleController.formatString(R.string.TeleDurationHM, total / 3600, minutes)
++            else LocaleController.formatString(R.string.TeleDurationH, total / 3600)
++        }
++        total >= 60 -> {
++            val rest = total % 60
++            if (rest > 0) LocaleController.formatString(R.string.TeleDurationMS, total / 60, rest)
++            else LocaleController.formatString(R.string.TeleDurationM, total / 60)
++        }
++        else -> LocaleController.formatString(R.string.TeleDurationS, total)
++    }
++
++    private class Bar(val title: String, val text: String)
++
++    private fun bar(account: Int): Bar? {
++        if (!shown()) return null
++        val now = SystemClock.elapsedRealtime()
++        val best = limits
++            .filter { it.account == account && !it.dismissed && it.deadline > now && it.deadline - it.started >= BAR_FROM * 1000L }
++            .maxByOrNull { it.deadline } ?: return null
++        return Bar(
++            LocaleController.getString(best.action.limited),
++            LocaleController.formatString(R.string.TeleLimitLeft, duration(seconds(best.deadline - now)))
++        )
++    }
++
++    @JvmStatic
++    fun hasBar(account: Int): Boolean = bar(account) != null
++
++    /** Fills the hint cell of the chat list with the longest wait; the caller checked [hasBar]. */
++    @JvmStatic
++    fun fillBar(cell: DialogsHintCell, fragment: BaseFragment, account: Int, refresh: Runnable) {
++        val bar = bar(account) ?: return
++        cell.setText(bar.title, bar.text, false, false)
++        cell.setOnClickListener { fragment.presentFragment(TeleNoticesActivity()) }
++        cell.setOnCloseListener {
++            for (limit in limits) if (limit.account == account) limit.dismissed = true
++            refresh.run()
++        }
++        barCells[account] = WeakReference(cell)
++    }
++
++    /** The chat list asks to be told when the bar appears or goes. UI thread. */
++    @JvmStatic
++    fun attachBar(account: Int, refresh: Runnable) {
++        if (hosts.any { it.refresh === refresh }) return
++        val host = Host(account, refresh)
++        host.visible = bar(account) != null
++        hosts.add(host)
++        if (host.visible) refresh.run()
++    }
++
++    @JvmStatic
++    fun detachBar(refresh: Runnable) {
++        hosts.removeAll { it.refresh === refresh }
++    }
++
++    // a bar that stays gets its text updated in place; one that appears or goes asks the list for a rebuild
++    private fun notifyHosts() {
++        for (host in ArrayList(hosts)) {
++            val bar = bar(host.account)
++            val visible = bar != null
++            if (visible != host.visible) {
++                host.visible = visible
++                host.refresh.run()
++            } else if (bar != null) {
++                barCells[host.account]?.get()?.messageView?.text = bar.text
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNoticeSources.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNoticeSources.kt
+new file mode 100644
+index 000000000..6ce88611a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNoticeSources.kt
+@@ -0,0 +1,56 @@
++package tele.helpers
++
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.TLRPC
++import tele.db.TeleDatabaseHelper
++
++/** The small producers of the notification center: the ones that only need a call from the feature. */
++object TeleNoticeSources {
++
++    private const val UPDATE_TAG = "notices_update_tag"
++
++    /** An update of tele is downloading or ready: one entry for the tag, on every account. */
++    @JvmStatic
++    fun update(tag: String) {
++        if (!TeleNotices.enabled() || tag.isEmpty() || TeleDatabaseHelper.get(UPDATE_TAG) == tag) return
++        TeleDatabaseHelper.put(UPDATE_TAG, tag)
++        val build = tag.substringAfterLast("-tele.", tag)
++        val notice = TeleNotice(
++            kind = NoticeKind.UPDATE,
++            key = "update",
++            title = LocaleController.formatString(R.string.TeleNoticesUpdateTitle, build),
++            buttons = listOf(NoticeButton(LocaleController.getString(R.string.TeleNoticesWhatsNew), "${TeleUpdater.RELEASES}/tag/$tag"))
++        )
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (UserConfig.getInstance(account).isClientActivated) TeleNotices.add(account, notice)
++        }
++    }
++
++    /** A crash report went to the server; [response] is its body, `Done <id>` on success. */
++    @JvmStatic
++    fun crashSent(response: String?) {
++        if (!TeleNotices.enabled()) return
++        val text = response.orEmpty().trim()
++        val id = if (text.startsWith("Done ")) text.substring(5).trim() else ""
++        val title = when {
++            id.isEmpty() -> LocaleController.getString(R.string.TeleNoticesCrashSent)
++            else -> LocaleController.formatString(R.string.TeleNoticesCrashSentId, id)
++        }
++        TeleNotices.add(UserConfig.selectedAccount, TeleNotice(kind = NoticeKind.CRASH, title = title))
++    }
++
++    /** A watched user came online. */
++    @JvmStatic
++    fun cameOnline(account: Int, user: TLRPC.User) {
++        if (!TeleNotices.enabled()) return
++        TeleNotices.add(account, TeleNotice(
++            kind = NoticeKind.ONLINE,
++            title = UserObject.getUserName(user),
++            text = LocaleController.getString(R.string.TeleNoticesCameOnline),
++            peer = user.id
++        ))
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+new file mode 100644
+index 000000000..c510383f5
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+@@ -0,0 +1,348 @@
++package tele.helpers
++
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.DispatchQueue
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.ui.ActionBar.BaseFragment
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.CopyOnWriteArrayList
++
++/**
++ * The kinds of the notification center (tele 0205). A kind with a [cap] has its own pool of that
++ * size; the others share [TeleNotices.MAX_SHARED]. [icon] and [color] are what the list draws.
++ */
++enum class NoticeKind(val id: String, val icon: Int, val color: Int, val cap: Int = 0) {
++    LIMIT("limit", R.drawable.msg_recent, 0xFFF29E38.toInt()),
++    SERVER("server", R.drawable.msg_info, 0xFF4A9EF0.toInt()),
++    TELE("tele", R.drawable.msg_notifications, 0xFF9A6BE8.toInt()),
++    UPDATE("update", R.drawable.msg_download, 0xFF4DB86A.toInt()),
++    CRASH("crash", R.drawable.msg_report, 0xFFE5574E.toInt()),
++    ONLINE("online", R.drawable.msg_online, 0xFF3FB6C7.toInt());
++
++    companion object {
++        @JvmStatic
++        fun of(id: String): NoticeKind? = values().firstOrNull { it.id == id }
++    }
++}
++
++enum class NoticeTone(val id: String) {
++    NONE(""),
++    INFO("info"),
++    SUCCESS("success"),
++    WARNING("warning"),
++    CRITICAL("critical");
++
++    companion object {
++        @JvmStatic
++        fun of(id: String): NoticeTone = values().firstOrNull { it.id == id } ?: NONE
++    }
++}
++
++data class NoticeButton(val text: String, val url: String)
++
++/**
++ * One entry. [id] is assigned by the store (per account, growing); [key] makes the entry
++ * replaceable: a notice with an existing key takes the place of the old one. [extra] is a JSON
++ * object for the fields of one kind (see [json]); the store never reads it.
++ */
++data class TeleNotice(
++    val kind: NoticeKind,
++    val title: String = "",
++    val text: String = "",
++    val tone: NoticeTone = NoticeTone.NONE,
++    /** Unix seconds; 0 means now. */
++    val date: Int = 0,
++    val key: String = "",
++    val rev: Int = 0,
++    val buttons: List<NoticeButton> = emptyList(),
++    /** The name of a cached picture of a server notice. */
++    val photo: String = "",
++    /** The dialog id (negative for chats) the entry opens on tap; 0 for none. */
++    val peer: Long = 0L,
++    val messageId: Int = 0,
++    val topicId: Long = 0L,
++    val extra: String = "",
++    val id: Long = 0L,
++    val unread: Boolean = true
++) {
++    /** The [extra] object; an empty one when there is none. */
++    fun json(): JSONObject = if (extra.isEmpty()) JSONObject() else runCatching { JSONObject(extra) }.getOrDefault(JSONObject())
++}
++
++/**
++ * The notification center: a per-account list of the notices of tele. It is a plain store with
++ * change listeners; the producers call [add], the screen of [tele.ui.settings.TeleNoticesActivity]
++ * reads [list]. Nothing is recorded while the master option is off.
++ *
++ * The lists live in memory (at most [MAX_SHARED] entries plus the pools of the capped kinds, 30
++ * days) and are written through to `tele_notices` on a background queue. Every method works from
++ * any thread; listeners run on the UI thread.
++ */
++object TeleNotices {
++
++    const val MAX_SHARED = 300
++    private const val MAX_AGE = 30 * 24 * 60 * 60
++
++    fun interface Listener {
++        fun onChanged(account: Int)
++    }
++
++    /** How a kind shows its text; a kind without one shows [TeleNotice.text]. UI thread. */
++    fun interface TextRenderer {
++        fun render(notice: TeleNotice): CharSequence
++    }
++
++    /** What a tap on an entry of a kind does; return false to leave it to the default. UI thread. */
++    fun interface Action {
++        fun open(fragment: BaseFragment, account: Int, notice: TeleNotice): Boolean
++    }
++
++    private class State {
++        var list = ArrayList<TeleNotice>()
++        var last = 0L
++        var unread = 0
++    }
++
++    private val lock = Any()
++    private val states = arrayOfNulls<State>(UserConfig.MAX_ACCOUNT_COUNT)
++    private val listeners = CopyOnWriteArrayList<Listener>()
++    private val renderers = HashMap<NoticeKind, TextRenderer>()
++    private val actions = HashMap<NoticeKind, Action>()
++    private val queue by lazy { DispatchQueue("teleNotices") }
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.NOTICES.value
++
++    fun addListener(listener: Listener) {
++        listeners.add(listener)
++    }
++
++    fun removeListener(listener: Listener) {
++        listeners.remove(listener)
++    }
++
++    fun registerText(kind: NoticeKind, renderer: TextRenderer) {
++        renderers[kind] = renderer
++    }
++
++    fun registerAction(kind: NoticeKind, action: Action) {
++        actions[kind] = action
++    }
++
++    fun textOf(notice: TeleNotice): CharSequence = renderers[notice.kind]?.render(notice) ?: notice.text
++
++    /** Runs the action of the kind; false when the kind has none or it declined. */
++    fun open(fragment: BaseFragment, account: Int, notice: TeleNotice): Boolean =
++        actions[notice.kind]?.open(fragment, account, notice) == true
++
++    /**
++     * Adds an entry on top and returns its id, or 0 when the center is off. A notice with the key
++     * of an existing one replaces it and is unread again.
++     */
++    @JvmStatic
++    fun add(account: Int, notice: TeleNotice): Long {
++        if (!enabled() || account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return 0L
++        val id = synchronized(lock) {
++            val state = stateOf(account)
++            val id = ++state.last
++            val added = notice.copy(
++                id = id,
++                unread = true,
++                date = if (notice.date > 0) notice.date else now(),
++                buttons = notice.buttons.take(MAX_BUTTONS)
++            )
++            val removed = ArrayList<Long>()
++            if (added.key.isNotEmpty()) {
++                val old = state.list.firstOrNull { it.key == added.key }
++                if (old != null) {
++                    state.list.remove(old)
++                    removed.add(old.id)
++                }
++            }
++            state.list.add(0, added)
++            trim(state, removed)
++            state.unread = state.list.count { it.unread }
++            queue.postRunnable {
++                TeleDatabaseHelper.transaction {
++                    TeleDatabaseHelper.removeNotices(account, removed)
++                    if (removed.none { it == id }) TeleDatabaseHelper.putNotice(account, toRow(added))
++                }
++            }
++            id
++        }
++        changed(account)
++        return id
++    }
++
++    /** The entry with this key, or null. */
++    @JvmStatic
++    fun find(account: Int, key: String): TeleNotice? {
++        if (key.isEmpty() || account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return null
++        synchronized(lock) { return stateOf(account).list.firstOrNull { it.key == key } }
++    }
++
++    /** A snapshot of the entries, the newest first. */
++    @JvmStatic
++    fun list(account: Int): List<TeleNotice> {
++        if (account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return emptyList()
++        synchronized(lock) { return ArrayList(stateOf(account).list) }
++    }
++
++    @JvmStatic
++    fun unread(account: Int): Int {
++        if (account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return 0
++        synchronized(lock) { return stateOf(account).unread }
++    }
++
++    /** The unread entries of one kind, for the badges of a kind. */
++    @JvmStatic
++    fun unread(account: Int, kind: NoticeKind): Int {
++        if (account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return 0
++        synchronized(lock) { return stateOf(account).list.count { it.unread && it.kind == kind } }
++    }
++
++    /** Marks every entry read. */
++    @JvmStatic
++    fun markRead(account: Int) {
++        if (account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return
++        synchronized(lock) {
++            val state = stateOf(account)
++            if (state.unread == 0) return
++            state.list = ArrayList(state.list.map { if (it.unread) it.copy(unread = false) else it })
++            state.unread = 0
++            queue.postRunnable { TeleDatabaseHelper.markNoticesRead(account, null) }
++        }
++        changed(account)
++    }
++
++    @JvmStatic
++    fun markRead(account: Int, id: Long) {
++        if (update(account, id) { if (it.unread) it.copy(unread = false) else it }) changed(account)
++    }
++
++    /** Changes the text of an entry in place, like an edited message. */
++    @JvmStatic
++    fun setText(account: Int, id: Long, text: String) {
++        if (update(account, id) { if (it.text != text) it.copy(text = text) else it }) changed(account)
++    }
++
++    @JvmStatic
++    fun remove(account: Int, id: Long) {
++        synchronized(lock) {
++            val state = stateOf(account)
++            if (!state.list.removeAll { it.id == id }) return
++            state.unread = state.list.count { it.unread }
++            queue.postRunnable { TeleDatabaseHelper.removeNotices(account, listOf(id)) }
++        }
++        changed(account)
++    }
++
++    @JvmStatic
++    fun clear(account: Int) {
++        synchronized(lock) {
++            val state = stateOf(account)
++            if (state.list.isEmpty()) return
++            state.list = ArrayList()
++            state.unread = 0
++            queue.postRunnable { TeleDatabaseHelper.clearNotices(account) }
++        }
++        changed(account)
++    }
++
++    // returns whether the entry changed; the caller fires the listeners
++    private fun update(account: Int, id: Long, transform: (TeleNotice) -> TeleNotice): Boolean {
++        if (account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return false
++        synchronized(lock) {
++            val state = stateOf(account)
++            val index = state.list.indexOfFirst { it.id == id }
++            if (index < 0) return false
++            val old = state.list[index]
++            val updated = transform(old)
++            if (updated == old) return false
++            state.list[index] = updated
++            state.unread = state.list.count { it.unread }
++            queue.postRunnable { TeleDatabaseHelper.putNotice(account, toRow(updated)) }
++            return true
++        }
++    }
++
++    private fun changed(account: Int) {
++        AndroidUtilities.runOnUIThread { listeners.forEach { it.onChanged(account) } }
++    }
++
++    private fun now(): Int = (System.currentTimeMillis() / 1000L).toInt()
++
++    private fun stateOf(account: Int): State {
++        states[account]?.let { return it }
++        val state = State()
++        runCatching {
++            val old = now() - MAX_AGE
++            val rows = TeleDatabaseHelper.getNotices(account)
++            val dropped = ArrayList<Long>()
++            for (row in rows) {
++                val notice = fromRow(row)
++                state.last = maxOf(state.last, row.id)
++                if (notice == null || notice.date < old) dropped.add(row.id) else state.list.add(notice)
++            }
++            val removed = ArrayList<Long>()
++            trim(state, removed)
++            dropped.addAll(removed)
++            if (dropped.isNotEmpty()) queue.postRunnable { TeleDatabaseHelper.removeNotices(account, dropped) }
++        }.onFailure { FileLog.e(it) }
++        state.unread = state.list.count { it.unread }
++        states[account] = state
++        return state
++    }
++
++    // the oldest entries beyond the pool of their kind and the ones past the age go
++    private fun trim(state: State, removed: MutableList<Long>) {
++        val old = now() - MAX_AGE
++        val counts = HashMap<NoticeKind?, Int>()
++        val iterator = state.list.iterator()
++        while (iterator.hasNext()) {
++            val notice = iterator.next()
++            val pool = if (notice.kind.cap > 0) notice.kind else null
++            val limit = if (pool != null) pool.cap else MAX_SHARED
++            val count = counts[pool] ?: 0
++            if (count < limit && notice.date >= old) {
++                counts[pool] = count + 1
++            } else {
++                iterator.remove()
++                removed.add(notice.id)
++            }
++        }
++    }
++
++    private const val MAX_BUTTONS = 2
++
++    private fun toRow(notice: TeleNotice): TeleDatabaseHelper.NoticeRow {
++        val buttons = JSONArray()
++        for (button in notice.buttons) buttons.put(JSONArray().put(button.text).put(button.url))
++        return TeleDatabaseHelper.NoticeRow(
++            notice.id, notice.kind.id, notice.tone.id, notice.date, notice.key, notice.rev, notice.title, notice.text,
++            buttons.toString(), notice.photo, notice.peer, notice.messageId, notice.topicId, notice.extra, notice.unread
++        )
++    }
++
++    private fun fromRow(row: TeleDatabaseHelper.NoticeRow): TeleNotice? {
++        val kind = NoticeKind.of(row.kind) ?: return null
++        val buttons = ArrayList<NoticeButton>()
++        runCatching {
++            val array = JSONArray(row.buttons)
++            for (i in 0 until array.length()) {
++                val pair = array.getJSONArray(i)
++                buttons.add(NoticeButton(pair.getString(0), pair.getString(1)))
++            }
++        }
++        return TeleNotice(
++            kind = kind, title = row.title, text = row.text, tone = NoticeTone.of(row.tone), date = row.date, key = row.key,
++            rev = row.rev, buttons = buttons, photo = row.photo, peer = row.peer, messageId = row.messageId,
++            topicId = row.topicId, extra = row.extra, id = row.id, unread = row.unread
++        )
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+index 7da7c8845..612b847ce 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+@@ -111,6 +111,7 @@ object TeleUpdater {
+         if (value == status) return
+         status = value
+         AndroidUtilities.runOnUIThread { listeners.forEach(Runnable::run) }
++        if (value.state == State.DOWNLOADING || value.state == State.READY) TeleNoticeSources.update(value.tag)
+     }
+ 
+     private fun schedule(delay: Long) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleCountBadge.kt b/TMessagesProj/src/main/java/tele/ui/TeleCountBadge.kt
+new file mode 100644
+index 000000000..00ba4ab0a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleCountBadge.kt
+@@ -0,0 +1,62 @@
++package tele.ui
++
++import android.graphics.Canvas
++import android.graphics.ColorFilter
++import android.graphics.Paint
++import android.graphics.PixelFormat
++import android.graphics.RectF
++import android.graphics.drawable.Drawable
++import android.text.Spannable
++import android.text.SpannableStringBuilder
++import android.text.style.DynamicDrawableSpan
++import android.text.style.ImageSpan
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.ui.ActionBar.Theme
++
++/** An unread counter after the text of a settings row: a rounded pill with the number. */
++object TeleCountBadge {
++
++    private class Pill(private val label: String) : Drawable() {
++        private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
++        private val fg = Paint(Paint.ANTI_ALIAS_FLAG)
++        private val rect = RectF()
++        private val width: Int
++        private val height = AndroidUtilities.dp(20f)
++
++        init {
++            bg.color = Theme.getColor(Theme.key_featuredStickers_unread)
++            fg.color = Theme.getColor(Theme.key_featuredStickers_buttonText)
++            fg.textSize = AndroidUtilities.dp(12f).toFloat()
++            fg.typeface = AndroidUtilities.bold()
++            fg.textAlign = Paint.Align.CENTER
++            width = maxOf(height, fg.measureText(label).toInt() + AndroidUtilities.dp(12f))
++            setBounds(0, 0, width, height)
++        }
++
++        override fun getIntrinsicWidth(): Int = width
++        override fun getIntrinsicHeight(): Int = height
++
++        override fun draw(canvas: Canvas) {
++            val bounds = bounds
++            rect.set(bounds)
++            canvas.drawRoundRect(rect, height / 2f, height / 2f, bg)
++            val baseline = bounds.centerY() - (fg.descent() + fg.ascent()) / 2f
++            canvas.drawText(label, bounds.exactCenterX(), baseline, fg)
++        }
++
++        override fun setAlpha(alpha: Int) {}
++        override fun setColorFilter(colorFilter: ColorFilter?) {}
++        @Deprecated("Deprecated in Java")
++        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
++    }
++
++    @JvmStatic
++    fun withCount(text: CharSequence, count: Int): CharSequence {
++        val label = if (count > 99) "99+" else count.toString()
++        val result = SpannableStringBuilder(text).append("  ")
++        val start = result.length
++        result.append(label)
++        result.setSpan(ImageSpan(Pill(label), DynamicDrawableSpan.ALIGN_BOTTOM), start, result.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+new file mode 100644
+index 000000000..ecf756184
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+@@ -0,0 +1,133 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.Color
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import tele.helpers.NoticeButton
++import tele.helpers.NoticeTone
++import tele.helpers.TeleNotice
++import tele.helpers.TeleNotices
++
++private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
++private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
++
++/**
++ * One entry of the notification center: the round icon of its kind, the title and the time on the
++ * first line, the text and up to two link buttons below. The extension points are
++ * [TeleNotices.registerText] for the text and the kind's [tele.helpers.NoticeKind.icon] and `color`.
++ */
++class TeleNoticeCell(context: Context) : LinearLayout(context) {
++
++    private val icon = ImageView(context)
++    private val title = TextView(context)
++    private val time = TextView(context)
++    private val text = TextView(context)
++    private val buttons = LinearLayout(context)
++
++    /** A tap on one of the buttons of the entry. */
++    var onButton: ((NoticeButton) -> Unit)? = null
++
++    init {
++        orientation = HORIZONTAL
++        setWillNotDraw(false)
++        setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(10f), AndroidUtilities.dp(16f), AndroidUtilities.dp(10f))
++
++        icon.scaleType = ImageView.ScaleType.CENTER
++        addView(icon, LayoutHelper.createLinear(36, 36, Gravity.TOP, 0, 0, 12, 0))
++
++        val column = LinearLayout(context)
++        column.orientation = VERTICAL
++        addView(column, LinearLayout.LayoutParams(0, WRAP, 1f))
++
++        val header = LinearLayout(context)
++        header.orientation = HORIZONTAL
++        header.gravity = Gravity.CENTER_VERTICAL
++        title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        title.typeface = AndroidUtilities.bold()
++        title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++        title.isSingleLine = true
++        title.ellipsize = TextUtils.TruncateAt.END
++        header.addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
++        time.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        time.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++        header.addView(time, LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = AndroidUtilities.dp(8f) })
++        column.addView(header, LinearLayout.LayoutParams(MATCH, WRAP))
++
++        text.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        text.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++        column.addView(text, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(2f) })
++
++        buttons.orientation = HORIZONTAL
++        column.addView(buttons, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(6f) })
++    }
++
++    /** [fresh] entries were unread when the screen opened: they stay tinted until it closes. */
++    fun set(notice: TeleNotice, fresh: Boolean) {
++        setBackgroundColor(if (fresh) Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton), 0.1f) else Theme.getColor(Theme.key_windowBackgroundWhite))
++        icon.background = Theme.createCircleDrawable(AndroidUtilities.dp(36f), color(notice))
++        icon.setImageResource(notice.kind.icon)
++        icon.setColorFilter(Color.WHITE)
++
++        title.text = notice.title
++        title.visibility = if (notice.title.isEmpty()) View.INVISIBLE else View.VISIBLE
++        val body = TeleNotices.textOf(notice)
++        text.text = body
++        text.visibility = if (body.isEmpty()) View.GONE else View.VISIBLE
++        refreshTime(notice)
++
++        buttons.removeAllViews()
++        buttons.visibility = if (notice.buttons.isEmpty()) View.GONE else View.VISIBLE
++        for (button in notice.buttons) {
++            val view = TextView(context)
++            view.text = button.text
++            view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            view.typeface = AndroidUtilities.bold()
++            view.setTextColor(Theme.getColor(Theme.key_featuredStickers_addButton))
++            view.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(6f), AndroidUtilities.dp(12f), AndroidUtilities.dp(6f))
++            view.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(16f), Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton), 0.2f))
++            view.setOnClickListener { onButton?.invoke(button) }
++            buttons.addView(view, LinearLayout.LayoutParams(WRAP, WRAP).apply { rightMargin = AndroidUtilities.dp(6f) })
++        }
++    }
++
++    fun refreshTime(notice: TeleNotice) {
++        time.text = ago(notice.date)
++    }
++
++    private fun color(notice: TeleNotice): Int = when (notice.tone) {
++        NoticeTone.INFO -> 0xFF4A9EF0.toInt()
++        NoticeTone.SUCCESS -> 0xFF4DB86A.toInt()
++        NoticeTone.WARNING -> 0xFFF29E38.toInt()
++        NoticeTone.CRITICAL -> 0xFFE5574E.toInt()
++        NoticeTone.NONE -> notice.kind.color
++    }
++
++    override fun onDraw(canvas: Canvas) {
++        val left = if (LocaleController.isRTL) 0f else AndroidUtilities.dp(64f).toFloat()
++        val right = if (LocaleController.isRTL) (width - AndroidUtilities.dp(64f)).toFloat() else width.toFloat()
++        canvas.drawLine(left, height - 1f, right, height - 1f, Theme.dividerPaint)
++    }
++
++    private fun ago(date: Int): String {
++        val seconds = maxOf((System.currentTimeMillis() / 1000L).toInt() - date, 0)
++        return when {
++            seconds < 60 -> LocaleController.getString(R.string.TeleNoticesJustNow)
++            seconds < 3600 -> LocaleController.formatString(R.string.TeleNoticesMinutesAgo, seconds / 60)
++            seconds < 86400 -> LocaleController.formatString(R.string.TeleNoticesHoursAgo, seconds / 3600)
++            else -> LocaleController.formatDateChat(date.toLong())
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
+new file mode 100644
+index 000000000..2c2b9f47e
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
+@@ -0,0 +1,264 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.os.Bundle
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.HorizontalScrollView
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.browser.Browser
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.ActionBarMenuItem
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.helpers.NoticeKind
++import tele.helpers.TeleNotice
++import tele.helpers.TeleNotices
++import tele.ui.TeleNoticeCell
++
++/**
++ * The notification center of tele (tele 0205): the notices of the selected account, the newest
++ * first, filtered by a strip of chips. What it shows comes from [TeleNotices]; a kind changes how
++ * an entry looks or opens with [TeleNotices.registerText] and [TeleNotices.registerAction].
++ */
++class TeleNoticesActivity : BaseFragment() {
++
++    /** The chips of the strip; a kind that has a chip of its own leaves the shared one. */
++    private enum class Filter(val title: Int, val matches: (NoticeKind) -> Boolean) {
++        ALL(R.string.TeleNoticesFilterAll, { true }),
++        LIMITS(R.string.TeleNoticesFilterLimits, { it == NoticeKind.LIMIT }),
++        SERVER(R.string.TeleNoticesFilterServer, { it == NoticeKind.SERVER }),
++        TELE(R.string.TeleNoticesFilterTele, { it != NoticeKind.LIMIT && it != NoticeKind.SERVER })
++    }
++
++    private val account = UserConfig.selectedAccount
++    private var filter = Filter.ALL
++    private var shown: List<TeleNotice> = emptyList()
++    private var built = false
++    private val fresh = HashSet<Long>()
++    private var adapter: Adapter? = null
++    private var list: RecyclerListView? = null
++    private val listener = TeleNotices.Listener { target -> if (target == account) changed() }
++    private var clearItem: ActionBarMenuItem? = null
++
++    private var chips: LinearLayout? = null
++    private val timeTick = object : Runnable {
++        override fun run() {
++            val view = list ?: return
++            for (i in 0 until view.childCount) {
++                val cell = view.getChildAt(i) as? TeleNoticeCell ?: continue
++                val position = view.getChildAdapterPosition(cell)
++                shown.getOrNull(position)?.let { cell.refreshTime(it) }
++            }
++            AndroidUtilities.runOnUIThread(this, TIME_REFRESH)
++        }
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(LocaleController.getString(R.string.TeleNotices))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment() else if (id == MENU_CLEAR) confirmClear()
++            }
++        })
++        clearItem = actionBar.createMenu().addItem(MENU_CLEAR, R.drawable.msg_delete)
++
++        val root = LinearLayout(context)
++        root.orientation = LinearLayout.VERTICAL
++        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++        fragmentView = root
++
++        val scroll = HorizontalScrollView(context)
++        scroll.isHorizontalScrollBarEnabled = false
++        val strip = LinearLayout(context)
++        strip.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(8f), AndroidUtilities.dp(12f), AndroidUtilities.dp(8f))
++        scroll.addView(strip, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        chips = strip
++        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++
++        val recycler = RecyclerListView(context)
++        recycler.layoutManager = LinearLayoutManager(context)
++        recycler.isVerticalScrollBarEnabled = false
++        adapter = Adapter(context)
++        recycler.adapter = adapter
++        recycler.setOnItemClickListener { _, position -> shown.getOrNull(position)?.let { open(it) } }
++        recycler.setOnItemLongClickListener { _, position ->
++            shown.getOrNull(position)?.let { showActions(it) }
++            true
++        }
++        list = recycler
++        root.addView(recycler, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
++
++        TeleNotices.addListener(listener)
++        updateChips()
++        changed()
++        return root
++    }
++
++    override fun onResume() {
++        super.onResume()
++        changed()
++        AndroidUtilities.cancelRunOnUIThread(timeTick)
++        AndroidUtilities.runOnUIThread(timeTick, TIME_REFRESH)
++    }
++
++    override fun onPause() {
++        super.onPause()
++        AndroidUtilities.cancelRunOnUIThread(timeTick)
++    }
++
++    override fun onFragmentDestroy() {
++        super.onFragmentDestroy()
++        TeleNotices.removeListener(listener)
++        AndroidUtilities.cancelRunOnUIThread(timeTick)
++    }
++
++    private fun changed() {
++        if (fragmentView == null) return
++        val all = TeleNotices.list(account)
++        var unread = false
++        for (notice in all) {
++            if (notice.unread) {
++                fresh.add(notice.id)
++                unread = true
++            }
++        }
++        val next = all.filter { filter.matches(it.kind) }
++        if (!built || next != shown) {
++            built = true
++            shown = next
++            adapter?.notifyDataSetChanged()
++        }
++        clearItem?.visibility = if (all.isEmpty()) View.GONE else View.VISIBLE
++        // the entries stay tinted for this visit, then count as read
++        if (unread) AndroidUtilities.runOnUIThread { TeleNotices.markRead(account) }
++    }
++
++    private fun updateChips() {
++        val strip = chips ?: return
++        strip.removeAllViews()
++        for (value in Filter.values()) {
++            val active = value == filter
++            val chip = TextView(strip.context)
++            chip.text = LocaleController.getString(value.title)
++            chip.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            chip.gravity = Gravity.CENTER
++            chip.setPadding(AndroidUtilities.dp(14f), AndroidUtilities.dp(7f), AndroidUtilities.dp(14f), AndroidUtilities.dp(7f))
++            chip.setTextColor(Theme.getColor(if (active) Theme.key_featuredStickers_buttonText else Theme.key_windowBackgroundWhiteBlackText))
++            chip.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(16f), Theme.getColor(if (active) Theme.key_featuredStickers_addButton else Theme.key_windowBackgroundGray))
++            chip.setOnClickListener {
++                if (filter != value) {
++                    filter = value
++                    built = false
++                    updateChips()
++                    changed()
++                }
++            }
++            strip.addView(chip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = AndroidUtilities.dp(8f) })
++        }
++    }
++
++    private fun open(notice: TeleNotice) {
++        if (TeleNotices.open(this, account, notice)) return
++        if (notice.peer != 0L) {
++            val args = Bundle()
++            if (notice.peer < 0) args.putLong("chat_id", -notice.peer) else args.putLong("user_id", notice.peer)
++            if (notice.messageId != 0) args.putInt("message_id", notice.messageId)
++            presentFragment(ChatActivity(args))
++        } else if (notice.kind == NoticeKind.UPDATE && notice.buttons.isNotEmpty()) {
++            openLink(notice.buttons[0].url)
++        }
++    }
++
++    // the stored links come from the server too: only the web and Telegram links open
++    private fun openLink(url: String) {
++        val context = parentActivity ?: return
++        if (url.startsWith("https://", true) || url.startsWith("http://", true) || url.startsWith("tg://", true)) {
++            Browser.openUrl(context, url)
++        }
++    }
++
++    private fun showActions(notice: TeleNotice) {
++        val activity = parentActivity ?: return
++        val labels = arrayOf<CharSequence>(LocaleController.getString(R.string.Copy), LocaleController.getString(R.string.Delete))
++        val dialog = AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(notice.title.ifEmpty { null })
++            .setItems(labels) { _, which ->
++                if (which == 0) {
++                    val full = listOf(notice.title, TeleNotices.textOf(notice).toString()).filter { it.isNotEmpty() }.joinToString("\n")
++                    AndroidUtilities.addToClipboard(full)
++                    BulletinFactory.of(this).createCopyBulletin(LocaleController.getString(R.string.TextCopied)).show()
++                } else {
++                    TeleNotices.remove(account, notice.id)
++                }
++            }
++            .create()
++        showDialog(dialog)
++        dialog.setItemColor(1, Theme.getColor(Theme.key_text_RedBold), Theme.getColor(Theme.key_text_RedRegular))
++    }
++
++    private fun confirmClear() {
++        val activity = parentActivity ?: return
++        AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(LocaleController.getString(R.string.TeleNotices))
++            .setMessage(LocaleController.getString(R.string.TeleNoticesClearAsk))
++            .setPositiveButton(LocaleController.getString(R.string.Clear)) { _, _ -> TeleNotices.clear(account) }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++        override fun getItemCount(): Int = maxOf(shown.size, 1)
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = shown.isNotEmpty()
++        override fun getItemViewType(position: Int): Int = if (shown.isEmpty()) TYPE_EMPTY else TYPE_ENTRY
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = if (viewType == TYPE_EMPTY) {
++                TextView(context).apply {
++                    setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
++                    setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++                    gravity = Gravity.CENTER
++                    setPadding(AndroidUtilities.dp(32f), AndroidUtilities.dp(48f), AndroidUtilities.dp(32f), AndroidUtilities.dp(16f))
++                }
++            } else {
++                TeleNoticeCell(context).apply { onButton = { button -> openLink(button.url) } }
++            }
++            view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            if (getItemViewType(position) == TYPE_EMPTY) {
++                val empty = TeleNotices.list(account).isEmpty()
++                (holder.itemView as TextView).text = LocaleController.getString(if (empty) R.string.TeleNoticesEmpty else R.string.TeleNoticesNothing)
++                return
++            }
++            val notice = shown[position]
++            (holder.itemView as TeleNoticeCell).set(notice, fresh.contains(notice.id))
++        }
++    }
++
++    companion object {
++        const val MODE_NOTICES = "notices_list"
++        private const val MENU_CLEAR = 9640
++        private const val TYPE_EMPTY = 0
++        private const val TYPE_ENTRY = 1
++        private const val TIME_REFRESH = 30_000L
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 054ca98cf..d087cba12 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -345,7 +345,12 @@ object TeleSearch {
+             screen(1401, "Online notifications") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_ONLINE) },
+             section(1402, "Presence alerts", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online"),
+             section(1403, "Watch the online status of people", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online"),
+-            section(1404, "Came online", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online")
++            section(1404, "Came online", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online"),
++            section(1430, "Notification center", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            screen(1431, "Notifications of tele") { TeleNoticesActivity() },
++            section(1432, "Rate-limit toasts and bar", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            section(1433, "Flood wait countdown", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Rate-limit toasts and bar"),
++            section(1434, "Too many requests", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Rate-limit toasts and bar")
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index e43381a16..273ee8141 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -53,7 +53,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         /** The number of the enabled children of a parent toggle. */
+         val childCount: Int = 0,
+         /** The id of a row that isn't an option: links and buttons. */
+-        val id: String? = null
++        val id: String? = null,
++        /** The unread count shown as a badge on a link. */
++        val count: Int = 0
+     )
+ 
+     private var listView: UniversalRecyclerView? = null
+@@ -504,7 +506,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                         // TextCell dims its own text; alpha on the view would fade the section background too
+                         enabled = row.parent?.value as? Boolean ?: true
+                     }
+-                    TYPE_LINK_ICON -> UItem.asButton(position, row.icon, if (row.badge) tele.helpers.TeleNewSettings.withBadge(shown) else if (row.mode == MODE_MENU || row.mode == MODE_RULES) lc(title) else shown)
++                    TYPE_LINK_ICON -> UItem.asButton(position, row.icon, if (row.badge) tele.helpers.TeleNewSettings.withBadge(shown) else if (row.count > 0) tele.ui.TeleCountBadge.withCount(shown, row.count) else if (row.mode == MODE_MENU || row.mode == MODE_RULES) lc(title) else shown)
+                     TYPE_LINK -> UItem.asButton(position, if (row.mode == MODE_MENU || row.mode == MODE_RULES) lc(title) else shown, shownValue(row))
+                     TYPE_SHADOW -> UItem.asShadow(row.title?.let { lc(it) })
+                     TYPE_CUSTOM -> {
+@@ -585,6 +587,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "peers_online" -> presentFragment(TelePeersActivity(UserConfig.selectedAccount, TelePeersActivity.MODE_ONLINE))
+                 "words_global" -> presentFragment(TeleWordsActivity(UserConfig.selectedAccount, 0L))
+                 TeleDeletedMessagesActivity.MODE_ARCHIVE -> presentFragment(TeleDeletedMessagesActivity())
++                TeleNoticesActivity.MODE_NOTICES -> presentFragment(TeleNoticesActivity())
+                 TeleDraftsActivity.MODE_DRAFTS -> presentFragment(TeleDraftsActivity())
+                 TeleBookmarksActivity.MODE_BOOKMARKS -> presentFragment(TeleBookmarksActivity.of(UserConfig.selectedAccount))
+                 MODE_RULES -> presentFragment(TeleRulesActivity())
+@@ -792,6 +795,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             TeleConfig.PROFILE_PHOTO_BACKGROUND.key to listOf(
+                 TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.key
+             ),
++            TeleConfig.NOTICES.key to listOf(
++                TeleConfig.NOTICES_LIMITS.key
++            ),
+             TeleConfig.INVISIBLE_NAMES.key to listOf(
+                 TeleConfig.INVISIBLE_NAMES_FALLBACK.key,
+                 TeleConfig.INVISIBLE_NAMES_PHRASE.key
+@@ -1036,6 +1042,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Regex search in chats" to "A .* chip in chat search; matches only the messages already loaded.",
+             "Message type filter in chat search" to "Chips for photos, videos, links and more; an empty query lists them all.",
+             "Save downloads in a folder per chat" to "Saved media goes to Telegram/<chat name> in the public folders.",
++            "Notification center" to "Keeps rate limits, updates and other notices of tele in a list on this device.",
++            "Rate-limit toasts and bar" to "Counts down Telegram's waits when you send, react, join, search or pay too fast; a bar shows above the chats from a minute.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1060,6 +1068,17 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         private fun sectionLink(title: String, mode: String, icon: Int, id: String? = null) =
+             Row(TYPE_LINK_ICON, title = title, mode = mode, icon = icon, id = id)
+ 
++        /** The root row of the notification center with its unread badge; absent while the center is off. */
++        private fun noticesRoot(all: Boolean): List<Row> =
++            if (!all && !TeleConfig.NOTICES.value) emptyList() else listOf(Row(
++                TYPE_LINK_ICON,
++                title = "Notification center",
++                mode = TeleNoticesActivity.MODE_NOTICES,
++                icon = R.drawable.msg2_notifications,
++                id = "tele-notices-open",
++                count = tele.helpers.TeleNotices.unread(UserConfig.selectedAccount)
++            ))
++
+         private val SECTION_SPECS = listOf(
+             Section(MODE_INTERFACE, "interface", R.drawable.msg2_animations),
+             Section(MODE_CHATS, "chats", R.drawable.msg2_discussion),
+@@ -1409,6 +1428,14 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     rows.add(link("Online notifications", "peers_online", if (watched > 0) watched.toString() else "None", "tele-online-notify-people"))
+                 }
+                 rows.add(Row(TYPE_SHADOW))
++                rows.add(Row(TYPE_HEADER, "Notification center"))
++                rows.add(toggle("Notification center", TeleConfig.NOTICES))
++                rows.add(toggle("Rate-limit toasts and bar", TeleConfig.NOTICES_LIMITS))
++                if (all || TeleConfig.NOTICES.value) {
++                    val unread = tele.helpers.TeleNotices.unread(UserConfig.selectedAccount)
++                    rows.add(link("Notifications", TeleNoticesActivity.MODE_NOTICES, if (unread > 0) "$unread new" else "None", "tele-notices-open"))
++                }
++                rows.add(Row(TYPE_SHADOW))
+                 rows
+             }
+             MODE_MENUS -> listOf(
+@@ -1595,7 +1622,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             )
+             MODE_NEW -> newRows(NewState())
+             // the what's new row is always there: the page lists every version, the badge says when settings are new
+-            else -> listOf(Row(TYPE_HEADER, "tele"), Row(TYPE_LINK_ICON, title = tele.helpers.TeleNewSettings.title(), mode = MODE_NEW, icon = R.drawable.msg_fave, badge = tele.helpers.TeleNewSettings.fresh().isNotEmpty() && !tele.helpers.TeleNewSettings.isSeen())) + SECTION_SPECS.map { sectionLink(it) } + listOf(
++            else -> listOf(Row(TYPE_HEADER, "tele"), Row(TYPE_LINK_ICON, title = tele.helpers.TeleNewSettings.title(), mode = MODE_NEW, icon = R.drawable.msg_fave, badge = tele.helpers.TeleNewSettings.fresh().isNotEmpty() && !tele.helpers.TeleNewSettings.isSeen())) + noticesRoot(all) + SECTION_SPECS.map { sectionLink(it) } + listOf(
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Updates"),
+                 Row(TYPE_LINK, title = if (tele.helpers.TeleUpdater.isReady()) "Install update" else "Check for updates", mode = MODE_UPDATE_ACTION, id = "tele-check-updates"),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index ac314b631..166292117 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -173,4 +173,41 @@
+     <string name="TeleOnlineText">%1$s is online</string>
+     <string name="TeleOnlineHidden">Someone you watch is online</string>
+     <string name="TeleOnlineMenu">Notify when online</string>
++    <string name="TeleNotices">Notification center</string>
++    <string name="TeleNoticesEmpty">No notifications yet.</string>
++    <string name="TeleNoticesNothing">Nothing here.</string>
++    <string name="TeleNoticesClearAsk">Clear all notifications?</string>
++    <string name="TeleNoticesFilterAll">All</string>
++    <string name="TeleNoticesFilterLimits">Limits</string>
++    <string name="TeleNoticesFilterServer">Server</string>
++    <string name="TeleNoticesFilterTele">tele</string>
++    <string name="TeleNoticesJustNow">Just now</string>
++    <string name="TeleNoticesMinutesAgo">%1$d m ago</string>
++    <string name="TeleNoticesHoursAgo">%1$d h ago</string>
++    <string name="TeleNoticesUpdateTitle">tele %1$s is out</string>
++    <string name="TeleNoticesWhatsNew">What\'s new</string>
++    <string name="TeleNoticesCrashSent">Crash report sent</string>
++    <string name="TeleNoticesCrashSentId">Crash report #%1$s sent</string>
++    <string name="TeleNoticesCameOnline">Came online</string>
++    <string name="TeleLimitSend">Sending is limited</string>
++    <string name="TeleLimitReact">Reacting is limited</string>
++    <string name="TeleLimitJoin">Joining chats is limited</string>
++    <string name="TeleLimitSearch">Search is limited</string>
++    <string name="TeleLimitContacts">Importing contacts is limited</string>
++    <string name="TeleLimitPayment">Payments are limited</string>
++    <string name="TeleAgainSend">You can send again</string>
++    <string name="TeleAgainReact">You can react again</string>
++    <string name="TeleAgainJoin">You can join chats again</string>
++    <string name="TeleAgainSearch">You can search again</string>
++    <string name="TeleAgainContacts">You can import contacts again</string>
++    <string name="TeleAgainPayment">You can pay again</string>
++    <string name="TeleLimitFor">For %1$s</string>
++    <string name="TeleLimitAfter">After %1$s</string>
++    <string name="TeleLimitCountdown">%1$s for %2$s</string>
++    <string name="TeleLimitLeft">%1$s left</string>
++    <string name="TeleDurationHM">%1$d h %2$d m</string>
++    <string name="TeleDurationH">%1$d h</string>
++    <string name="TeleDurationMS">%1$d m %2$d s</string>
++    <string name="TeleDurationM">%1$d m</string>
++    <string name="TeleDurationS">%1$d s</string>
+ </resources>

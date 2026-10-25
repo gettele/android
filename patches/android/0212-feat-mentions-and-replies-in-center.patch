@@ -1,0 +1,560 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 02:05:06 +0300
+Subject: [PATCH 212/216] feat: mentions and replies in center
+
+---
+ .../messenger/MessagesController.java         |   6 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   1 +
+ .../main/java/tele/helpers/TeleMentions.kt    | 273 ++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleNotices.kt |   3 +-
+ .../src/main/java/tele/ui/TeleNoticeCell.kt   |  47 ++-
+ .../tele/ui/settings/TeleNoticesActivity.kt   |   3 +-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +-
+ .../src/main/res/values/strings_tele.xml      |   2 +
+ 10 files changed, 339 insertions(+), 8 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 9ef91dc92..8a9986c33 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -14476,6 +14476,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         long dialogId = messageObject.getDialogId();
+         getMessagesStorage().markMessagesContentAsRead(dialogId, arrayList, 0, 0);
+         getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, dialogId, arrayList);
++        tele.helpers.TeleMentions.onContentRead(currentAccount, dialogId, arrayList);
+         if (tele.helpers.PrivacyRules.ghostContentsRead(currentAccount, dialogId)) {
+         } else if (messageObject.getId() < 0) {
+             markMessageAsRead(messageObject.getDialogId(), messageObject.messageOwner.random_id, Integer.MIN_VALUE);
+@@ -14750,6 +14751,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     public void markDialogAsRead(long dialogId, int maxPositiveId, int maxNegativeId, int maxDate, boolean popup, long threadId, int countDiff, boolean readNow, int scheduledCount) {
++        tele.helpers.TeleMentions.onRead(currentAccount, dialogId, maxPositiveId, threadId);
+         boolean createReadTask;
+ 
+         if (threadId != 0) {
+@@ -21052,6 +21054,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                     long dialogId = editingMessagesFinal.keyAt(b);
+                     SparseBooleanArray unreadReactions = null;
+                     ArrayList<MessageObject> arrayList = editingMessagesFinal.valueAt(b);
++                    tele.helpers.TeleMentions.onEdited(currentAccount, dialogId, arrayList);
+                     for (int a = 0, size2 = arrayList.size(); a < size2; a++) {
+                         MessageObject messageObject = arrayList.get(a);
+                         if (dialogId > 0) {
+@@ -21164,6 +21167,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             int updateMask = 0;
+             if (markAsReadMessagesInboxFinal != null || markAsReadMessagesOutboxFinal != null) {
+                 getNotificationCenter().postNotificationName(NotificationCenter.messagesRead, markAsReadMessagesInboxFinal, markAsReadMessagesOutboxFinal);
++                tele.helpers.TeleMentions.onInboxRead(currentAccount, markAsReadMessagesInboxFinal);
+                 if (markAsReadMessagesInboxFinal != null) {
+                     getNotificationsController().processReadMessages(markAsReadMessagesInboxFinal, 0, 0, 0, false);
+                     SharedPreferences.Editor editor = notificationsPreferences.edit();
+@@ -21240,6 +21244,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                     long key = markContentAsReadMessagesFinal.keyAt(a);
+                     ArrayList<Integer> value = markContentAsReadMessagesFinal.valueAt(a);
+                     getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, key, value);
++                    tele.helpers.TeleMentions.onContentRead(currentAccount, key, value);
+                 }
+             }
+             if (deletedMessagesFinal != null) {
+@@ -22080,6 +22085,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                 getNotificationCenter().postNotificationName(NotificationCenter.replaceMessagesObjects, dialogId, gramMessages);
+             }
+         }
++        tele.helpers.TeleMentions.onNew(currentAccount, dialogId, messages, mode);
+         getNotificationCenter().postNotificationName(NotificationCenter.didReceiveNewMessages, dialogId, messages, scheduled, mode);
+ 
+         if (lastMessage == null || scheduled) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 48b575d1f..b9bb1db67 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -383,6 +383,8 @@ object TeleConfig {
+     val NOTICES_LIMITS = BoolItem("notices_limits", false)
+     @JvmField
+     val NOTICES_LOG_LIMITS = BoolItem("notices_log_limits", false)
++    @JvmField
++    val NOTICES_MENTIONS = BoolItem("notices_mentions", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index e1331f67a..5c1b4e2b7 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -41,6 +41,7 @@ object TeleHooks {
+         tele.helpers.LastSeenPeek.restorePending()
+         tele.helpers.TeleReduceMotion.apply()
+         tele.helpers.DeletedRetention.start()
++        tele.helpers.TeleMentions.install()
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt b/TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt
+new file mode 100644
+index 000000000..9abae54bd
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt
+@@ -0,0 +1,273 @@
++package tele.helpers
++
++import android.os.Bundle
++import org.json.JSONObject
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.messenger.support.LongSparseIntArray
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.Forum.ForumUtilities
++import tele.TeleConfig
++
++/**
++ * Mentions and replies in the notification center (tele 0232, the badge of 0246 is in the cell).
++ * Every new incoming message of a group that mentions you or answers yours becomes an entry of the
++ * kind [NoticeKind.MENTION], muted chats included. The entry keeps the message (peer, id, topic) so
++ * a tap opens it; its JSON has `from` (the sender), and for the Replies chat the copy there
++ * (`source`, `smsg`). The hooks sit in MessagesController and run on the UI thread.
++ */
++object TeleMentions {
++
++    private const val EDIT_WINDOW = 120
++    private const val MAX_PREVIEW = 300
++    private const val MAX_LOGGED = 2000
++
++    private class Target(
++        val chat: Long,
++        val msg: Int,
++        val topic: Long,
++        val from: Long,
++        val name: String,
++        val source: Long,
++        val sourceMsg: Int,
++        val forum: Boolean,
++        val replies: Boolean
++    )
++
++    // keys given out in this run: an entry deleted by the user does not come back with an edit
++    private val logged = Array(UserConfig.MAX_ACCOUNT_COUNT) { LinkedHashSet<String>() }
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_MENTIONS.value
++
++    /** Registers the tap action; the entries of an earlier run need it too. */
++    @JvmStatic
++    fun install() {
++        TeleNotices.registerAction(NoticeKind.MENTION, TeleNotices.Action { fragment, account, notice -> open(fragment, account, notice) })
++    }
++
++    /** New messages of a dialog, from MessagesController.updateInterfaceWithMessages. */
++    @JvmStatic
++    fun onNew(account: Int, dialogId: Long, messages: List<MessageObject>?, mode: Int) {
++        if (mode != ChatActivity.MODE_DEFAULT || messages.isNullOrEmpty() || !enabled()) return
++        for (message in messages) {
++            runCatching { log(account, dialogId, message, message.messageOwner.date) }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    /** Edited messages: the text of a logged one follows, a message that now mentions you is logged. */
++    @JvmStatic
++    fun onEdited(account: Int, dialogId: Long, messages: List<MessageObject>?) {
++        if (messages.isNullOrEmpty() || !enabled()) return
++        val now = (System.currentTimeMillis() / 1000L).toInt()
++        for (message in messages) {
++            runCatching {
++                val target = targetOf(account, dialogId, message) ?: return@runCatching
++                val existing = TeleNotices.find(account, key(target))
++                if (existing != null) {
++                    TeleNotices.setText(account, existing.id, previewOf(message))
++                    return@runCatching
++                }
++                val edited = message.messageOwner.edit_date
++                if (edited != 0 && edited >= now - EDIT_WINDOW) log(account, dialogId, message, edited)
++            }.onFailure { FileLog.e(it) }
++        }
++    }
++
++    /** The dialog (or the topic [threadId]) is read up to [maxId]. */
++    @JvmStatic
++    fun onRead(account: Int, dialogId: Long, maxId: Int, threadId: Long) {
++        markRead(account) { notice ->
++            val json = notice.json()
++            val external = json.optLong("source") != 0L
++            val (dialog, id) = where(notice, json)
++            dialog == dialogId && id <= maxId && (external || sameThread(notice.topicId, threadId))
++        }
++    }
++
++    /** Reads of other devices: dialog id to the last read message. */
++    @JvmStatic
++    fun onInboxRead(account: Int, inbox: LongSparseIntArray?) {
++        if (inbox == null || !enabled()) return
++        for (i in 0 until inbox.size()) onRead(account, inbox.keyAt(i), inbox.valueAt(i), 0L)
++    }
++
++    /** The content of messages is read: for a mention this is the moment it is seen. */
++    @JvmStatic
++    fun onContentRead(account: Int, dialogId: Long, ids: List<Int>?) {
++        if (ids.isNullOrEmpty()) return
++        markRead(account) { notice ->
++            val (dialog, id) = where(notice, notice.json())
++            dialog == dialogId && ids.contains(id)
++        }
++    }
++
++    private fun markRead(account: Int, match: (TeleNotice) -> Boolean) {
++        if (!enabled() || TeleNotices.unread(account, NoticeKind.MENTION) == 0) return
++        for (notice in TeleNotices.list(account)) {
++            if (notice.kind == NoticeKind.MENTION && notice.unread && match(notice)) TeleNotices.markRead(account, notice.id)
++        }
++    }
++
++    // the message that tells whether the entry was read: the copy in the Replies chat when there is one
++    private fun where(notice: TeleNotice, json: JSONObject): Pair<Long, Int> {
++        val source = json.optLong("source")
++        return if (source != 0L) source to json.optInt("smsg") else notice.peer to notice.messageId
++    }
++
++    // the General topic reads as no topic
++    private fun sameThread(topic: Long, thread: Long): Boolean = topic == thread || (topic <= 1L && thread <= 1L)
++
++    private fun key(target: Target): String = "mention:${target.chat}:${target.msg}"
++
++    private fun remember(account: Int, key: String): Boolean {
++        val set = logged[account]
++        if (!set.add(key)) return false
++        if (set.size > MAX_LOGGED) set.remove(set.first())
++        return true
++    }
++
++    private fun log(account: Int, dialogId: Long, message: MessageObject, date: Int) {
++        val target = targetOf(account, dialogId, message) ?: return
++        if (!qualifies(account, dialogId, message, target)) return
++        val key = key(target)
++        if (!remember(account, key) || TeleNotices.find(account, key) != null) return
++        val extra = JSONObject().put("from", target.from)
++        if (target.source != 0L) extra.put("source", target.source).put("smsg", target.sourceMsg)
++        TeleNotices.add(account, TeleNotice(
++            kind = NoticeKind.MENTION,
++            date = date,
++            key = key,
++            title = titleOf(account, target),
++            text = previewOf(message),
++            peer = target.chat,
++            messageId = target.msg,
++            topicId = target.topic,
++            extra = extra.toString()
++        ))
++    }
++
++    // where the entry leads; null for the messages that never count: own, service, not of a group
++    private fun targetOf(account: Int, dialogId: Long, message: MessageObject): Target? {
++        val owner = message.messageOwner ?: return null
++        if (message.isOutOwner() || owner is TLRPC.TL_messageService || message.isSponsored() || message.id <= 0) return null
++        val controller = MessagesController.getInstance(account)
++        val self = UserConfig.getInstance(account).getClientUserId()
++        if (UserObject.isReplyUser(dialogId)) {
++            // the Replies chat holds the answers to your comments, forwarded from the discussion
++            val forwarded = owner.fwd_from ?: return null
++            val saved = forwarded.saved_from_peer ?: return null
++            if (forwarded.saved_from_msg_id == 0) return null
++            val from = MessageObject.getPeerId(forwarded.from_id)
++            if (from == self || ignored(account, from)) return null
++            val name = when {
++                from > 0 -> controller.getUser(from)?.let { UserObject.getUserName(it) }
++                from < 0 -> controller.getChat(-from)?.title
++                else -> null
++            } ?: forwarded.from_name.orEmpty()
++            return Target(DialogObject.getPeerDialogId(saved), forwarded.saved_from_msg_id, 0L, from, name, dialogId, message.id, false, true)
++        }
++        if (dialogId >= 0) return null
++        val chat = controller.getChat(-dialogId) ?: return null
++        if (ChatObject.isChannelAndNotMegaGroup(chat) || ChatObject.isMonoForum(chat)) return null
++        val from = message.getFromChatId()
++        if (from == self) return null
++        val name = when {
++            from > 0 -> controller.getUser(from)?.let { UserObject.getUserName(it) }
++            from < 0 -> controller.getChat(-from)?.title
++            else -> null
++        }.orEmpty()
++        val forum = ChatObject.isForum(chat)
++        return Target(dialogId, message.id, if (forum) message.getTopicId() else 0L, from, name, 0L, 0, forum, false)
++    }
++
++    private fun ignored(account: Int, from: Long): Boolean =
++        from != 0L && TeleConfig.IGNORE_USERS.value && PrivacyRules.ignoredMode(account, from) != null
++
++    private fun qualifies(account: Int, dialogId: Long, message: MessageObject, target: Target): Boolean =
++        !PrivacyRules.isMuted(account, dialogId, message) &&
++            (target.replies || message.messageOwner.mentioned || repliesToSelf(account, message, target) || textMentionsSelf(account, message))
++
++    private fun repliesToSelf(account: Int, message: MessageObject, target: Target): Boolean {
++        val to = message.replyMessageObject ?: return false
++        if (target.forum && to.id.toLong() == target.topic) return false
++        return to.isOutOwner() || to.getFromChatId() == UserConfig.getInstance(account).getClientUserId()
++    }
++
++    private fun textMentionsSelf(account: Int, message: MessageObject): Boolean {
++        val owner = message.messageOwner
++        val entities = owner.entities
++        if (entities.isNullOrEmpty()) return false
++        val user = UserConfig.getInstance(account).getCurrentUser() ?: return false
++        val text = owner.message.orEmpty()
++        for (entity in entities) {
++            if (entity is TLRPC.TL_messageEntityMentionName) {
++                if (entity.user_id == user.id) return true
++            } else if (entity is TLRPC.TL_messageEntityMention && entity.length > 1 && entity.offset >= 0 && entity.offset + entity.length <= text.length) {
++                val name = text.substring(entity.offset + 1, entity.offset + entity.length)
++                if (UserObject.hasPublicUsername(user, name)) return true
++            }
++        }
++        return false
++    }
++
++    private fun previewOf(message: MessageObject): String {
++        val caption = message.caption?.toString().orEmpty()
++        val text = caption.ifEmpty { message.messageText?.toString().orEmpty() }.trim()
++        if (text.length <= MAX_PREVIEW) return text
++        val end = if (Character.isHighSurrogate(text[MAX_PREVIEW - 1])) MAX_PREVIEW - 1 else MAX_PREVIEW
++        return text.substring(0, end)
++    }
++
++    private fun nameOf(controller: MessagesController, dialogId: Long): String = when {
++        dialogId > 0 -> controller.getUser(dialogId)?.let { UserObject.getUserName(it) }.orEmpty()
++        dialogId < 0 -> controller.getChat(-dialogId)?.title.orEmpty()
++        else -> ""
++    }
++
++    private fun titleOf(account: Int, target: Target): String {
++        val controller = MessagesController.getInstance(account)
++        var chat = nameOf(controller, target.chat)
++        if (target.topic != 0L) {
++            controller.getTopicsController().findTopic(-target.chat, target.topic)?.title?.let { chat += " \u203A $it" }
++        }
++        return if (target.name.isEmpty()) chat else LocaleController.formatString(R.string.TeleNoticesMentionIn, target.name, chat)
++    }
++
++    // a topic of a forum opens through the topic, like a push does
++    private fun open(fragment: BaseFragment, account: Int, notice: TeleNotice): Boolean {
++        val dialogId = notice.peer
++        if (dialogId == 0L) return false
++        val args = Bundle()
++        if (dialogId < 0) args.putLong("chat_id", -dialogId) else args.putLong("user_id", dialogId)
++        if (notice.messageId != 0) args.putInt("message_id", notice.messageId)
++        val controller = MessagesController.getInstance(account)
++        if (!controller.checkCanOpenChat(args, fragment)) return true
++        val chat = ChatActivity(args)
++        val topicId = notice.topicId
++        if (dialogId < 0 && topicId > 0) {
++            val topics = controller.getTopicsController()
++            if (topics.findTopic(-dialogId, topicId) != null) {
++                ForumUtilities.applyTopic(chat, MessagesStorage.TopicKey.of(dialogId, topicId))
++            } else {
++                topics.loadTopic(-dialogId, topicId) {
++                    ForumUtilities.applyTopic(chat, MessagesStorage.TopicKey.of(dialogId, topicId))
++                    fragment.presentFragment(chat)
++                }
++                return true
++            }
++        }
++        fragment.presentFragment(chat)
++        return true
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+index c510383f5..687cb278e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+@@ -22,7 +22,8 @@ enum class NoticeKind(val id: String, val icon: Int, val color: Int, val cap: In
+     TELE("tele", R.drawable.msg_notifications, 0xFF9A6BE8.toInt()),
+     UPDATE("update", R.drawable.msg_download, 0xFF4DB86A.toInt()),
+     CRASH("crash", R.drawable.msg_report, 0xFFE5574E.toInt()),
+-    ONLINE("online", R.drawable.msg_online, 0xFF3FB6C7.toInt());
++    ONLINE("online", R.drawable.msg_online, 0xFF3FB6C7.toInt()),
++    MENTION("mention", R.drawable.msg_mention, 0xFFE0609C.toInt(), cap = 300);
+ 
+     companion object {
+         @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+index ecf756184..8519e4277 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+@@ -9,6 +9,7 @@ import android.view.Gravity
+ import android.view.View
+ import android.view.ViewGroup
+ import android.widget.ImageView
++import android.widget.FrameLayout
+ import android.widget.LinearLayout
+ import android.widget.TextView
+ import org.telegram.messenger.AndroidUtilities
+@@ -20,6 +21,11 @@ import tele.helpers.NoticeButton
+ import tele.helpers.NoticeTone
+ import tele.helpers.TeleNotice
+ import tele.helpers.TeleNotices
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.UserConfig
++import org.telegram.ui.Components.AvatarDrawable
++import org.telegram.ui.Components.BackupImageView
++import tele.helpers.NoticeKind
+ 
+ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+ private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+@@ -32,6 +38,7 @@ private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+ 
+     private val icon = ImageView(context)
++    private val avatar = BackupImageView(context)
+     private val title = TextView(context)
+     private val time = TextView(context)
+     private val text = TextView(context)
+@@ -46,7 +53,12 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(10f), AndroidUtilities.dp(16f), AndroidUtilities.dp(10f))
+ 
+         icon.scaleType = ImageView.ScaleType.CENTER
+-        addView(icon, LayoutHelper.createLinear(36, 36, Gravity.TOP, 0, 0, 12, 0))
++        avatar.setRoundRadius(AndroidUtilities.dp(18f))
++        avatar.visibility = View.GONE
++        val iconBox = FrameLayout(context)
++        iconBox.addView(icon, LayoutHelper.createFrame(36, 36f))
++        iconBox.addView(avatar, LayoutHelper.createFrame(36, 36f))
++        addView(iconBox, LayoutHelper.createLinear(36, 36, Gravity.TOP, 0, 0, 12, 0))
+ 
+         val column = LinearLayout(context)
+         column.orientation = VERTICAL
+@@ -74,12 +86,39 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         column.addView(buttons, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(6f) })
+     }
+ 
+-    /** [fresh] entries were unread when the screen opened: they stay tinted until it closes. */
+-    fun set(notice: TeleNotice, fresh: Boolean) {
+-        setBackgroundColor(if (fresh) Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton), 0.1f) else Theme.getColor(Theme.key_windowBackgroundWhite))
++    // a mention shows the person who wrote it
++    private fun bindIcon(notice: TeleNotice) {
++        val from = if (notice.kind == NoticeKind.MENTION) notice.json().optLong("from") else 0L
++        if (showAvatar(from)) {
++            avatar.visibility = View.VISIBLE
++            icon.visibility = View.GONE
++            return
++        }
++        avatar.visibility = View.GONE
++        icon.visibility = View.VISIBLE
+         icon.background = Theme.createCircleDrawable(AndroidUtilities.dp(36f), color(notice))
+         icon.setImageResource(notice.kind.icon)
+         icon.setColorFilter(Color.WHITE)
++    }
++
++    // false when the person is not loaded: the icon of the kind stays
++    private fun showAvatar(fromId: Long): Boolean {
++        if (fromId == 0L) return false
++        val controller = MessagesController.getInstance(UserConfig.selectedAccount)
++        if (fromId > 0) {
++            val user = controller.getUser(fromId) ?: return false
++            avatar.setForUserOrChat(user, AvatarDrawable(user))
++        } else {
++            val chat = controller.getChat(-fromId) ?: return false
++            avatar.setForUserOrChat(chat, AvatarDrawable(chat))
++        }
++        return true
++    }
++
++    /** [fresh] entries were unread when the screen opened: they stay tinted until it closes. */
++    fun set(notice: TeleNotice, fresh: Boolean) {
++        setBackgroundColor(if (fresh) Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton), 0.1f) else Theme.getColor(Theme.key_windowBackgroundWhite))
++        bindIcon(notice)
+ 
+         title.text = notice.title
+         title.visibility = if (notice.title.isEmpty()) View.INVISIBLE else View.VISIBLE
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
+index 2c2b9f47e..c2ea9468a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
+@@ -40,9 +40,10 @@ class TeleNoticesActivity : BaseFragment() {
+     /** The chips of the strip; a kind that has a chip of its own leaves the shared one. */
+     private enum class Filter(val title: Int, val matches: (NoticeKind) -> Boolean) {
+         ALL(R.string.TeleNoticesFilterAll, { true }),
++        MENTIONS(R.string.TeleNoticesFilterMentions, { it == NoticeKind.MENTION }),
+         LIMITS(R.string.TeleNoticesFilterLimits, { it == NoticeKind.LIMIT }),
+         SERVER(R.string.TeleNoticesFilterServer, { it == NoticeKind.SERVER }),
+-        TELE(R.string.TeleNoticesFilterTele, { it != NoticeKind.LIMIT && it != NoticeKind.SERVER })
++        TELE(R.string.TeleNoticesFilterTele, { it != NoticeKind.LIMIT && it != NoticeKind.SERVER && it != NoticeKind.MENTION })
+     }
+ 
+     private val account = UserConfig.selectedAccount
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index e61dcbc83..16b740f13 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -354,7 +354,10 @@ object TeleSearch {
+             section(1435, "Log rate limits", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
+             section(1436, "Slow mode waits", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log rate limits"),
+             section(1437, "File download speed limits", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log rate limits"),
+-            section(1438, "Flood wait history", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log rate limits")
++            section(1438, "Flood wait history", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log rate limits"),
++            section(1440, "Log mentions and replies", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
++            section(1441, "Mentions in the notification center", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log mentions and replies"),
++            section(1442, "Replies to your messages", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Log mentions and replies")
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 25852dba2..c0aec7f9f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -796,7 +796,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR.key
+             ),
+             TeleConfig.NOTICES.key to listOf(
+-                TeleConfig.NOTICES_LOG_LIMITS.key
++                TeleConfig.NOTICES_LOG_LIMITS.key,
++                TeleConfig.NOTICES_MENTIONS.key
+             ),
+             TeleConfig.INVISIBLE_NAMES.key to listOf(
+                 TeleConfig.INVISIBLE_NAMES_FALLBACK.key,
+@@ -1044,6 +1045,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Save downloads in a folder per chat" to "Saved media goes to Telegram/<chat name> in the public folders.",
+             "Notification center" to "Keeps rate limits, updates and other notices of tele in a list on this device.",
+             "Log rate limits" to "Adds each wait of Telegram and the moment it ends to the list; slow mode and file speed limits stay out.",
++            "Log mentions and replies" to "Adds messages that mention you or reply to yours from groups, muted ones too.",
+             "Rate-limit toasts and bar" to "Counts down Telegram's waits when you send, react, join, search or pay too fast; a bar shows above the chats from a minute.",
+         )
+ 
+@@ -1432,6 +1434,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(Row(TYPE_HEADER, "Notification center"))
+                 rows.add(toggle("Notification center", TeleConfig.NOTICES))
+                 rows.add(toggle("Log rate limits", TeleConfig.NOTICES_LOG_LIMITS))
++                rows.add(toggle("Log mentions and replies", TeleConfig.NOTICES_MENTIONS))
+                 if (all || TeleConfig.NOTICES.value) {
+                     val unread = tele.helpers.TeleNotices.unread(UserConfig.selectedAccount)
+                     rows.add(link("Notifications", TeleNoticesActivity.MODE_NOTICES, if (unread > 0) "$unread new" else "None", "tele-notices-open"))
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 166292117..bb1c02ad4 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -178,6 +178,7 @@
+     <string name="TeleNoticesNothing">Nothing here.</string>
+     <string name="TeleNoticesClearAsk">Clear all notifications?</string>
+     <string name="TeleNoticesFilterAll">All</string>
++    <string name="TeleNoticesFilterMentions">Mentions</string>
+     <string name="TeleNoticesFilterLimits">Limits</string>
+     <string name="TeleNoticesFilterServer">Server</string>
+     <string name="TeleNoticesFilterTele">tele</string>
+@@ -189,6 +190,7 @@
+     <string name="TeleNoticesCrashSent">Crash report sent</string>
+     <string name="TeleNoticesCrashSentId">Crash report #%1$s sent</string>
+     <string name="TeleNoticesCameOnline">Came online</string>
++    <string name="TeleNoticesMentionIn">%1$s in %2$s</string>
+     <string name="TeleLimitSend">Sending is limited</string>
+     <string name="TeleLimitReact">Reacting is limited</string>
+     <string name="TeleLimitJoin">Joining chats is limited</string>

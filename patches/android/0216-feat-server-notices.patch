@@ -1,0 +1,974 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 02:04:08 +0300
+Subject: [PATCH 216/216] feat: server notices
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../src/main/java/tele/helpers/TeleBadges.kt  |  21 +-
+ .../src/main/java/tele/helpers/TeleServer.kt  |   6 +-
+ .../java/tele/helpers/TeleServerNotices.kt    | 647 ++++++++++++++++++
+ .../src/main/java/tele/ui/TeleNoticeCell.kt   |  84 ++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   4 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +-
+ 8 files changed, 766 insertions(+), 6 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 27eab189f..16789239b 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -112,6 +112,8 @@ object TeleConfig {
+     @JvmField
+     val SERVER_USERNAMES = BoolItem("server_usernames", true)
+     @JvmField
++    val NOTICES_SERVER = BoolItem("notices_server", true)
++    @JvmField
+     val BUBBLE_BADGES = BoolItem("bubble_badges", false)
+     @JvmField
+     val HIDE_BUBBLE_TAILS = BoolItem("hide_bubble_tails", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 848abc61c..bf042646f 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -174,6 +174,9 @@ object TeleHooks {
+         if (item === TeleConfig.NOTICES || item === TeleConfig.NOTICES_LIMITS || item === TeleConfig.NOTICES_LOG_LIMITS) {
+             tele.helpers.TeleFloodWait.refresh()
+         }
++        if (item === TeleConfig.NOTICES || item === TeleConfig.NOTICES_SERVER) {
++            tele.helpers.TeleServerNotices.onToggled()
++        }
+         if (item === TeleConfig.KEEP_MEDIA_PAST_LIMIT) {
+             tele.helpers.PastLimit.onToggled()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+index ab051ce52..f2c1ae4fb 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleBadges.kt
+@@ -30,7 +30,12 @@ object TeleBadges {
+ 
+     data class ServerConfig(val salt: ByteArray, val memoryKiB: Int, val passes: Int, val lanes: Int)
+     data class UsernameEntry(val username: String, val position: Int? = null)
+-    data class ServerData(val config: ServerConfig, val peers: Map<String, Peer>, val usernames: Map<String, UsernameEntry> = emptyMap())
++    data class ServerData(
++        val config: ServerConfig,
++        val peers: Map<String, Peer>,
++        val usernames: Map<String, UsernameEntry> = emptyMap(),
++        val notices: List<TeleServerNotices.FeedNotice> = emptyList()
++    )
+ 
+     class FeedException(message: String) : Exception(message)
+ 
+@@ -88,6 +93,12 @@ object TeleBadges {
+         return p
+     }
+ 
++    // the key of an own account in the feed's `users` lists; blocking: background threads only
++    fun userKey(account: Int, userId: Long): String? {
++        val d = dataRef.get() ?: return null
++        return keysFor(d.config).map.getOrPut(cacheKey(account, userId)) { key(d, account, userId) }
++    }
++
+     // UI-thread lookup: answers from the cache; a miss is resolved in the background and reported only for listed peers
+     private fun cachedPeer(account: Int, peerId: Long, onResolved: (Peer) -> Unit): Peer? {
+         val d = dataRef.get() ?: return null
+@@ -134,7 +145,12 @@ object TeleBadges {
+             val entry = list.optJSONObject(k)?.let(::parseEntry) ?: throw FeedException("bad entry $k")
+             peers[Base64.getUrlEncoder().withoutPadding().encodeToString(tag)] = entry
+         }
+-        return ServerData(ServerConfig(salt, memory, passes, lanes), peers, parseUsernames(o.optJSONObject("usernames")))
++        return ServerData(
++            ServerConfig(salt, memory, passes, lanes),
++            peers,
++            parseUsernames(o.optJSONObject("usernames")),
++            TeleServerNotices.parse(o.opt("notices"))
++        )
+     }
+ 
+     private fun JSONObject.intIn(name: String, min: Int, max: Int): Int? {
+@@ -197,6 +213,7 @@ object TeleBadges {
+         } else {
+             forEachAccount(::apply)
+         }
++        TeleServerNotices.onFeed()
+     }
+ 
+     private fun forEachAccount(action: (Int) -> Unit) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
+index 279b3927b..394cc9737 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleServer.kt
+@@ -50,10 +50,14 @@ object TeleServer {
+     @JvmStatic
+     fun serverUrl(): String = normalizeUrl(TeleConfig.TELE_SERVER_URL.value).orEmpty()
+ 
++    @JvmStatic
++    fun userAgent(): String = "tele/${BuildVars.BUILD_VERSION_STRING}-tele.${TeleBuild.BUILD}"
++
+     private fun cacheFile(): File = File(ApplicationLoader.applicationContext.filesDir, CACHE_FILE)
+ 
+     @JvmStatic
+     fun start() {
++        TeleServerNotices.init()
+         queue.postRunnable({
+             val target = normalizeUrl(TeleConfig.TELE_SERVER_URL.value)
+             if (target.isNullOrEmpty()) {
+@@ -139,7 +143,7 @@ object TeleServer {
+             connection.connectTimeout = TIMEOUT
+             connection.readTimeout = TIMEOUT
+             connection.setRequestProperty("Accept", "application/json")
+-            connection.setRequestProperty("User-Agent", "tele/${BuildVars.BUILD_VERSION_STRING}-tele.${TeleBuild.BUILD}")
++            connection.setRequestProperty("User-Agent", userAgent())
+             if (etag.isNotEmpty()) connection.setRequestProperty("If-None-Match", etag)
+             when (val code = connection.responseCode) {
+                 HttpURLConnection.HTTP_NOT_MODIFIED -> {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt b/TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt
+new file mode 100644
+index 000000000..e6a4b4d32
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt
+@@ -0,0 +1,647 @@
++package tele.helpers
++
++import android.graphics.Bitmap
++import android.graphics.BitmapFactory
++import android.graphics.Paint
++import android.graphics.Typeface
++import android.os.SystemClock
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.TextPaint
++import android.text.style.BackgroundColorSpan
++import android.text.style.ClickableSpan
++import android.text.style.QuoteSpan
++import android.text.style.StrikethroughSpan
++import android.text.style.StyleSpan
++import android.text.style.UnderlineSpan
++import android.util.LruCache
++import android.view.View
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.DispatchQueue
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.browser.Browser
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.AnimatedEmojiSpan
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.TypefaceSpan
++import org.telegram.ui.LaunchActivity
++import tele.TeleBuild
++import tele.TeleConfig
++import java.io.ByteArrayOutputStream
++import java.io.File
++import java.net.HttpURLConnection
++import java.net.URL
++
++/**
++ * Notices of the tele server (tele 0206): the optional top-level `notices` of the badges feed
++ * ([TeleServer]) land in the notification center as [NoticeKind.SERVER], per account. A notice
++ * has an id and a revision: a new revision replaces the entry, a known one is not added again
++ * (so a deleted entry stays deleted). Nothing is queried per account: every account is
++ * filtered from the one feed.
++ */
++object TeleServerNotices {
++
++    private const val MAX_NOTICES = 64
++    private const val MAX_ID_LENGTH = 64
++    private const val MAX_TEXT_LENGTH = 4096
++    private const val MAX_ENTITIES = 256
++    private const val MAX_USERS = 100000
++    private const val TAG_SIZE = 16
++    private const val MAX_PHOTO_SIZE = 1024 * 1024
++    private const val MAX_REDIRECTS = 4
++    private const val TRANSFER_TIMEOUT = 60_000
++    private const val MAX_SEEN = 500
++    private const val SEEN_KEY = "server_notices_seen_"
++    private const val PHOTO_DIR = "tele_notice_photos"
++    private const val TOAST_DURATION = 6_000L
++    private const val TOAST_RETRY = 3_000L
++    private const val TOAST_RECENT = 3_000L
++    private const val PLATFORM = "android"
++
++    data class Entity(val type: String, val offset: Int, val length: Int, val data: String = "")
++
++    data class FeedNotice(
++        val id: String,
++        val rev: Int,
++        val tone: NoticeTone,
++        val title: String,
++        val text: String,
++        val entities: List<Entity>,
++        /** A path on the configured server. */
++        val photo: String,
++        val buttons: List<NoticeButton>,
++        val toast: Boolean,
++        val buildsMin: Int?,
++        val buildsMax: Int?,
++        val platforms: List<String>?,
++        /** Argon2 keys (url-safe base64, no padding) of the targeted users; null for everyone. */
++        val users: Set<String>?,
++        val from: Int,
++        val until: Int
++    )
++
++    private class Seen(var rev: Int, var toasted: Boolean)
++    private class Photo(val name: String, val width: Int, val height: Int)
++    private class QueuedToast(val account: Int, val notice: FeedNotice)
++
++    private val queue by lazy { DispatchQueue("teleServerNotices") }
++    private val photoQueue by lazy { DispatchQueue("teleServerNoticePhotos") }
++    private val refreshLock = Any()
++    private val seenLock = Any()
++    private val seen = arrayOfNulls<LinkedHashMap<String, Seen>>(UserConfig.MAX_ACCOUNT_COUNT)
++    // refreshLock only: the photos in flight, "account:id"
++    private val fetching = HashSet<String>()
++    private val timer = Runnable { refreshSafely() }
++    private val photos = LruCache<String, Bitmap>(8)
++
++    // UI thread only
++    private val toastQueue = ArrayList<QueuedToast>()
++    private var toastBusyUntil = 0L
++    private val pumpRunnable = Runnable { pump() }
++    @Volatile
++    private var lastToastQueued = 0L
++    private var started = false
++
++    private val observer = object : NotificationCenter.NotificationCenterDelegate {
++        override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++            // a new account may have signed in
++            if (id == NotificationCenter.mainUserInfoChanged) queue.postRunnable { refreshSafely() }
++        }
++    }
++
++    /** UI thread, once: the text of the entries and the sign-in watch. */
++    @JvmStatic
++    fun init() {
++        if (started) return
++        started = true
++        TeleNotices.registerText(NoticeKind.SERVER) { render(it) }
++        // Application.onCreate runs before ApplicationLoader.applicationHandler exists, which addObserver needs
++        android.os.Handler(android.os.Looper.getMainLooper()).post {
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                NotificationCenter.getInstance(account).addObserver(observer, NotificationCenter.mainUserInfoChanged)
++            }
++        }
++    }
++
++    private fun enabled(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_SERVER.value
++
++    @JvmStatic
++    fun onToggled() {
++        queue.postRunnable { refreshSafely() }
++    }
++
++    /** The feed changed; the calling thread may block (argon2). */
++    @JvmStatic
++    fun onFeed() = refreshSafely()
++
++    /** A toast of a server notice came up a moment ago: the result of "Refresh now" would stack on it. */
++    @JvmStatic
++    fun toastRecent(): Boolean {
++        val queued = lastToastQueued
++        return queued != 0L && SystemClock.elapsedRealtime() - queued < TOAST_RECENT
++    }
++
++    // ---- parsing
++
++    private fun present(value: Any?) = value != null && value != JSONObject.NULL
++
++    private fun number(value: Any?): Int? {
++        val number = value as? Number ?: return null
++        val double = number.toDouble()
++        return if (double < 0 || double > 2147483647.0 || double != Math.floor(double)) null else double.toInt()
++    }
++
++    private fun linkAllowed(url: String) = url.startsWith("https://", true) || url.startsWith("http://", true) || url.startsWith("tg://", true)
++
++    private fun idAllowed(id: String): Boolean {
++        if (id.isEmpty() || id.length > MAX_ID_LENGTH) return false
++        return id.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '-' }
++    }
++
++    private fun parseTone(type: String): NoticeTone? = when (type) {
++        "info" -> NoticeTone.INFO
++        "success" -> NoticeTone.SUCCESS
++        "warning" -> NoticeTone.WARNING
++        "critical" -> NoticeTone.CRITICAL
++        else -> null
++    }
++
++    private fun parseEntity(fields: JSONObject): Entity? {
++        val offset = number(fields.opt("offset"))
++        val length = number(fields.opt("length"))
++        if (offset == null || length == null || length == 0) return null
++        return when (val type = fields.opt("type") as? String ?: "") {
++            "bold", "italic", "underline", "strikethrough", "spoiler", "code", "blockquote", "url" -> Entity(type, offset, length)
++            "pre" -> Entity(type, offset, length, fields.opt("language") as? String ?: "")
++            "text_link" -> (fields.opt("url") as? String)?.takeIf(::linkAllowed)?.let { Entity(type, offset, length, it) }
++            "custom_emoji" -> {
++                val id = fields.opt("custom_emoji_id") as? String ?: ""
++                val document = id.toULongOrNull()?.toLong() ?: 0L
++                if (document != 0L) Entity(type, offset, length, id) else null
++            }
++            else -> null
++        }
++    }
++
++    private fun parseNotice(value: Any?): FeedNotice? {
++        val fields = value as? JSONObject ?: return null
++        val id = fields.opt("id") as? String ?: ""
++        val rev = number(fields.opt("rev"))
++        val tone = parseTone(fields.opt("type") as? String ?: "")
++        val title = fields.opt("title")
++        val text = fields.opt("text")
++        if (!idAllowed(id) || rev == null || tone == null || (present(title) && title !is String) || (present(text) && text !is String)) return null
++        val titleText = (title as? String).orEmpty().trim()
++        val body = (text as? String).orEmpty().take(MAX_TEXT_LENGTH)
++        if (titleText.isEmpty() && body.isBlank()) return null
++
++        val entities = ArrayList<Entity>()
++        val entityArray = fields.opt("entities") as? JSONArray
++        if (entityArray != null) {
++            for (i in 0 until entityArray.length()) {
++                if (entities.size >= MAX_ENTITIES) break
++                val parsed = parseEntity(entityArray.opt(i) as? JSONObject ?: continue) ?: continue
++                if (parsed.offset.toLong() + parsed.length <= body.length) entities.add(parsed)
++            }
++            entities.sortBy { it.offset }
++        }
++
++        val url = ((fields.opt("photo") as? JSONObject)?.opt("url") as? String).orEmpty()
++        val photo = if (url.startsWith("/") && !url.startsWith("//")) url else ""
++
++        val buttons = ArrayList<NoticeButton>()
++        val buttonArray = fields.opt("buttons") as? JSONArray
++        if (buttonArray != null) {
++            for (i in 0 until buttonArray.length()) {
++                val button = buttonArray.opt(i) as? JSONObject
++                val label = (button?.opt("text") as? String).orEmpty().trim()
++                val link = (button?.opt("url") as? String).orEmpty()
++                if (label.isNotEmpty() && linkAllowed(link)) {
++                    buttons.add(NoticeButton(label, link))
++                    if (buttons.size == 2) break
++                }
++            }
++        }
++
++        val builds = fields.opt("builds") as? JSONObject
++        val platformArray = fields.opt("platforms") as? JSONArray
++        val platforms = platformArray?.let { array -> List(array.length()) { array.opt(it) as? String ?: "" } }
++
++        var users: HashSet<String>? = null
++        val userArray = fields.opt("users") as? JSONArray
++        if (userArray != null) {
++            val list = HashSet<String>()
++            users = list
++            val decoder = java.util.Base64.getUrlDecoder()
++            val encoder = java.util.Base64.getUrlEncoder().withoutPadding()
++            for (i in 0 until userArray.length()) {
++                val decoded = runCatching { decoder.decode(userArray.opt(i) as? String ?: "") }.getOrNull()
++                if (decoded != null && decoded.size == TAG_SIZE) list.add(encoder.encodeToString(decoded))
++                if (list.size >= MAX_USERS) break
++            }
++        }
++
++        return FeedNotice(
++            id = id, rev = rev, tone = tone, title = titleText, text = body, entities = entities, photo = photo,
++            buttons = buttons, toast = fields.opt("toast") == true,
++            buildsMin = number(builds?.opt("min")), buildsMax = number(builds?.opt("max")),
++            platforms = platforms, users = users,
++            from = number(fields.opt("from")) ?: 0, until = number(fields.opt("until")) ?: 0
++        )
++    }
++
++    /** The `notices` of the feed: invalid entries are skipped, at most [MAX_NOTICES] are kept. */
++    @JvmStatic
++    fun parse(value: Any?): List<FeedNotice> {
++        val array = value as? JSONArray ?: return emptyList()
++        val result = ArrayList<FeedNotice>()
++        var skipped = 0
++        for (i in 0 until array.length()) {
++            if (result.size >= MAX_NOTICES) {
++                skipped++
++                continue
++            }
++            val notice = parseNotice(array.opt(i))
++            if (notice != null) result.add(notice) else skipped++
++        }
++        if (skipped > 0) FileLog.e("TeleServerNotices: skipped $skipped notices")
++        return result
++    }
++
++    // ---- applying the feed
++
++    private fun targeted(notice: FeedNotice): Boolean {
++        val build = TeleBuild.BUILD
++        if ((notice.buildsMin != null && build < notice.buildsMin) || (notice.buildsMax != null && build > notice.buildsMax)) return false
++        return notice.platforms == null || PLATFORM in notice.platforms
++    }
++
++    private fun now(): Int = (System.currentTimeMillis() / 1000L).toInt()
++
++    private fun refreshSafely() {
++        try {
++            synchronized(refreshLock) { refreshLocked() }
++        } catch (e: Throwable) {
++            FileLog.e(e)
++        }
++    }
++
++    private fun refreshLocked() {
++        queue.cancelRunnable(timer)
++        if (!enabled()) return
++        val feed = TeleBadges.current()?.notices.orEmpty()
++        if (feed.isEmpty()) return
++        val now = now()
++        var next = 0
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            val config = UserConfig.getInstance(account)
++            if (!config.isClientActivated) continue
++            var own: String? = null
++            var derived = false
++            for (notice in feed) {
++                if (!targeted(notice)) continue
++                val users = notice.users
++                if (users != null) {
++                    if (!derived) {
++                        derived = true
++                        own = runCatching { TeleBadges.userKey(account, config.getClientUserId()) }.onFailure(FileLog::e).getOrNull()
++                    }
++                    if (own == null || own !in users) continue
++                }
++                if (notice.until != 0 && now >= notice.until) continue
++                if (notice.from != 0 && now < notice.from) {
++                    next = if (next == 0) notice.from else minOf(next, notice.from)
++                    continue
++                }
++                show(account, notice)
++            }
++        }
++        if (next != 0) queue.postRunnable(timer, (next - now) * 1000L + 500L)
++        if (fetching.isEmpty()) sweepPhotos()
++    }
++
++    private fun show(account: Int, notice: FeedNotice) {
++        val fetchKey = "$account:${notice.id}"
++        when {
++            seenRev(account, notice.id) == notice.rev -> toast(account, notice)
++            fetching.contains(fetchKey) -> return
++            notice.photo.isEmpty() -> add(account, notice, null)
++            else -> fetch(account, notice)
++        }
++    }
++
++    private fun add(account: Int, notice: FeedNotice, photo: Photo?) {
++        setSeenRev(account, notice.id, notice.rev)
++        val extra = JSONObject()
++        if (notice.entities.isNotEmpty()) {
++            val array = JSONArray()
++            for (entity in notice.entities) array.put(JSONArray().put(entity.type).put(entity.offset).put(entity.length).put(entity.data))
++            extra.put("entities", array)
++        }
++        if (photo != null) extra.put("w", photo.width).put("h", photo.height)
++        TeleNotices.add(account, TeleNotice(
++            kind = NoticeKind.SERVER,
++            title = notice.title,
++            text = notice.text,
++            tone = notice.tone,
++            key = "server:${notice.id}",
++            rev = notice.rev,
++            buttons = notice.buttons,
++            photo = photo?.name.orEmpty(),
++            extra = if (extra.length() == 0) "" else extra.toString()
++        ))
++        toast(account, notice)
++    }
++
++    // ---- seen memory: the revision and whether the toast was shown, per account and notice id
++
++    private fun seenOf(account: Int): LinkedHashMap<String, Seen> {
++        seen[account]?.let { return it }
++        val map = LinkedHashMap<String, Seen>()
++        runCatching {
++            val json = JSONObject(tele.db.TeleDatabaseHelper.get(SEEN_KEY + account) ?: "{}")
++            val keys = json.keys()
++            while (keys.hasNext() && map.size < MAX_SEEN) {
++                val id = keys.next()
++                val pair = json.optJSONArray(id) ?: continue
++                map[id] = Seen(pair.optInt(0, -1), pair.optInt(1) != 0)
++            }
++        }.onFailure(FileLog::e)
++        seen[account] = map
++        return map
++    }
++
++    private fun saveSeen(account: Int, map: LinkedHashMap<String, Seen>) {
++        val json = JSONObject()
++        for ((id, entry) in map) json.put(id, JSONArray().put(entry.rev).put(if (entry.toasted) 1 else 0))
++        tele.db.TeleDatabaseHelper.put(SEEN_KEY + account, json.toString())
++    }
++
++    private fun seenRev(account: Int, id: String): Int = synchronized(seenLock) { seenOf(account)[id]?.rev ?: -1 }
++
++    private fun toasted(account: Int, id: String): Boolean = synchronized(seenLock) { seenOf(account)[id]?.toasted == true }
++
++    private fun remember(account: Int, id: String, change: (Seen?) -> Seen) {
++        synchronized(seenLock) {
++            val map = seenOf(account)
++            val updated = change(map.remove(id))
++            map[id] = updated
++            while (map.size > MAX_SEEN) map.remove(map.keys.first())
++            saveSeen(account, map)
++        }
++    }
++
++    private fun setSeenRev(account: Int, id: String, rev: Int) = remember(account, id) { Seen(rev, it?.toasted == true) }
++
++    private fun setToasted(account: Int, id: String) = remember(account, id) { Seen(it?.rev ?: -1, true) }
++
++    // ---- photo
++
++    private fun photoDir(): File = File(ApplicationLoader.getFilesDirFixed(), PHOTO_DIR).also { it.mkdirs() }
++
++    private fun fetch(account: Int, notice: FeedNotice) {
++        val base = TeleServer.serverUrl()
++        if (base.isEmpty()) {
++            add(account, notice, null)
++            return
++        }
++        fetching.add("$account:${notice.id}")
++        photoQueue.postRunnable {
++            val photo = runCatching { download(base, notice) }.onFailure { FileLog.e("TeleServerNotices: photo ${notice.id}: ${it.message}") }.getOrNull()
++            queue.postRunnable {
++                try {
++                    synchronized(refreshLock) { fetched(account, notice, photo) }
++                } catch (e: Throwable) {
++                    FileLog.e(e)
++                }
++            }
++        }
++    }
++
++    private fun fetched(account: Int, notice: FeedNotice, photo: Photo?) {
++        fetching.remove("$account:${notice.id}")
++        val current = TeleBadges.current()?.notices?.firstOrNull { it.id == notice.id }
++        if (current == null || current.rev != notice.rev || !enabled()) return
++        add(account, notice, photo)
++    }
++
++    // photoQueue; the file is shared by the accounts
++    private fun download(base: String, notice: FeedNotice): Photo? {
++        val name = "tele_notice_${notice.id}_${notice.rev}"
++        val file = File(photoDir(), name)
++        if (file.exists()) bounds(file.readBytes())?.let { return Photo(name, it.first, it.second) }
++        val bytes = httpGet(base + notice.photo) ?: return null
++        val size = bounds(bytes) ?: return null
++        val temp = File(file.parentFile, "$name.tmp")
++        temp.writeBytes(bytes)
++        if (!temp.renameTo(file)) {
++            temp.delete()
++            return null
++        }
++        return Photo(name, size.first, size.second)
++    }
++
++    // only jpeg and png count, like desktop
++    private fun bounds(bytes: ByteArray): Pair<Int, Int>? {
++        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
++        val type = options.outMimeType
++        if ((type != "image/jpeg" && type != "image/png") || options.outWidth <= 0 || options.outHeight <= 0) return null
++        return options.outWidth to options.outHeight
++    }
++
++    private fun httpGet(address: String): ByteArray? {
++        var target = URL(address)
++        repeat(MAX_REDIRECTS + 1) {
++            val connection = target.openConnection() as HttpURLConnection
++            try {
++                connection.connectTimeout = TRANSFER_TIMEOUT
++                connection.readTimeout = TRANSFER_TIMEOUT
++                connection.instanceFollowRedirects = false
++                connection.setRequestProperty("User-Agent", TeleServer.userAgent())
++                val code = connection.responseCode
++                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
++                    val next = URL(target, connection.getHeaderField("Location") ?: return null)
++                    val port = { url: URL -> if (url.port == -1) url.defaultPort else url.port }
++                    // same origin only
++                    if (next.protocol != target.protocol || next.host != target.host || port(next) != port(target)) return null
++                    target = next
++                    return@repeat
++                }
++                if (code != HttpURLConnection.HTTP_OK || connection.contentLengthLong > MAX_PHOTO_SIZE) return null
++                val out = ByteArrayOutputStream()
++                connection.inputStream.use { input ->
++                    val buffer = ByteArray(16 * 1024)
++                    while (true) {
++                        val read = input.read(buffer)
++                        if (read < 0) break
++                        out.write(buffer, 0, read)
++                        if (out.size() > MAX_PHOTO_SIZE) return null
++                    }
++                }
++                return out.toByteArray()
++            } finally {
++                connection.disconnect()
++            }
++        }
++        return null
++    }
++
++    // the files of the entries that are gone; refreshLock, no photo in flight
++    private fun sweepPhotos() {
++        val files = photoDir().listFiles() ?: return
++        if (files.isEmpty()) return
++        val used = HashSet<String>()
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            for (notice in TeleNotices.list(account)) if (notice.photo.isNotEmpty()) used.add(notice.photo)
++        }
++        for (file in files) if (file.name !in used) file.delete()
++    }
++
++    /** Decodes the picture of an entry off the UI thread; [done] runs on the UI thread with null when it is gone. */
++    @JvmStatic
++    fun loadPhoto(name: String, done: (Bitmap?) -> Unit) {
++        photos.get(name)?.let {
++            done(it)
++            return
++        }
++        photoQueue.postRunnable {
++            val bitmap = runCatching {
++                val file = File(photoDir(), name)
++                val limit = minOf(AndroidUtilities.displaySize.x, AndroidUtilities.dp(600f))
++                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++                BitmapFactory.decodeFile(file.path, options)
++                var sample = 1
++                while (options.outWidth / (sample * 2) >= limit) sample *= 2
++                BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
++            }.onFailure(FileLog::e).getOrNull()
++            if (bitmap != null) photos.put(name, bitmap)
++            AndroidUtilities.runOnUIThread { done(bitmap) }
++        }
++    }
++
++    // ---- toast
++
++    private fun toast(account: Int, notice: FeedNotice) {
++        if (!notice.toast || toasted(account, notice.id)) return
++        lastToastQueued = SystemClock.elapsedRealtime()
++        AndroidUtilities.runOnUIThread {
++            if (toastQueue.none { it.account == account && it.notice.id == notice.id }) toastQueue.add(QueuedToast(account, notice))
++            pump()
++        }
++    }
++
++    // UI thread: one toast at a time, for the selected account while the app is in front
++    private fun pump() {
++        AndroidUtilities.cancelRunOnUIThread(pumpRunnable)
++        if (toastQueue.isEmpty()) return
++        val wait = toastBusyUntil - SystemClock.elapsedRealtime()
++        if (wait > 0) {
++            AndroidUtilities.runOnUIThread(pumpRunnable, wait)
++            return
++        }
++        val selected = UserConfig.selectedAccount
++        val item = toastQueue.firstOrNull { it.account == selected }
++        if (item == null || !LaunchActivity.isActive) {
++            AndroidUtilities.runOnUIThread(pumpRunnable, TOAST_RETRY)
++            return
++        }
++        toastQueue.remove(item)
++        if (!enabled() || toasted(item.account, item.notice.id)) {
++            pump()
++            return
++        }
++        setToasted(item.account, item.notice.id)
++        showToast(item.notice)
++        toastBusyUntil = SystemClock.elapsedRealtime() + TOAST_DURATION + 400L
++        pump()
++    }
++
++    private fun showToast(notice: FeedNotice) {
++        val icon = when (notice.tone) {
++            NoticeTone.SUCCESS -> R.raw.done
++            NoticeTone.WARNING, NoticeTone.CRITICAL -> R.raw.error
++            else -> R.raw.info
++        }
++        val factory = BulletinFactory.global()
++        val bulletin = when {
++            notice.title.isEmpty() -> factory.createSimpleBulletin(icon, notice.text, 4)
++            notice.text.isBlank() -> factory.createSimpleBulletin(icon, notice.title, 2)
++            else -> factory.createSimpleBulletin(icon, notice.title, notice.text)
++        }
++        bulletin.show()
++    }
++
++    // ---- text of the entries
++
++    private class LinkSpan(private val url: String) : ClickableSpan() {
++        override fun onClick(widget: View) = TeleServerNotices.openLink(widget.context, url)
++
++        override fun updateDrawState(ds: TextPaint) {
++            ds.color = Theme.getColor(Theme.key_windowBackgroundWhiteLinkText)
++            ds.isUnderlineText = false
++        }
++    }
++
++    // hidden until tapped
++    private class SpoilerSpan : ClickableSpan() {
++        private var revealed = false
++
++        override fun onClick(widget: View) {
++            revealed = true
++            widget.invalidate()
++        }
++
++        override fun updateDrawState(ds: TextPaint) {
++            if (!revealed) ds.bgColor = ds.color
++        }
++    }
++
++    /** Opens a web or Telegram link; the stored links come from the server, so anything else is ignored. */
++    @JvmStatic
++    fun openLink(context: android.content.Context, url: String) {
++        if (linkAllowed(url)) Browser.openUrl(context, url)
++    }
++
++    private fun render(notice: TeleNotice): CharSequence {
++        val builder = SpannableStringBuilder(notice.text)
++        val entities = notice.json().optJSONArray("entities") ?: return builder
++        val metrics = Paint().apply { textSize = AndroidUtilities.dp(15f).toFloat() }.fontMetricsInt
++        val textColor = Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)
++        for (i in 0 until entities.length()) {
++            val fields = entities.optJSONArray(i) ?: continue
++            val type = fields.optString(0)
++            val start = fields.optInt(1)
++            val end = start + fields.optInt(2)
++            if (start < 0 || end <= start || end > builder.length) continue
++            val data = fields.optString(3)
++            val span: Any = when (type) {
++                "bold" -> TypefaceSpan(AndroidUtilities.bold())
++                "italic" -> StyleSpan(Typeface.ITALIC)
++                "underline" -> UnderlineSpan()
++                "strikethrough" -> StrikethroughSpan()
++                "spoiler" -> SpoilerSpan()
++                "code", "pre" -> {
++                    builder.setSpan(BackgroundColorSpan(Theme.multAlpha(textColor, 0.1f)), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++                    TypefaceSpan(Typeface.MONOSPACE)
++                }
++                "blockquote" -> QuoteSpan(Theme.getColor(Theme.key_featuredStickers_addButton))
++                "url" -> {
++                    val shown = builder.substring(start, end)
++                    LinkSpan(if (shown.contains("://")) shown else "https://$shown")
++                }
++                "text_link" -> LinkSpan(data)
++                "custom_emoji" -> AnimatedEmojiSpan(data.toULongOrNull()?.toLong() ?: continue, metrics)
++                else -> continue
++            }
++            builder.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        }
++        return builder
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+index dd2d7badf..a98dc8f1f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+@@ -6,11 +6,16 @@ import android.graphics.drawable.GradientDrawable
+ import android.graphics.Color
+ import android.graphics.Typeface
+ import android.text.StaticLayout
++import android.graphics.Outline
++import android.text.Spanned
+ import android.text.TextUtils
++import android.text.style.ClickableSpan
+ import android.util.TypedValue
+ import android.view.Gravity
++import android.view.MotionEvent
+ import android.view.View
+ import android.view.ViewGroup
++import android.view.ViewOutlineProvider
+ import android.widget.ImageView
+ import android.widget.FrameLayout
+ import android.widget.LinearLayout
+@@ -20,6 +25,7 @@ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.R
+ import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.AnimatedEmojiSpan
+ import org.telegram.ui.Components.LayoutHelper
+ import tele.helpers.NoticeButton
+ import tele.helpers.NoticeKind
+@@ -30,7 +36,7 @@ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.UserConfig
+ import org.telegram.ui.Components.AvatarDrawable
+ import org.telegram.ui.Components.BackupImageView
+-import tele.helpers.NoticeKind
++import tele.helpers.TeleServerNotices
+ 
+ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+ private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+@@ -50,9 +56,11 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+     private val badge = ImageView(context)
+     private val title = TextView(context)
+     private val time = TextView(context)
+-    private val text = TextView(context)
++    private val text = AnimatedEmojiSpan.TextViewEmojis(context)
++    private val photo = PhotoView(context)
+     private val buttons = LinearLayout(context)
+     private val more = TextView(context)
++    private var pressedSpan: ClickableSpan? = null
+ 
+     /** A tap on one of the buttons of the entry. */
+     var onButton: ((NoticeButton) -> Unit)? = null
+@@ -105,6 +113,8 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+ 
+         text.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
+         text.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++        // the links of a text open from here; a tap elsewhere is the tap on the entry
++        text.setOnTouchListener { _, event -> touchSpan(event) }
+         column.addView(text, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(2f) })
+ 
+         more.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+@@ -120,6 +130,14 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         }
+         column.addView(more, LinearLayout.LayoutParams(WRAP, WRAP))
+ 
++        photo.scaleType = ImageView.ScaleType.CENTER_CROP
++        photo.clipToOutline = true
++        photo.outlineProvider = object : ViewOutlineProvider() {
++            override fun getOutline(view: View, outline: Outline) {
++                outline.setRoundRect(0, 0, view.width, view.height, AndroidUtilities.dp(8f).toFloat())
++            }
++        }
++        column.addView(photo, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(8f) })
+         buttons.orientation = HORIZONTAL
+         column.addView(buttons, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(6f) })
+     }
+@@ -194,6 +212,24 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+             view.setOnClickListener { onButton?.invoke(button) }
+             buttons.addView(view, LinearLayout.LayoutParams(WRAP, WRAP).apply { rightMargin = AndroidUtilities.dp(6f) })
+         }
++
++        if (notice.photo.isEmpty()) {
++            photo.visibility = View.GONE
++            photo.tag = null
++            photo.setImageDrawable(null)
++        } else {
++            photo.visibility = View.VISIBLE
++            val extra = notice.json()
++            val width = extra.optInt("w")
++            val height = extra.optInt("h")
++            photo.ratio = if (width > 0 && height > 0) height.toFloat() / width else 0f
++            if (photo.tag != notice.photo) {
++                photo.tag = notice.photo
++                photo.setImageDrawable(null)
++                val name = notice.photo
++                TeleServerNotices.loadPhoto(name) { bitmap -> if (photo.tag == name && bitmap != null) photo.setImageBitmap(bitmap) }
++            }
++        }
+     }
+ 
+     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+@@ -242,6 +278,50 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         time.text = ago(notice.date)
+     }
+ 
++    private fun spanAt(event: MotionEvent): ClickableSpan? {
++        val spanned = text.text as? Spanned ?: return null
++        val layout = text.layout ?: return null
++        val x = event.x - text.totalPaddingLeft + text.scrollX
++        val y = event.y - text.totalPaddingTop + text.scrollY
++        if (y < 0 || y > layout.height) return null
++        val line = layout.getLineForVertical(y.toInt())
++        if (x < layout.getLineLeft(line) || x > layout.getLineRight(line)) return null
++        val offset = layout.getOffsetForHorizontal(line, x)
++        return spanned.getSpans(offset, offset, ClickableSpan::class.java).firstOrNull()
++    }
++
++    private fun touchSpan(event: MotionEvent): Boolean {
++        when (event.actionMasked) {
++            MotionEvent.ACTION_DOWN -> {
++                pressedSpan = spanAt(event)
++                return pressedSpan != null
++            }
++            MotionEvent.ACTION_UP -> {
++                val span = pressedSpan ?: return false
++                pressedSpan = null
++                if (spanAt(event) == span) span.onClick(text)
++                return true
++            }
++            MotionEvent.ACTION_CANCEL -> {
++                val pressed = pressedSpan != null
++                pressedSpan = null
++                return pressed
++            }
++        }
++        return pressedSpan != null
++    }
++
++    /** The picture of a server notice: as tall as its ratio says (capped) before the bitmap is there. */
++    private class PhotoView(context: Context) : ImageView(context) {
++        var ratio = 0f
++
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            val width = MeasureSpec.getSize(widthMeasureSpec)
++            val height = if (ratio > 0f) minOf((width * ratio).toInt(), AndroidUtilities.dp(280f)) else AndroidUtilities.dp(160f)
++            setMeasuredDimension(width, height)
++        }
++    }
++
+     private fun color(notice: TeleNotice): Int = when (notice.tone) {
+         NoticeTone.INFO -> 0xFF4A9EF0.toInt()
+         NoticeTone.SUCCESS -> 0xFF4DB86A.toInt()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 196122b28..cb222ce36 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -178,6 +178,10 @@ object TeleSearch {
+             section(GUID_SERVER + 4, "Usernames from the server", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 5, "Send crash reports", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 6, "Badges next to names in messages", "chats", TeleSettingsActivity.MODE_CHATS),
++            section(1446, "Notifications from the server", "server", TeleSettingsActivity.MODE_SERVER),
++            section(1447, "Server notices", "server", TeleSettingsActivity.MODE_SERVER, "Notifications from the server"),
++            section(1448, "Announcements from the tele server", "server", TeleSettingsActivity.MODE_SERVER, "Notifications from the server"),
++            section(1449, "Server messages in the notification center", "server", TeleSettingsActivity.MODE_SERVER, "Notifications from the server"),
+             section(1107, "Collectible prices at the purchase date", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1108, "Open collectible gifts in see.tg", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index eccc74f4a..2afe3e986 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -391,7 +391,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+     private fun showServerResult(text: String) {
+         if (fragmentView == null) return
+-        BulletinFactory.of(this).createSimpleBulletin(R.raw.info, text).show()
++        // a server notice toast that just came up is the answer to the refresh
++        if (!tele.helpers.TeleServerNotices.toastRecent()) BulletinFactory.of(this).createSimpleBulletin(R.raw.info, text).show()
+         refresh()
+     }
+ 
+@@ -1012,6 +1013,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Remember read times" to "Log when private chats read your messages.",
+             "Username aliases" to "Your own aliases for chats and usernames.",
+             "Usernames from the server" to "Usernames and aliases from the tele server.",
++            "Notifications from the server" to "Notices from the tele server in the notification center.",
+             "Send crash reports" to "Offer to send crash reports to the tele server.",
+             "Update automatically" to "Check GitHub for new tele releases.",
+             "Show what's new after updates" to "Release notes in the tele chat after an update.",
+@@ -1619,6 +1621,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_LINK, title = "Refresh now", mode = "server_refresh", id = "tele-refresh-badges"),
+                 Row(TYPE_LINK, title = "Clear cached data", mode = "server_clear", id = "tele-clear-badges"),
+                 toggle("Usernames from the server", TeleConfig.SERVER_USERNAMES),
++                toggle("Notifications from the server", TeleConfig.NOTICES_SERVER),
+                 toggle("Send crash reports", TeleConfig.SEND_CRASH_REPORTS),
+                 Row(TYPE_LINK, title = "Send pending crash report", mode = "server_send_crash", id = "tele-send-pending-crash"),
+                 Row(TYPE_SHADOW)

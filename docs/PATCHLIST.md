@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Гайды исполнителей для оставшихся пачек: [22](batches/batch-22.md) · [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
+Гайды исполнителей для оставшихся пачек: [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
 
 инфраструктурные патчи (без номера tele) помечены `infra`: `0002`, `0003`, `0019`, `0065`, `0066`.
 
@@ -421,13 +421,13 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0205 | центр уведомлений | todo | `tgnet/jni`, `TeleNotices`, `tele_notices`, `TeleSettingsActivity`, `DialogsHintCell`; L; зависит от JNI-хук tgnet, android 0065; реш.: центр уведомлений + JNI-хук, вход — строка с бейджем в tele; первый hunk форка в `jni/` |
-| 0212 | лимиты slowmode и throttling | todo | tgnet-хук, `TeleNotices`; S; зависит от 0205, центр уведомлений; реш.: центр уведомлений; тип ошибки в общем колбэке |
-| 0232 | упоминания и ответы в центре | todo | `NotificationCenter.didReceiveNewMessages`, `LaunchActivity`; M; зависит от 0205, центр уведомлений; реш.: центр уведомлений; не через `processNewMessages` |
-| 0239 | центр: записи целиком, «Show more» | todo | ячейка центра; S; зависит от 0205, центр уведомлений; реш.: центр уведомлений; делать сразу в ячейке |
-| 0240 | центр: скопированные значения | todo | `TeleNotices.copied`, `Bulletin`; S; зависит от 0205, центр уведомлений; реш.: центр уведомлений; только fork-копирования |
-| 0246 | бейдж «ответ/@» в центре уведомлений | todo | ячейка центра уведомлений; S; зависит от 0205, 0232, центр уведомлений; реш.: центр уведомлений портируется; косметика, после 0205/0232 |
-| 0206 | серверные notices в центре | todo | `TeleServer.kt`, `TeleBadges.kt`; M; зависит от 0205, android 0065, android 0066, центр уведомлений; по умолч.: фид принимает platform android; открытый вопрос к серверу |
+| 0205 | центр уведомлений | built | `0210-feat-notifications-center`; `tgnet/jni`, `TeleNotices`, `tele_notices`, `TeleSettingsActivity`, `DialogsHintCell`; L; зависит от JNI-хук tgnet, android 0065; реш.: центр уведомлений + JNI-хук, вход — строка с бейджем в tele; первый hunk форка в `jni/` |
+| 0212 | лимиты slowmode и throttling | built | `0211-feat-rate-limit-notice-filters`; tgnet-хук, `TeleNotices`; S; зависит от 0205, центр уведомлений; реш.: центр уведомлений; тип ошибки в общем колбэке |
+| 0232 | упоминания и ответы в центре | built | `0212-feat-mentions-and-replies-in-center`; `NotificationCenter.didReceiveNewMessages`, `LaunchActivity`; M; зависит от 0205, центр уведомлений; реш.: центр уведомлений; не через `processNewMessages` |
+| 0239 | центр: записи целиком, «Show more» | built | `0214-feat-full-center-entries`; ячейка центра; S; зависит от 0205, центр уведомлений; реш.: центр уведомлений; делать сразу в ячейке |
+| 0240 | центр: скопированные значения | built | `0215-feat-copied-values-in-center`; `TeleNotices.copied`, `Bulletin`; S; зависит от 0205, центр уведомлений; реш.: центр уведомлений; только fork-копирования |
+| 0246 | бейдж «ответ/@» в центре уведомлений | built | `0213-feat-reply-and-mention-badges`; ячейка центра уведомлений; S; зависит от 0205, 0232, центр уведомлений; реш.: центр уведомлений портируется; косметика, после 0205/0232 |
+| 0206 | серверные notices в центре | built | `0216-feat-server-notices`; `TeleServer.kt`, `TeleBadges.kt`; M; зависит от 0205, android 0065, android 0066, центр уведомлений; по умолч.: фид принимает platform android; открытый вопрос к серверу |
 
 ## пачка 23 — подарки: пароль и массовые действия
 

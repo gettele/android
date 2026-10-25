@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 01:57:38 +0300
+Subject: [PATCH 214/216] feat: full center entries
+
+---
+ .../src/main/java/tele/ui/TeleNoticeCell.kt   | 79 ++++++++++++++++++-
+ .../tele/ui/settings/TeleNoticesActivity.kt   |  9 ++-
+ .../src/main/res/values/strings_tele.xml      |  2 +
+ 3 files changed, 85 insertions(+), 5 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+index d84123fb9..78130b5db 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+@@ -4,6 +4,7 @@ import android.content.Context
+ import android.graphics.Canvas
+ import android.graphics.drawable.GradientDrawable
+ import android.graphics.Color
++import android.text.StaticLayout
+ import android.text.TextUtils
+ import android.util.TypedValue
+ import android.view.Gravity
+@@ -32,6 +33,9 @@ import tele.helpers.NoticeKind
+ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+ private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+ 
++// longer bodies collapse to this many lines until "Show more" is tapped
++private const val MAX_LINES = 6
++
+ /**
+  * One entry of the notification center: the round icon of its kind, the title and the time on the
+  * first line, the text and up to two link buttons below. The extension points are
+@@ -46,10 +50,23 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+     private val time = TextView(context)
+     private val text = TextView(context)
+     private val buttons = LinearLayout(context)
++    private val more = TextView(context)
+ 
+     /** A tap on one of the buttons of the entry. */
+     var onButton: ((NoticeButton) -> Unit)? = null
+ 
++    /** The entry was expanded or collapsed by its "Show more" link; the screen keeps the state. */
++    var onExpand: ((TeleNotice, Boolean) -> Unit)? = null
++
++    private var notice: TeleNotice? = null
++    private var expanded = false
++
++    // the line count of the body at one width, so a measure pass doesn't build a layout again
++    private var countedBody: CharSequence? = null
++    private var countedWidth = 0
++    private var countedLines = 0
++    private var clampLines = Int.MAX_VALUE
++
+     init {
+         orientation = HORIZONTAL
+         setWillNotDraw(false)
+@@ -77,8 +94,7 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
+         title.typeface = AndroidUtilities.bold()
+         title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+-        title.isSingleLine = true
+-        title.ellipsize = TextUtils.TruncateAt.END
++        // the title wraps: an entry shows everything it has
+         header.addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
+         time.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
+         time.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2))
+@@ -89,6 +105,19 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         text.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+         column.addView(text, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(2f) })
+ 
++        more.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++        more.typeface = AndroidUtilities.bold()
++        more.setTextColor(Theme.getColor(Theme.key_featuredStickers_addButton))
++        more.setPadding(0, AndroidUtilities.dp(4f), AndroidUtilities.dp(12f), AndroidUtilities.dp(4f))
++        more.visibility = View.GONE
++        more.setOnClickListener {
++            val current = notice ?: return@setOnClickListener
++            expanded = !expanded
++            onExpand?.invoke(current, expanded)
++            requestLayout()
++        }
++        column.addView(more, LinearLayout.LayoutParams(WRAP, WRAP))
++
+         buttons.orientation = HORIZONTAL
+         column.addView(buttons, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(6f) })
+     }
+@@ -136,7 +165,9 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+     }
+ 
+     /** [fresh] entries were unread when the screen opened: they stay tinted until it closes. */
+-    fun set(notice: TeleNotice, fresh: Boolean) {
++    fun set(notice: TeleNotice, fresh: Boolean, expanded: Boolean = false) {
++        this.notice = notice
++        this.expanded = expanded
+         setBackgroundColor(if (fresh) Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton), 0.1f) else Theme.getColor(Theme.key_windowBackgroundWhite))
+         bindIcon(notice, fresh)
+ 
+@@ -162,6 +193,48 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         }
+     }
+ 
++    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++        val body = text.text
++        var clipped = false
++        if (text.visibility != View.GONE && body.isNotEmpty() && MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
++            // the column is what is left of the cell after the paddings, the icon and its margin
++            val available = MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight - AndroidUtilities.dp(48f)
++            clipped = available > 0 && lineCount(body, available) > MAX_LINES
++        }
++        applyClamp(clipped)
++        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
++    }
++
++    private fun lineCount(body: CharSequence, width: Int): Int {
++        if (body == countedBody && width == countedWidth) return countedLines
++        val layout = StaticLayout.Builder.obtain(body, 0, body.length, text.paint, width)
++            .setIncludePad(text.includeFontPadding)
++            .setBreakStrategy(text.breakStrategy)
++            .setHyphenationFrequency(text.hyphenationFrequency)
++            .setLineSpacing(text.lineSpacingExtra, text.lineSpacingMultiplier)
++            .build()
++        countedBody = body
++        countedWidth = width
++        countedLines = layout.lineCount
++        return countedLines
++    }
++
++    // every write is guarded: a change inside onMeasure asks for another layout pass
++    private fun applyClamp(clipped: Boolean) {
++        val lines = if (clipped && !expanded) MAX_LINES else Int.MAX_VALUE
++        if (clampLines != lines) {
++            clampLines = lines
++            text.maxLines = lines
++            text.ellipsize = if (lines == Int.MAX_VALUE) null else TextUtils.TruncateAt.END
++        }
++        val visibility = if (clipped) View.VISIBLE else View.GONE
++        if (more.visibility != visibility) more.visibility = visibility
++        if (clipped) {
++            val label = LocaleController.getString(if (expanded) R.string.TeleNoticesShowLess else R.string.TeleNoticesShowMore)
++            if (more.text.toString() != label) more.text = label
++        }
++    }
++
+     fun refreshTime(notice: TeleNotice) {
+         time.text = ago(notice.date)
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
+index c2ea9468a..2dff7a2f9 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleNoticesActivity.kt
+@@ -51,6 +51,8 @@ class TeleNoticesActivity : BaseFragment() {
+     private var shown: List<TeleNotice> = emptyList()
+     private var built = false
+     private val fresh = HashSet<Long>()
++    // entries opened with "Show more"; the cells are recycled, so the state lives here
++    private val expanded = HashSet<Long>()
+     private var adapter: Adapter? = null
+     private var list: RecyclerListView? = null
+     private val listener = TeleNotices.Listener { target -> if (target == account) changed() }
+@@ -238,7 +240,10 @@ class TeleNoticesActivity : BaseFragment() {
+                     setPadding(AndroidUtilities.dp(32f), AndroidUtilities.dp(48f), AndroidUtilities.dp(32f), AndroidUtilities.dp(16f))
+                 }
+             } else {
+-                TeleNoticeCell(context).apply { onButton = { button -> openLink(button.url) } }
++                TeleNoticeCell(context).apply {
++                    onButton = { button -> openLink(button.url) }
++                    onExpand = { notice, open -> if (open) expanded.add(notice.id) else expanded.remove(notice.id) }
++                }
+             }
+             view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+             return RecyclerListView.Holder(view)
+@@ -251,7 +256,7 @@ class TeleNoticesActivity : BaseFragment() {
+                 return
+             }
+             val notice = shown[position]
+-            (holder.itemView as TeleNoticeCell).set(notice, fresh.contains(notice.id))
++            (holder.itemView as TeleNoticeCell).set(notice, fresh.contains(notice.id), expanded.contains(notice.id))
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index bb1c02ad4..97d2932fd 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -185,6 +185,8 @@
+     <string name="TeleNoticesJustNow">Just now</string>
+     <string name="TeleNoticesMinutesAgo">%1$d m ago</string>
+     <string name="TeleNoticesHoursAgo">%1$d h ago</string>
++    <string name="TeleNoticesShowMore">Show more</string>
++    <string name="TeleNoticesShowLess">Show less</string>
+     <string name="TeleNoticesUpdateTitle">tele %1$s is out</string>
+     <string name="TeleNoticesWhatsNew">What\'s new</string>
+     <string name="TeleNoticesCrashSent">Crash report sent</string>

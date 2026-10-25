@@ -1,0 +1,138 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 02:05:15 +0300
+Subject: [PATCH 213/216] feat: reply and mention badges
+
+---
+ .../main/java/tele/helpers/TeleMentions.kt    | 15 +++++++--
+ .../src/main/java/tele/ui/TeleNoticeCell.kt   | 32 +++++++++++++++----
+ 2 files changed, 39 insertions(+), 8 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt b/TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt
+index 9abae54bd..84de6d03e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleMentions.kt
+@@ -23,7 +23,7 @@ import tele.TeleConfig
+  * Mentions and replies in the notification center (tele 0232, the badge of 0246 is in the cell).
+  * Every new incoming message of a group that mentions you or answers yours becomes an entry of the
+  * kind [NoticeKind.MENTION], muted chats included. The entry keeps the message (peer, id, topic) so
+- * a tap opens it; its JSON has `from` (the sender), and for the Replies chat the copy there
++ * a tap opens it; its JSON has `from` (the sender), `reply`, and for the Replies chat the copy there
+  * (`source`, `smsg`). The hooks sit in MessagesController and run on the UI thread.
+  */
+ object TeleMentions {
+@@ -142,7 +142,9 @@ object TeleMentions {
+         if (!qualifies(account, dialogId, message, target)) return
+         val key = key(target)
+         if (!remember(account, key) || TeleNotices.find(account, key) != null) return
+-        val extra = JSONObject().put("from", target.from)
++        val extra = JSONObject()
++            .put("from", target.from)
++            .put("reply", isReply(account, message, target))
+         if (target.source != 0L) extra.put("source", target.source).put("smsg", target.sourceMsg)
+         TeleNotices.add(account, TeleNotice(
+             kind = NoticeKind.MENTION,
+@@ -221,6 +223,15 @@ object TeleMentions {
+         return false
+     }
+ 
++    // an answer to your message, as opposed to a mention by name
++    private fun isReply(account: Int, message: MessageObject, target: Target): Boolean {
++        if (message.replyMessageObject != null) return repliesToSelf(account, message, target)
++        if (textMentionsSelf(account, message)) return false
++        if (target.replies) return true
++        val to = message.messageOwner.reply_to?.reply_to_msg_id ?: 0
++        return to != 0 && message.messageOwner.mentioned && !(target.forum && to.toLong() == target.topic)
++    }
++
+     private fun previewOf(message: MessageObject): String {
+         val caption = message.caption?.toString().orEmpty()
+         val text = caption.ifEmpty { message.messageText?.toString().orEmpty() }.trim()
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+index 8519e4277..d84123fb9 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleNoticeCell.kt
+@@ -2,6 +2,7 @@ package tele.ui
+ 
+ import android.content.Context
+ import android.graphics.Canvas
++import android.graphics.drawable.GradientDrawable
+ import android.graphics.Color
+ import android.text.TextUtils
+ import android.util.TypedValue
+@@ -12,6 +13,7 @@ import android.widget.ImageView
+ import android.widget.FrameLayout
+ import android.widget.LinearLayout
+ import android.widget.TextView
++import androidx.core.graphics.ColorUtils
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.R
+@@ -39,6 +41,7 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+ 
+     private val icon = ImageView(context)
+     private val avatar = BackupImageView(context)
++    private val badge = ImageView(context)
+     private val title = TextView(context)
+     private val time = TextView(context)
+     private val text = TextView(context)
+@@ -55,9 +58,13 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         icon.scaleType = ImageView.ScaleType.CENTER
+         avatar.setRoundRadius(AndroidUtilities.dp(18f))
+         avatar.visibility = View.GONE
++        badge.scaleType = ImageView.ScaleType.FIT_CENTER
++        badge.setPadding(AndroidUtilities.dp(3f), AndroidUtilities.dp(3f), AndroidUtilities.dp(3f), AndroidUtilities.dp(3f))
++        badge.visibility = View.GONE
+         val iconBox = FrameLayout(context)
+         iconBox.addView(icon, LayoutHelper.createFrame(36, 36f))
+         iconBox.addView(avatar, LayoutHelper.createFrame(36, 36f))
++        iconBox.addView(badge, LayoutHelper.createFrame(18, 18, Gravity.BOTTOM or Gravity.END))
+         addView(iconBox, LayoutHelper.createLinear(36, 36, Gravity.TOP, 0, 0, 12, 0))
+ 
+         val column = LinearLayout(context)
+@@ -86,18 +93,31 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+         column.addView(buttons, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = AndroidUtilities.dp(6f) })
+     }
+ 
+-    // a mention shows the person who wrote it
+-    private fun bindIcon(notice: TeleNotice) {
+-        val from = if (notice.kind == NoticeKind.MENTION) notice.json().optLong("from") else 0L
+-        if (showAvatar(from)) {
++    // a mention shows the person with the kind of the entry on the corner: @ or reply
++    private fun bindIcon(notice: TeleNotice, fresh: Boolean) {
++        val mention = notice.kind == NoticeKind.MENTION
++        val extra = if (mention) notice.json() else null
++        val glyph = if (extra?.optBoolean("reply") == true) R.drawable.menu_reply else notice.kind.icon
++        if (extra != null && showAvatar(extra.optLong("from"))) {
++            val white = Theme.getColor(Theme.key_windowBackgroundWhite)
++            val ring = if (fresh) ColorUtils.compositeColors(Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton), 0.1f), white) else white
++            badge.background = GradientDrawable().apply {
++                shape = GradientDrawable.OVAL
++                setColor(color(notice))
++                setStroke(AndroidUtilities.dp(2f), ring)
++            }
++            badge.setImageResource(glyph)
++            badge.setColorFilter(Color.WHITE)
++            badge.visibility = View.VISIBLE
+             avatar.visibility = View.VISIBLE
+             icon.visibility = View.GONE
+             return
+         }
+         avatar.visibility = View.GONE
++        badge.visibility = View.GONE
+         icon.visibility = View.VISIBLE
+         icon.background = Theme.createCircleDrawable(AndroidUtilities.dp(36f), color(notice))
+-        icon.setImageResource(notice.kind.icon)
++        icon.setImageResource(glyph)
+         icon.setColorFilter(Color.WHITE)
+     }
+ 
+@@ -118,7 +138,7 @@ class TeleNoticeCell(context: Context) : LinearLayout(context) {
+     /** [fresh] entries were unread when the screen opened: they stay tinted until it closes. */
+     fun set(notice: TeleNotice, fresh: Boolean) {
+         setBackgroundColor(if (fresh) Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton), 0.1f) else Theme.getColor(Theme.key_windowBackgroundWhite))
+-        bindIcon(notice)
++        bindIcon(notice, fresh)
+ 
+         title.text = notice.title
+         title.visibility = if (notice.title.isEmpty()) View.INVISIBLE else View.VISIBLE
