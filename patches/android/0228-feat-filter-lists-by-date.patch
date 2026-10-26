@@ -5,19 +5,20 @@ Subject: [PATCH 228/228] feat: filter lists by date
 
 ---
  .../messenger/MediaDataController.java        |  29 ++-
+ .../org/telegram/ui/CalendarActivity.java     | 152 ++++++++++-
  .../ui/Components/SharedMediaLayout.java      | 125 ++++++++-
  .../ui/Gifts/ProfileGiftsContainer.java       |  34 ++-
  .../telegram/ui/Stars/StarsController.java    |   3 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  .../src/main/java/tele/helpers/GiftDates.kt   | 237 ++++++++++++++++++
- .../src/main/java/tele/helpers/ListDates.kt   |  82 ++++++
+ .../src/main/java/tele/helpers/ListDates.kt   |  67 +++++
  .../src/main/java/tele/helpers/MediaDates.kt  |  90 +++++++
  .../src/main/java/tele/helpers/StarsTools.kt  | 190 +++++++++-----
  .../java/tele/helpers/TeleSettingsLinks.kt    |   3 +-
  .../src/main/java/tele/ui/TeleDatesBar.kt     | 185 ++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   4 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
- 13 files changed, 908 insertions(+), 78 deletions(-)
+ 14 files changed, 1039 insertions(+), 84 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftDates.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ListDates.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/MediaDates.kt
@@ -103,6 +104,253 @@ index dfc6c4b82..cca71c063 100644
                      });
                  };
  
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java
+index e1bdfe58d..0ef21d553 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java
+@@ -23,6 +23,7 @@ import android.view.MotionEvent;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.widget.FrameLayout;
++import android.widget.LinearLayout;
+ import android.widget.TextView;
+ 
+ import androidx.annotation.NonNull;
+@@ -75,6 +76,10 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+     public final static int TYPE_MEDIA_CALENDAR = 1;
+     public final static int TYPE_PROFILE_STORIES = 2;
+     public final static int TYPE_ARCHIVED_STORIES = 3;
++    // tele: plain day-range picker, no dialog and no history (lists filtered by date)
++    public final static int TYPE_DATE_RANGE = 4;
++    // the first Telegram day, 2013-08-14 UTC
++    private final static int RANGE_MIN_DATE = 1376438400;
+ 
+     FrameLayout contentView;
+ 
+@@ -127,6 +132,11 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+     private FrameLayout bottomBar;
+     private int minDate;
+     private boolean canClearHistory;
++    private RangeCallback rangeCallback;
++    private String rangeApplyText;
++    private String rangeClearText;
++    private TextView rangeApplyButton;
++    private TextView rangeClearButton;
+ 
+     private int calendarType;
+ 
+@@ -236,7 +246,7 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+             };
+         }
+ 
+-        if (dialogId >= 0) {
++        if (dialogId >= 0 && calendarType != TYPE_DATE_RANGE) {
+             canClearHistory = true;
+         } else {
+             canClearHistory = false;
+@@ -308,7 +318,7 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+         });
+ 
+         boolean showBottomPanel = calendarType == TYPE_CHAT_ACTIVITY && canClearHistory;
+-        contentView.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, 0, 0, 36, 0, showBottomPanel ? 48 : 0));
++        contentView.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, 0, 0, 36, 0, showBottomPanel || calendarType == TYPE_DATE_RANGE ? 48 : 0));
+ 
+         final String[] daysOfWeek = new String[]{
+                 LocaleController.getString(R.string.CalendarWeekNameShortMonday),
+@@ -344,7 +354,9 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+             @Override
+             public void onItemClick(int id) {
+                 if (id == -1) {
+-                    if (dateSelectedStart != 0 || dateSelectedEnd != 0 || inSelectionMode) {
++                    if (calendarType == TYPE_DATE_RANGE) {
++                        finishFragment();
++                    } else if (dateSelectedStart != 0 || dateSelectedEnd != 0 || inSelectionMode) {
+                         inSelectionMode = false;
+                         dateSelectedStart = 0;
+                         dateSelectedEnd = 0;
+@@ -379,6 +391,10 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+         updateColors();
+         activeTextPaint.setColor(Color.WHITE);
+ 
++        if (calendarType == TYPE_DATE_RANGE) {
++            inSelectionMode = true;
++            createRangeBar(context);
++        }
+         if (showBottomPanel) {
+             bottomBar = new FrameLayout(context) {
+                 @Override
+@@ -459,6 +475,10 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+     }
+ 
+     private void loadNext() {
++        if (calendarType == TYPE_DATE_RANGE) {
++            fillRangeDays();
++            return;
++        }
+         if (loading || endReached) {
+             return;
+         }
+@@ -732,7 +752,7 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+             super(context);
+             setWillNotDraw(false);
+             titleView = new SimpleTextView(context);
+-            if (calendarType == TYPE_CHAT_ACTIVITY && canClearHistory) {
++            if (calendarType == TYPE_CHAT_ACTIVITY && canClearHistory || calendarType == TYPE_DATE_RANGE) {
+                 titleView.setOnLongClickListener(view -> {
+                     if (messagesByDays == null) {
+                         return false;
+@@ -1381,6 +1401,10 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+     boolean lastInSelectionMode;
+ 
+     private void updateTitle() {
++        if (calendarType == TYPE_DATE_RANGE) {
++            updateRangeBar();
++            return;
++        }
+         if (!canClearHistory) {
+             actionBar.setTitle(LocaleController.getString(R.string.Calendar));
+             backDrawable.setRotation(0f, true);
+@@ -1448,6 +1472,122 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+ 
+     }
+ 
++    // tele: all days from the first Telegram day to today are selectable
++    private void fillRangeDays() {
++        Calendar calendar = Calendar.getInstance();
++        calendar.setTimeInMillis(RANGE_MIN_DATE * 1000L);
++        startOfDay(calendar);
++        minDate = (int) (calendar.getTimeInMillis() / 1000L);
++        minMontYear = calendar.get(Calendar.YEAR) * 100 + calendar.get(Calendar.MONTH);
++        int minMonths = calendar.get(Calendar.YEAR) * 12 + calendar.get(Calendar.MONTH);
++        Calendar today = Calendar.getInstance();
++        startOfDay(today);
++        while (!calendar.after(today)) {
++            int month = calendar.get(Calendar.YEAR) * 100 + calendar.get(Calendar.MONTH);
++            SparseArray<PeriodDay> days = messagesByYearMounth.get(month);
++            if (days == null) {
++                days = new SparseArray<>();
++                messagesByYearMounth.put(month, days);
++            }
++            PeriodDay day = new PeriodDay();
++            day.hasImage = false;
++            day.date = (int) (calendar.getTimeInMillis() / 1000L);
++            days.put(calendar.get(Calendar.DAY_OF_MONTH) - 1, day);
++            calendar.add(Calendar.DAY_OF_MONTH, 1);
++        }
++        endReached = true;
++        monthCount = Math.max(monthCount, startFromYear * 12 + startFromMonth - minMonths + 1);
++        adapter.notifyDataSetChanged();
++    }
++
++    private static void startOfDay(Calendar calendar) {
++        calendar.set(Calendar.HOUR_OF_DAY, 0);
++        calendar.set(Calendar.MINUTE, 0);
++        calendar.set(Calendar.SECOND, 0);
++        calendar.set(Calendar.MILLISECOND, 0);
++    }
++
++    private void createRangeBar(Context context) {
++        bottomBar = new FrameLayout(context) {
++            @Override
++            public void onDraw(Canvas canvas) {
++                canvas.drawRect(0, 0, getMeasuredWidth(), AndroidUtilities.getShadowHeight(), Theme.dividerPaint);
++            }
++        };
++        bottomBar.setWillNotDraw(false);
++        bottomBar.setPadding(0, AndroidUtilities.getShadowHeight(), 0, 0);
++        LinearLayout row = new LinearLayout(context);
++        row.setOrientation(LinearLayout.HORIZONTAL);
++        bottomBar.addView(row, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
++
++        rangeClearButton = createRangeButton(context, rangeClearText, Theme.key_text_RedBold);
++        rangeClearButton.setOnClickListener(view -> {
++            if (selectionAnimator != null) {
++                selectionAnimator.cancel();
++                selectionAnimator = null;
++            }
++            dateSelectedStart = dateSelectedEnd = 0;
++            updateRangeBar();
++            animateSelection();
++        });
++        row.addView(rangeClearButton, LayoutHelper.createLinear(0, LayoutHelper.MATCH_PARENT, 1f));
++
++        rangeApplyButton = createRangeButton(context, rangeApplyText, Theme.key_chat_fieldOverlayText);
++        rangeApplyButton.setOnClickListener(view -> {
++            if (dateSelectedStart == 0 || dateSelectedEnd == 0) {
++                return;
++            }
++            RangeCallback done = rangeCallback;
++            int start = Math.min(dateSelectedStart, dateSelectedEnd);
++            int end = Math.max(dateSelectedStart, dateSelectedEnd);
++            finishFragment();
++            if (done != null) {
++                done.onRange(start, end);
++            }
++        });
++        row.addView(rangeApplyButton, LayoutHelper.createLinear(0, LayoutHelper.MATCH_PARENT, 1f));
++        contentView.addView(bottomBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48, Gravity.BOTTOM, 0, 0, 0, 0));
++        updateRangeBar();
++    }
++
++    private TextView createRangeButton(Context context, String text, int colorKey) {
++        TextView button = new TextView(context);
++        button.setGravity(Gravity.CENTER);
++        button.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
++        button.setTypeface(AndroidUtilities.bold());
++        button.setAllCaps(true);
++        button.setText(text);
++        button.setTextColor(Theme.getColor(colorKey));
++        button.setBackground(Theme.createSelectorDrawable(ColorUtils.setAlphaComponent(Theme.getColor(colorKey), (int) (0.2f * 255)), 2));
++        return button;
++    }
++
++    private void updateRangeBar() {
++        boolean selected = dateSelectedStart != 0 && dateSelectedEnd != 0;
++        int days = selected ? 1 + Math.round(Math.abs(dateSelectedStart - dateSelectedEnd) / 86400f) : 0;
++        actionBar.setTitle(days > 0 ? LocaleController.formatPluralString("Days", days) : LocaleController.getString(R.string.SelectDays));
++        if (rangeApplyButton != null) {
++            rangeApplyButton.setEnabled(selected);
++            rangeApplyButton.setAlpha(selected ? 1f : 0.5f);
++            rangeClearButton.setEnabled(selected);
++            rangeClearButton.setAlpha(selected ? 1f : 0.5f);
++        }
++    }
++
++    /** A picker of a day range: [start] and [end] are the first seconds of the first and the last day, or 0. */
++    public CalendarActivity setRangePicker(int start, int end, String applyText, String clearText, RangeCallback callback) {
++        dateSelectedStart = start;
++        dateSelectedEnd = end;
++        rangeApplyText = applyText;
++        rangeClearText = clearText;
++        rangeCallback = callback;
++        return this;
++    }
++
++    public interface RangeCallback {
++        void onRange(int start, int end);
++    }
++
+     public void setCallback(Callback callback) {
+         this.callback = callback;
+     }
+@@ -1498,7 +1638,7 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+ 
+     @Override
+     public boolean needDelayOpenAnimation() {
+-        return true;
++        return calendarType != TYPE_DATE_RANGE;
+     }
+ 
+     @Override
+@@ -1648,7 +1788,7 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+ 
+     @Override
+     public boolean onBackPressed(boolean invoked) {
+-        if (inSelectionMode) {
++        if (inSelectionMode && calendarType != TYPE_DATE_RANGE) {
+             if (invoked) {
+                 inSelectionMode = false;
+                 dateSelectedStart = dateSelectedEnd = 0;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
 index e4c82038d..70d9f3e9f 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
@@ -347,7 +595,7 @@ index e4c82038d..70d9f3e9f 100644
          sharedMediaData[type].messages.clear();
          sharedMediaData[type].messagesDict[0].clear();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
-index 36b29bfe8..9185571b2 100644
+index f4b058be8..b526c4eca 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
 @@ -110,8 +110,10 @@ import org.telegram.ui.Stars.StarGiftSheet;
@@ -369,7 +617,7 @@ index 36b29bfe8..9185571b2 100644
      private TeleGiftSelectionBar selectionBar;
      private boolean selectionShown;
  
-@@ -646,8 +649,10 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+@@ -651,8 +654,10 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
                  int spanCountLeft = 3;
                  final boolean selecting = parent.selection.isActive();
                  final GiftSearch search = parent.search;
@@ -381,7 +629,7 @@ index 36b29bfe8..9185571b2 100644
                  for (TL_stars.SavedStarGift userGift : shown) {
                      items.add(
                          GiftSheet.GiftCell.Factory.asStarGift(0, userGift, true, selecting, isCollection)
-@@ -659,13 +664,13 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+@@ -664,13 +669,13 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
                          spanCountLeft = 3;
                      }
                  }
@@ -398,7 +646,7 @@ index 36b29bfe8..9185571b2 100644
                  }
              }
              if (parent.list == list) {
-@@ -678,6 +683,9 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+@@ -683,6 +688,9 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
                  items.add(UItem.asSpace(dp(24 + 48 + 10)));
              }
  
@@ -408,7 +656,7 @@ index 36b29bfe8..9185571b2 100644
              if (parent.search != null && (parent.search.isActive() || !list.gifts.isEmpty())) {
                  items.add(0, TeleGiftSearchFactory.asSearch(parent.search, parent.fragment));
              }
-@@ -701,7 +709,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+@@ -706,7 +714,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
  
          // the sheet of a gift pages through what is shown: the search results while a search is open
          private StarsController.IGiftsList sheetList() {
@@ -417,7 +665,7 @@ index 36b29bfe8..9185571b2 100644
          }
  
          public void onItemClick(UItem item, View view, int position, float x, float y) {
-@@ -1092,7 +1100,20 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+@@ -1097,7 +1105,20 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
      }
  
      boolean searching() {
@@ -439,7 +687,7 @@ index 36b29bfe8..9185571b2 100644
      }
  
      private void onSearchChanged() {
-@@ -1164,6 +1185,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+@@ -1169,6 +1190,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
          this.selection = new GiftSelection(currentAccount, dialogId, list, collections, canReorder());
          this.selection.addListener(this::onSelectionChanged);
          this.search = GiftSearch.create(currentAccount, dialogId, list, this::onSearchChanged);
@@ -733,16 +981,16 @@ index 000000000..3e1b9f934
 +}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ListDates.kt b/TMessagesProj/src/main/java/tele/helpers/ListDates.kt
 new file mode 100644
-index 000000000..9237773e8
+index 000000000..8c6ba41e1
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ListDates.kt
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,67 @@
 +package tele.helpers
 +
-+import org.telegram.messenger.AndroidUtilities
++import android.os.Bundle
 +import org.telegram.messenger.LocaleController
 +import org.telegram.ui.ActionBar.BaseFragment
-+import org.telegram.ui.Components.AlertsCreator
++import org.telegram.ui.CalendarActivity
 +import tele.TeleConfig
 +import java.util.Calendar
 +import java.util.Date
@@ -763,7 +1011,8 @@ index 000000000..9237773e8
 +            val last = Date((end - 1) * 1000L)
 +            val full = LocaleController.getInstance().chatFullDate
 +            if (day(start) == day(end - 1)) return full.format(first)
-+            val short = LocaleController.getInstance().chatDateShort
++            // chatDate is chatFullDate without the year, so both ends read the same way
++            val short = LocaleController.getInstance().chatDate
 +            val sameYear = calendar(start)[Calendar.YEAR] == calendar(end - 1)[Calendar.YEAR]
 +            return (if (sameYear) short.format(first) else full.format(first)) + " \u2013 " + full.format(last)
 +        }
@@ -777,46 +1026,30 @@ index 000000000..9237773e8
 +    @JvmStatic
 +    fun calendar(time: Int): Calendar = Calendar.getInstance().also { it.timeInMillis = time * 1000L }
 +
-+    // the day picker does not shrink with the month: Feb 31 is the last day of February
-+    private fun midnight(year: Int, month: Int, day: Int): Calendar =
-+        Calendar.getInstance().also {
-+            it.clear()
-+            it.set(year, month, 1, 0, 0, 0)
-+            it.set(Calendar.DAY_OF_MONTH, minOf(day, it.getActualMaximum(Calendar.DAY_OF_MONTH)))
++    private fun midnight(time: Int): Calendar =
++        calendar(time).also {
++            it[Calendar.HOUR_OF_DAY] = 0
++            it[Calendar.MINUTE] = 0
++            it[Calendar.SECOND] = 0
++            it[Calendar.MILLISECOND] = 0
 +        }
 +
-+    /** The range between two days, in any order. */
-+    private fun range(a: Calendar, b: Calendar): Range {
-+        val one = midnight(a[Calendar.YEAR], a[Calendar.MONTH], a[Calendar.DAY_OF_MONTH])
-+        val two = midnight(b[Calendar.YEAR], b[Calendar.MONTH], b[Calendar.DAY_OF_MONTH])
-+        val from = if (two.before(one)) two else one
-+        val till = if (two.before(one)) one else two
-+        till.add(Calendar.DAY_OF_MONTH, 1)
-+        return Range((from.timeInMillis / 1000).toInt(), (till.timeInMillis / 1000).toInt())
-+    }
++    private fun seconds(time: Calendar): Int = (time.timeInMillis / 1000).toInt()
 +
-+    /** Asks for the first day, then for the last one; [done] gets the range. */
++    /** Opens the calendar to pick the first and the last day; [done] gets the range. */
 +    @JvmStatic
 +    fun choose(fragment: BaseFragment?, current: Range?, done: (Range) -> Unit) {
 +        fragment ?: return
-+        val first = current?.let { calendar(it.start) } ?: Calendar.getInstance()
-+        pick(fragment, TeleLowercase.lc("First day"), first) { a ->
-+            val last = current?.let { calendar(it.end - 1) }?.takeIf { !it.before(a) } ?: a
-+            // the first dialog is still closing
-+            AndroidUtilities.runOnUIThread {
-+                pick(fragment, TeleLowercase.lc("Last day"), last) { b -> done(range(a, b)) }
++        val args = Bundle().apply { putInt("type", CalendarActivity.TYPE_DATE_RANGE) }
++        val first = current?.let { seconds(midnight(it.start)) } ?: 0
++        val last = current?.let { seconds(midnight(it.end - 1)) } ?: 0
++        val picker = CalendarActivity(args, 0, first)
++            .setRangePicker(first, last, TeleLowercase.lc("Apply"), TeleLowercase.lc("Clear")) { start, end ->
++                // the end of the last day is the start of the next one
++                val till = midnight(end).also { it.add(Calendar.DAY_OF_MONTH, 1) }
++                done(Range(start, seconds(till)))
 +            }
-+        }
-+    }
-+
-+    private fun pick(fragment: BaseFragment, title: String, initial: Calendar, picked: (Calendar) -> Unit) {
-+        val context = fragment.parentActivity ?: return
-+        val builder = AlertsCreator.createDatePickerDialog(
-+            context, -15, 0, 0,
-+            initial[Calendar.DAY_OF_MONTH], initial[Calendar.MONTH], initial[Calendar.YEAR],
-+            title, false
-+        ) { year, month, day -> picked(midnight(year, month, day)) } ?: return
-+        fragment.showDialog(builder.create())
++        fragment.presentFragment(picker)
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/MediaDates.kt b/TMessagesProj/src/main/java/tele/helpers/MediaDates.kt
@@ -1438,7 +1671,7 @@ index d73bd1a8a..59b257bbc 100644
              section(1411, "Open locations in another map", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
              section(1412, "Google Maps, OpenStreetMap, Yandex, 2GIS, Apple Maps", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index 361e3688d..c97736f26 100644
+index 116e503ac..02767681f 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 @@ -987,6 +987,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
