@@ -8,12 +8,12 @@ Subject: [PATCH 221/228] feat: search gifts
  .../telegram/ui/Stars/StarsController.java    |   3 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  .../src/main/java/tele/helpers/GiftBulk.kt    |  11 +-
- .../src/main/java/tele/helpers/GiftSearch.kt  | 312 ++++++++++++++++++
- .../main/java/tele/ui/TeleGiftSearchView.kt   | 311 +++++++++++++++++
+ .../src/main/java/tele/helpers/GiftSearch.kt  | 327 ++++++++++++++++++
+ .../main/java/tele/ui/TeleGiftSearchView.kt   | 316 +++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
  .../src/main/res/values/strings_tele.xml      |   6 +
- 9 files changed, 687 insertions(+), 8 deletions(-)
+ 9 files changed, 707 insertions(+), 8 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
 
@@ -230,10 +230,10 @@ index 021825999..b001d399d 100644
                      gift.unsaved = !save
 diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt b/TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt
 new file mode 100644
-index 000000000..c25a40479
+index 000000000..304ab8014
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt
-@@ -0,0 +1,312 @@
+@@ -0,0 +1,327 @@
 +package tele.helpers
 +
 +import org.telegram.messenger.AndroidUtilities
@@ -268,9 +268,14 @@ index 000000000..c25a40479
 +            StarsController.findAttribute(unique.attributes, TL_stars.starGiftAttributeBackdrop::class.java),
 +            StarsController.findAttribute(unique.attributes, TL_stars.starGiftAttributePattern::class.java)
 +        )
-+        val fields: List<String> = listOfNotNull(
-+            unique.title, "#" + unique.num, attributes[0]?.name, attributes[1]?.name, attributes[2]?.name
-+        ).map { it.lowercase() }
++        // one string per item: a list of lowercased copies of every field is what fills the heap
++        val haystack: String = buildString {
++            unique.title?.let { append(it.lowercase()).append('\n') }
++            append('#').append(unique.num).append('\n')
++            for (attribute in attributes) {
++                attribute?.name?.let { append(it.lowercase()).append('\n') }
++            }
++        }
 +    }
 +
 +    private val items = ArrayList<Item>()
@@ -386,6 +391,10 @@ index 000000000..c25a40479
 +    private var wanted = false
 +    private var shownActive = false
 +
++    /** The collectibles of a huge profile did not all fit: the search covers only what was loaded. */
++    var truncated = false
++        private set
++
 +    private fun done(result: TL_stars.TL_payments_savedStarGifts) {
 +        val messages = MessagesController.getInstance(currentAccount)
 +        messages.putUsers(result.users, false)
@@ -396,13 +405,16 @@ index 000000000..c25a40479
 +            items.add(Item(gift, unique))
 +        }
 +        val next = result.next_offset
-+        if (next.isNullOrEmpty() || result.gifts.isEmpty()) {
++        if (next.isNullOrEmpty() || result.gifts.isEmpty() || items.size >= MAX_ITEMS) {
++            // a profile with tens of thousands of collectibles would not fit in the heap
++            truncated = items.size >= MAX_ITEMS && !next.isNullOrEmpty() && result.gifts.isNotEmpty()
 +            loaded = true
++            org.telegram.messenger.FileLog.d("TeleGiftSearch: items=" + items.size + " truncated=" + truncated)
 +        } else {
 +            offset = next
 +        }
 +        notifyChanged()
-+        load()
++        if (!loaded) load()
 +    }
 +
 +    /** A gift left the profile: it is gone from the results too. */
@@ -436,7 +448,7 @@ index 000000000..c25a40479
 +            val names = selected[i]
 +            if (names.isNotEmpty() && item.attributes[i]?.name !in names) return false
 +        }
-+        return words.all { word -> item.fields.any { it.contains(word) } }
++        return words.all { word -> item.haystack.contains(word) }
 +    }
 +
 +    /** The gifts that match, as the page of [list] would show them: its collection and visibility filters apply. */
@@ -494,6 +506,9 @@ index 000000000..c25a40479
 +        const val CHIPS = 3
 +        private const val PER_PAGE = 100
 +
++        // a profile with tens of thousands of collectibles does not fit in the heap: the search covers a part of it
++        private const val MAX_ITEMS = 3000
++
 +        private val instances = WeakHashMap<GiftSearch, Boolean>()
 +
 +        /** The search of a container, or null while the option is off. */
@@ -548,10 +563,10 @@ index 000000000..c25a40479
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
 new file mode 100644
-index 000000000..08f0b247e
+index 000000000..bda2b0d29
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,316 @@
 +package tele.ui
 +
 +import android.content.Context
@@ -705,7 +720,12 @@ index 000000000..08f0b247e
 +            syncing = false
 +        }
 +        for ((index, chip) in chips.withIndex()) chip.setValue(GiftSearch.chipText(search, index))
-+        statusView.visibility = if (search.isLoading()) VISIBLE else GONE
++        if (search.truncated) {
++            statusView.text = tele.helpers.TeleLowercase.lc("Only the first gifts are searched")
++            statusView.visibility = VISIBLE
++        } else {
++            statusView.visibility = if (search.isLoading()) VISIBLE else GONE
++        }
 +    }
 +
 +    // the field goes right under the pinned tabs and the profile scrolls its gifts to the top
