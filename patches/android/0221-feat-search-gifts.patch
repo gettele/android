@@ -9,11 +9,11 @@ Subject: [PATCH 221/228] feat: search gifts
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  .../src/main/java/tele/helpers/GiftBulk.kt    |  11 +-
  .../src/main/java/tele/helpers/GiftSearch.kt  | 312 ++++++++++++++++++
- .../main/java/tele/ui/TeleGiftSearchView.kt   | 270 +++++++++++++++
+ .../main/java/tele/ui/TeleGiftSearchView.kt   | 311 +++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
  .../src/main/res/values/strings_tele.xml      |   6 +
- 9 files changed, 646 insertions(+), 8 deletions(-)
+ 9 files changed, 687 insertions(+), 8 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
 
@@ -548,10 +548,10 @@ index 000000000..c25a40479
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
 new file mode 100644
-index 000000000..e5dcfce9b
+index 000000000..08f0b247e
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,311 @@
 +package tele.ui
 +
 +import android.content.Context
@@ -736,15 +736,22 @@ index 000000000..e5dcfce9b
 +            .setDrawScrim(false)
 +            .setOnTopOfScrim()
 +            .translate(0f, dp(-8f).toFloat())
++            .needsFocus()
++        var query = ""
 +        var list: UniversalRecyclerView? = null
 +        val listView = object : UniversalRecyclerView(
 +            fragment,
 +            { items, _ ->
++                // the same match as the stock resale filters: a word start, also in the other keyboard layout
++                val q = query.lowercase()
++                val tq = AndroidUtilities.translitSafe(q)
 +                // the gifts keep loading while the menu is open
 +                for (value in search.values(index)) {
++                    val name = value.name.lowercase()
++                    if (q.isNotEmpty() && !name.startsWith(q) && !name.startsWith(tq) && !name.contains(" $q") && !name.contains(" $tq")) continue
 +                    // nothing picked means every value counts
 +                    val checked = search.selectedCount(index) == 0 || search.isSelected(index, value.name)
-+                    items.add(valueItem(value).setChecked(checked))
++                    items.add(valueItem(value, q).setChecked(checked))
 +                }
 +            },
 +            { item, _, _, _, _ ->
@@ -769,6 +776,37 @@ index 000000000..e5dcfce9b
 +        }
 +        list = listView
 +        listView.adapter.setApplyBackground(false)
++
++        val searchLayout = FrameLayout(context)
++        val searchIcon = ImageView(context)
++        searchIcon.scaleType = ImageView.ScaleType.CENTER
++        searchIcon.setImageResource(R.drawable.smiles_inputsearch)
++        searchIcon.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_actionBarDefaultSubmenuItemIcon, resourcesProvider), PorterDuff.Mode.SRC_IN)
++        searchLayout.addView(searchIcon, LayoutHelper.createFrame(24, 24f, Gravity.CENTER_VERTICAL or Gravity.LEFT, 10f, 0f, 0f, 0f))
++        val editText = EditTextCaption(context, resourcesProvider)
++        editText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        val inputType = InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
++        editText.inputType = inputType
++        editText.setRawInputType(inputType)
++        editText.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText3, resourcesProvider))
++        editText.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        editText.setCursorSize(dp(19f))
++        editText.setCursorWidth(1.5f)
++        editText.hint = LocaleController.getString(R.string.Gift2ResaleFiltersSearch)
++        editText.setTextColor(Theme.getColor(Theme.key_actionBarDefaultSubmenuItem, resourcesProvider))
++        editText.background = null
++        searchLayout.addView(editText, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER_VERTICAL or Gravity.LEFT, 43f, 0f, 8f, 0f))
++        editText.addTextChangedListener(object : TextWatcher {
++            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
++            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
++            override fun afterTextChanged(s: Editable?) {
++                query = s?.toString().orEmpty()
++                listView.adapter.update(true)
++            }
++        })
++        menu.addView(searchLayout, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 44))
++        menu.addGap()
++
 +        if (search.selectedCount(index) > 0) {
 +            menu.add(R.drawable.msg_select, LocaleController.getString(R.string.SelectAll)) {
 +                search.clear(index)
@@ -778,14 +816,17 @@ index 000000000..e5dcfce9b
 +        menu.addView(listView)
 +        val live = Runnable { listView.adapter.update(true) }
 +        search.addViewListener(live)
-+        menu.setOnDismiss { search.removeViewListener(live) }
++        menu.setOnDismiss {
++            search.removeViewListener(live)
++            AndroidUtilities.hideKeyboard(editText)
++        }
 +        menu.show()
 +    }
 +
-+    private fun valueItem(value: GiftSearch.Value): UItem = when (val attribute = value.attribute) {
-+        is TL_stars.starGiftAttributeModel -> ResaleGiftsFragment.ModelItem.Factory.asModel(attribute, value.count, "")
-+        is TL_stars.starGiftAttributePattern -> ResaleGiftsFragment.PatternItem.Factory.asPattern(attribute, value.count, "")
-+        else -> ResaleGiftsFragment.BackdropItem.Factory.asBackdrop(attribute as TL_stars.starGiftAttributeBackdrop, value.count, "")
++    private fun valueItem(value: GiftSearch.Value, query: String): UItem = when (val attribute = value.attribute) {
++        is TL_stars.starGiftAttributeModel -> ResaleGiftsFragment.ModelItem.Factory.asModel(attribute, value.count, query)
++        is TL_stars.starGiftAttributePattern -> ResaleGiftsFragment.PatternItem.Factory.asPattern(attribute, value.count, query)
++        else -> ResaleGiftsFragment.BackdropItem.Factory.asBackdrop(attribute as TL_stars.starGiftAttributeBackdrop, value.count, query)
 +    }
 +}
 +
