@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Гайды исполнителей для оставшихся пачек: [23](batches/batch-23.md) · [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
+Гайды исполнителей для оставшихся пачек: [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
 
 инфраструктурные патчи (без номера tele) помечены `infra`: `0002`, `0003`, `0019`, `0065`, `0066`.
 
@@ -437,17 +437,17 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0187 | локальный пароль для звёзд/подарков | todo | `StarsController`, `StarGiftSheet`; M; реш.: 0187 свой пароль+биометрия; гейтит 0184–0198, 0195 |
-| 0217 | локальный пароль для платежей | todo | `PaymentFormActivity`, `AlertsCreator`; S; зависит от 0187; реш.: локальный пароль 0187+0217; свой пароль + биометрия |
-| 0213 | пачки подарков переживают flood-wait | todo | `StarsController`, `ProfileGiftsContainer`; M; зависит от 0184–0186, 0190, 0192, 0193, 0205, студия подарков; реш.: mass actions + runner 0213; Kotlin-раннер с пропуском плохих |
-| 0184 | несколько подарков сразу | todo | `SendGiftSheet`; M; зависит от 0187; реш.: массовые подарки; клампить по per_user_remains |
-| 0185 | приглушить скрытые подарки + мультивыбор | todo | `ProfileGiftsContainer`; L; зависит от 0187; реш.: массовые подарки; сначала S-часть (dim) |
-| 0186 | поиск по подаркам | todo | `ProfileGiftsContainer`, `GiftsList`; M; зависит от 0185; реш.: массовые подарки; чипы как ResaleGiftsFragment |
-| 0190 | ещё массовые действия с подарками | todo | `GiftBatch`, `TL_stars`; M; зависит от 0185, 0187, 0213; реш.: массовые подарки; раннер общий с 0213 |
-| 0192 | поиск/экспорт транзакций звёзд | todo | `StarsIntroActivity`; M; зависит от 0187; по умолч.: CSV share; догрузка всей истории |
-| 0193 | фильтр списков по дате | todo | `SharedMedia`, подарки, транзакции; M; зависит от 0186, 0192; по умолч.: все списки; CalendarActivity диапазон |
-| 0207 | копировать ссылку на коллекцию подарков | todo | `ProfileGiftsContainer`; S; рядом со стоковым Share |
-| 0224 | ретрай загрузки коллекций подарков | todo | `StarsController.GiftsCollections`; S; повтор через 3 с |
+| 0187 | локальный пароль для звёзд/подарков | built | `0218-feat-local-password-for-stars`; `StarsController`, `StarGiftSheet`; M; реш.: 0187 свой пароль+биометрия; гейтит 0184–0198, 0195 |
+| 0217 | локальный пароль для платежей | built | `0219-feat-local-password-for-payments`; `PaymentFormActivity`, `AlertsCreator`; S; зависит от 0187; реш.: локальный пароль 0187+0217; свой пароль + биометрия |
+| 0213 | пачки подарков переживают flood-wait | built | `0226-fix-gift-batches-survive-flood-waits`; `StarsController`, `ProfileGiftsContainer`; M; зависит от 0184–0186, 0190, 0192, 0193, 0205, студия подарков; реш.: mass actions + runner 0213; Kotlin-раннер с пропуском плохих |
+| 0184 | несколько подарков сразу | built | `0222-feat-send-several-gifts-at-once`; `SendGiftSheet`; M; зависит от 0187; реш.: массовые подарки; клампить по per_user_remains |
+| 0185 | приглушить скрытые подарки + мультивыбор | built | `0220-feat-dim-and-select-gifts`; `ProfileGiftsContainer`; L; зависит от 0187; реш.: массовые подарки; сначала S-часть (dim) |
+| 0186 | поиск по подаркам | built | `0221-feat-search-gifts`; `ProfileGiftsContainer`, `GiftsList`; M; зависит от 0185; реш.: массовые подарки; чипы как ResaleGiftsFragment |
+| 0190 | ещё массовые действия с подарками | built | `0227-feat-more-bulk-gift-actions`; `GiftBatch`, `TL_stars`; M; зависит от 0185, 0187, 0213; реш.: массовые подарки; раннер общий с 0213 |
+| 0192 | поиск/экспорт транзакций звёзд | built | `0225-feat-search-and-export-transactions`; `StarsIntroActivity`; M; зависит от 0187; по умолч.: CSV share; догрузка всей истории |
+| 0193 | фильтр списков по дате | built | `0228-feat-filter-lists-by-date`; `SharedMedia`, подарки, транзакции; M; зависит от 0186, 0192; по умолч.: все списки; CalendarActivity диапазон |
+| 0207 | копировать ссылку на коллекцию подарков | built | `0223-feat-copy-collection-link`; `ProfileGiftsContainer`; S; рядом со стоковым Share |
+| 0224 | ретрай загрузки коллекций подарков | built | `0224-fix-retry-gift-collections`; `StarsController.GiftsCollections`; S; повтор через 3 с |
 
 ## пачка 24 — студия подарков
 

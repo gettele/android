@@ -1,0 +1,908 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 03:11:34 +0300
+Subject: [PATCH 225/228] feat: search and export transactions
+
+---
+ .../telegram/ui/Stars/StarsIntroActivity.java |  42 +-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/StarsTools.kt  | 689 ++++++++++++++++++
+ .../java/tele/helpers/TeleSettingsLinks.kt    |   3 +-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ 6 files changed, 739 insertions(+), 6 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/StarsTools.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsIntroActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsIntroActivity.java
+index b9df33c14..87f9bec57 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsIntroActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsIntroActivity.java
+@@ -166,6 +166,8 @@ import java.util.Date;
+ import java.util.HashMap;
+ import java.util.Locale;
+ 
++import tele.helpers.StarsTools;
++
+ public class StarsIntroActivity extends GradientHeaderActivity implements NotificationCenter.NotificationCenterDelegate {
+ 
+     private StarsBalanceView balanceView;
+@@ -1217,6 +1219,7 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+         private final PageAdapter adapter;
+         private final ViewPagerFixed.TabsView tabsView;
+         private final long bot_id;
++        private final StarsTools.State toolsState;
+ 
+         private static class PageAdapter extends ViewPagerFixed.Adapter {
+ 
+@@ -1226,9 +1229,11 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+             private final int classGuid;
+             private final Theme.ResourcesProvider resourcesProvider;
+             private final long bot_id;
++            private final StarsTools.State toolsState;
+ 
+-            public PageAdapter(Context context, int currentAccount, boolean ton, long bot_id, int classGuid, Theme.ResourcesProvider resourcesProvider) {
++            public PageAdapter(Context context, int currentAccount, boolean ton, long bot_id, int classGuid, Theme.ResourcesProvider resourcesProvider, StarsTools.State toolsState) {
+                 this.context = context;
++                this.toolsState = toolsState;
+                 this.currentAccount = currentAccount;
+                 this.ton = ton;
+                 this.classGuid = classGuid;
+@@ -1269,7 +1274,7 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+ 
+             @Override
+             public View createView(int viewType) {
+-                return new Page(context, ton, bot_id, viewType, currentAccount, classGuid, resourcesProvider);
++                return new Page(context, ton, bot_id, viewType, currentAccount, classGuid, resourcesProvider, toolsState);
+             }
+ 
+             @Override
+@@ -1310,15 +1315,30 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+ 
+             setOrientation(VERTICAL);
+ 
+-            viewPager = new ViewPagerFixed(context);
+-            viewPager.setAdapter(adapter = new PageAdapter(context, currentAccount, ton, bot_id, classGuid, resourcesProvider));
++            toolsState = StarsTools.state(currentAccount, ton, bot_id);
++            viewPager = new ViewPagerFixed(context) {
++                @Override
++                protected void onItemSelected(View currentPage, View oldPage, int position, int oldPosition) {
++                    super.onItemSelected(currentPage, oldPage, position, oldPosition);
++                    if (toolsState != null) {
++                        toolsState.pageChanged();
++                    }
++                }
++            };
++            viewPager.setAdapter(adapter = new PageAdapter(context, currentAccount, ton, bot_id, classGuid, resourcesProvider, toolsState));
+             tabsView = viewPager.createTabsView(true, 3);
++            if (toolsState != null) {
++                toolsState.setTypeProvider(() -> adapter.getItemViewType(viewPager.getCurrentPosition()));
++            }
+ 
+             View separatorView = new View(context);
+             separatorView.setBackgroundColor(Theme.getColor(Theme.key_divider, resourcesProvider));
+ 
+             addView(tabsView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48));
+             addView(separatorView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 1f / AndroidUtilities.density));
++            if (toolsState != null) {
++                addView(StarsTools.bar(context, toolsState, resourcesProvider), LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
++            }
+             addView(viewPager, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+ 
+             setBackgroundColor(Theme.getColor(Theme.key_dialogBackground, resourcesProvider));
+@@ -1352,9 +1372,12 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+             private final int type;
+             private final boolean ton;
+             private final long bot_id;
++            private final StarsTools.State toolsState;
++            private final Runnable toolsListener;
+ 
+-            public Page(Context context, boolean ton, long bot_id, int type, int currentAccount, int classGuid, Theme.ResourcesProvider resourcesProvider) {
++            public Page(Context context, boolean ton, long bot_id, int type, int currentAccount, int classGuid, Theme.ResourcesProvider resourcesProvider, StarsTools.State toolsState) {
+                 super(context);
++                this.toolsState = toolsState;
+ 
+                 this.type = type;
+                 this.ton = ton;
+@@ -1380,6 +1403,7 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+                         }
+                     }
+                 });
++                toolsListener = toolsState == null ? null : () -> listView.adapter.update(true);
+             }
+ 
+             private final Runnable loadTransactionsRunnable;
+@@ -1414,6 +1438,9 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+                 } else {
+                     NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.starTransactionsLoaded);
+                 }
++                if (toolsState != null) {
++                    toolsState.addListener(toolsListener);
++                }
+                 listView.adapter.update(false);
+             }
+ 
+@@ -1425,12 +1452,16 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+                 } else {
+                     NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.starTransactionsLoaded);
+                 }
++                if (toolsState != null) {
++                    toolsState.removeListener(toolsListener);
++                }
+             }
+ 
+             private void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
+                 if (bot_id != 0) {
+                     final BotStarsController c = BotStarsController.getInstance(currentAccount);
+                     for (TL_stars.StarsTransaction t : c.getTransactions(bot_id, type)) {
++                        if (toolsState != null && !toolsState.matches(t)) continue;
+                         items.add(StarsTransactionView.Factory.asTransaction(t, true));
+                     }
+                     if (!c.didFullyLoadTransactions(bot_id, type)) {
+@@ -1441,6 +1472,7 @@ public class StarsIntroActivity extends GradientHeaderActivity implements Notifi
+                 } else {
+                     final StarsController c = StarsController.getInstance(currentAccount, ton);
+                     for (TL_stars.StarsTransaction t : c.transactions[type]) {
++                        if (toolsState != null && !toolsState.matches(t)) continue;
+                         items.add(StarsTransactionView.Factory.asTransaction(t, false));
+                     }
+                     if (!c.didFullyLoadTransactions(type)) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 305cfe60d..85747ec70 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -152,6 +152,8 @@ object TeleConfig {
+     @JvmField
+     val THIN_BRUSH = BoolItem("thin_brush", false)
+     @JvmField
++    val STAR_TRANSACTIONS = BoolItem("star_transactions", false)
++    @JvmField
+     val MAP_SERVICE = StringItem("map_service", "")
+     @JvmField
+     val DELETED_REPLY = StringItem("deleted_reply", "skip")
+diff --git a/TMessagesProj/src/main/java/tele/helpers/StarsTools.kt b/TMessagesProj/src/main/java/tele/helpers/StarsTools.kt
+new file mode 100644
+index 000000000..0f5ac9331
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/StarsTools.kt
+@@ -0,0 +1,689 @@
++package tele.helpers
++
++import android.content.Context
++import android.content.Intent
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.TextPaint
++import android.text.method.LinkMovementMethod
++import android.text.style.ClickableSpan
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.widget.FrameLayout
++import android.widget.HorizontalScrollView
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.core.content.FileProvider
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLoader
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.messenger.UserObject
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.SearchField
++import org.telegram.ui.LaunchActivity
++import org.telegram.ui.Stars.BotStarsController
++import org.telegram.ui.Stars.StarsController
++import tele.TeleConfig
++import java.io.File
++import java.text.SimpleDateFormat
++import java.util.Date
++import java.util.IdentityHashMap
++import java.util.Locale
++import java.util.TimeZone
++import kotlin.math.abs
++
++/**
++ * Search, filter chips and CSV export above the star and TON transaction lists (desktop 0192).
++ * Searching or filtering loads the whole history of the open tab first; the list itself is
++ * filtered by [State.matches] in the stock page.
++ */
++object StarsTools {
++
++    private const val GIFTS = 1
++    private const val REACTIONS = 1 shl 1
++    private const val PAID_MEDIA = 1 shl 2
++    private const val SUBSCRIPTIONS = 1 shl 3
++    private const val BOTS = 1 shl 4
++    private const val TOP_UPS = 1 shl 5
++    private const val WITHDRAWALS = 1 shl 6
++    private const val INCOMING = 1 shl 7
++    private const val OUTGOING = 1 shl 8
++    private const val TYPE_MASK = INCOMING - 1
++    private const val DIRECTION_MASK = INCOMING or OUTGOING
++
++    private const val NANO = 1_000_000_000L
++    private const val CHANNEL_SHIFT = 1_000_000_000_000L
++    private const val WATCHDOG_MS = 1500L
++
++    private const val STAR = "\u2b50"
++    private const val MINUS = "\u2212"
++
++    internal class Chip(val flag: Int, val name: String, val key: String)
++
++    private val CHIPS = listOf(
++        Chip(GIFTS, "Gifts", "gift"),
++        Chip(REACTIONS, "Reactions", "reaction"),
++        Chip(PAID_MEDIA, "Paid media", "paid_media"),
++        Chip(SUBSCRIPTIONS, "Subscriptions", "subscription"),
++        Chip(BOTS, "Bots/mini apps", "bot"),
++        Chip(TOP_UPS, "Top-ups", "top_up"),
++        Chip(WITHDRAWALS, "Withdrawals/refunds", "withdrawal"),
++        Chip(INCOMING, "Incoming", "in"),
++        Chip(OUTGOING, "Outgoing", "out")
++    )
++
++    internal class Item(val categories: Int, val text: String)
++
++    // a query word; a number matches the amount, a leading + or - also the direction
++    internal class Word(val text: String, val number: Double?, val direction: Int)
++
++    fun interface TypeProvider {
++        fun type(): Int
++    }
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.STAR_TRANSACTIONS.value
++
++    /** The state of one transactions screen, or null when the option is off. */
++    @JvmStatic
++    fun state(account: Int, ton: Boolean, botId: Long): State? = if (enabled()) State(account, ton, botId) else null
++
++    /** The search field, the chips and the status line, to go above the pages. */
++    @JvmStatic
++    fun bar(context: Context, state: State, resources: Theme.ResourcesProvider?): View = Bar(context, state, resources)
++
++    class State(val account: Int, val ton: Boolean, val botId: Long) {
++
++        var typeProvider: TypeProvider? = null
++        var selected = 0
++            private set
++        private var words: List<Word> = emptyList()
++        private val items = IdentityHashMap<TL_stars.StarsTransaction, Item>()
++        private val listeners = ArrayList<Runnable>()
++        internal var pageListener: Runnable? = null
++
++        fun type(): Int = typeProvider?.type() ?: StarsController.ALL_TRANSACTIONS
++
++        fun active(): Boolean = selected != 0 || words.isNotEmpty()
++
++        /** The pages refilter their lists when this fires. */
++        fun addListener(listener: Runnable) {
++            if (!listeners.contains(listener)) listeners.add(listener)
++        }
++
++        fun removeListener(listener: Runnable) {
++            listeners.remove(listener)
++        }
++
++        internal fun fire() {
++            for (listener in ArrayList(listeners)) listener.run()
++        }
++
++        /** The current tab changed. */
++        fun pageChanged() {
++            pageListener?.run()
++        }
++
++        internal fun toggle(flag: Int) {
++            selected = selected xor flag
++        }
++
++        internal fun clearChips() {
++            selected = 0
++        }
++
++        /** True when the query changed. */
++        internal fun setQuery(query: String): Boolean {
++            val parsed = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.map(::parseWord)
++            if (parsed.size == words.size && parsed.indices.all { parsed[it].text == words[it].text }) return false
++            words = parsed
++            return true
++        }
++
++        fun list(type: Int): List<TL_stars.StarsTransaction> =
++            if (botId != 0L) BotStarsController.getInstance(account).getTransactions(botId, type)
++            else StarsController.getInstance(account, ton).transactions[type]
++
++        fun loaded(type: Int): Boolean =
++            if (botId != 0L) BotStarsController.getInstance(account).didFullyLoadTransactions(botId, type)
++            else StarsController.getInstance(account, ton).didFullyLoadTransactions(type)
++
++        fun loading(type: Int): Boolean =
++            if (botId != 0L) BotStarsController.getInstance(account).isLoadingTransactions(botId, type)
++            else StarsController.getInstance(account, ton).isLoadingTransactions(type)
++
++        fun request(type: Int) {
++            if (botId != 0L) BotStarsController.getInstance(account).loadTransactions(botId, type)
++            else StarsController.getInstance(account, ton).loadTransactions(type)
++        }
++
++        internal fun itemFor(t: TL_stars.StarsTransaction): Item = items.getOrPut(t) { makeItem(t) }
++
++        /** Whether a transaction stays in the list with the current query and chips. */
++        fun matches(t: TL_stars.StarsTransaction?): Boolean {
++            if (t == null) return false
++            if (!active()) return true
++            val item = itemFor(t)
++            val types = selected and TYPE_MASK
++            if (types != 0 && (item.categories and types) == 0) return false
++            val directions = selected and DIRECTION_MASK
++            if (directions != 0 && (item.categories and directions) == 0) return false
++            val amount = abs(nano(t.amount)) / NANO.toDouble()
++            for (word in words) {
++                val number = word.number
++                if (number != null) {
++                    val same = abs(amount - number) < 1e-9 && (word.direction == 0 || (item.categories and word.direction) != 0)
++                    if (!same && (word.direction != 0 || !item.text.contains(word.text))) return false
++                } else if (!item.text.contains(word.text)) {
++                    return false
++                }
++            }
++            return true
++        }
++
++        private fun makeItem(t: TL_stars.StarsTransaction): Item {
++            val peer = t.peer
++            val user = userOf(t)
++            var categories = if (inbound(t)) INCOMING else OUTGOING
++            val unique = t.stargift as? TL_stars.TL_starGiftUnique
++            if (t.stargift != null || t.gift || t.stargift_upgrade || t.stargift_resale || t.offer ||
++                t.giveaway_post_id != 0 || (t.flags and 8192) != 0 || t.premium_gift
++            ) {
++                categories = categories or GIFTS
++            }
++            if (t.reaction) categories = categories or REACTIONS
++            if (t.extended_media.isNotEmpty() || t.paid_message || t.paid_messages > 0) categories = categories or PAID_MEDIA
++            if (t.subscription) categories = categories or SUBSCRIPTIONS
++            if (user?.bot == true || peer is TL_stars.TL_starsTransactionPeerAPI) categories = categories or BOTS
++            val fragment = peer is TL_stars.TL_starsTransactionPeerFragment
++            if (peer is TL_stars.TL_starsTransactionPeerAppStore || peer is TL_stars.TL_starsTransactionPeerPlayMarket ||
++                peer is TL_stars.TL_starsTransactionPeerPremiumBot || fragment && inbound(t)
++            ) {
++                categories = categories or TOP_UPS
++            }
++            if (fragment && !inbound(t) || t.refund) categories = categories or WITHDRAWALS
++
++            val fields = ArrayList<String?>()
++            fields.add(peerName(t))
++            fields.add(user?.username ?: chatOf(t)?.username)
++            fields.add(t.title)
++            fields.add(t.description)
++            fields.add(entryName(t))
++            fields.add(giftName(t))
++            // the label the row shows, like "Converted Gift", comes from stock and isn't in the TL fields
++            fields.add(runCatching { org.telegram.ui.Stars.StarsIntroActivity.getTransactionTitle(account, false, t)?.toString() }.getOrNull())
++            fields.add(unique?.slug)
++            for (chip in CHIPS) {
++                if ((categories and chip.flag and TYPE_MASK) != 0) fields.add(chip.name)
++            }
++            val text = fields.filter { !it.isNullOrEmpty() }.joinToString("\n").lowercase()
++            return Item(categories, text)
++        }
++
++        private fun dialogOf(t: TL_stars.StarsTransaction): Long = DialogObject.getPeerDialogId(t.peer?.peer)
++
++        private fun userOf(t: TL_stars.StarsTransaction): TLRPC.User? {
++            val did = dialogOf(t)
++            return if (did > 0 && !UserObject.isService(did)) MessagesController.getInstance(account).getUser(did) else null
++        }
++
++        private fun chatOf(t: TL_stars.StarsTransaction): TLRPC.Chat? {
++            val did = dialogOf(t)
++            return if (did < 0) MessagesController.getInstance(account).getChat(-did) else null
++        }
++
++        /** The title of a transaction without a peer: what the row shows instead of a name. */
++        private fun entryName(t: TL_stars.StarsTransaction): String {
++            val peer = t.peer
++            val inbound = inbound(t)
++            return when {
++                t.stargift_upgrade && t.stargift != null -> LocaleController.getString(R.string.Gift2TransactionUpgraded)
++                t.stargift_drop_original_details && t.stargift != null -> LocaleController.getString(R.string.Gift2TransactionRemovedDescription)
++                t.posts_search -> LocaleController.getString(R.string.StarsTransactionPostsSearch)
++                dialogOf(t) != 0L -> ""
++                t.floodskip -> LocaleController.getString(R.string.StarsTransactionFloodskip)
++                peer is TL_stars.TL_starsTransactionPeerAppStore || peer is TL_stars.TL_starsTransactionPeerPlayMarket ->
++                    LocaleController.getString(R.string.StarsTransactionInApp)
++                peer is TL_stars.TL_starsTransactionPeerFragment -> when {
++                    t.gift -> LocaleController.getString(R.string.StarsGiftReceived)
++                    (if (t.refund) inbound else !inbound) -> LocaleController.getString(R.string.StarsTransactionWithdrawFragment)
++                    else -> LocaleController.getString(R.string.StarsTransactionFragment)
++                }
++                peer is TL_stars.TL_starsTransactionPeerPremiumBot -> LocaleController.getString(R.string.StarsTransactionBot)
++                peer is TL_stars.TL_starsTransactionPeerUnsupported -> LocaleController.getString(R.string.StarsTransactionUnsupported)
++                peer is TL_stars.TL_starsTransactionPeerAds -> LocaleController.getString(R.string.StarsTransactionAds)
++                else -> ""
++            }
++        }
++
++        internal fun peerName(t: TL_stars.StarsTransaction): String {
++            val did = dialogOf(t)
++            return when {
++                did == 0L -> entryName(t)
++                UserObject.isService(did) -> LocaleController.getString(R.string.StarsTransactionUnknown)
++                did > 0 -> UserObject.getUserName(MessagesController.getInstance(account).getUser(did))
++                else -> MessagesController.getInstance(account).getChat(-did)?.title ?: ""
++            }
++        }
++
++        internal fun giftName(t: TL_stars.StarsTransaction): String {
++            val unique = t.stargift as? TL_stars.TL_starGiftUnique ?: return ""
++            return "${unique.title} #${unique.num}"
++        }
++    }
++
++    private fun inbound(t: TL_stars.StarsTransaction): Boolean = !t.amount.negative()
++
++    private fun isTon(t: TL_stars.StarsTransaction): Boolean = t.amount is TL_stars.TL_starsTonAmount
++
++    // the TON amount is nanotons already; the stars one is whole stars plus nanostars
++    private fun nano(amount: TL_stars.StarsAmount): Long =
++        if (amount is TL_stars.TL_starsTonAmount) amount.amount else amount.amount * NANO + amount.nanos
++
++    private fun parseWord(word: String): Word {
++        var direction = 0
++        var digits = word
++        if (digits.startsWith("+")) {
++            direction = INCOMING
++            digits = digits.substring(1)
++        } else if (digits.startsWith("-") || digits.startsWith(MINUS)) {
++            direction = OUTGOING
++            digits = digits.substring(1)
++        }
++        digits = digits.replace(",", "").replace("'", "")
++        if (digits.isEmpty() || digits.any { !it.isDigit() && it != '.' }) return Word(word, null, 0)
++        val number = digits.toDoubleOrNull() ?: return Word(word, null, 0)
++        return Word(word, number, direction)
++    }
++
++    private fun fraction(frac: Long): String = frac.toString().padStart(9, '0').trimEnd('0')
++
++    private fun decimal(nano: Long): String {
++        val abs = abs(nano)
++        val frac = abs % NANO
++        return LocaleController.formatNumber(abs / NANO, ',') + if (frac == 0L) "" else "." + fraction(frac)
++    }
++
++    private fun exact(nano: Long): String {
++        val abs = abs(nano)
++        val frac = abs % NANO
++        return (abs / NANO).toString() + if (frac == 0L) "" else "." + fraction(frac)
++    }
++
++    private fun csvField(raw: String?, text: Boolean): String {
++        var value = raw ?: ""
++        // a text cell must not run as a formula in a spreadsheet
++        if (text && value.isNotEmpty() && "=+-@\t\r".indexOf(value[0]) >= 0) value = "'$value"
++        return if (value.contains('"') || value.contains(',') || value.contains('\n') || value.contains('\r')) {
++            "\"" + value.replace("\"", "\"\"") + "\""
++        } else {
++            value
++        }
++    }
++
++    private const val CSV_HEADER = "id,date,direction,amount,nano,currency,peer,peer_id,type,title,description,gift,gift_slug,gift_id,msg_id,giveaway_msg_id"
++
++    private fun peerApiId(t: TL_stars.StarsTransaction): String = when (val p = t.peer?.peer) {
++        is TLRPC.TL_peerUser -> p.user_id.toString()
++        is TLRPC.TL_peerChat -> (-p.chat_id).toString()
++        is TLRPC.TL_peerChannel -> (-(CHANNEL_SHIFT + p.channel_id)).toString()
++        else -> ""
++    }
++
++    private fun csvLine(state: State, t: TL_stars.StarsTransaction, item: Item, date: SimpleDateFormat): String {
++        val total = nano(t.amount)
++        val inbound = inbound(t)
++        val types = CHIPS.filter { (item.categories and it.flag and TYPE_MASK) != 0 }.map { it.key }
++        val unique = t.stargift as? TL_stars.TL_starGiftUnique
++        fun number(value: Long) = if (value != 0L) value.toString() else ""
++        val fields = listOf(
++            t.id to false,
++            date.format(Date(t.date * 1000L)) to false,
++            (if (inbound) "in" else "out") to false,
++            ((if (inbound) "" else "-") + exact(total)) to false,
++            abs(total).let { if (inbound) it else -it }.toString() to false,
++            (if (isTon(t)) "ton" else "stars") to false,
++            state.peerName(t) to true,
++            peerApiId(t) to false,
++            (if (types.isEmpty()) "other" else types.joinToString(";")) to false,
++            (t.title ?: "") to true,
++            (t.description ?: "") to true,
++            state.giftName(t) to true,
++            (unique?.slug ?: "") to true,
++            (if (unique != null) number(unique.id) else "") to false,
++            number(t.msg_id.toLong()) to false,
++            number(t.giveaway_post_id.toLong()) to false
++        )
++        return fields.joinToString(",") { csvField(it.first, it.second) }
++    }
++
++    private fun lc(text: String): String = TeleLowercase.lc(text)
++
++    private class Bar(context: Context, private val state: State, private val themeResources: Theme.ResourcesProvider?) :
++        LinearLayout(context), NotificationCenter.NotificationCenterDelegate {
++
++        private val searchField: SearchField
++        private val menuButton: ImageView
++        private val chipViews = ArrayList<Pair<Chip, TextView>>()
++        private val status: TextView
++        private var loading = false
++        private var loadType = 0
++        private var lastCount = 0
++        private var pendingExport = false
++        private val watchdog = Runnable { checkLoading() }
++
++        init {
++            orientation = VERTICAL
++            state.pageListener = Runnable { pageChanged() }
++
++            val row = LinearLayout(context)
++            row.orientation = HORIZONTAL
++            searchField = object : SearchField(context, true, themeResources) {
++                override fun onTextChange(text: String) {
++                    if (state.setQuery(text)) used()
++                }
++            }
++            searchField.setHint(lc("Search transactions"))
++            row.addView(searchField, LayoutHelper.createLinear(0, LayoutHelper.WRAP_CONTENT, 1f))
++            menuButton = ImageView(context)
++            menuButton.scaleType = ImageView.ScaleType.CENTER
++            menuButton.setImageResource(R.drawable.ic_ab_other)
++            menuButton.colorFilter = android.graphics.PorterDuffColorFilter(Theme.getColor(Theme.key_dialogSearchIcon, themeResources), android.graphics.PorterDuff.Mode.MULTIPLY)
++            menuButton.background = Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector, themeResources), 1)
++            menuButton.setOnClickListener { showMenu() }
++            row.addView(menuButton, LayoutHelper.createLinear(48, 48, Gravity.TOP, 0, 5, 6, 0))
++            addView(row, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++            val scroll = HorizontalScrollView(context)
++            scroll.isHorizontalScrollBarEnabled = false
++            val chips = LinearLayout(context)
++            chips.orientation = HORIZONTAL
++            chips.setPadding(AndroidUtilities.dp(14f), 0, AndroidUtilities.dp(14f), 0)
++            for (chip in CHIPS) {
++                val view = TextView(context)
++                view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++                view.typeface = AndroidUtilities.bold()
++                view.text = lc(chip.name)
++                view.gravity = Gravity.CENTER
++                view.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(6f), AndroidUtilities.dp(12f), AndroidUtilities.dp(6f))
++                view.setOnClickListener {
++                    state.toggle(chip.flag)
++                    updateChips()
++                    used()
++                }
++                chipViews.add(chip to view)
++                chips.addView(view, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, 0f, 0f, 6f, 0f))
++            }
++            scroll.addView(chips, FrameLayout.LayoutParams(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
++            addView(scroll, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0f, 8f, 0f, 0f))
++
++            status = TextView(context)
++            status.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            status.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, themeResources))
++            status.movementMethod = LinkMovementMethod.getInstance()
++            status.setLineSpacing(0f, 1.1f)
++            addView(status, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 20f, 10f, 20f, 8f))
++
++            updateChips()
++            refreshStatus()
++        }
++
++        private fun updateChips() {
++            for ((chip, view) in chipViews) {
++                val on = (state.selected and chip.flag) != 0
++                val background = Theme.getColor(if (on) Theme.key_featuredStickers_addButton else Theme.key_dialogSearchBackground, themeResources)
++                view.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(16f), background)
++                view.setTextColor(Theme.getColor(if (on) Theme.key_featuredStickers_buttonText else Theme.key_windowBackgroundWhiteBlackText, themeResources))
++            }
++        }
++
++        override fun onAttachedToWindow() {
++            super.onAttachedToWindow()
++            NotificationCenter.getInstance(state.account).addObserver(this, NotificationCenter.starTransactionsLoaded)
++            NotificationCenter.getInstance(state.account).addObserver(this, NotificationCenter.botStarsTransactionsLoaded)
++            if (loading) {
++                step()
++                if (loading) AndroidUtilities.runOnUIThread(watchdog, WATCHDOG_MS)
++            }
++            refreshStatus()
++        }
++
++        override fun onDetachedFromWindow() {
++            super.onDetachedFromWindow()
++            NotificationCenter.getInstance(state.account).removeObserver(this, NotificationCenter.starTransactionsLoaded)
++            NotificationCenter.getInstance(state.account).removeObserver(this, NotificationCenter.botStarsTransactionsLoaded)
++            AndroidUtilities.cancelRunOnUIThread(watchdog)
++        }
++
++        override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++            if (id == NotificationCenter.botStarsTransactionsLoaded && (args.firstOrNull() as? Long) != state.botId) return
++            if (id == NotificationCenter.starTransactionsLoaded && state.botId != 0L) return
++            if (loading) step() else refreshStatus()
++        }
++
++        private fun used() {
++            if (state.active()) startLoading()
++            state.fire()
++            refreshStatus()
++        }
++
++        private fun pageChanged() {
++            if (loading) cancelLoading()
++            if (state.active()) startLoading()
++            refreshStatus()
++        }
++
++        private fun startLoading() {
++            if (loading) return
++            val type = state.type()
++            if (state.loaded(type)) return
++            loading = true
++            loadType = type
++            lastCount = state.list(type).size
++            state.request(type)
++            AndroidUtilities.cancelRunOnUIThread(watchdog)
++            AndroidUtilities.runOnUIThread(watchdog, WATCHDOG_MS)
++            refreshStatus()
++        }
++
++        private fun cancelLoading() {
++            loading = false
++            pendingExport = false
++            AndroidUtilities.cancelRunOnUIThread(watchdog)
++            refreshStatus()
++        }
++
++        // a page arrived or the request is over: ask for the next one while the list keeps growing
++        private fun step() {
++            if (!loading) return
++            val count = state.list(loadType).size
++            if (state.loaded(loadType)) {
++                loading = false
++                AndroidUtilities.cancelRunOnUIThread(watchdog)
++                refreshStatus()
++                if (pendingExport) {
++                    pendingExport = false
++                    exportCsv()
++                }
++            } else if (count > lastCount) {
++                lastCount = count
++                state.request(loadType)
++                refreshStatus()
++            } else if (!state.loading(loadType)) {
++                fail()
++            } else {
++                refreshStatus()
++            }
++        }
++
++        // a failed request posts no notification, so it has to be noticed here
++        private fun checkLoading() {
++            if (!loading) return
++            step()
++            if (loading) AndroidUtilities.runOnUIThread(watchdog, WATCHDOG_MS)
++        }
++
++        private fun fail() {
++            loading = false
++            pendingExport = false
++            AndroidUtilities.cancelRunOnUIThread(watchdog)
++            refreshStatus()
++            toast("stars-tools-load", "Couldn't load all transactions.")
++        }
++
++        private fun toast(site: String, text: String) {
++            val shown = lc(text)
++            TeleToast.log(site, shown, account = state.account)
++            val fragment = LaunchActivity.getSafeLastFragment() ?: return
++            BulletinFactory.of(fragment).createErrorBulletin(shown).show()
++        }
++
++        private fun link(builder: SpannableStringBuilder, label: String, action: Runnable) {
++            val start = builder.length
++            builder.append(label)
++            builder.setSpan(object : ClickableSpan() {
++                override fun onClick(widget: View) = action.run()
++                override fun updateDrawState(paint: TextPaint) {
++                    paint.color = Theme.getColor(Theme.key_windowBackgroundWhiteLinkText, themeResources)
++                    paint.isUnderlineText = false
++                }
++            }, start, builder.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        }
++
++        private fun side(inStars: Long, inTon: Long, stars: Boolean, ton: Boolean, sign: String): String {
++            val parts = ArrayList<String>()
++            if (stars || !ton) parts.add("$sign${decimal(inStars)} $STAR")
++            if (ton) parts.add("$sign${decimal(inTon)} TON")
++            return parts.joinToString(" ")
++        }
++
++        private fun refreshStatus() {
++            val builder = SpannableStringBuilder()
++            val type = state.type()
++            if (loading) {
++                builder.append(lc("Loading transactions... %d loaded").format(Locale.US, state.list(loadType).size))
++                builder.append(" · ")
++                link(builder, lc("Cancel")) { cancelLoading() }
++            } else {
++                var inStars = 0L
++                var outStars = 0L
++                var inTon = 0L
++                var outTon = 0L
++                var stars = false
++                var ton = false
++                var count = 0
++                for (t in state.list(type)) {
++                    if (!state.matches(t)) continue
++                    count++
++                    val value = abs(nano(t.amount))
++                    if (isTon(t)) {
++                        ton = true
++                        if (inbound(t)) inTon += value else outTon += value
++                    } else {
++                        stars = true
++                        if (inbound(t)) inStars += value else outStars += value
++                    }
++                }
++                builder.append(lc("In")).append(' ').append(side(inStars, inTon, stars, ton, "+"))
++                builder.append(" · ")
++                builder.append(lc("Out")).append(' ').append(side(outStars, outTon, stars, ton, MINUS))
++                builder.append(" · ")
++                builder.append(LocaleController.formatNumber(count.toLong(), ',')).append(' ')
++                    .append(lc(if (count == 1) "transaction" else "transactions"))
++                if (!state.loaded(type)) {
++                    builder.append(" · ")
++                    link(builder, lc("Load all")) { startLoading() }
++                }
++            }
++            status.text = builder
++        }
++
++        private fun showMenu() {
++            val fragment = LaunchActivity.getSafeLastFragment() ?: return
++            val type = state.type()
++            ItemOptions.makeOptions(fragment, menuButton)
++                .add(R.drawable.msg_download, lc("Export CSV")) { exportRequested() }
++                .addIf(!state.loaded(type) && !loading, R.drawable.msg_retry, lc("Load all")) { startLoading() }
++                .addIf(state.active(), R.drawable.msg_clear, lc("Clear filters")) { clearFilters() }
++                .show()
++        }
++
++        private fun clearFilters() {
++            state.clearChips()
++            updateChips()
++            // clearing the text reports the empty query, which refreshes the list
++            if (searchField.searchEditText.length() > 0) searchField.searchEditText.setText("") else used()
++        }
++
++        private fun exportRequested() {
++            if (state.loaded(state.type())) {
++                exportCsv()
++            } else {
++                pendingExport = true
++                startLoading()
++            }
++        }
++
++        private fun exportCsv() {
++            val type = state.type()
++            val rows = state.list(type).filter { state.matches(it) }.map { it to state.itemFor(it) }
++            val anyTon = state.ton || rows.any { isTon(it.first) }
++            val appContext = context
++            Utilities.globalQueue.postRunnable {
++                val file = try {
++                    writeCsv(rows, anyTon)
++                } catch (e: Throwable) {
++                    FileLog.e(e)
++                    null
++                }
++                AndroidUtilities.runOnUIThread {
++                    if (file == null) toast("stars-tools-write", "Couldn't write the file.") else share(appContext, file)
++                }
++            }
++        }
++
++        private fun writeCsv(rows: List<Pair<TL_stars.StarsTransaction, Item>>, anyTon: Boolean): File {
++            val date = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
++            date.timeZone = TimeZone.getTimeZone("UTC")
++            val text = StringBuilder(CSV_HEADER).append("\r\n")
++            for ((t, item) in rows) text.append(csvLine(state, t, item, date)).append("\r\n")
++            val directory = File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), "tele_exports")
++            directory.mkdirs()
++            // only the last export is kept
++            directory.listFiles()?.forEach { it.delete() }
++            val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
++            val file = File(directory, "${if (anyTon) "ton" else "stars"}-transactions-$day.csv")
++            // the BOM lets spreadsheets read the file as UTF-8
++            file.writeBytes(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + text.toString().toByteArray(Charsets.UTF_8))
++            return file
++        }
++
++        private fun share(context: Context, file: File) {
++            val activity = AndroidUtilities.findActivity(context) ?: return
++            try {
++                val intent = Intent(Intent.ACTION_SEND)
++                intent.type = "text/csv"
++                intent.putExtra(Intent.EXTRA_STREAM, FileProvider.getUriForFile(activity, ApplicationLoader.getApplicationId() + ".provider", file))
++                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++                activity.startActivity(Intent.createChooser(intent, lc("Export transactions")))
++            } catch (e: Throwable) {
++                FileLog.e(e)
++                toast("stars-tools-share", "Couldn't write the file.")
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+index 14e4a1d67..7be72d24a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -86,7 +86,8 @@ object TeleSettingsLinks {
+         "tele-ignore-in-menu" to optionId(TeleConfig.IGNORE_BUTTON.key),
+         "tele-peek-last-seen" to optionId(TeleConfig.LAST_SEEN_RESTORE.key),
+         "tele-hide-phone-in-profile" to optionId(TeleConfig.HIDE_PHONE_IN_PROFILES.key),
+-        "tele-server-url" to optionId(TeleConfig.TELE_SERVER_URL.key)
++        "tele-server-url" to optionId(TeleConfig.TELE_SERVER_URL.key),
++        "tele-stars-tools" to optionId(TeleConfig.STAR_TRANSACTIONS.key)
+     )
+ 
+     private val ALIASES: Map<String, String> = DESKTOP_IDS.toMap()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 76525aa83..d73bd1a8a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -331,6 +331,11 @@ object TeleSearch {
+             section(1420, "Thinner brush in the editor", "interface", TeleSettingsActivity.MODE_INTERFACE),
+             section(1421, "Thin pen in the photo editor", "interface", TeleSettingsActivity.MODE_INTERFACE, "Thinner brush in the editor"),
+             section(1422, "Draw size of the brush", "interface", TeleSettingsActivity.MODE_INTERFACE, "Thinner brush in the editor"),
++            section(1480, "Search and export star transactions", "interface", TeleSettingsActivity.MODE_INTERFACE),
++            section(1481, "Search star transactions", "interface", TeleSettingsActivity.MODE_INTERFACE, "Search and export star transactions"),
++            section(1482, "Filter transactions by type", "interface", TeleSettingsActivity.MODE_INTERFACE, "Search and export star transactions"),
++            section(1483, "Export transactions as CSV", "interface", TeleSettingsActivity.MODE_INTERFACE, "Search and export star transactions"),
++            section(1484, "TON transaction history", "interface", TeleSettingsActivity.MODE_INTERFACE, "Search and export star transactions"),
+             section(1410, "Map service", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(1411, "Open locations in another map", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
+             section(1412, "Google Maps, OpenStreetMap, Yandex, 2GIS, Apple Maps", "messages", TeleSettingsActivity.MODE_MESSAGES, "Map service"),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 38c3528f8..361e3688d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -986,6 +986,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Show data center" to "Show the data center in profiles and the media viewer.",
+             "Id and dc in one row" to "Put the ID and data center in one row.",
+             "Thinner brush in the editor" to "Let the normal brush get much thinner.",
++            "Search and export star transactions" to "Search and filters load the whole history first.",
+             "Map service" to "Open locations in this map instead of the system one.",
+             "Show when media was uploaded" to "In the media viewer, when it differs from the message date.",
+             "Show message id in the message menu" to "Show the message ID in its menu.",
+@@ -1270,6 +1271,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Editor"),
+                 toggle("Pick brush colors from the image", TeleConfig.EDITOR_EYEDROPPER),
+                 toggle("Thinner brush in the editor", TeleConfig.THIN_BRUSH),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Lists"),
++                toggle("Search and export star transactions", TeleConfig.STAR_TRANSACTIONS),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_CHATS -> listOf(

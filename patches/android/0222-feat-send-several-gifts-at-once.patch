@@ -1,0 +1,636 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 03:50:49 +0300
+Subject: [PATCH 222/228] feat: send several gifts at once
+
+---
+ .../org/telegram/ui/Gifts/SendGiftSheet.java  |  73 ++++++++-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../main/java/tele/helpers/GiftQuantity.kt    | 153 ++++++++++++++++++
+ .../src/main/java/tele/helpers/GiftSender.kt  | 130 +++++++++++++++
+ .../main/java/tele/ui/TeleGiftQuantityView.kt | 119 ++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ .../src/main/res/values/strings_tele.xml      |   9 ++
+ 8 files changed, 486 insertions(+), 4 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftSender.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleGiftQuantityView.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java
+index 5654e5e20..fac3a9ddb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java
+@@ -92,6 +92,8 @@ import org.telegram.ui.Stars.StarsController;
+ import org.telegram.ui.Stars.StarsIntroActivity;
+ import org.telegram.ui.Stories.recorder.ButtonWithCounterView;
+ import org.telegram.ui.Stories.recorder.PreviewView;
++import tele.helpers.GiftQuantity;
++import tele.ui.TeleGiftQuantityView;
+ 
+ import java.util.ArrayList;
+ import java.util.Arrays;
+@@ -131,6 +133,11 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+     private final TextView soldTextView, soldTextView2;
+     private final TextView leftTextView, leftTextView2;
+ 
++    // the quantity row when several gifts at once is on and the gift allows it
++    private final @Nullable TeleGiftQuantityView quantity;
++    private boolean quantitySending;
++    private @Nullable CharSequence quantityProgress;
++
+     public boolean anonymous;
+     public boolean upgrade = false;
+     public boolean useStars = false;
+@@ -172,6 +179,9 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+         }
+ 
+         this.premiumTier = premiumTier;
++        this.quantity = GiftQuantity.applies(starGift, auction != null)
++            ? new TeleGiftQuantityView(context, resourcesProvider, GiftQuantity.max(starGift), () -> setButtonText(true))
++            : null;
+         this.closeParentSheet = closeParentSheet;
+         this.forceUpgrade = forceUpgrade;
+         this.forceNotUpgrade = forceNotUpgrade;
+@@ -486,7 +496,7 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+         setButtonText(false);
+         buttonContainer.addView(button, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.FILL, 10, 10, 10, 10));
+         button.setOnClickListener(v -> {
+-            if (button.isLoading()) return;
++            if (button.isLoading() || quantitySending) return;
+ 
+             if (auction != null) {
+                 final AuctionBidSheet.Params p = new AuctionBidSheet.Params(dialogId, anonymous, getMessage());
+@@ -502,6 +512,11 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+                 return;
+             }
+ 
++            if (quantity != null && quantity.getCount() > 1) {
++                sendSeveral();
++                return;
++            }
++
+             button.setLoading(true);
+             if (messageEdit.editTextEmoji.getEmojiPadding() > 0) {
+                 messageEdit.editTextEmoji.hidePopup(true);
+@@ -655,9 +670,16 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+             }
+         } else if (starGift != null) {
+             final long balance = StarsController.getInstance(currentAccount).getBalance().amount;
+-            final long price = this.starGift.stars + (upgrade ? this.starGift.upgrade_stars : 0) + (TextUtils.isEmpty(messageEdit.getText()) ? 0 : send_paid_messages_stars);
+-            button.setText(StarsIntroActivity.replaceStars(LocaleController.formatPluralStringComma(self ? "Gift2SendSelf" : "Gift2Send", (int) price), cachedStarSpan), animated);
+-            if (StarsController.getInstance(currentAccount).balanceAvailable() && price > balance) {
++            final long price = giftPrice();
++            final int count = quantity != null ? quantity.getCount() : 1;
++            if (quantityProgress != null) {
++                button.setText(quantityProgress, animated);
++            } else if (count > 1) {
++                button.setText(StarsIntroActivity.replaceStars(formatString(self ? R.string.TeleGiftsSendManySelf : R.string.TeleGiftsSendMany, count, LocaleController.formatNumber(price * count, ',')), cachedStarSpan), animated);
++            } else {
++                button.setText(StarsIntroActivity.replaceStars(LocaleController.formatPluralStringComma(self ? "Gift2SendSelf" : "Gift2Send", (int) price), cachedStarSpan), animated);
++            }
++            if (quantityProgress == null && StarsController.getInstance(currentAccount).balanceAvailable() && price * count > balance) {
+                 button.setSubText(LocaleController.formatPluralStringComma("Gift2SendYourBalance", (int) balance), animated);
+             } else {
+                 button.setSubText(null, animated);
+@@ -703,6 +725,46 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+         }
+     }
+ 
++    private long giftPrice() {
++        return starGift.stars + (upgrade ? starGift.upgrade_stars : 0) + (TextUtils.isEmpty(messageEdit.getText()) ? 0 : send_paid_messages_stars);
++    }
++
++    private void sendSeveral() {
++        AndroidUtilities.hideKeyboard(messageEdit);
++        BaseFragment fragment = getBaseFragment();
++        if (fragment == null) fragment = LaunchActivity.getSafeLastFragment();
++        final GiftQuantity.Request request = new GiftQuantity.Request(currentAccount, starGift, dialogId, anonymous, upgrade, getMessage(), quantity.getCount(), giftPrice(), name, self);
++        GiftQuantity.confirmAndSend(getContext(), resourcesProvider, fragment, request, new GiftQuantity.Listener() {
++            @Override
++            public void onStart() {
++                quantitySending = true;
++                if (!isDismissed) setButtonText(true);
++            }
++
++            @Override
++            public void onProgress(int index, int total) {
++                quantityProgress = formatString(R.string.TeleGiftsSendingMany, index, total);
++                if (!isDismissed) setButtonText(true);
++            }
++
++            @Override
++            public void onFinish(int sent) {
++                quantitySending = false;
++                quantityProgress = null;
++                if (isDismissed) return;
++                if (sent > 0) {
++                    if (closeParentSheet != null) {
++                        closeParentSheet.run();
++                    }
++                    AndroidUtilities.hideKeyboard(messageEdit);
++                    dismiss();
++                } else {
++                    setButtonText(true);
++                }
++            }
++        });
++    }
++
+     private void buyStarGift() {
+         StarsController.getInstance(currentAccount).buyStarGift(
+             this.starGift,
+@@ -936,6 +998,9 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+             items.add(UItem.asSpace(dp(12)));
+         }
+         if (starGift != null) {
++            if (quantity != null) {
++                items.add(UItem.asCustom(-50, quantity));
++            }
+             if (starGift.can_upgrade && !self) {
+                 items.add(UItem.asShadow(-3, null));
+                 items.add(UItem.asCheck(2, StarsIntroActivity.replaceStarsWithPlain(formatString(self ? R.string.Gift2UpgradeSelf : R.string.Gift2Upgrade, (int) starGift.upgrade_stars), .78f)).setChecked(upgrade));
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index d67b07179..94b739dbf 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -195,6 +195,8 @@ object TeleConfig {
+     @JvmField
+     val GIFT_SEARCH = BoolItem("gift_search", false)
+     @JvmField
++    val GIFT_QUANTITY = BoolItem("gift_quantity", false)
++    @JvmField
+     val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
+     @JvmField
+     val LOCAL_NAMES = BoolItem("local_names", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt b/TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt
+new file mode 100644
+index 000000000..d81fc5182
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt
+@@ -0,0 +1,153 @@
++package tele.helpers
++
++import android.content.Context
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.LaunchActivity
++import org.telegram.ui.Stars.StarsController
++import org.telegram.ui.Stars.StarsIntroActivity
++import tele.TeleConfig
++
++/**
++ * Sending several star gifts at once (desktop 0184): the quantity limits, the confirmation of the
++ * total and the sequential sending. It stops at the first error and never repeats a send whose
++ * result is unknown.
++ */
++object GiftQuantity {
++
++    // there is no limit for plain gifts; the confirmation shows the total anyway
++    private const val UNLIMITED = 100
++
++    /** The sheet reacts to what happens to the batch. All the calls are on the UI thread. */
++    interface Listener {
++        /** The batch passed the confirmation and the lock and is about to send. */
++        fun onStart()
++
++        /** The [index]th (from 1) of [total] gifts is being sent. */
++        fun onProgress(index: Int, total: Int)
++
++        /** The batch ended; [sent] gifts left. */
++        fun onFinish(sent: Int)
++    }
++
++    /** What to send. [price] is the Stars one gift is expected to cost, the batch stops when the server asks for more. */
++    class Request(
++        @JvmField val currentAccount: Int,
++        @JvmField val gift: TL_stars.StarGift,
++        @JvmField val dialogId: Long,
++        @JvmField val anonymous: Boolean,
++        @JvmField val upgrade: Boolean,
++        @JvmField val message: TLRPC.TL_textWithEntities?,
++        @JvmField val count: Int,
++        @JvmField val price: Long,
++        @JvmField val name: String,
++        @JvmField val self: Boolean
++    )
++
++    /** Only plain star gifts: collectibles and auctions have their own sheets. */
++    @JvmStatic
++    fun applies(gift: TL_stars.StarGift?, auction: Boolean): Boolean =
++        TeleConfig.GIFT_QUANTITY.value && gift != null && !auction && !gift.auction && gift !is TL_stars.TL_starGiftUnique
++
++    /** The most gifts that can go out in one batch: what the gift has left in total and for the user. */
++    @JvmStatic
++    fun max(gift: TL_stars.StarGift): Int {
++        var result = UNLIMITED
++        if (gift.limited_per_user) result = minOf(result, gift.per_user_remains)
++        if (gift.limited) result = minOf(result, gift.availability_remains)
++        return maxOf(result, 1)
++    }
++
++    /** Asks for the total, passes the lock and sends. */
++    @JvmStatic
++    fun confirmAndSend(
++        context: Context,
++        resourcesProvider: Theme.ResourcesProvider?,
++        fragment: BaseFragment?,
++        request: Request,
++        listener: Listener
++    ) {
++        val total = request.price * request.count
++        val stars = "XTR " + LocaleController.formatNumber(total, ',')
++        val text = StarsIntroActivity.replaceStarsWithPlain(
++            LocaleController.formatString(
++                if (request.self) R.string.TeleGiftsSendConfirmSelf else R.string.TeleGiftsSendConfirm,
++                request.count, request.name, stars
++            ),
++            .66f
++        )
++        AlertDialog.Builder(context, resourcesProvider)
++            .setMessage(text)
++            .setPositiveButton(LocaleController.getString(R.string.Send)) { _, _ ->
++                // the whole batch is one protected action
++                StarsLock.guard(fragment, "send_gift") { start(context, resourcesProvider, request, total, listener) }
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun start(context: Context, resourcesProvider: Theme.ResourcesProvider?, request: Request, total: Long, listener: Listener) {
++        val stars = StarsController.getInstance(request.currentAccount)
++        val run = Runnable {
++            listener.onStart()
++            send(request, listener)
++        }
++        if (stars.balanceAvailable() && stars.balance.amount < total) {
++            // the same top-up sheet as the stock sending; the batch starts once the Stars arrive
++            StarsIntroActivity.StarsNeededSheet(
++                context, resourcesProvider, total, StarsIntroActivity.StarsNeededSheet.TYPE_STAR_GIFT_BUY, request.name, run, 0
++            ).show()
++        } else {
++            run.run()
++        }
++    }
++
++    /** Runs the series through [GiftSender] and reports to the sheet and the user. */
++    private fun send(request: Request, listener: Listener) {
++        val account = request.currentAccount
++        val job = GiftSender.Job(account, request.dialogId, request.gift, request.anonymous, request.upgrade, request.message, request.count, request.price)
++        GiftSender.start(job, object : GiftSender.Listener {
++            override fun onProgress(sent: Int) {
++                listener.onProgress(sent + 1, request.count)
++            }
++
++            override fun onFinished(sent: Int, failure: GiftSender.Failure?) {
++                val stars = StarsController.getInstance(account)
++                if (sent > 0) {
++                    stars.invalidateStarGifts()
++                    stars.invalidateProfileGifts(request.dialogId)
++                    stars.invalidateBalance()
++                    stars.invalidateTransactions(true)
++                }
++                listener.onFinish(sent)
++                val text = if (failure == null && sent == request.count) {
++                    LocaleController.formatString(R.string.TeleGiftsSent, sent)
++                } else {
++                    // the result of the last payment is unknown unless the server answered
++                    val hint = if (failure?.unknown == true) " " + LocaleController.getString(R.string.TeleGiftsCheckBalance) else ""
++                    LocaleController.formatString(R.string.TeleGiftsSendStopped, sent, request.count) + (failure?.let { " ${it.text}" } ?: "") + hint
++                }
++                TeleToast.log("gifts-sent", text, account = account)
++                BulletinFactory.global().createSimpleBulletin(R.raw.chats_infotip, text).show()
++                if (sent > 0) afterSent(account, request.dialogId)
++            }
++        })
++    }
++
++    private fun afterSent(account: Int, dialogId: Long) {
++        if (dialogId < 0) return
++        val fragment = LaunchActivity.getSafeLastFragment() ?: return
++        if (fragment is ChatActivity && fragment.dialogId == dialogId) return
++        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.closeProfileActivity, dialogId, false)
++        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.closeChatActivity, dialogId, false)
++        fragment.presentFragment(ChatActivity.of(dialogId))
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftSender.kt b/TMessagesProj/src/main/java/tele/helpers/GiftSender.kt
+new file mode 100644
+index 000000000..a2b373e1f
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftSender.kt
+@@ -0,0 +1,130 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.tgnet.tl.TL_stars.StarGift
++
++/**
++ * Sends the same star gift several times, one after another (desktop 0184). It stops at the first
++ * error and never retries a payment. Callers only use [start], so the way the series is run can be
++ * swapped without touching them.
++ */
++object GiftSender {
++
++    class Job(
++        @JvmField val currentAccount: Int,
++        @JvmField val dialogId: Long,
++        @JvmField val gift: StarGift,
++        @JvmField val anonymous: Boolean,
++        @JvmField val upgrade: Boolean,
++        @JvmField val message: TLRPC.TL_textWithEntities?,
++        @JvmField val count: Int,
++        /** The Stars one gift may cost at most; a dearer payment form stops the series before any charge. */
++        @JvmField val price: Long
++    )
++
++    /** [unknown]: the payment was sent but its result never came, so the gift may have gone through. */
++    class Failure(@JvmField val text: String, @JvmField val unknown: Boolean)
++
++    interface Listener {
++        /** Gift number [sent] + 1 is being sent now. */
++        fun onProgress(sent: Int)
++
++        fun onFinished(sent: Int, failure: Failure?)
++    }
++
++    class Run internal constructor() {
++        internal var cancelled = false
++
++        /** Stops after the gift that is being sent. */
++        fun cancel() {
++            cancelled = true
++        }
++    }
++
++    @JvmStatic
++    fun start(job: Job, listener: Listener): Run {
++        val run = Run()
++        next(job, listener, run, 0)
++        return run
++    }
++
++    private fun next(job: Job, listener: Listener, run: Run, sent: Int) {
++        if (run.cancelled || sent >= job.count) {
++            listener.onFinished(sent, null)
++            return
++        }
++        listener.onProgress(sent)
++        sendOne(job) { failure ->
++            if (failure != null) {
++                listener.onFinished(sent, failure)
++            } else {
++                next(job, listener, run, sent + 1)
++            }
++        }
++    }
++
++    private fun invoice(job: Job): TLRPC.TL_inputInvoiceStarGift {
++        val invoice = TLRPC.TL_inputInvoiceStarGift()
++        invoice.hide_name = job.anonymous
++        invoice.peer = MessagesController.getInstance(job.currentAccount).getInputPeer(job.dialogId)
++        invoice.gift_id = job.gift.id
++        invoice.include_upgrade = job.upgrade
++        val message = job.message
++        if (message != null && !message.text.isNullOrEmpty()) {
++            invoice.flags = invoice.flags or 2
++            invoice.message = message
++        }
++        return invoice
++    }
++
++    private fun failure(error: TLRPC.TL_error?, fallback: String, afterPayment: Boolean): Failure {
++        val text = error?.text?.takeIf { it.isNotEmpty() } ?: fallback
++        // a server answer (4xx) means the payment was not made; anything else may have been
++        val unknown = afterPayment && (error == null || error.code !in 400..499)
++        return Failure(text, unknown)
++    }
++
++    private fun sendOne(job: Job, done: (Failure?) -> Unit) {
++        val connections = ConnectionsManager.getInstance(job.currentAccount)
++        val invoice = invoice(job)
++        val form = TLRPC.TL_payments_getPaymentForm()
++        form.invoice = invoice
++        connections.sendRequest(form) { formResponse, formError ->
++            AndroidUtilities.runOnUIThread {
++                if (formResponse !is TLRPC.TL_payments_paymentFormStarGift) {
++                    done(failure(formError, "NO_PAYMENT_FORM", false))
++                    return@runOnUIThread
++                }
++                var cost = 0L
++                for (price in formResponse.invoice.prices) cost += price.amount
++                if (cost > job.price) {
++                    done(Failure(LocaleController.getString(R.string.TeleGiftsPriceChanged), false))
++                    return@runOnUIThread
++                }
++                val pay = TL_stars.TL_payments_sendStarsForm()
++                pay.form_id = formResponse.form_id
++                pay.invoice = invoice
++                connections.sendRequest(pay) { payResponse, payError ->
++                    AndroidUtilities.runOnUIThread {
++                        if (payResponse !is TLRPC.TL_payments_paymentResult) {
++                            done(failure(payError, "FAILED_SEND_STARS", true))
++                            return@runOnUIThread
++                        }
++                        Utilities.stageQueue.postRunnable {
++                            MessagesController.getInstance(job.currentAccount).processUpdates(payResponse.updates, false)
++                        }
++                        if (job.gift.limited_per_user) job.gift.per_user_remains--
++                        done(null)
++                    }
++                }
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftQuantityView.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftQuantityView.kt
+new file mode 100644
+index 000000000..ed65f34a5
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftQuantityView.kt
+@@ -0,0 +1,119 @@
++package tele.ui
++
++import android.annotation.SuppressLint
++import android.content.Context
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.MotionEvent
++import android.widget.LinearLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.AndroidUtilities.dp
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++
++/** The row of the gift sheet that picks how many gifts go out: a label and a stepper that repeats while held. */
++class TeleGiftQuantityView(
++    context: Context,
++    private val resourcesProvider: Theme.ResourcesProvider?,
++    private val max: Int,
++    private val changed: Runnable
++) : LinearLayout(context) {
++
++    var count = 1
++        private set
++
++    private val countView = TextView(context)
++    private val minus = stepper("\u2212")
++    private val plus = stepper("+")
++    private var step = 0
++    private var held = 0
++
++    private val repeat = object : Runnable {
++        override fun run() {
++            if (!move(step)) return
++            held++
++            AndroidUtilities.runOnUIThread(this, if (held > 8) 40L else 90L)
++        }
++    }
++
++    init {
++        orientation = HORIZONTAL
++        gravity = Gravity.CENTER_VERTICAL
++        setPadding(dp(16f), dp(6f), dp(16f), dp(6f))
++
++        val label = TextView(context)
++        label.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        label.setTextColor(color(Theme.key_windowBackgroundWhiteBlackText))
++        label.text = LocaleController.getString(R.string.TeleGiftsQuantity)
++        addView(label, LayoutHelper.createLinear(0, LayoutHelper.WRAP_CONTENT, 1f, Gravity.CENTER_VERTICAL))
++
++        addView(minus, LayoutHelper.createLinear(40, 40))
++        countView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
++        countView.typeface = AndroidUtilities.bold()
++        countView.setTextColor(color(Theme.key_windowBackgroundWhiteBlackText))
++        countView.gravity = Gravity.CENTER
++        addView(countView, LayoutHelper.createLinear(48, 40))
++        addView(plus, LayoutHelper.createLinear(40, 40))
++
++        hold(minus, -1)
++        hold(plus, 1)
++        update()
++    }
++
++    @SuppressLint("ClickableViewAccessibility")
++    private fun hold(view: TextView, direction: Int) {
++        view.setOnTouchListener { v, event ->
++            when (event.actionMasked) {
++                MotionEvent.ACTION_DOWN -> {
++                    v.isPressed = true
++                    step = direction
++                    held = 0
++                    if (move(direction)) AndroidUtilities.runOnUIThread(repeat, 400)
++                    true
++                }
++                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
++                    v.isPressed = false
++                    AndroidUtilities.cancelRunOnUIThread(repeat)
++                    true
++                }
++                else -> true
++            }
++        }
++    }
++
++    // false when the edge is reached
++    private fun move(delta: Int): Boolean {
++        val next = (count + delta).coerceIn(1, max)
++        if (next == count) return false
++        count = next
++        update()
++        changed.run()
++        return true
++    }
++
++    private fun update() {
++        countView.text = count.toString()
++        minus.alpha = if (count > 1) 1f else .4f
++        plus.alpha = if (count < max) 1f else .4f
++    }
++
++    override fun onDetachedFromWindow() {
++        super.onDetachedFromWindow()
++        AndroidUtilities.cancelRunOnUIThread(repeat)
++    }
++
++    private fun stepper(text: String): TextView {
++        val view = TextView(context)
++        view.text = text
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 22f)
++        view.gravity = Gravity.CENTER
++        view.setTextColor(color(Theme.key_featuredStickers_addButton))
++        view.background = Theme.createSelectorDrawable(Theme.multAlpha(color(Theme.key_featuredStickers_addButton), .12f), Theme.RIPPLE_MASK_CIRCLE_20DP, dp(20f))
++        return view
++    }
++
++    private fun color(key: Int): Int = Theme.getColor(key, resourcesProvider)
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 63d11fd47..7d0a9f3e6 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -190,6 +190,8 @@ object TeleSearch {
+             section(1476, "Bulk gift actions", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Select several gifts"),
+             section(1472, "Search gifts", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1478, "Gift filter by model, backdrop and symbol", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Search gifts"),
++            section(1473, "Send several gifts at once", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1477, "Gift quantity", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Send several gifts at once"),
+             section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1101, "Preview calcmula results while typing", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1330, "Calcmula suggestions and sending without calculating", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 8bd60ac45..22820ac6a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -994,6 +994,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Dim hidden gifts" to "Fade hidden gifts in the list and mark them with a badge.",
+             "Select several gifts" to "Adds Select gifts to the gifts menu of your profile, to show, hide, pin or transfer many at once.",
+             "Search gifts" to "Adds a search field and attribute chips to the gift list; covers collectible gifts only.",
++            "Send several gifts at once" to "Adds a quantity stepper to the gift sheet. The gifts are sent one by one after you confirm the total.",
+             "Open collectible gifts in see.tg" to "Open collectible gifts in the see.tg mini app.",
+             "Copy custom emoji id" to "Copy a custom emoji's ID from its menu.",
+             "Send photos in HD by default" to "Send photos in full quality.",
+@@ -1523,6 +1524,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Dim hidden gifts", TeleConfig.GIFT_HIDDEN_DIM),
+                 toggle("Select several gifts", TeleConfig.GIFT_SELECT),
+                 toggle("Search gifts", TeleConfig.GIFT_SEARCH),
++                toggle("Send several gifts at once", TeleConfig.GIFT_QUANTITY),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Collectibles"),
+                 toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 45ff84ddc..3d43ce9be 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -242,4 +242,13 @@
+     <string name="TeleGiftsBackdrops_other">%1$d backdrops</string>
+     <string name="TeleGiftsSymbols_one">%1$d symbol</string>
+     <string name="TeleGiftsSymbols_other">%1$d symbols</string>
++    <string name="TeleGiftsQuantity">Quantity</string>
++    <string name="TeleGiftsSendMany">Send %1$d Gifts for ⭐️%2$s</string>
++    <string name="TeleGiftsSendManySelf">Buy %1$d Gifts for ⭐️%2$s</string>
++    <string name="TeleGiftsSendingMany">Sending %1$d of %2$d…</string>
++    <string name="TeleGiftsSendConfirm">Send %1$d gifts to %2$s for %3$s?</string>
++    <string name="TeleGiftsSendConfirmSelf">Buy %1$d gifts for %3$s?</string>
++    <string name="TeleGiftsSent">%1$d gifts sent</string>
++    <string name="TeleGiftsSendStopped">Sent %1$d of %2$d gifts.</string>
++    <string name="TeleGiftsPriceChanged">The price of the gift changed.</string>
+ </resources>

@@ -1,0 +1,638 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 04:11:26 +0300
+Subject: [PATCH 227/228] feat: more bulk gift actions
+
+---
+ .../src/main/java/tele/helpers/GiftBulk.kt    | 368 ++++++++++++++++--
+ .../main/java/tele/ui/TeleGiftSelectionBar.kt |  83 ++--
+ .../src/main/res/values/strings_tele.xml      |  47 +++
+ 3 files changed, 435 insertions(+), 63 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+index 72c22392f..6ed731ee4 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+@@ -1,12 +1,17 @@
+ package tele.helpers
+ 
+ import android.content.Context
++import android.view.View
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.BirthdayController
+ import org.telegram.messenger.DialogObject
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
+ import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.messenger.utils.tlutils.AmountUtils
+ import org.telegram.tgnet.ConnectionsManager
+ import org.telegram.tgnet.TLRPC
+ import org.telegram.tgnet.tl.TL_stars
+@@ -14,61 +19,115 @@ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.ItemOptions
+ import org.telegram.ui.Components.Premium.boosts.UserSelectorBottomSheet
++import org.telegram.ui.Stars.BotStarsController
+ import org.telegram.ui.Stars.StarGiftSheet
+ import org.telegram.ui.Stars.StarsController
+ import org.telegram.ui.Stars.StarsIntroActivity
+-import org.telegram.messenger.Utilities
+ 
+ /**
+- * The bulk actions of the gift selection (desktop 0185): show, hide, pin, unpin and transfer. Each
++ * The bulk actions of the gift selection (desktop 0185, 0190): show, hide, pin, unpin, transfer, sell,
++ * unlist, convert to Stars and add to a collection. Each
+  * one runs over [GiftSelection.gifts] one by one through [GiftBatch]: it waits out rate limits, skips
+  * the gifts the server refuses and leaves them picked.
+  */
+ object GiftBulk {
+ 
+-    @JvmStatic
+-    fun canShow(selection: GiftSelection): Boolean =
+-        canToggleSaved(selection) && selection.gifts.any { it.unsaved }
++    /** The actions of the bar, in the order of its buttons. */
++    enum class Action { SHOW, HIDE, PIN, UNPIN, TRANSFER, SELL, UNLIST, CONVERT, COLLECTION }
+ 
+-    @JvmStatic
+-    fun canHide(selection: GiftSelection): Boolean =
+-        canToggleSaved(selection) && selection.gifts.any { !it.unsaved }
++    private fun manage(selection: GiftSelection): Boolean =
++        StarGiftSheet.isMineWithActions(selection.currentAccount, selection.dialogId)
+ 
+-    @JvmStatic
+-    fun canTransfer(selection: GiftSelection): Boolean {
+-        val gifts = selection.gifts
+-        return gifts.isNotEmpty() && gifts.all { transferable(selection.currentAccount, it) }
++    // pinned gifts live on the main list only, like in the menu of a gift; search results are other objects
++    private fun pinnable(selection: GiftSelection): Boolean =
++        selection.canPin && selection.list === selection.allList && selection.gifts.all { selection.list.gifts.contains(it) }
++
++    // the sentence about the gifts that fail [bad], or null when none does
++    private fun problem(gifts: List<TL_stars.SavedStarGift>, key: String, bad: (TL_stars.SavedStarGift) -> Boolean): String? {
++        val count = gifts.count(bad)
++        return if (count == 0) null else LocaleController.formatPluralString(key, count)
+     }
+ 
+-    @JvmStatic
+-    fun canPin(selection: GiftSelection): Boolean {
+-        val gifts = selection.gifts
+-        return pinnable(selection) && gifts.isNotEmpty()
+-            && gifts.any { !it.pinned_to_top }
+-            && gifts.all { it.gift is TL_stars.TL_starGiftUnique && !it.unsaved }
++    private fun unique(gift: TL_stars.SavedStarGift): TL_stars.TL_starGiftUnique? = gift.gift as? TL_stars.TL_starGiftUnique
++
++    private fun peerId(peer: TLRPC.Peer?): Long = if (peer == null) 0L else DialogObject.getPeerDialogId(peer)
++
++    /** A collectible of the user (or of a channel they own). */
++    private fun canTransfer(account: Int, gift: TL_stars.SavedStarGift): Boolean {
++        val unique = unique(gift) ?: return false
++        return unique.owner_id != null && StarGiftSheet.isMineWithActions(account, peerId(unique.owner_id))
+     }
+ 
+-    @JvmStatic
+-    fun canUnpin(selection: GiftSelection): Boolean {
+-        val gifts = selection.gifts
+-        return pinnable(selection) && gifts.isNotEmpty() && gifts.all { it.pinned_to_top }
++    /** The user's own collectible that is not hosted by someone else; channels don't sell gifts. */
++    private fun canSell(selection: GiftSelection, gift: TL_stars.SavedStarGift): Boolean {
++        val unique = unique(gift) ?: return false
++        val self = UserConfig.getInstance(selection.currentAccount).getClientUserId()
++        val host = if (unique.host_id != null) peerId(unique.host_id) else peerId(unique.owner_id)
++        return selection.dialogId >= 0 && selection.dialogId == self && peerId(unique.owner_id) == self && host == self
+     }
+ 
+-    private fun canToggleSaved(selection: GiftSelection): Boolean =
+-        StarGiftSheet.isMineWithActions(selection.currentAccount, selection.dialogId)
++    private fun onSale(gift: TL_stars.SavedStarGift): Boolean = !unique(gift)?.resell_amount.isNullOrEmpty()
+ 
+-    // pinned gifts live on the main list only, like in the menu of a gift; search results are other objects
+-    private fun pinnable(selection: GiftSelection): Boolean =
+-        selection.canPin && selection.list === selection.allList && selection.gifts.all { selection.list.gifts.contains(it) }
++    // the id of the gift in the list that holds it: messages of a user, saved ids of a channel
++    private fun hasInput(selection: GiftSelection, gift: TL_stars.SavedStarGift): Boolean =
++        gift.flags and (if (selection.dialogId < 0) 2048 else 8) != 0
+ 
+-    /** A unique gift of the user (or of a channel they own) that is not locked for transfers. */
++    private fun canConvert(selection: GiftSelection, gift: TL_stars.SavedStarGift): Boolean =
++        unique(gift) == null && gift.convert_stars > 0 && gift.from_id != null && hasInput(selection, gift)
++
++    /** Why [action] can't run on the picked gifts, or null when it can. */
+     @JvmStatic
+-    fun transferable(currentAccount: Int, gift: TL_stars.SavedStarGift): Boolean {
+-        val unique = gift.gift as? TL_stars.TL_starGiftUnique ?: return false
+-        if (unique.owner_id == null) return false
+-        if (gift.can_transfer_at > ConnectionsManager.getInstance(currentAccount).currentTime) return false
+-        return StarGiftSheet.isMineWithActions(currentAccount, DialogObject.getPeerDialogId(unique.owner_id))
++    fun reason(selection: GiftSelection, action: Action): String? {
++        val gifts = selection.gifts
++        if (gifts.isEmpty()) return LocaleController.getString(R.string.TeleGiftsReasonNone)
++        val account = selection.currentAccount
++        val now = ConnectionsManager.getInstance(account).currentTime
++        val noRights = LocaleController.getString(R.string.TeleGiftsReasonNoRights)
++        fun notCollectible() = problem(gifts, "TeleGiftsReasonNotUnique") { unique(it) == null }
++        return when (action) {
++            Action.SHOW -> when {
++                !manage(selection) -> noRights
++                gifts.none { it.unsaved } -> LocaleController.getString(R.string.TeleGiftsReasonShown)
++                else -> null
++            }
++            Action.HIDE -> when {
++                !manage(selection) -> noRights
++                gifts.all { it.unsaved } -> LocaleController.getString(R.string.TeleGiftsReasonHidden)
++                else -> null
++            }
++            Action.PIN -> when {
++                !pinnable(selection) -> LocaleController.getString(R.string.TeleGiftsReasonPinHere)
++                else -> notCollectible()
++                    ?: problem(gifts, "TeleGiftsReasonHiddenGifts") { it.unsaved }
++                    ?: if (gifts.all { it.pinned_to_top }) LocaleController.getString(R.string.TeleGiftsReasonPinned) else null
++            }
++            Action.UNPIN -> when {
++                !pinnable(selection) -> LocaleController.getString(R.string.TeleGiftsReasonPinHere)
++                gifts.none { it.pinned_to_top } -> LocaleController.getString(R.string.TeleGiftsReasonNoPinned)
++                else -> null
++            }
++            Action.TRANSFER -> if (!manage(selection)) noRights else notCollectible()
++                ?: problem(gifts, "TeleGiftsReasonNoTransfer") { !canTransfer(account, it) }
++                ?: problem(gifts, "TeleGiftsReasonTransferLater") { it.can_transfer_at > now }
++            Action.SELL -> if (!manage(selection)) noRights else notCollectible()
++                ?: problem(gifts, "TeleGiftsReasonNoSell") { !canSell(selection, it) }
++                ?: problem(gifts, "TeleGiftsReasonSellLater") { it.can_resell_at > now }
++            Action.UNLIST -> if (!manage(selection)) noRights else notCollectible()
++                ?: problem(gifts, "TeleGiftsReasonNotOnSale") { !onSale(it) }
++            Action.CONVERT -> {
++                val period = MessagesController.getInstance(account).stargiftsConvertPeriodMax
++                if (!manage(selection)) noRights else problem(gifts, "TeleGiftsReasonCollectible") { unique(it) != null }
++                    ?: problem(gifts, "TeleGiftsReasonNoConvert") { !canConvert(selection, it) }
++                    ?: problem(gifts, "TeleGiftsReasonConvertLate") { it.date.toLong() + period <= now }
++            }
++            Action.COLLECTION -> when {
++                !selection.collections.isMine() -> noRights
++                selection.collections.getCollections().isEmpty() -> LocaleController.getString(R.string.TeleGiftsReasonNoCollections)
++                else -> null
++            }
++        }
+     }
+ 
+     private fun bulletins(fragment: BaseFragment?): BulletinFactory = BulletinFactory.of(fragment)
+@@ -174,7 +233,7 @@ object GiftBulk {
+      */
+     @JvmStatic
+     fun transfer(selection: GiftSelection, fragment: BaseFragment?, context: Context, resourcesProvider: Theme.ResourcesProvider?) {
+-        if (selection.isBusy || !canTransfer(selection)) return
++        if (selection.isBusy || reason(selection, Action.TRANSFER) != null) return
+         val account = selection.currentAccount
+         val gifts = selection.gifts
+         val sheet = UserSelectorBottomSheet(
+@@ -292,4 +351,245 @@ object GiftBulk {
+             }
+         )
+     }
++
++    /** Says why a dimmed button of the bar does nothing. */
++    @JvmStatic
++    fun explain(fragment: BaseFragment?, reason: String) {
++        bulletins(fragment).createSimpleBulletin(R.raw.error, reason).show()
++    }
++
++    /** Runs the action of a button of the bar, or explains why it can't. [anchor] is the button. */
++    @JvmStatic
++    fun perform(selection: GiftSelection, action: Action, fragment: BaseFragment?, anchor: View, resourcesProvider: Theme.ResourcesProvider?) {
++        if (selection.isBusy) return
++        val reason = reason(selection, action)
++        if (reason != null) {
++            explain(fragment, reason)
++            return
++        }
++        val context = anchor.context
++        when (action) {
++            Action.SHOW -> setSaved(selection, true, fragment)
++            Action.HIDE -> setSaved(selection, false, fragment)
++            Action.PIN -> setPinned(selection, true, fragment)
++            Action.UNPIN -> setPinned(selection, false, fragment)
++            Action.TRANSFER -> transfer(selection, fragment, context, resourcesProvider)
++            Action.SELL -> sell(selection, fragment, context, resourcesProvider)
++            Action.UNLIST -> unlist(selection, fragment, context, resourcesProvider)
++            Action.CONVERT -> convert(selection, fragment, context, resourcesProvider)
++            Action.COLLECTION -> chooseCollection(selection, fragment, anchor)
++        }
++    }
++
++    // every list that may hold another object of the same gift
++    private fun lists(selection: GiftSelection): List<StarsController.GiftsList> {
++        val result = ArrayList<StarsController.GiftsList>()
++        result.add(selection.allList)
++        selection.collections.all?.let { result.add(it) }
++        result.addAll(selection.collections.gifts.values)
++        if (!result.contains(selection.list)) result.add(selection.list)
++        return result
++    }
++
++    // the price is [price], or the gift is off sale when it is null; the same gift in other lists is another object
++    private fun markResale(selection: GiftSelection, gift: TL_stars.SavedStarGift, price: AmountUtils.Amount?) {
++        val targets = ArrayList<TL_stars.SavedStarGift>()
++        targets.add(gift)
++        for (list in lists(selection)) {
++            for (other in list.gifts) if (other !== gift && StarsController.eq(other, gift)) targets.add(other)
++        }
++        for (target in targets) {
++            val unique = unique(target) ?: continue
++            if (price != null) {
++                unique.flags = unique.flags or 16
++                unique.resale_ton_only = price.currency == AmountUtils.Currency.TON
++                unique.resell_amount = arrayListOf(price.convertTo(AmountUtils.Currency.STARS).toTl(), price.convertTo(AmountUtils.Currency.TON).toTl())
++            } else {
++                unique.flags = unique.flags and 16.inv()
++                unique.resale_ton_only = false
++                unique.resell_amount = null
++            }
++        }
++    }
++
++    private fun sell(selection: GiftSelection, fragment: BaseFragment?, context: Context, resourcesProvider: Theme.ResourcesProvider?) {
++        StarsIntroActivity.showGiftResellPriceSheet(context, selection.currentAccount, Utilities.Callback2<AmountUtils.Amount, Runnable> { price, close ->
++            close?.run()
++            confirmSell(selection, fragment, context, resourcesProvider, price)
++        }, resourcesProvider)
++    }
++
++    // the sheet asks for one price: tell it goes to every gift before anything is listed
++    private fun confirmSell(selection: GiftSelection, fragment: BaseFragment?, context: Context, resourcesProvider: Theme.ResourcesProvider?, price: AmountUtils.Amount) {
++        val gifts = selection.gifts
++        val amount = StarsIntroActivity.formatStarsAmountString(price.toTl()).toString()
++        val text = StarsIntroActivity.replaceStarsWithPlain(
++            price.currency == AmountUtils.Currency.TON,
++            LocaleController.formatPluralString("TeleGiftsSellConfirm", gifts.size, "XTR $amount"),
++            .66f
++        )
++        AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(LocaleController.getString(R.string.Gift2ActionResell))
++            .setMessage(text)
++            .setPositiveButton(LocaleController.getString(R.string.Gift2ActionResell)) { _, _ ->
++                // the whole batch is one protected action
++                StarsLock.guard(fragment, StarsLock.SELL) {
++                    if (!selection.isBusy) runSell(selection, fragment, gifts, price)
++                }
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun unlist(selection: GiftSelection, fragment: BaseFragment?, context: Context, resourcesProvider: Theme.ResourcesProvider?) {
++        val gifts = selection.gifts
++        AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(LocaleController.getString(R.string.Gift2ActionUnlist))
++            .setMessage(LocaleController.formatPluralString("TeleGiftsUnlistConfirm", gifts.size))
++            .setPositiveButton(LocaleController.getString(R.string.Gift2ActionUnlist)) { _, _ ->
++                if (!selection.isBusy) runSell(selection, fragment, gifts, null)
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    // [price] null takes the gifts off sale
++    private fun runSell(selection: GiftSelection, fragment: BaseFragment?, gifts: List<TL_stars.SavedStarGift>, price: AmountUtils.Amount?) {
++        val messages = MessagesController.getInstance(selection.currentAccount)
++        runBatch(
++            selection, fragment, if (price != null) "gifts-listed" else "gifts-unlisted", gifts,
++            LocaleController.formatPluralString(if (price != null) "TeleGiftsPutOnSale" else "TeleGiftsRemovedFromSale", gifts.size),
++            { index, batch, done ->
++                val gift = gifts[index]
++                val request = TL_stars.updateStarGiftPrice()
++                request.stargift = selection.list.getInput(gift)
++                request.resell_amount = price?.toTl() ?: TL_stars.StarsAmount.ofStars(0)
++                batch.send(request) { response, err ->
++                    if (response is TLRPC.Updates) {
++                        messages.processUpdates(response, false)
++                        markResale(selection, gift, price)
++                        done(null)
++                    } else {
++                        done(GiftBatch.Failure.of(err, "SELL_FAILED", false))
++                    }
++                }
++            },
++            { for (list in lists(selection)) list.notifyUpdate() }
++        )
++    }
++
++    private fun convert(selection: GiftSelection, fragment: BaseFragment?, context: Context, resourcesProvider: Theme.ResourcesProvider?) {
++        val gifts = selection.gifts
++        val stars = gifts.sumOf { it.convert_stars }
++        AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(LocaleController.getString(R.string.TeleGiftsConvertTitle))
++            .setMessage(LocaleController.formatPluralString("TeleGiftsConvertConfirm", gifts.size, LocaleController.formatNumber(stars, ',')))
++            .setPositiveButton(LocaleController.getString(R.string.Gift2ConvertButton)) { _, _ ->
++                // the whole batch is one protected action
++                StarsLock.guard(fragment, StarsLock.CONVERT) {
++                    if (!selection.isBusy) runConvert(selection, fragment, gifts, stars)
++                }
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun runConvert(selection: GiftSelection, fragment: BaseFragment?, gifts: List<TL_stars.SavedStarGift>, stars: Long) {
++        val account = selection.currentAccount
++        val dialogId = selection.dialogId
++        runBatch(
++            selection, fragment, "gifts-converted", gifts,
++            LocaleController.formatPluralString("TeleGiftsConverted", gifts.size, LocaleController.formatNumber(stars, ',')),
++            { index, batch, done ->
++                val gift = gifts[index]
++                val request = TL_stars.convertStarGift()
++                request.stargift = selection.list.getInput(gift)
++                batch.send(request) { response, err ->
++                    if (response is TLRPC.TL_boolTrue) {
++                        StarsController.getInstance(account).removeProfileGiftLocally(dialogId, gift)
++                        selection.remove(gift)
++                        val full = if (dialogId >= 0) MessagesController.getInstance(account).getUserFull(dialogId) else null
++                        if (full != null) {
++                            full.stargifts_count = maxOf(0, full.stargifts_count - 1)
++                            if (full.stargifts_count <= 0) full.flags2 = full.flags2 and 256.inv()
++                        }
++                        done(null)
++                    } else {
++                        done(GiftBatch.Failure.of(err, "CONVERT_FAILED", false))
++                    }
++                }
++            },
++            { result ->
++                if (result.done > 0) {
++                    if (dialogId >= 0) {
++                        StarsController.getInstance(account).invalidateBalance()
++                        StarsController.getInstance(account).invalidateTransactions(true)
++                    } else {
++                        BotStarsController.getInstance(account).invalidateStarsBalance(dialogId)
++                        BotStarsController.getInstance(account).invalidateTransactions(dialogId, true)
++                    }
++                }
++            }
++        )
++    }
++
++    // the menu lists the collections; the ones that already hold every picked gift are dimmed
++    private fun chooseCollection(selection: GiftSelection, fragment: BaseFragment?, anchor: View) {
++        if (fragment == null) return
++        val gifts = selection.gifts
++        val options = ItemOptions.makeOptions(fragment, anchor).setDrawScrim(false)
++        for (collection in selection.collections.getCollections()) {
++            val id = collection.collection_id
++            val title = collection.title
++            val inside = gifts.all { it.collection_id.contains(id) }
++            options.add(if (inside) LocaleController.formatString(R.string.TeleGiftsInCollection, title) else title) {
++                addToCollection(selection, fragment, id, title)
++            }
++            if (inside) {
++                options.lastView?.let {
++                    it.alpha = .4f
++                    it.isEnabled = false
++                }
++            }
++        }
++        options.show()
++    }
++
++    // one request for all the gifts; the selection stays locked until the server answers
++    private fun addToCollection(selection: GiftSelection, fragment: BaseFragment, id: Int, title: String) {
++        if (selection.isBusy) return
++        val targets = selection.gifts.filter { !it.collection_id.contains(id) }
++        if (targets.isEmpty()) return
++        val account = selection.currentAccount
++        val collections = selection.collections
++        selection.work(true, LocaleController.getString(R.string.TeleGiftsAdding))
++        val request = TL_stars.updateStarGiftCollection()
++        request.peer = MessagesController.getInstance(account).getInputPeer(selection.dialogId)
++        request.collection_id = id
++        request.flags = request.flags or 4
++        for (gift in targets) request.add_stargift.add(selection.list.getInput(gift))
++        ConnectionsManager.getInstance(account).sendRequest(request) { response, err ->
++            AndroidUtilities.runOnUIThread {
++                if (response is TL_stars.TL_starGiftCollection) {
++                    // the same bookkeeping as the add from the menu of a gift
++                    val list = collections.getListById(id)
++                    if (list != null) {
++                        list.gifts.addAll(0, targets)
++                        list.totalCount += targets.size
++                        list.notifyUpdate()
++                        collections.updateIcon(id)
++                    }
++                    for (gift in targets) collections.updateGiftsCollections(gift, id, true)
++                    val known = collections.getCollections()
++                    val index = known.indexOfFirst { it.collection_id == id }
++                    if (index >= 0) known[index] = response
++                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.starUserGiftCollectionsLoaded, selection.dialogId, collections)
++                    toast(selection, fragment, "gifts-collected", LocaleController.formatPluralString("TeleGiftsAddedToCollection", targets.size, title))
++                } else {
++                    bulletins(fragment).showForError(err)
++                }
++                selection.exit()
++            }
++        }
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt
+index 062ff96b6..dd527d6a3 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt
+@@ -7,7 +7,8 @@ import android.graphics.PorterDuffColorFilter
+ import android.graphics.Paint
+ import android.util.TypedValue
+ import android.view.Gravity
+-import android.view.View
++import android.widget.FrameLayout
++import android.widget.HorizontalScrollView
+ import android.widget.ImageView
+ import android.widget.LinearLayout
+ import android.widget.TextView
+@@ -19,9 +20,13 @@ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Components.LayoutHelper
+ import tele.helpers.GiftBulk
++import tele.helpers.GiftBulk.Action
+ import tele.helpers.GiftSelection
+ 
+-/** The bar under the gift list while gifts are being picked: the count, cancel and the bulk actions. */
++/**
++ * The bar under the gift list while gifts are being picked: the count, cancel and the bulk actions.
++ * Every action has a button; the ones that can't run on the picked gifts are dimmed and say why when pressed.
++ */
+ class TeleGiftSelectionBar(
+     context: Context,
+     private val resourcesProvider: Theme.ResourcesProvider?,
+@@ -31,12 +36,9 @@ class TeleGiftSelectionBar(
+ 
+     private val closeView = ImageView(context)
+     private val titleView = TextView(context)
++    private val scroll = HorizontalScrollView(context)
+     private val buttons = LinearLayout(context)
+-    private val showButton: TextView
+-    private val hideButton: TextView
+-    private val transferButton: TextView
+-    private val pinButton: TextView
+-    private val unpinButton: TextView
++    private val views = LinkedHashMap<Action, TextView>()
+     private val linePaint = Paint()
+     private val refresh = Runnable { update() }
+ 
+@@ -70,48 +72,66 @@ class TeleGiftSelectionBar(
+         header.addView(titleView, LayoutHelper.createLinear(0, LayoutHelper.MATCH_PARENT, 1f, 4, 0, 16, 0))
+ 
+         buttons.orientation = HORIZONTAL
+-        addView(buttons, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 40, 12f, 0f, 12f, 12f))
+-
+-        showButton = button(ID_SHOW, R.string.Gift2ShowGift) { GiftBulk.setSaved(selection, true, fragment) }
+-        hideButton = button(ID_HIDE, R.string.Gift2HideGift) { GiftBulk.setSaved(selection, false, fragment) }
+-        transferButton = button(ID_TRANSFER, R.string.Gift2TransferOption) { GiftBulk.transfer(selection, fragment, context, resourcesProvider) }
+-        pinButton = button(ID_PIN, R.string.Gift2Pin) { GiftBulk.setPinned(selection, true, fragment) }
+-        unpinButton = button(ID_UNPIN, R.string.Gift2Unpin) { GiftBulk.setPinned(selection, false, fragment) }
++        scroll.id = ID_SCROLL
++        scroll.isHorizontalScrollBarEnabled = false
++        scroll.overScrollMode = OVER_SCROLL_NEVER
++        scroll.addView(buttons, FrameLayout.LayoutParams(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT))
++        addView(scroll, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 40, 8f, 0f, 8f, 12f))
++
++        for (action in Action.values()) {
++            views[action] = button(idOf(action), labelOf(action), action)
++        }
+     }
+ 
+     private fun color(key: Int): Int = Theme.getColor(key, resourcesProvider)
+ 
+-    private fun button(id: Int, text: Int, click: () -> Unit): TextView {
++    private fun idOf(action: Action): Int = when (action) {
++        Action.SHOW -> ID_SHOW
++        Action.HIDE -> ID_HIDE
++        Action.TRANSFER -> ID_TRANSFER
++        Action.PIN -> ID_PIN
++        Action.UNPIN -> ID_UNPIN
++        Action.SELL -> ID_SELL
++        Action.UNLIST -> ID_UNLIST
++        Action.CONVERT -> ID_CONVERT
++        Action.COLLECTION -> ID_COLLECTION
++    }
++
++    private fun labelOf(action: Action): Int = when (action) {
++        Action.SHOW -> R.string.Gift2ShowGift
++        Action.HIDE -> R.string.Gift2HideGift
++        Action.TRANSFER -> R.string.Gift2TransferOption
++        Action.PIN -> R.string.Gift2Pin
++        Action.UNPIN -> R.string.Gift2Unpin
++        Action.SELL -> R.string.TeleGiftsSell
++        Action.UNLIST -> R.string.Gift2ActionUnlist
++        Action.CONVERT -> R.string.TeleGiftsConvert
++        Action.COLLECTION -> R.string.Gift2AddToCollection
++    }
++
++    private fun button(id: Int, text: Int, action: Action): TextView {
+         val accent = color(Theme.key_featuredStickers_addButton)
+         val view = TextView(context)
+         view.id = id
+         view.gravity = Gravity.CENTER
++        view.setSingleLine()
++        view.setPadding(dp(14f), 0, dp(14f), 0)
+         view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
+         view.typeface = AndroidUtilities.bold()
+         view.setTextColor(accent)
+         view.text = LocaleController.getString(text)
+         view.background = Theme.createSimpleSelectorRoundRectDrawable(dp(8f), Theme.multAlpha(accent, .12f), Theme.multAlpha(accent, .24f))
+-        view.setOnClickListener { if (!selection.isBusy) click() }
+-        buttons.addView(view, LayoutHelper.createLinear(0, LayoutHelper.MATCH_PARENT, 1f, 4, 0, 4, 0))
++        view.setOnClickListener { GiftBulk.perform(selection, action, fragment, view, resourcesProvider) }
++        buttons.addView(view, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT, 4f, 0f, 4f, 0f))
+         return view
+     }
+ 
+     private fun update() {
+         titleView.text = selection.status ?: LocaleController.formatString(R.string.TeleGiftsSelected, selection.count)
+         val busy = selection.isBusy
+-        var visible = 0
+-        for ((view, shown) in listOf(
+-            showButton to GiftBulk.canShow(selection),
+-            hideButton to GiftBulk.canHide(selection),
+-            transferButton to GiftBulk.canTransfer(selection),
+-            pinButton to GiftBulk.canPin(selection),
+-            unpinButton to GiftBulk.canUnpin(selection)
+-        )) {
+-            view.visibility = if (shown) View.VISIBLE else View.GONE
+-            view.alpha = if (busy) .5f else 1f
+-            if (shown) visible++
++        for ((action, view) in views) {
++            view.alpha = if (busy) .5f else if (GiftBulk.reason(selection, action) != null) .4f else 1f
+         }
+-        buttons.visibility = if (visible > 0) View.VISIBLE else View.GONE
+     }
+ 
+     override fun onAttachedToWindow() {
+@@ -136,6 +156,11 @@ class TeleGiftSelectionBar(
+         const val ID_TRANSFER = 9668
+         const val ID_PIN = 9669
+         const val ID_UNPIN = 9670
++        const val ID_SELL = 9677
++        const val ID_UNLIST = 9678
++        const val ID_CONVERT = 9679
++        const val ID_COLLECTION = 9680
++        const val ID_SCROLL = 9681
+         // the "Select gifts" entry of the gifts menu
+         const val ID_SELECT = 9665
+     }
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 5455efad2..cdec29434 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -263,4 +263,51 @@
+     <string name="TeleGiftsBatchWaiting">%1$s, waiting %2$s for Telegram\'s limit</string>
+     <string name="TeleGiftsSendWaiting">Waiting %1$s to send %2$d of %3$d…</string>
+     <string name="TeleGiftsSendCancelled">Cancelled after %1$d of %2$d gifts.</string>
++    <string name="TeleGiftsSell">Sell</string>
++    <string name="TeleGiftsConvert">Convert to stars</string>
++    <string name="TeleGiftsConvertTitle">Convert to stars</string>
++    <string name="TeleGiftsInCollection">%1$s (already there)</string>
++    <string name="TeleGiftsAdding">Adding to collection…</string>
++    <string name="TeleGiftsReasonNone">No gifts selected</string>
++    <string name="TeleGiftsReasonNoRights">You can\'t manage these gifts</string>
++    <string name="TeleGiftsReasonShown">Selected gifts are already shown</string>
++    <string name="TeleGiftsReasonHidden">Selected gifts are already hidden</string>
++    <string name="TeleGiftsReasonPinned">Selected gifts are already pinned</string>
++    <string name="TeleGiftsReasonNoPinned">No pinned gifts selected</string>
++    <string name="TeleGiftsReasonPinHere">Gifts can only be pinned on the main list</string>
++    <string name="TeleGiftsReasonNoCollections">No collections yet</string>
++    <string name="TeleGiftsReasonNotUnique_one">%1$d gift isn\'t a collectible</string>
++    <string name="TeleGiftsReasonNotUnique_other">%1$d gifts aren\'t collectibles</string>
++    <string name="TeleGiftsReasonCollectible_one">%1$d gift is a collectible</string>
++    <string name="TeleGiftsReasonCollectible_other">%1$d gifts are collectibles</string>
++    <string name="TeleGiftsReasonHiddenGifts_one">%1$d gift is hidden</string>
++    <string name="TeleGiftsReasonHiddenGifts_other">%1$d gifts are hidden</string>
++    <string name="TeleGiftsReasonNoTransfer_one">%1$d gift can\'t be transferred</string>
++    <string name="TeleGiftsReasonNoTransfer_other">%1$d gifts can\'t be transferred</string>
++    <string name="TeleGiftsReasonTransferLater_one">%1$d gift can\'t be transferred yet</string>
++    <string name="TeleGiftsReasonTransferLater_other">%1$d gifts can\'t be transferred yet</string>
++    <string name="TeleGiftsReasonNoSell_one">%1$d gift can\'t be sold</string>
++    <string name="TeleGiftsReasonNoSell_other">%1$d gifts can\'t be sold</string>
++    <string name="TeleGiftsReasonSellLater_one">%1$d gift can\'t be sold yet</string>
++    <string name="TeleGiftsReasonSellLater_other">%1$d gifts can\'t be sold yet</string>
++    <string name="TeleGiftsReasonNotOnSale_one">%1$d gift isn\'t on sale</string>
++    <string name="TeleGiftsReasonNotOnSale_other">%1$d gifts aren\'t on sale</string>
++    <string name="TeleGiftsReasonNoConvert_one">%1$d gift can\'t be converted</string>
++    <string name="TeleGiftsReasonNoConvert_other">%1$d gifts can\'t be converted</string>
++    <string name="TeleGiftsReasonConvertLate_one">%1$d gift can\'t be converted anymore</string>
++    <string name="TeleGiftsReasonConvertLate_other">%1$d gifts can\'t be converted anymore</string>
++    <string name="TeleGiftsSellConfirm_one">Put %1$d gift on sale for %2$s?</string>
++    <string name="TeleGiftsSellConfirm_other">Put %1$d gifts on sale for %2$s each?</string>
++    <string name="TeleGiftsPutOnSale_one">%1$d gift put on sale</string>
++    <string name="TeleGiftsPutOnSale_other">%1$d gifts put on sale</string>
++    <string name="TeleGiftsUnlistConfirm_one">Remove %1$d gift from sale?</string>
++    <string name="TeleGiftsUnlistConfirm_other">Remove %1$d gifts from sale?</string>
++    <string name="TeleGiftsRemovedFromSale_one">%1$d gift removed from sale</string>
++    <string name="TeleGiftsRemovedFromSale_other">%1$d gifts removed from sale</string>
++    <string name="TeleGiftsConvertConfirm_one">Convert %1$d gift to %2$s stars? This can\'t be undone.</string>
++    <string name="TeleGiftsConvertConfirm_other">Convert %1$d gifts to %2$s stars? This can\'t be undone.</string>
++    <string name="TeleGiftsConverted_one">%1$d gift converted to %2$s stars</string>
++    <string name="TeleGiftsConverted_other">%1$d gifts converted to %2$s stars</string>
++    <string name="TeleGiftsAddedToCollection_one">%1$d gift added to %2$s</string>
++    <string name="TeleGiftsAddedToCollection_other">%1$d gifts added to %2$s</string>
+ </resources>

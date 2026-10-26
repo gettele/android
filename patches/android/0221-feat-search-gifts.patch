@@ -1,0 +1,828 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 03:26:58 +0300
+Subject: [PATCH 221/228] feat: search gifts
+
+---
+ .../ui/Gifts/ProfileGiftsContainer.java       |  38 ++-
+ .../telegram/ui/Stars/StarsController.java    |   3 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/GiftBulk.kt    |  11 +-
+ .../src/main/java/tele/helpers/GiftSearch.kt  | 306 ++++++++++++++++++
+ .../main/java/tele/ui/TeleGiftSearchView.kt   | 254 +++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ .../src/main/res/values/strings_tele.xml      |   6 +
+ 9 files changed, 616 insertions(+), 8 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+index 2c5baebd5..cecf2a1f4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+@@ -110,7 +110,9 @@ import org.telegram.ui.Stars.StarGiftSheet;
+ import org.telegram.ui.Stars.StarsController;
+ import org.telegram.ui.Stories.recorder.ButtonWithCounterView;
+ import tele.helpers.GiftSelection;
++import tele.helpers.GiftSearch;
+ import tele.ui.TeleGiftSelectionBar;
++import tele.ui.TeleGiftSearchFactory;
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
+@@ -147,6 +149,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+     public ItemOptions currentMenu;
+ 
+     final GiftSelection selection;
++    final GiftSearch search;
+     private TeleGiftSelectionBar selectionBar;
+     private boolean selectionShown;
+ 
+@@ -641,7 +644,10 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+             if (list != null) {
+                 int spanCountLeft = 3;
+                 final boolean selecting = parent.selection.isActive();
+-                for (TL_stars.SavedStarGift userGift : list.gifts) {
++                final GiftSearch search = parent.search;
++                final boolean searching = search != null && search.isActive();
++                final ArrayList<TL_stars.SavedStarGift> shown = searching ? search.found(list) : list.gifts;
++                for (TL_stars.SavedStarGift userGift : shown) {
+                     items.add(
+                         GiftSheet.GiftCell.Factory.asStarGift(0, userGift, true, selecting, isCollection)
+                             .setChecked(selecting && parent.selection.list == list && parent.selection.isSelected(userGift))
+@@ -652,11 +658,14 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+                         spanCountLeft = 3;
+                     }
+                 }
+-                if (list.loading || !list.endReached) {
++                if (searching ? search.isLoading() : (list.loading || !list.endReached)) {
+                     for (int i = 0; i < (spanCountLeft <= 0 ? 3 : spanCountLeft); ++i) {
+                         items.add(UItem.asFlicker(1 + i, FlickerLoadingView.STAR_GIFT).setSpanCount(1));
+                     }
+                 }
++                if (searching && shown.isEmpty() && search.isLoaded()) {
++                    items.add(TextFactory.asText(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourcesProvider), Gravity.CENTER, 14, LocaleController.getString(R.string.Gift2ResaleFiltersEmptyTitle), false, dp(24), 0));
++                }
+             }
+             if (parent.list == list) {
+                 items.add(UItem.asSpace(dp(20)));
+@@ -668,6 +677,9 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+                 items.add(UItem.asSpace(dp(24 + 48 + 10)));
+             }
+ 
++            if (parent.search != null && (parent.search.isActive() || !list.gifts.isEmpty())) {
++                items.add(0, TeleGiftSearchFactory.asSearch(parent.search, parent.fragment));
++            }
+             if (!items.isEmpty()) {
+                 items.add(0, UItem.asSpace(dp(hasTabs ? 42 : 12)));
+             }
+@@ -686,6 +698,11 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+             }
+         }
+ 
++        // the sheet of a gift pages through what is shown: the search results while a search is open
++        private StarsController.IGiftsList sheetList() {
++            return parent.searching() ? parent.search.results : list;
++        }
++
+         public void onItemClick(UItem item, View view, int position, float x, float y) {
+             if (list == null) return;
+             if (parent.selection.isActive() && item.object instanceof TL_stars.SavedStarGift) {
+@@ -740,7 +757,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+                                 LaunchActivity.instance.getFireworksOverlay().start(true);
+                             }
+                         })
+-                        .set(userGift, list)
++                        .set(userGift, sheetList())
+                         .show();
+                 }
+             }
+@@ -748,7 +765,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+ 
+         public boolean onItemLongPress(UItem item, View view, int position, float x, float y) {
+             if (list == null) return false;
+-            if (parent.selection.isActive()) return false;
++            if (parent.selection.isActive() || parent.searching()) return false;
+             if (view instanceof GiftSheet.GiftCell && item.object instanceof TL_stars.SavedStarGift) {
+                 final GiftSheet.GiftCell cell = (GiftSheet.GiftCell) view;
+                 final TL_stars.SavedStarGift savedStarGift = (TL_stars.SavedStarGift) item.object;
+@@ -1073,6 +1090,18 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+         }
+     }
+ 
++    boolean searching() {
++        return search != null && search.isActive();
++    }
++
++    private void onSearchChanged() {
++        final View[] pages = viewPager.getViewPages();
++        if (pages == null) return;
++        for (View view : pages) {
++            if (view instanceof Page) ((Page) view).update(true);
++        }
++    }
++
+     private void onSelectionChanged() {
+         final boolean active = selection.isActive();
+         final View[] pages = viewPager.getViewPages();
+@@ -1133,6 +1162,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+         this.collections.all = list;
+         this.selection = new GiftSelection(currentAccount, dialogId, list, collections, canReorder());
+         this.selection.addListener(this::onSelectionChanged);
++        this.search = GiftSearch.create(currentAccount, dialogId, list, this::onSearchChanged);
+         this.list.shown = true;
+         if (fragment instanceof ProfileActivity && ((ProfileActivity) fragment).openGiftsUpgradable) {
+             this.list.setFilters(StarsController.GiftsList.INCLUDE_TYPE_UPGRADABLE_FLAG);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsController.java b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsController.java
+index 9588affbb..66b87d1d2 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarsController.java
+@@ -3040,6 +3040,7 @@ public class StarsController {
+     }
+ 
+     public void invalidateProfileGifts(long dialogId) {
++        tele.helpers.GiftSearch.invalidate(currentAccount, dialogId);
+         GiftsList list = getProfileGiftsList(dialogId, false);
+         if (list != null) {
+             list.invalidate(false);
+@@ -3053,6 +3054,7 @@ public class StarsController {
+     // removes a deleted gift from the loaded lists without reloading them (which would reset the scroll)
+     public void removeProfileGiftLocally(long dialogId, TL_stars.SavedStarGift gift) {
+         if (gift == null) return;
++        tele.helpers.GiftSearch.removed(currentAccount, dialogId, gift);
+         final GiftsList list = getProfileGiftsList(dialogId, false);
+         if (list != null) {
+             list.removeGiftLocally(gift);
+@@ -3069,6 +3071,7 @@ public class StarsController {
+         GiftsList list = getProfileGiftsList(dialogId, false);
+         if (list != null && list.totalCount != userFull.stargifts_count) {
+             list.invalidate(false);
++            tele.helpers.GiftSearch.invalidate(currentAccount, dialogId);
+         }
+         GiftsCollections collections = giftCollections.get(dialogId);
+         if (collections != null) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 87ebe217e..d67b07179 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -193,6 +193,8 @@ object TeleConfig {
+     @JvmField
+     val GIFT_SELECT = BoolItem("gift_select", false)
+     @JvmField
++    val GIFT_SEARCH = BoolItem("gift_search", false)
++    @JvmField
+     val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
+     @JvmField
+     val LOCAL_NAMES = BoolItem("local_names", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+index 021825999..b001d399d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+@@ -57,9 +57,9 @@ object GiftBulk {
+     private fun canToggleSaved(selection: GiftSelection): Boolean =
+         StarGiftSheet.isMineWithActions(selection.currentAccount, selection.dialogId)
+ 
+-    // pinned gifts live on the main list only, like in the menu of a gift
++    // pinned gifts live on the main list only, like in the menu of a gift; search results are other objects
+     private fun pinnable(selection: GiftSelection): Boolean =
+-        selection.canPin && selection.list === selection.allList
++        selection.canPin && selection.list === selection.allList && selection.gifts.all { selection.list.gifts.contains(it) }
+ 
+     /** A unique gift of the user (or of a channel they own) that is not locked for transfers. */
+     @JvmStatic
+@@ -118,9 +118,12 @@ object GiftBulk {
+                         finish(index)
+                         return@runOnUIThread
+                     }
+-                    // a hidden gift can't stay pinned, like in its menu
++                    // a hidden gift can't stay pinned, like in its menu; the list knows its own object of the gift
+                     if (!save && gift.pinned_to_top && !selection.list.isCollection) {
+-                        selection.list.togglePinned(gift, false, false)
++                        selection.list.gifts.firstOrNull { StarsController.eq(it, gift) }?.let {
++                            selection.list.togglePinned(it, false, false)
++                        }
++                        gift.pinned_to_top = false
+                     }
+                     selection.collections.updateGiftsUnsaved(gift, !save)
+                     gift.unsaved = !save
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt b/TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt
+new file mode 100644
+index 000000000..27face7c8
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftSearch.kt
+@@ -0,0 +1,306 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.Stars.StarsController
++import tele.TeleConfig
++import java.util.WeakHashMap
++
++/**
++ * Search in the gifts of a profile (desktop 0186): collectible gifts only, by title, number, model,
++ * backdrop and symbol, plus a menu of values for each of the three attributes. All the collectibles of
++ * the profile are loaded for it, 100 at a time, the first time it is used.
++ */
++class GiftSearch private constructor(
++    private val currentAccount: Int,
++    private val dialogId: Long,
++    private val allList: StarsController.GiftsList,
++    private val changed: Runnable
++) {
++
++    /** One value of an attribute in the menu of a chip. */
++    class Value(@JvmField val name: String, @JvmField var count: Int, @JvmField val attribute: TL_stars.StarGiftAttribute)
++
++    private class Item(val gift: TL_stars.SavedStarGift, unique: TL_stars.TL_starGiftUnique) {
++        val attributes = arrayOf<TL_stars.StarGiftAttribute?>(
++            StarsController.findAttribute(unique.attributes, TL_stars.starGiftAttributeModel::class.java),
++            StarsController.findAttribute(unique.attributes, TL_stars.starGiftAttributeBackdrop::class.java),
++            StarsController.findAttribute(unique.attributes, TL_stars.starGiftAttributePattern::class.java)
++        )
++        val fields: List<String> = listOfNotNull(
++            unique.title, "#" + unique.num, attributes[0]?.name, attributes[1]?.name, attributes[2]?.name
++        ).map { it.lowercase() }
++    }
++
++    private val items = ArrayList<Item>()
++    private val keys = HashSet<String>()
++    private val viewListeners = ArrayList<Runnable>()
++    private var offset = ""
++    private var requestId = 0
++    private var loaded = false
++    private var words: List<String> = emptyList()
++
++    // model, backdrop, symbol
++    private val selected = Array(CHIPS) { LinkedHashSet<String>() }
++
++    /** What the user typed; the field of the header restores it. */
++    var query = ""
++        private set
++
++    /** The found gifts in the order they are shown; the sheet of a gift pages through them. */
++    @JvmField
++    val results = Results()
++
++    fun isActive(): Boolean = words.isNotEmpty() || selected.any { it.isNotEmpty() }
++
++    /** More gifts are still coming. */
++    fun isLoading(): Boolean = requestId != 0
++
++    /** Every collectible of the profile is here. */
++    fun isLoaded(): Boolean = loaded
++
++    fun addViewListener(listener: Runnable) {
++        viewListeners.add(listener)
++    }
++
++    fun removeViewListener(listener: Runnable) {
++        viewListeners.remove(listener)
++    }
++
++    fun setQuery(text: String) {
++        val now = text.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
++        query = text
++        if (now == words) return
++        words = now
++        if (words.isNotEmpty()) load()
++        notifyChanged()
++    }
++
++    fun isSelected(index: Int, name: String): Boolean = selected[index].contains(name)
++
++    fun selectedCount(index: Int): Int = selected[index].size
++
++    fun selectedNames(index: Int): Set<String> = selected[index]
++
++    fun toggle(index: Int, name: String) {
++        if (!selected[index].remove(name)) selected[index].add(name)
++        notifyChanged()
++    }
++
++    fun clear(index: Int) {
++        if (selected[index].isEmpty()) return
++        selected[index].clear()
++        notifyChanged()
++    }
++
++    /** The values of an attribute among the loaded gifts, the most common first. */
++    fun values(index: Int): List<Value> {
++        val map = LinkedHashMap<String, Value>()
++        for (item in items) {
++            val attribute = item.attributes[index] ?: continue
++            val name = attribute.name
++            if (name.isNullOrEmpty()) continue
++            val value = map.getOrPut(name) { Value(name, 0, attribute) }
++            value.count++
++        }
++        return map.values.sortedByDescending { it.count }
++    }
++
++    private fun notifyChanged() {
++        for (listener in ArrayList(viewListeners)) listener.run()
++        changed.run()
++    }
++
++    /** Starts the loading of the profile's collectibles, or does nothing when it runs or is done. */
++    fun load() {
++        if (requestId != 0 || loaded) return
++        val request = TL_stars.getSavedStarGifts()
++        request.exclude_unlimited = true
++        request.exclude_unupgradable = true
++        request.exclude_upgradable = true
++        request.peer = if (dialogId == 0L) TLRPC.TL_inputPeerSelf() else MessagesController.getInstance(currentAccount).getInputPeer(dialogId)
++        request.offset = offset
++        request.limit = PER_PAGE
++        val generation = ++epoch
++        requestId = ConnectionsManager.getInstance(currentAccount).sendRequest(request) { response, _ ->
++            AndroidUtilities.runOnUIThread {
++                if (generation != epoch) return@runOnUIThread
++                requestId = 0
++                if (response is TL_stars.TL_payments_savedStarGifts) {
++                    done(response)
++                } else {
++                    // stays unloaded: the next use tries again
++                    notifyChanged()
++                }
++            }
++        }
++        notifyChanged()
++    }
++
++    private var epoch = 0
++
++    private fun done(result: TL_stars.TL_payments_savedStarGifts) {
++        val messages = MessagesController.getInstance(currentAccount)
++        messages.putUsers(result.users, false)
++        messages.putChats(result.chats, false)
++        for (gift in result.gifts) {
++            val unique = gift.gift as? TL_stars.TL_starGiftUnique ?: continue
++            if (!keys.add(GiftSelection.key(gift))) continue
++            items.add(Item(gift, unique))
++        }
++        val next = result.next_offset
++        if (next.isNullOrEmpty() || result.gifts.isEmpty()) {
++            loaded = true
++        } else {
++            offset = next
++        }
++        notifyChanged()
++        load()
++    }
++
++    /** A gift left the profile: it is gone from the results too. */
++    private fun drop(gift: TL_stars.SavedStarGift) {
++        val key = GiftSelection.key(gift)
++        if (keys.remove(key)) {
++            items.removeAll { GiftSelection.key(it.gift) == key }
++            if (isActive()) notifyChanged()
++        }
++    }
++
++    /** The profile's gifts were reloaded: start over, and load again when a search is open. */
++    private fun reset() {
++        epoch++
++        if (requestId != 0) {
++            ConnectionsManager.getInstance(currentAccount).cancelRequest(requestId, true)
++            requestId = 0
++        }
++        items.clear()
++        keys.clear()
++        offset = ""
++        loaded = false
++        if (isActive()) {
++            load()
++            notifyChanged()
++        }
++    }
++
++    private fun matches(item: Item): Boolean {
++        for (i in 0 until CHIPS) {
++            val names = selected[i]
++            if (names.isNotEmpty() && item.attributes[i]?.name !in names) return false
++        }
++        return words.all { word -> item.fields.any { it.contains(word) } }
++    }
++
++    /** The gifts that match, as the page of [list] would show them: its collection and visibility filters apply. */
++    fun found(list: StarsController.GiftsList): ArrayList<TL_stars.SavedStarGift> {
++        val skipSaved = !list.isInclude_displayed
++        val skipUnsaved = !list.isInclude_hidden
++        // the profile's own objects carry the latest state of a gift
++        val own = HashMap<String, TL_stars.SavedStarGift>()
++        for (gift in allList.gifts) own[GiftSelection.key(gift)] = gift
++        val found = ArrayList<TL_stars.SavedStarGift>()
++        for (item in items) {
++            val gift = item.gift
++            own[GiftSelection.key(gift)]?.let {
++                gift.unsaved = it.unsaved
++                gift.pinned_to_top = it.pinned_to_top
++                gift.collection_id = it.collection_id
++            }
++            if (list.isCollection && !gift.collection_id.contains(list.collectionId)) continue
++            if ((skipSaved && !gift.unsaved) || (skipUnsaved && gift.unsaved)) continue
++            if (!matches(item)) continue
++            found.add(gift)
++        }
++        results.update(found)
++        return found
++    }
++
++    /** The found gifts as a list for the gift sheet. */
++    class Results : StarsController.IGiftsList {
++        private var gifts = ArrayList<TL_stars.SavedStarGift>()
++
++        fun update(gifts: ArrayList<TL_stars.SavedStarGift>) {
++            this.gifts = gifts
++        }
++
++        override fun notifyUpdate() {}
++
++        override fun getLoadedCount(): Int = gifts.size
++
++        override fun set(index: Int, obj: Any?) {
++            if (obj is TL_stars.SavedStarGift && index in gifts.indices) gifts[index] = obj
++        }
++
++        override fun get(index: Int): Any? = gifts.getOrNull(index)
++
++        override fun indexOf(obj: Any?): Int = gifts.indexOf(obj)
++
++        override fun getTotalCount(): Int = gifts.size
++
++        override fun load() {}
++
++        override fun findGiftToUpgrade(from: Int): Int = -1
++    }
++
++    companion object {
++        const val CHIPS = 3
++        private const val PER_PAGE = 100
++
++        private val instances = WeakHashMap<GiftSearch, Boolean>()
++
++        /** The search of a container, or null while the option is off. */
++        @JvmStatic
++        fun create(currentAccount: Int, dialogId: Long, allList: StarsController.GiftsList, changed: Runnable): GiftSearch? {
++            if (!TeleConfig.GIFT_SEARCH.value) return null
++            return GiftSearch(currentAccount, dialogId, allList, changed).also { instances[it] = true }
++        }
++
++        // the profile's lists were reloaded or lost a gift
++        @JvmStatic
++        fun invalidate(currentAccount: Int, dialogId: Long) {
++            for (search in instances.keys.toList()) {
++                if (search.currentAccount == currentAccount && search.dialogId == dialogId) search.reset()
++            }
++        }
++
++        @JvmStatic
++        fun removed(currentAccount: Int, dialogId: Long, gift: TL_stars.SavedStarGift) {
++            for (search in instances.keys.toList()) {
++                if (search.currentAccount == currentAccount && search.dialogId == dialogId) search.drop(gift)
++            }
++        }
++
++        @JvmStatic
++        fun chipName(index: Int): String = LocaleController.getString(
++            when (index) {
++                0 -> R.string.Gift2AttributeModel
++                1 -> R.string.Gift2AttributeBackdrop
++                else -> R.string.Gift2AttributeSymbol
++            }
++        )
++
++        /** The name of a chip: the value when one is picked, how many when several, the attribute otherwise. */
++        @JvmStatic
++        fun chipText(search: GiftSearch, index: Int): String {
++            val names = search.selectedNames(index)
++            return when (names.size) {
++                0 -> chipName(index)
++                1 -> names.first()
++                else -> LocaleController.formatPluralString(
++                    when (index) {
++                        0 -> "TeleGiftsModels"
++                        1 -> "TeleGiftsBackdrops"
++                        else -> "TeleGiftsSymbols"
++                    },
++                    names.size
++                )
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
+new file mode 100644
+index 000000000..2bd663e1c
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftSearchView.kt
+@@ -0,0 +1,254 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.text.Editable
++import android.text.InputType
++import android.text.TextWatcher
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.inputmethod.EditorInfo
++import android.widget.FrameLayout
++import android.widget.HorizontalScrollView
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.AndroidUtilities.dp
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.EditTextCaption
++import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.UItem
++import org.telegram.ui.Components.UniversalAdapter
++import org.telegram.ui.Components.UniversalRecyclerView
++import org.telegram.ui.Gifts.ResaleGiftsFragment
++import tele.helpers.GiftSearch
++
++/** The field and the three attribute chips above the gifts of a profile (desktop 0186). */
++class TeleGiftSearchView(
++    context: Context,
++    private val resourcesProvider: Theme.ResourcesProvider?,
++    private val currentAccount: Int
++) : LinearLayout(context) {
++
++    private var search: GiftSearch? = null
++    private var fragment: BaseFragment? = null
++    private val field = EditTextCaption(context, resourcesProvider)
++    private val clearView = ImageView(context)
++    private val chips = Array(GiftSearch.CHIPS) { ResaleGiftsFragment.Filter(context, resourcesProvider) }
++    private val statusView = TextView(context)
++    private var syncing = false
++    private val refresh = Runnable { sync() }
++
++    init {
++        orientation = VERTICAL
++        setPadding(dp(3f), 0, dp(3f), dp(6f))
++
++        val textColor = Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider)
++        val box = FrameLayout(context)
++        box.background = Theme.createRoundRectDrawable(dp(10f), Theme.multAlpha(textColor, .06f))
++        addView(box, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 40, 0f, 6f, 0f, 0f))
++
++        val icon = ImageView(context)
++        icon.scaleType = ImageView.ScaleType.CENTER
++        icon.setImageResource(R.drawable.smiles_inputsearch)
++        icon.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText3, resourcesProvider), PorterDuff.Mode.SRC_IN)
++        box.addView(icon, LayoutHelper.createFrame(24, 24f, Gravity.CENTER_VERTICAL or Gravity.LEFT, 10f, 0f, 0f, 0f))
++
++        field.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        field.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
++        field.setRawInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
++        field.imeOptions = EditorInfo.IME_ACTION_SEARCH
++        field.setSingleLine(true)
++        field.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText3, resourcesProvider))
++        field.setCursorColor(textColor)
++        field.setCursorSize(dp(19f))
++        field.setCursorWidth(1.5f)
++        field.hint = LocaleController.getString(R.string.Search)
++        field.setTextColor(textColor)
++        field.background = null
++        box.addView(field, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER_VERTICAL or Gravity.LEFT, 43f, 0f, 40f, 0f))
++        field.addTextChangedListener(object : TextWatcher {
++            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
++            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
++            override fun afterTextChanged(s: Editable?) {
++                clearView.visibility = if (s.isNullOrEmpty()) GONE else VISIBLE
++                if (!syncing) search?.setQuery(s?.toString() ?: "")
++            }
++        })
++        field.setOnEditorActionListener { _, _, _ ->
++            AndroidUtilities.hideKeyboard(field)
++            field.clearFocus()
++            true
++        }
++        field.setOnFocusChangeListener { _, focused ->
++            val owner = fragment
++            val activity = owner?.parentActivity
++            if (owner != null && activity != null) {
++                // the profile does not resize for the keyboard otherwise
++                if (focused) {
++                    AndroidUtilities.requestAdjustResize(activity, owner.classGuid)
++                } else {
++                    AndroidUtilities.requestAdjustNothing(activity, owner.classGuid)
++                }
++            }
++        }
++
++        clearView.scaleType = ImageView.ScaleType.CENTER
++        clearView.setImageResource(R.drawable.msg_close)
++        clearView.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText3, resourcesProvider), PorterDuff.Mode.SRC_IN)
++        clearView.visibility = GONE
++        clearView.setOnClickListener { field.setText("") }
++        box.addView(clearView, LayoutHelper.createFrame(40f, 40f, Gravity.CENTER_VERTICAL or Gravity.RIGHT))
++
++        val scroll = HorizontalScrollView(context)
++        scroll.isHorizontalScrollBarEnabled = false
++        val row = LinearLayout(context)
++        row.orientation = HORIZONTAL
++        row.gravity = Gravity.CENTER_VERTICAL
++        scroll.addView(row, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat()))
++        addView(scroll, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 26, 0f, 8f, 0f, 0f))
++        for ((index, chip) in chips.withIndex()) {
++            chip.setOnClickListener { showMenu(index) }
++            row.addView(chip, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_VERTICAL, 0, 0, 6, 0))
++        }
++        statusView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        statusView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourcesProvider))
++        statusView.text = LocaleController.getString(R.string.Loading)
++        statusView.visibility = GONE
++        row.addView(statusView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_VERTICAL, 4, 0, 6, 0))
++    }
++
++    fun bind(search: GiftSearch, fragment: BaseFragment?) {
++        this.fragment = fragment
++        if (this.search !== search) {
++            this.search?.removeViewListener(refresh)
++            this.search = search
++            if (isAttachedToWindow) search.addViewListener(refresh)
++        }
++        sync()
++    }
++
++    // the state of the search changed elsewhere: another page's field, a chip, the loading
++    private fun sync() {
++        val search = search ?: return
++        if (field.text.toString() != search.query) {
++            syncing = true
++            field.setText(search.query)
++            syncing = false
++        }
++        for ((index, chip) in chips.withIndex()) chip.setValue(GiftSearch.chipText(search, index))
++        statusView.visibility = if (search.isLoading()) VISIBLE else GONE
++    }
++
++    override fun onAttachedToWindow() {
++        super.onAttachedToWindow()
++        search?.addViewListener(refresh)
++        sync()
++    }
++
++    override fun onDetachedFromWindow() {
++        super.onDetachedFromWindow()
++        search?.removeViewListener(refresh)
++    }
++
++    private fun showMenu(index: Int) {
++        val search = search ?: return
++        val fragment = fragment ?: return
++        search.load()
++        val values = search.values(index)
++        if (values.isEmpty()) return
++        val menu = ItemOptions.makeOptions(fragment, chips[index], false, true)
++            .setDrawScrim(false)
++            .setOnTopOfScrim()
++            .translate(0f, dp(-8f).toFloat())
++        var list: UniversalRecyclerView? = null
++        val listView = object : UniversalRecyclerView(
++            fragment,
++            { items, _ ->
++                for (value in values) {
++                    // nothing picked means every value counts
++                    val checked = search.selectedCount(index) == 0 || search.isSelected(index, value.name)
++                    items.add(valueItem(value).setChecked(checked))
++                }
++            },
++            { item, _, _, _, _ ->
++                val attribute = item.`object` as? TL_stars.StarGiftAttribute
++                val name = attribute?.name
++                if (name != null) {
++                    search.toggle(index, name)
++                    list?.adapter?.update(true)
++                }
++            },
++            null
++        ) {
++            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++                super.onMeasure(
++                    widthMeasureSpec,
++                    MeasureSpec.makeMeasureSpec(
++                        Math.min((AndroidUtilities.displaySize.y * 0.35f).toInt(), MeasureSpec.getSize(heightMeasureSpec)),
++                        MeasureSpec.getMode(heightMeasureSpec)
++                    )
++                )
++            }
++        }
++        list = listView
++        listView.adapter.setApplyBackground(false)
++        if (search.selectedCount(index) > 0) {
++            menu.add(R.drawable.msg_select, LocaleController.getString(R.string.SelectAll)) {
++                search.clear(index)
++                listView.adapter.update(true)
++            }
++        }
++        menu.addView(listView)
++        menu.show()
++    }
++
++    private fun valueItem(value: GiftSearch.Value): UItem = when (val attribute = value.attribute) {
++        is TL_stars.starGiftAttributeModel -> ResaleGiftsFragment.ModelItem.Factory.asModel(attribute, value.count, "")
++        is TL_stars.starGiftAttributePattern -> ResaleGiftsFragment.PatternItem.Factory.asPattern(attribute, value.count, "")
++        else -> ResaleGiftsFragment.BackdropItem.Factory.asBackdrop(attribute as TL_stars.starGiftAttributeBackdrop, value.count, "")
++    }
++}
++
++class TeleGiftSearchFactory : UItem.UItemFactory<TeleGiftSearchView>() {
++
++    override fun createView(
++        context: Context,
++        listView: RecyclerListView?,
++        currentAccount: Int,
++        classGuid: Int,
++        resourcesProvider: Theme.ResourcesProvider?
++    ): TeleGiftSearchView = TeleGiftSearchView(context, resourcesProvider, currentAccount)
++
++    override fun bindView(view: View, item: UItem, divider: Boolean, adapter: UniversalAdapter, listView: UniversalRecyclerView) {
++        (view as TeleGiftSearchView).bind(item.`object` as GiftSearch, item.object2 as? BaseFragment)
++    }
++
++    // the same search keeps its view: a rebind would drop the focus of the field
++    override fun equals(a: UItem, b: UItem): Boolean = a.`object` === b.`object`
++
++    override fun contentsEquals(a: UItem, b: UItem): Boolean = a.`object` === b.`object`
++
++    companion object {
++        init {
++            UItem.UItemFactory.setup(TeleGiftSearchFactory())
++        }
++
++        @JvmStatic
++        fun asSearch(search: GiftSearch, fragment: BaseFragment?): UItem {
++            val item = UItem.ofFactory(TeleGiftSearchFactory::class.java)
++            item.`object` = search
++            item.object2 = fragment
++            return item
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index f6d3b4763..63d11fd47 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -188,6 +188,8 @@ object TeleSearch {
+             section(1479, "Hidden gifts", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Dim hidden gifts"),
+             section(1471, "Select several gifts", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1476, "Bulk gift actions", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Select several gifts"),
++            section(1472, "Search gifts", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1478, "Gift filter by model, backdrop and symbol", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Search gifts"),
+             section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1101, "Preview calcmula results while typing", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1330, "Calcmula suggestions and sending without calculating", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 8cf2b7003..8bd60ac45 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -993,6 +993,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Show ids on regular gifts" to "Show IDs on regular gifts too.",
+             "Dim hidden gifts" to "Fade hidden gifts in the list and mark them with a badge.",
+             "Select several gifts" to "Adds Select gifts to the gifts menu of your profile, to show, hide, pin or transfer many at once.",
++            "Search gifts" to "Adds a search field and attribute chips to the gift list; covers collectible gifts only.",
+             "Open collectible gifts in see.tg" to "Open collectible gifts in the see.tg mini app.",
+             "Copy custom emoji id" to "Copy a custom emoji's ID from its menu.",
+             "Send photos in HD by default" to "Send photos in full quality.",
+@@ -1521,6 +1522,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Show ids on regular gifts", TeleConfig.SHOW_REGULAR_GIFT_IDS),
+                 toggle("Dim hidden gifts", TeleConfig.GIFT_HIDDEN_DIM),
+                 toggle("Select several gifts", TeleConfig.GIFT_SELECT),
++                toggle("Search gifts", TeleConfig.GIFT_SEARCH),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Collectibles"),
+                 toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 23f17fa26..45ff84ddc 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -236,4 +236,10 @@
+     <string name="TeleGiftsTransferred_other">%1$d gifts transferred to %2$s</string>
+     <string name="TeleGiftsTransferStopped">Transferred %1$d of %2$d gifts.</string>
+     <string name="TeleGiftsCheckBalance">Check your Stars balance before trying again.</string>
++    <string name="TeleGiftsModels_one">%1$d model</string>
++    <string name="TeleGiftsModels_other">%1$d models</string>
++    <string name="TeleGiftsBackdrops_one">%1$d backdrop</string>
++    <string name="TeleGiftsBackdrops_other">%1$d backdrops</string>
++    <string name="TeleGiftsSymbols_one">%1$d symbol</string>
++    <string name="TeleGiftsSymbols_other">%1$d symbols</string>
+ </resources>

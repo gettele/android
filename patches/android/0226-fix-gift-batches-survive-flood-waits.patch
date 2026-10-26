@@ -1,0 +1,883 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 04:04:03 +0300
+Subject: [PATCH 226/228] fix: gift batches survive flood waits
+
+---
+ .../org/telegram/ui/Gifts/SendGiftSheet.java  |   4 +-
+ .../src/main/java/tele/helpers/GiftBatch.kt   | 264 ++++++++++++++++++
+ .../src/main/java/tele/helpers/GiftBulk.kt    | 201 ++++++-------
+ .../main/java/tele/helpers/GiftQuantity.kt    |  33 ++-
+ .../main/java/tele/helpers/GiftSelection.kt   |   9 +
+ .../src/main/java/tele/helpers/GiftSender.kt  | 103 +++----
+ .../main/java/tele/helpers/TeleFloodWait.kt   |  13 +-
+ .../src/main/res/values/strings_tele.xml      |  14 +-
+ 8 files changed, 453 insertions(+), 188 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftBatch.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java
+index fac3a9ddb..443567958 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/SendGiftSheet.java
+@@ -742,8 +742,8 @@ public class SendGiftSheet extends BottomSheetWithRecyclerListView implements No
+             }
+ 
+             @Override
+-            public void onProgress(int index, int total) {
+-                quantityProgress = formatString(R.string.TeleGiftsSendingMany, index, total);
++            public void onProgress(int index, int total, int wait) {
++                quantityProgress = GiftQuantity.progressText(index, total, wait);
+                 if (!isDismissed) setButtonText(true);
+             }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftBatch.kt b/TMessagesProj/src/main/java/tele/helpers/GiftBatch.kt
+new file mode 100644
+index 000000000..0dacfe11a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftBatch.kt
+@@ -0,0 +1,264 @@
++package tele.helpers
++
++import android.os.SystemClock
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.RequestDelegate
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++
++/**
++ * Runs an action over gifts one by one (desktop 0213): it waits out `FLOOD_WAIT` of Telegram and goes
++ * on, skips the items the server refuses, reports the progress and can be stopped. The steps send their
++ * requests through [Run.send], which hands rate limits to the runner instead of the network layer. All
++ * the calls are on the UI thread.
++ */
++object GiftBatch {
++
++    private const val TICK = 250L
++    private const val FLOOD = "FLOOD_WAIT_"
++
++    /**
++     * Why a step failed. [text] is the error type of the server. [unknown]: a payment was sent and its
++     * result never came, so the gift may have gone through; the batch stops and nothing is repeated.
++     */
++    class Failure(@JvmField val text: String, @JvmField val unknown: Boolean = false) {
++        companion object {
++            /** A server answer (4xx) means nothing was done; anything else after a payment may have been. */
++            @JvmStatic
++            fun of(error: TLRPC.TL_error?, fallback: String, afterPayment: Boolean): Failure {
++                val text = error?.text?.takeIf { it.isNotEmpty() } ?: fallback
++                return Failure(text, afterPayment && (error == null || error.code !in 400..499))
++            }
++        }
++    }
++
++    class Progress(@JvmField val index: Int, /** Seconds of a rate limit that is being waited out, else 0. */ @JvmField val wait: Int)
++
++    class Result(
++        @JvmField val done: Int,
++        /** Indexes of the items the server refused, and why. */
++        @JvmField val skipped: List<Int>,
++        @JvmField val errors: List<String>,
++        /** The reason the batch stopped before its end; the item [next] is the one that failed. */
++        @JvmField val failure: Failure?,
++        @JvmField val cancelled: Boolean,
++        /** The first item that was not processed: the rest were left alone. */
++        @JvmField val next: Int
++    ) {
++        /** The items that are not done: refused, failed and not reached. */
++        fun left(total: Int): List<Int> = skipped + (next until total)
++    }
++
++    class Job(
++        @JvmField val account: Int,
++        @JvmField val total: Int,
++        /** A refused item is skipped and the run goes on; otherwise the first refusal stops it. */
++        @JvmField val skipFailed: Boolean,
++        /** Asked between the steps and while a rate limit is waited out: false cancels the run. */
++        @JvmField val alive: () -> Boolean,
++        /** Does the work of one item and calls `done` once: null on success. */
++        @JvmField val step: (index: Int, run: Run, done: (Failure?) -> Unit) -> Unit,
++        @JvmField val progress: (Progress) -> Unit,
++        @JvmField val finished: (Result) -> Unit
++    )
++
++    @JvmStatic
++    fun start(job: Job): Run {
++        val run = Run(job)
++        run.next()
++        return run
++    }
++
++    class Run internal constructor(private val job: Job) {
++        private var index = 0
++        private var stepId = 0
++        private var running = false
++        private var finished = false
++        private var done = 0
++        private val skipped = ArrayList<Int>()
++        private val errors = ArrayList<String>()
++        private var failure: Failure? = null
++        private var cancelled = false
++        private var waitTill = 0L
++        private var shown = -1
++        private var resend: Runnable? = null
++        private val ticker = Runnable { tick() }
++
++        /**
++         * Sends a request of the step. A rate limit is answered by the server before anything is done, so
++         * the same request is sent again once the wait is over; every other answer goes to [callback].
++         */
++        fun send(request: TLObject, callback: (TLObject?, TLRPC.TL_error?) -> Unit) {
++            val id = stepId
++            ConnectionsManager.getInstance(job.account).sendRequest(request, RequestDelegate { response, error ->
++                AndroidUtilities.runOnUIThread {
++                    if (finished || id != stepId) return@runOnUIThread
++                    val seconds = floodSeconds(error)
++                    if (seconds > 0) {
++                        TeleFloodWait.report(job.account, request, seconds)
++                        waitOut(seconds) { send(request, callback) }
++                    } else {
++                        callback(response, error)
++                    }
++                }
++            }, ConnectionsManager.RequestFlagDoNotWaitFloodWait)
++        }
++
++        internal fun next() {
++            if (finished) return
++            if (index >= job.total) {
++                finish()
++                return
++            } else if (!job.alive()) {
++                cancel()
++                return
++            }
++            running = true
++            val id = ++stepId
++            report()
++            job.step(index, this) { failure -> stepDone(id, failure) }
++        }
++
++        private fun stepDone(id: Int, failure: Failure?) {
++            if (finished || id != stepId || !running) return
++            running = false
++            clearWait()
++            if (failure == null) {
++                done++
++            } else if (failure.unknown || !job.skipFailed) {
++                this.failure = failure
++                finish()
++                return
++            } else {
++                skipped.add(index)
++                errors.add(failure.text)
++            }
++            index++
++            next()
++        }
++
++        private fun waitOut(seconds: Int, then: Runnable) {
++            resend = then
++            waitTill = SystemClock.elapsedRealtime() + seconds * 1000L
++            AndroidUtilities.cancelRunOnUIThread(ticker)
++            AndroidUtilities.runOnUIThread(ticker, TICK)
++            report()
++        }
++
++        private fun tick() {
++            if (finished) return
++            if (!job.alive()) {
++                cancel()
++            } else if (SystemClock.elapsedRealtime() >= waitTill) {
++                val again = resend
++                clearWait()
++                again?.run()
++            } else {
++                report()
++                AndroidUtilities.runOnUIThread(ticker, TICK)
++            }
++        }
++
++        private fun clearWait() {
++            AndroidUtilities.cancelRunOnUIThread(ticker)
++            resend = null
++            if (waitTill != 0L) {
++                waitTill = 0L
++                report()
++            }
++        }
++
++        private fun report() {
++            if (finished) return
++            val left = if (waitTill != 0L) waitTill - SystemClock.elapsedRealtime() else 0L
++            val wait = ((maxOf(left, 0L) + 999L) / 1000L).toInt()
++            if (shown == wait && wait > 0) return
++            shown = wait
++            job.progress(Progress(index, wait))
++        }
++
++        private fun cancel() {
++            if (finished) return
++            cancelled = true
++            finish()
++        }
++
++        private fun finish() {
++            if (finished) return
++            finished = true
++            AndroidUtilities.cancelRunOnUIThread(ticker)
++            resend = null
++            job.finished(Result(done, skipped, errors, failure, cancelled, index))
++        }
++
++        private fun floodSeconds(error: TLRPC.TL_error?): Int {
++            val text = error?.text
++            if (error == null || error.code != 420 || text == null || !text.startsWith(FLOOD)) return 0
++            return text.substring(FLOOD.length).toIntOrNull()?.takeIf { it > 0 } ?: 2
++        }
++    }
++
++    /** "12 m 5 s" and the like. */
++    @JvmStatic
++    fun waitText(seconds: Int): String = TeleFloodWait.duration(seconds)
++
++    /** The status of a run: "2 of 7", and the wait of a rate limit when there is one. */
++    @JvmStatic
++    fun progressText(progress: Progress, total: Int): String {
++        val text = LocaleController.formatString(R.string.TeleGiftsProgress, progress.index + 1, total)
++        return if (progress.wait > 0) LocaleController.formatString(R.string.TeleGiftsBatchWaiting, text, waitText(progress.wait)) else text
++    }
++
++    /** Words for an error type of the server; unknown types are shown as they are. */
++    @JvmStatic
++    fun reason(type: String?): String = when {
++        type.isNullOrEmpty() -> LocaleController.getString(R.string.TeleGiftsFailed)
++        type == "STARGIFT_USAGE_LIMITED" -> LocaleController.getString(R.string.Gift2SoldOutTitle)
++        type == "STARGIFT_USER_USAGE_LIMITED" -> LocaleController.getString(R.string.TeleGiftsErrorUserLimit)
++        type == "USER_DISALLOWED_STARGIFTS" -> LocaleController.getString(R.string.TeleGiftsErrorRestricted)
++        type == "STARGIFT_MESSAGE_INVALID" -> LocaleController.getString(R.string.TeleGiftsErrorMessage)
++        type == "STARGIFT_ALREADY_BURNED" -> LocaleController.getString(R.string.UniqueGiftNotFoundBurned)
++        type.startsWith("STARGIFT_TRANSFER_TOO_EARLY_") -> LocaleController.getString(R.string.TeleGiftsErrorTransferEarly)
++        type.startsWith("STARGIFT_RESELL_TOO_EARLY_") -> LocaleController.getString(R.string.TeleGiftsErrorSellEarly)
++        else -> type
++    }
++
++    /** A failure as a sentence; a payment of an unknown result tells to check the balance. */
++    @JvmStatic
++    fun describe(failure: Failure): String {
++        val text = reason(failure.text)
++        return if (failure.unknown && failure.text != "BALANCE_TOO_LOW") {
++            text + " " + LocaleController.getString(R.string.TeleGiftsCheckBalance)
++        } else {
++            text
++        }
++    }
++
++    /** What to tell the user when the run of [total] items is over; [success] when everything went well. */
++    @JvmStatic
++    fun summary(result: Result, total: Int, success: String): String {
++        val reasons = ArrayList<String>()
++        for (error in result.errors) {
++            val reason = reason(error)
++            if (!reasons.contains(reason)) reasons.add(reason)
++        }
++        val skipped = result.skipped.size
++        val skips = if (skipped > 0) LocaleController.formatString(R.string.TeleGiftsBatchSkipped, skipped, reasons.joinToString("; ")) else ""
++        val failure = result.failure
++        return when {
++            result.cancelled -> {
++                val text = LocaleController.formatString(R.string.TeleGiftsBatchCancelled, result.done + skipped, total)
++                if (skips.isEmpty()) text else "$text $skips"
++            }
++            failure != null -> {
++                val text = LocaleController.formatString(R.string.TeleGiftsBatchStopped, result.done, total, describe(failure))
++                if (skips.isEmpty()) text else "$text $skips"
++            }
++            skipped > 0 -> LocaleController.formatString(R.string.TeleGiftsBatchDone, result.done, skips)
++            else -> success
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+index b001d399d..72c22392f 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+@@ -22,7 +22,8 @@ import org.telegram.messenger.Utilities
+ 
+ /**
+  * The bulk actions of the gift selection (desktop 0185): show, hide, pin, unpin and transfer. Each
+- * one runs over [GiftSelection.gifts] one by one, stops at the first error and leaves the select mode.
++ * one runs over [GiftSelection.gifts] one by one through [GiftBatch]: it waits out rate limits, skips
++ * the gifts the server refuses and leaves them picked.
+  */
+ object GiftBulk {
+ 
+@@ -77,46 +78,57 @@ object GiftBulk {
+         bulletins(fragment).createSimpleBulletin(R.raw.chats_infotip, text).show()
+     }
+ 
+-    private fun showError(fragment: BaseFragment?, error: TLRPC.TL_error?) {
+-        bulletins(fragment).showForError(error)
++    /**
++     * Runs [step] over [gifts] through [GiftBatch]: the bar shows the progress and its cancel button
++     * stops the run. Refused gifts stay picked, the rest leave the selection.
++     */
++    private fun runBatch(
++        selection: GiftSelection,
++        fragment: BaseFragment?,
++        site: String,
++        gifts: List<TL_stars.SavedStarGift>,
++        success: String,
++        step: (index: Int, run: GiftBatch.Run, done: (GiftBatch.Failure?) -> Unit) -> Unit,
++        after: (GiftBatch.Result) -> Unit = {}
++    ) {
++        val total = gifts.size
++        selection.work(true, GiftBatch.progressText(GiftBatch.Progress(0, 0), total))
++        GiftBatch.start(GiftBatch.Job(
++            account = selection.currentAccount,
++            total = total,
++            skipFailed = true,
++            alive = { selection.isActive && !selection.isCancelled },
++            step = step,
++            progress = { if (selection.isActive) selection.work(true, GiftBatch.progressText(it, total)) },
++            finished = { result ->
++                after(result)
++                toast(selection, fragment, site, GiftBatch.summary(result, total, success))
++                if (selection.isActive) {
++                    val left = result.left(total)
++                    if (left.isEmpty()) selection.exit() else selection.keep(left.map { GiftSelection.key(gifts[it]) })
++                }
++            }
++        ))
+     }
+ 
+     /** Shows ([save]) or hides the picked gifts that are not like that yet. */
+     @JvmStatic
+     fun setSaved(selection: GiftSelection, save: Boolean, fragment: BaseFragment?) {
+         if (selection.isBusy) return
+-        val account = selection.currentAccount
+         val targets = selection.gifts.filter { it.unsaved == save }
+         if (targets.isEmpty()) return
+-        selection.work(true, LocaleController.formatString(R.string.TeleGiftsProgress, 1, targets.size))
+-        val connections = ConnectionsManager.getInstance(account)
+-
+-        fun finish(done: Int) {
+-            if (done == targets.size) {
+-                toast(
+-                    selection, fragment, if (save) "gifts-shown" else "gifts-hidden",
+-                    LocaleController.formatPluralString(if (save) "TeleGiftsShown" else "TeleGiftsHidden", done)
+-                )
+-            }
+-            selection.exit()
+-        }
+-
+-        fun step(index: Int) {
+-            if (index == targets.size || selection.isCancelled) {
+-                finish(index)
+-                return
+-            }
+-            selection.work(true, LocaleController.formatString(R.string.TeleGiftsProgress, index + 1, targets.size))
+-            val gift = targets[index]
+-            val request = TL_stars.saveStarGift()
+-            request.stargift = selection.list.getInput(gift)
+-            request.unsave = !save
+-            connections.sendRequest(request) { _, err ->
+-                AndroidUtilities.runOnUIThread {
++        runBatch(
++            selection, fragment, if (save) "gifts-shown" else "gifts-hidden", targets,
++            LocaleController.formatPluralString(if (save) "TeleGiftsShown" else "TeleGiftsHidden", targets.size),
++            { index, batch, done ->
++                val gift = targets[index]
++                val request = TL_stars.saveStarGift()
++                request.stargift = selection.list.getInput(gift)
++                request.unsave = !save
++                batch.send(request) { _, err ->
+                     if (err != null) {
+-                        showError(fragment, err)
+-                        finish(index)
+-                        return@runOnUIThread
++                        done(GiftBatch.Failure.of(err, "SAVE_FAILED", false))
++                        return@send
+                     }
+                     // a hidden gift can't stay pinned, like in its menu; the list knows its own object of the gift
+                     if (!save && gift.pinned_to_top && !selection.list.isCollection) {
+@@ -127,11 +139,10 @@ object GiftBulk {
+                     }
+                     selection.collections.updateGiftsUnsaved(gift, !save)
+                     gift.unsaved = !save
+-                    step(index + 1)
++                    done(null)
+                 }
+             }
+-        }
+-        step(0)
++        )
+     }
+ 
+     /** Pins ([pin]) or unpins the picked gifts; pinning stops before the limit is exceeded. */
+@@ -159,7 +170,7 @@ object GiftBulk {
+ 
+     /**
+      * Transfers the picked gifts to a person or a channel they choose: one confirmation for all, then
+-     * one transfer after another; the first error stops the run. Paid transfers are never retried.
++     * one transfer after another. A payment whose result is unknown stops the run and is never retried.
+      */
+     @JvmStatic
+     fun transfer(selection: GiftSelection, fragment: BaseFragment?, context: Context, resourcesProvider: Theme.ResourcesProvider?) {
+@@ -215,96 +226,70 @@ object GiftBulk {
+ 
+     private fun runTransfer(selection: GiftSelection, gifts: List<TL_stars.SavedStarGift>, to: Long, fragment: BaseFragment?) {
+         val account = selection.currentAccount
+-        val connections = ConnectionsManager.getInstance(account)
+         val messages = MessagesController.getInstance(account)
+-        val total = gifts.size
+         var paid = false
+-
+-        fun finish(done: Int, problem: CharSequence?) {
+-            if (paid) {
+-                StarsController.getInstance(account).invalidateBalance()
+-                StarsController.getInstance(account).invalidateTransactions(false)
+-            }
+-            if (done > 0) StarsController.getInstance(account).invalidateProfileGifts(to)
+-            if (done == total) {
+-                toast(
+-                    selection, fragment, "gifts-transferred",
+-                    LocaleController.formatPluralString("TeleGiftsTransferred", done, DialogObject.getShortName(to))
+-                )
+-            } else {
+-                toast(
+-                    selection, fragment, "gifts-transfer-stopped",
+-                    LocaleController.formatString(R.string.TeleGiftsTransferStopped, done, total) + (if (problem.isNullOrEmpty()) "" else " $problem")
+-                )
+-            }
+-            selection.exit()
+-        }
+-
+-        fun step(index: Int) {
+-            if (index == total || selection.isCancelled) {
+-                finish(index, null)
+-                return
+-            }
+-            selection.work(true, LocaleController.formatString(R.string.TeleGiftsProgress, index + 1, total))
+-            val gift = gifts[index]
+-            val input = selection.list.getInput(gift)
+-            val peer = messages.getInputPeer(to)
+-            val sent = Runnable {
+-                StarsController.getInstance(account).removeProfileGiftLocally(selection.dialogId, gift)
+-                selection.remove(gift)
+-                step(index + 1)
+-            }
+-            if (gift.transfer_stars <= 0) {
+-                val request = TL_stars.transferStarGift()
+-                request.stargift = input
+-                request.to_id = peer
+-                connections.sendRequest(request) { response, err ->
+-                    AndroidUtilities.runOnUIThread {
++        runBatch(
++            selection, fragment, "gifts-transferred", gifts,
++            LocaleController.formatPluralString("TeleGiftsTransferred", gifts.size, DialogObject.getShortName(to)),
++            { index, batch, done ->
++                val gift = gifts[index]
++                val input = selection.list.getInput(gift)
++                val peer = messages.getInputPeer(to)
++                val sent = Runnable {
++                    StarsController.getInstance(account).removeProfileGiftLocally(selection.dialogId, gift)
++                    selection.remove(gift)
++                    done(null)
++                }
++                if (gift.transfer_stars <= 0) {
++                    val request = TL_stars.transferStarGift()
++                    request.stargift = input
++                    request.to_id = peer
++                    batch.send(request) { response, err ->
+                         if (response is TLRPC.Updates) {
+                             messages.processUpdates(response, false)
+                             sent.run()
+                         } else {
+-                            finish(index, err?.text)
++                            done(GiftBatch.Failure.of(err, "TRANSFER_FAILED", false))
+                         }
+                     }
+-                }
+-                return
+-            }
+-            paid = true
+-            val invoice = TLRPC.TL_inputInvoiceStarGiftTransfer()
+-            invoice.stargift = input
+-            invoice.to_id = peer
+-            val formRequest = TLRPC.TL_payments_getPaymentForm()
+-            formRequest.invoice = invoice
+-            connections.sendRequest(formRequest) { form, formError ->
+-                AndroidUtilities.runOnUIThread {
+-                    if (form !is TLRPC.PaymentForm) {
+-                        // nothing was charged yet
+-                        finish(index, formError?.text)
+-                        return@runOnUIThread
+-                    }
+-                    messages.putUsers(form.users, false)
+-                    val pay = TL_stars.TL_payments_sendStarsForm()
+-                    pay.form_id = form.form_id
+-                    pay.invoice = invoice
+-                    connections.sendRequest(pay) { result, payError ->
+-                        AndroidUtilities.runOnUIThread {
++                } else {
++                    paid = true
++                    val invoice = TLRPC.TL_inputInvoiceStarGiftTransfer()
++                    invoice.stargift = input
++                    invoice.to_id = peer
++                    val formRequest = TLRPC.TL_payments_getPaymentForm()
++                    formRequest.invoice = invoice
++                    batch.send(formRequest) { form, formError ->
++                        if (form !is TLRPC.PaymentForm) {
++                            // nothing was charged yet
++                            done(GiftBatch.Failure.of(formError, "NO_PAYMENT_FORM", false))
++                            return@send
++                        }
++                        messages.putUsers(form.users, false)
++                        val pay = TL_stars.TL_payments_sendStarsForm()
++                        pay.form_id = form.form_id
++                        pay.invoice = invoice
++                        batch.send(pay) { result, payError ->
+                             if (result is TLRPC.TL_payments_paymentResult) {
+                                 messages.putUsers(result.updates.users, false)
+                                 messages.putChats(result.updates.chats, false)
+                                 Utilities.stageQueue.postRunnable { messages.processUpdates(result.updates, false) }
+                                 sent.run()
+                             } else {
+-                                val text = payError?.text
+-                                // the result of the payment is unknown unless the server says the balance is too low
+-                                val hint = if (text == "BALANCE_TOO_LOW") "" else LocaleController.getString(R.string.TeleGiftsCheckBalance)
+-                                finish(index, (text ?: "") + (if (hint.isEmpty()) "" else " $hint"))
++                                // a server answer means no charge; anything else may have gone through, so the batch stops
++                                done(GiftBatch.Failure.of(payError, "FAILED_SEND_STARS", true))
+                             }
+                         }
+                     }
+                 }
++            },
++            { result ->
++                if (paid) {
++                    StarsController.getInstance(account).invalidateBalance()
++                    StarsController.getInstance(account).invalidateTransactions(false)
++                }
++                if (result.done > 0) StarsController.getInstance(account).invalidateProfileGifts(to)
+             }
+-        }
+-        step(0)
++        )
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt b/TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt
+index d81fc5182..b017448e9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftQuantity.kt
+@@ -31,8 +31,8 @@ object GiftQuantity {
+         /** The batch passed the confirmation and the lock and is about to send. */
+         fun onStart()
+ 
+-        /** The [index]th (from 1) of [total] gifts is being sent. */
+-        fun onProgress(index: Int, total: Int)
++        /** The [index]th (from 1) of [total] gifts is being sent; [wait] seconds are left of a rate limit, else 0. */
++        fun onProgress(index: Int, total: Int, wait: Int)
+ 
+         /** The batch ended; [sent] gifts left. */
+         fun onFinish(sent: Int)
+@@ -55,7 +55,16 @@ object GiftQuantity {
+     /** Only plain star gifts: collectibles and auctions have their own sheets. */
+     @JvmStatic
+     fun applies(gift: TL_stars.StarGift?, auction: Boolean): Boolean =
+-        TeleConfig.GIFT_QUANTITY.value && gift != null && !auction && !gift.auction && gift !is TL_stars.TL_starGiftUnique
++        TeleConfig.GIFT_QUANTITY.value && gift != null && !auction && !gift.auction && gift !is TL_stars.TL_starGiftUnique && max(gift) > 1
++
++    /** What the button of the sheet says while the batch runs. */
++    @JvmStatic
++    fun progressText(index: Int, total: Int, wait: Int): String =
++        if (wait > 0) {
++            LocaleController.formatString(R.string.TeleGiftsSendWaiting, GiftBatch.waitText(wait), index, total)
++        } else {
++            LocaleController.formatString(R.string.TeleGiftsSendingMany, index, total)
++        }
+ 
+     /** The most gifts that can go out in one batch: what the gift has left in total and for the user. */
+     @JvmStatic
+@@ -115,11 +124,13 @@ object GiftQuantity {
+         val account = request.currentAccount
+         val job = GiftSender.Job(account, request.dialogId, request.gift, request.anonymous, request.upgrade, request.message, request.count, request.price)
+         GiftSender.start(job, object : GiftSender.Listener {
+-            override fun onProgress(sent: Int) {
+-                listener.onProgress(sent + 1, request.count)
++            override fun onProgress(sent: Int, wait: Int) {
++                listener.onProgress(sent + 1, request.count, wait)
+             }
+ 
+-            override fun onFinished(sent: Int, failure: GiftSender.Failure?) {
++            override fun onFinished(result: GiftBatch.Result) {
++                val sent = result.done
++                val failure = result.failure
+                 val stars = StarsController.getInstance(account)
+                 if (sent > 0) {
+                     stars.invalidateStarGifts()
+@@ -128,12 +139,10 @@ object GiftQuantity {
+                     stars.invalidateTransactions(true)
+                 }
+                 listener.onFinish(sent)
+-                val text = if (failure == null && sent == request.count) {
+-                    LocaleController.formatString(R.string.TeleGiftsSent, sent)
+-                } else {
+-                    // the result of the last payment is unknown unless the server answered
+-                    val hint = if (failure?.unknown == true) " " + LocaleController.getString(R.string.TeleGiftsCheckBalance) else ""
+-                    LocaleController.formatString(R.string.TeleGiftsSendStopped, sent, request.count) + (failure?.let { " ${it.text}" } ?: "") + hint
++                val text = when {
++                    result.cancelled -> LocaleController.formatString(R.string.TeleGiftsSendCancelled, sent, request.count)
++                    failure != null -> LocaleController.formatString(R.string.TeleGiftsSendStopped, sent, request.count) + " " + GiftBatch.describe(failure)
++                    else -> LocaleController.formatString(R.string.TeleGiftsSent, sent)
+                 }
+                 TeleToast.log("gifts-sent", text, account = account)
+                 BulletinFactory.global().createSimpleBulletin(R.raw.chats_infotip, text).show()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt b/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt
+index 53aeb247a..a403eb961 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt
+@@ -97,6 +97,15 @@ class GiftSelection(
+         if (selected.remove(key(gift)) != null) fire()
+     }
+ 
++    /** Ends a run that left some gifts undone: only they stay picked and the bar is free again. */
++    fun keep(keys: Collection<String>) {
++        selected.keys.retainAll(keys.toSet())
++        isBusy = false
++        isCancelled = false
++        status = null
++        fire()
++    }
++
+     fun work(busy: Boolean, status: CharSequence? = null) {
+         isBusy = busy
+         this.status = if (busy) status else null
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftSender.kt b/TMessagesProj/src/main/java/tele/helpers/GiftSender.kt
+index a2b373e1f..ad0f7dc8d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftSender.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftSender.kt
+@@ -1,19 +1,17 @@
+ package tele.helpers
+ 
+-import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.Utilities
+-import org.telegram.tgnet.ConnectionsManager
+ import org.telegram.tgnet.TLRPC
+ import org.telegram.tgnet.tl.TL_stars
+ import org.telegram.tgnet.tl.TL_stars.StarGift
+ 
+ /**
+- * Sends the same star gift several times, one after another (desktop 0184). It stops at the first
+- * error and never retries a payment. Callers only use [start], so the way the series is run can be
+- * swapped without touching them.
++ * Sends the same star gift several times, one after another (desktop 0184). It goes through
++ * [GiftBatch], so it waits out rate limits, stops at the first error and never retries a payment whose
++ * result is unknown. Callers only use [start], so the way the series is run can be swapped.
+  */
+ object GiftSender {
+ 
+@@ -29,20 +27,17 @@ object GiftSender {
+         @JvmField val price: Long
+     )
+ 
+-    /** [unknown]: the payment was sent but its result never came, so the gift may have gone through. */
+-    class Failure(@JvmField val text: String, @JvmField val unknown: Boolean)
+-
+     interface Listener {
+-        /** Gift number [sent] + 1 is being sent now. */
+-        fun onProgress(sent: Int)
++        /** Gift number [sent] + 1 is being sent now; [wait] seconds are left of a rate limit it waits out, else 0. */
++        fun onProgress(sent: Int, wait: Int)
+ 
+-        fun onFinished(sent: Int, failure: Failure?)
++        fun onFinished(result: GiftBatch.Result)
+     }
+ 
+     class Run internal constructor() {
+         internal var cancelled = false
+ 
+-        /** Stops after the gift that is being sent. */
++        /** Stops after the gift that is being sent, or at once while a rate limit is waited out. */
+         fun cancel() {
+             cancelled = true
+         }
+@@ -51,25 +46,18 @@ object GiftSender {
+     @JvmStatic
+     fun start(job: Job, listener: Listener): Run {
+         val run = Run()
+-        next(job, listener, run, 0)
++        GiftBatch.start(GiftBatch.Job(
++            account = job.currentAccount,
++            total = job.count,
++            skipFailed = false,
++            alive = { !run.cancelled },
++            step = { _, batch, done -> sendOne(job, invoice(job), batch, done) },
++            progress = { listener.onProgress(it.index, it.wait) },
++            finished = { listener.onFinished(it) }
++        ))
+         return run
+     }
+ 
+-    private fun next(job: Job, listener: Listener, run: Run, sent: Int) {
+-        if (run.cancelled || sent >= job.count) {
+-            listener.onFinished(sent, null)
+-            return
+-        }
+-        listener.onProgress(sent)
+-        sendOne(job) { failure ->
+-            if (failure != null) {
+-                listener.onFinished(sent, failure)
+-            } else {
+-                next(job, listener, run, sent + 1)
+-            }
+-        }
+-    }
+-
+     private fun invoice(job: Job): TLRPC.TL_inputInvoiceStarGift {
+         val invoice = TLRPC.TL_inputInvoiceStarGift()
+         invoice.hide_name = job.anonymous
+@@ -84,46 +72,33 @@ object GiftSender {
+         return invoice
+     }
+ 
+-    private fun failure(error: TLRPC.TL_error?, fallback: String, afterPayment: Boolean): Failure {
+-        val text = error?.text?.takeIf { it.isNotEmpty() } ?: fallback
+-        // a server answer (4xx) means the payment was not made; anything else may have been
+-        val unknown = afterPayment && (error == null || error.code !in 400..499)
+-        return Failure(text, unknown)
+-    }
+-
+-    private fun sendOne(job: Job, done: (Failure?) -> Unit) {
+-        val connections = ConnectionsManager.getInstance(job.currentAccount)
+-        val invoice = invoice(job)
++    private fun sendOne(job: Job, invoice: TLRPC.TL_inputInvoiceStarGift, batch: GiftBatch.Run, done: (GiftBatch.Failure?) -> Unit) {
+         val form = TLRPC.TL_payments_getPaymentForm()
+         form.invoice = invoice
+-        connections.sendRequest(form) { formResponse, formError ->
+-            AndroidUtilities.runOnUIThread {
+-                if (formResponse !is TLRPC.TL_payments_paymentFormStarGift) {
+-                    done(failure(formError, "NO_PAYMENT_FORM", false))
+-                    return@runOnUIThread
+-                }
+-                var cost = 0L
+-                for (price in formResponse.invoice.prices) cost += price.amount
+-                if (cost > job.price) {
+-                    done(Failure(LocaleController.getString(R.string.TeleGiftsPriceChanged), false))
+-                    return@runOnUIThread
++        batch.send(form) { formResponse, formError ->
++            if (formResponse !is TLRPC.TL_payments_paymentFormStarGift) {
++                done(GiftBatch.Failure.of(formError, "NO_PAYMENT_FORM", false))
++                return@send
++            }
++            var cost = 0L
++            for (price in formResponse.invoice.prices) cost += price.amount
++            if (cost > job.price) {
++                done(GiftBatch.Failure(LocaleController.getString(R.string.TeleGiftsPriceChanged)))
++                return@send
++            }
++            val pay = TL_stars.TL_payments_sendStarsForm()
++            pay.form_id = formResponse.form_id
++            pay.invoice = invoice
++            batch.send(pay) { payResponse, payError ->
++                if (payResponse !is TLRPC.TL_payments_paymentResult) {
++                    done(GiftBatch.Failure.of(payError, "FAILED_SEND_STARS", true))
++                    return@send
+                 }
+-                val pay = TL_stars.TL_payments_sendStarsForm()
+-                pay.form_id = formResponse.form_id
+-                pay.invoice = invoice
+-                connections.sendRequest(pay) { payResponse, payError ->
+-                    AndroidUtilities.runOnUIThread {
+-                        if (payResponse !is TLRPC.TL_payments_paymentResult) {
+-                            done(failure(payError, "FAILED_SEND_STARS", true))
+-                            return@runOnUIThread
+-                        }
+-                        Utilities.stageQueue.postRunnable {
+-                            MessagesController.getInstance(job.currentAccount).processUpdates(payResponse.updates, false)
+-                        }
+-                        if (job.gift.limited_per_user) job.gift.per_user_remains--
+-                        done(null)
+-                    }
++                Utilities.stageQueue.postRunnable {
++                    MessagesController.getInstance(job.currentAccount).processUpdates(payResponse.updates, false)
+                 }
++                if (job.gift.limited_per_user) job.gift.per_user_remains--
++                done(null)
+             }
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt b/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
+index 7c9eac34d..1a2cd9fa2 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleFloodWait.kt
+@@ -7,6 +7,7 @@ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.UserConfig
+ import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLObject
+ import org.telegram.tgnet.TLRPC
+ import org.telegram.tgnet.tl.TL_stars
+ import org.telegram.tgnet.tl.TL_stories
+@@ -169,6 +170,16 @@ object TeleFloodWait {
+         startTicking()
+     }
+ 
++    private var syntheticToken = 0
++
++    /** A wait that Java code waited out itself (a gift batch): same entries as the native ones. UI thread. */
++    @JvmStatic
++    fun report(account: Int, request: TLObject, seconds: Int) {
++        if (account !in 0 until UserConfig.MAX_ACCOUNT_COUNT) return
++        // no native request behind it, so it never gets a "resent" event and ends at its deadline
++        onWait(account, --syntheticToken, request.javaClass, seconds, "FLOOD_WAIT_$seconds")
++    }
++
+     private fun onResent(account: Int, token: Int) {
+         val limit = limits.firstOrNull { it.account == account && token in it.requests } ?: return
+         limit.requests.remove(token)
+@@ -266,7 +277,7 @@ object TeleFloodWait {
+     private fun countdown(limit: Limit, now: Long): String =
+         LocaleController.formatString(R.string.TeleLimitCountdown, LocaleController.getString(limit.action.limited), duration(seconds(limit.deadline - now)))
+ 
+-    private fun duration(total: Int): String = when {
++    fun duration(total: Int): String = when {
+         total >= 3600 -> {
+             val minutes = (total % 3600) / 60
+             if (minutes > 0) LocaleController.formatString(R.string.TeleDurationHM, total / 3600, minutes)
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 3d43ce9be..5455efad2 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -234,7 +234,6 @@
+     <string name="TeleGiftsTransferConfirmPrice_other">Transfer %1$d gifts to %2$s for %3$s?</string>
+     <string name="TeleGiftsTransferred_one">%1$d gift transferred to %2$s</string>
+     <string name="TeleGiftsTransferred_other">%1$d gifts transferred to %2$s</string>
+-    <string name="TeleGiftsTransferStopped">Transferred %1$d of %2$d gifts.</string>
+     <string name="TeleGiftsCheckBalance">Check your Stars balance before trying again.</string>
+     <string name="TeleGiftsModels_one">%1$d model</string>
+     <string name="TeleGiftsModels_other">%1$d models</string>
+@@ -251,4 +250,17 @@
+     <string name="TeleGiftsSent">%1$d gifts sent</string>
+     <string name="TeleGiftsSendStopped">Sent %1$d of %2$d gifts.</string>
+     <string name="TeleGiftsPriceChanged">The price of the gift changed.</string>
++    <string name="TeleGiftsFailed">Failed</string>
++    <string name="TeleGiftsErrorUserLimit">You can\'t send more of this gift</string>
++    <string name="TeleGiftsErrorRestricted">This user doesn\'t accept gifts</string>
++    <string name="TeleGiftsErrorMessage">Messages in gifts aren\'t allowed here</string>
++    <string name="TeleGiftsErrorTransferEarly">Can\'t be transferred yet</string>
++    <string name="TeleGiftsErrorSellEarly">Can\'t be sold yet</string>
++    <string name="TeleGiftsBatchCancelled">Cancelled after %1$d of %2$d.</string>
++    <string name="TeleGiftsBatchStopped">Stopped after %1$d of %2$d: %3$s</string>
++    <string name="TeleGiftsBatchSkipped">%1$d skipped: %2$s</string>
++    <string name="TeleGiftsBatchDone">%1$d done, %2$s</string>
++    <string name="TeleGiftsBatchWaiting">%1$s, waiting %2$s for Telegram\'s limit</string>
++    <string name="TeleGiftsSendWaiting">Waiting %1$s to send %2$d of %3$d…</string>
++    <string name="TeleGiftsSendCancelled">Cancelled after %1$d of %2$d gifts.</string>
+ </resources>
