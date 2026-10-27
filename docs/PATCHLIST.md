@@ -18,7 +18,7 @@
 ## пачки и ворота
 
 порядок пачек = порядок сборки. пачка закрывается только через **ворота сборки**: все её патчи закоммичены и экспортированы → `./gradlew :TMessagesProj_App:assembleDebug` → apk передан на ручное тестирование → человеческая верификация → статусы `done`. правило подробнее: [AGENTS.md](../AGENTS.md), [docs/development.md](development.md#the-batch-gate).
-Гайды исполнителей для оставшихся пачек: [24](batches/batch-24.md) · [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
+Гайды исполнителей для оставшихся пачек: [25](batches/batch-25.md) · [26](batches/batch-26.md) · [27](batches/batch-27.md) · [28](batches/batch-28.md) · [29](batches/batch-29.md) · [30](batches/batch-30.md). гайды выполненных пачек удалены, их итог — в таблицах ниже и в [features.md](../features.md).
 
 инфраструктурные патчи (без номера tele) помечены `infra`: `0002`, `0003`, `0019`, `0065`, `0066`.
 
@@ -457,13 +457,13 @@ regex-поиск, фильтры поиска, упоминания и мелк�
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0197 | gift studio | todo | `GiftCell`, `StarGiftPatterns`, `MediaCodec`; L; зависит от 0198, 0204, 0234; реш.: студия; по умолч.: api.changes.tg off; экспорт видео/GIF/TGS — тяжёлая часть |
-| 0204 | gift grid builder | todo | экран-конструктор, `GiftCell`; L; зависит от 0197, 0185, 0186; реш.: студия; по умолч.: api.changes.tg off; рендер общий с 0197 |
-| 0234 | больше подарков в студии | todo | студия подарков; L; зависит от 0197, 0198, 0204, студия подарков; реш.: gift studio; по умолч.: api.changes.tg за тумблером; третьесторонний запрос, off |
-| 0198 | fake-апгрейд подарка | todo | `StarGiftSheet.doUpgrade`; M; зависит от 0201; реш.: fake upgrade с ролл-анимацией; нужна новая ролл-анимация |
-| 0201 | прятать номер/модель до конца ролла | todo | `StarGiftSheet`; S; зависит от 0198; реш.: 0201 ролл; вместе с 0198 |
-| 0247 | подарки любого пира в gift grid | todo | `StarsController`, `ProfileGiftsContainer`; M; зависит от 0204, студия подарков; реш.: студия подарков; надстройка над grid-билдером |
-| 0248 | ранги редкости в студии подарков | todo | студия подарков, TL rarity; S; зависит от 0197, 0234, студия подарков; реш.: студия подарков; только рендер списка частей |
+| 0197 | gift studio | built | `0229-feat-gift-studio`; `GiftCell`, `StarGiftPatterns`, `MediaCodec`; L; зависит от 0198, 0204, 0234; реш.: студия; по умолч.: api.changes.tg off; экспорт видео/GIF/TGS — тяжёлая часть |
+| 0204 | gift grid builder | built | `0234-feat-gift-grid-builder`; экран-конструктор, `GiftCell`; L; зависит от 0197, 0185, 0186; реш.: студия; по умолч.: api.changes.tg off; рендер общий с 0197 |
+| 0234 | больше подарков в студии | built | `0230-feat-more-gifts-and-models-in-the-gift-studio`; студия подарков; L; зависит от 0197, 0198, 0204, студия подарков; реш.: gift studio; по умолч.: api.changes.tg за тумблером; третьесторонний запрос, off |
+| 0198 | fake-апгрейд подарка | built | `0232-feat-fake-gift-upgrades`; `StarGiftSheet.doUpgrade`; M; зависит от 0201; реш.: fake upgrade с ролл-анимацией; нужна новая ролл-анимация |
+| 0201 | прятать номер/модель до конца ролла | built | `0233-fix-hide-gift-roll-details-until-roll-ends`; `StarGiftSheet`; S; зависит от 0198; реш.: 0201 ролл; вместе с 0198 |
+| 0247 | подарки любого пира в gift grid | built | `0235-feat-open-anyone-s-gifts-in-the-gift-grid`; `StarsController`, `ProfileGiftsContainer`; M; зависит от 0204, студия подарков; реш.: студия подарков; надстройка над grid-билдером |
+| 0248 | ранги редкости в студии подарков | built | `0231-feat-rarity-tiers-in-the-gift-studio`; студия подарков, TL rarity; S; зависит от 0197, 0234, студия подарков; реш.: студия подарков; только рендер списка частей |
 
 ## пачка 25 — MTProto: инспектор, консоль, диагностика
 

@@ -1,0 +1,773 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 23:24:53 +0300
+Subject: [PATCH 234/237] feat: gift grid builder
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ .../src/main/java/tele/helpers/GiftGrid.kt    | 319 ++++++++++++++++++
+ .../tele/ui/settings/TeleGiftGridActivity.kt  | 115 +++++++
+ .../tele/ui/settings/TeleGiftGridCellItem.kt  |  81 +++++
+ .../tele/ui/settings/TeleGiftGridExport.kt    | 137 ++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   4 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ .../src/main/res/values/strings_tele.xml      |  11 +
+ 8 files changed, 673 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index b6c84312f..e296228d3 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -217,6 +217,8 @@ object TeleConfig {
+     @JvmField
+     val GIFT_ROLL_ANIMATION = BoolItem("gift_roll_animation", false)
+     @JvmField
++    val GIFT_GRID = BoolItem("gift_grid", false)
++    @JvmField
+     val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
+     @JvmField
+     val LOCAL_NAMES = BoolItem("local_names", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt b/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
+new file mode 100644
+index 000000000..716447a07
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
+@@ -0,0 +1,319 @@
++package tele.helpers
++
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.Stars.StarsController
++import tele.db.TeleDatabaseHelper
++
++/**
++ * The gift grid of the studio (desktop 0204): a table of three columns that holds gifts and can be
++ * exported as a picture.
++ *
++ * The model is a [Layout] of rows: every row holds [COLUMNS] cells and every cell is empty or holds
++ * one gift. The layout is kept on this device as JSON, so it survives a restart; the gifts
++ * themselves are found again by their ids, only their numbers and colors are stored.
++ */
++object GiftGrid {
++
++    /** The desktop grid has three columns. */
++    const val COLUMNS = 3
++
++    /** The desktop grid stops at fifty rows. */
++    const val MAX_ROWS = 50
++
++    /** The ids of the actions of the grid. */
++    const val ID_OPEN_IN_GRID = 9704
++    const val ID_COLLECTION_TO_GRID = 9705
++    const val ID_EXPORT_PNG = 9706
++    const val ID_ADD_ROW = 9707
++
++    private const val KEY_PREFIX = "tele_gift_grid_"
++
++    enum class Kind {
++        EMPTY,
++        UNIQUE,
++        REGULAR
++    }
++
++    /** One cell of the grid. The live gift is kept next to the fields that are stored. */
++    class Cell(
++        val kind: Kind = Kind.EMPTY,
++        val giftId: Long = 0,
++        val title: String = "",
++        val number: Int = 0,
++        val slug: String = "",
++        val centerColor: Int = 0,
++        val edgeColor: Int = 0,
++        val patternColor: Int = 0,
++        val stars: Long = 0,
++        val limited: Boolean = false,
++        val soldOut: Boolean = false,
++        val upgradable: Boolean = false
++    ) {
++        /** The gift of the cell, when it is known right now. */
++        var gift: TL_stars.StarGift? = null
++
++        val empty: Boolean get() = kind == Kind.EMPTY
++        val unique: Boolean get() = kind == Kind.UNIQUE
++    }
++
++    /** The rows of the grid and the cells of every row. */
++    class Layout {
++
++        private val rows = ArrayList<MutableList<Cell>>()
++        private var size = 0
++
++        val columns: Int get() = COLUMNS
++
++        fun rowCount(): Int = rows.size
++
++        fun row(index: Int): List<Cell> =
++            if (index in rows.indices) rows[index].toList() else emptyList()
++
++        /** Every cell of the grid, row by row. */
++        fun cells(): List<Cell> {
++            val result = ArrayList<Cell>(size)
++            for (row in rows) result.addAll(row)
++            return result
++        }
++
++        /** The cell at the flat index of the grid. */
++        fun cell(index: Int): Cell? {
++            if (index < 0 || index >= size) return null
++            var left = index
++            for (row in rows) {
++                if (left < row.size) return row[left]
++                left -= row.size
++            }
++            return null
++        }
++
++        /** Puts a gift into the cell at the flat index; the grid grows when the index is past its end. */
++        fun setCell(index: Int, cell: Cell) {
++            if (index < 0) return
++            while (size <= index) {
++                if (!addRow()) return
++            }
++            val row = index / COLUMNS
++            val column = index % COLUMNS
++            val target = rows[row]
++            while (target.size <= column) {
++                target.add(Cell())
++                size++
++            }
++            target[column] = cell
++        }
++
++        /** Adds an empty row at the end; false when the grid is full. */
++        fun addRow(): Boolean {
++            if (rows.size >= MAX_ROWS) return false
++            val row = ArrayList<Cell>(COLUMNS)
++            for (i in 0 until COLUMNS) row.add(Cell())
++            rows.add(row)
++            size += COLUMNS
++            return true
++        }
++
++        /** Removes a row; the gifts of the other rows keep their places. */
++        fun removeRow(index: Int): Boolean {
++            if (index !in rows.indices) return false
++            rows.removeAt(index)
++            size -= COLUMNS
++            if (rows.isEmpty()) addRow()
++            return true
++        }
++
++        /** Puts a gift into the first free cell; -1 when the grid is full. */
++        fun addCell(cell: Cell): Int {
++            val cells = cells()
++            for (i in cells.indices) {
++                if (cells[i].empty) {
++                    setCell(i, cell)
++                    return i
++                }
++            }
++            if (rows.size < MAX_ROWS) {
++                addRow()
++                return addCell(cell)
++            }
++            return -1
++        }
++
++        /** Empties a cell. */
++        fun removeCell(index: Int) {
++            val cell = cell(index) ?: return
++            if (cell.empty) return
++            setCell(index, Cell())
++        }
++
++        /** Moves a cell to another place of the grid; the cell that was there moves back. */
++        fun moveCell(from: Int, to: Int): Boolean {
++            if (from == to) return false
++            val source = cell(from) ?: return false
++            val target = cell(to) ?: return false
++            setCell(to, source)
++            setCell(from, target)
++            return true
++        }
++
++        fun clear() {
++            rows.clear()
++            size = 0
++            addRow()
++        }
++
++        /** The gifts of the grid, in order: the cells that hold one. */
++        fun collect(): List<Cell> {
++            val result = ArrayList<Cell>()
++            for (row in rows) {
++                for (cell in row) {
++                    if (!cell.empty) result.add(cell)
++                }
++            }
++            return result
++        }
++
++        fun toJson(): String {
++            val array = JSONArray()
++            for (row in rows) {
++                val rowArray = JSONArray()
++                for (cell in row) rowArray.put(cellToJson(cell))
++                array.put(rowArray)
++            }
++            return JSONObject().put("rows", array).toString()
++        }
++
++        companion object {
++            fun fromJson(json: String?): Layout {
++                val layout = Layout()
++                layout.clear()
++                if (json.isNullOrEmpty()) return layout
++                try {
++                    val rows = JSONObject(json).optJSONArray("rows") ?: return layout
++                    for (i in 0 until rows.length()) {
++                        val rowArray = rows.optJSONArray(i) ?: continue
++                        if (i > 0) layout.addRow()
++                        for (j in 0 until rowArray.length()) {
++                            layout.setCell(i * COLUMNS + j, cellFromJson(rowArray.optJSONObject(j)))
++                        }
++                    }
++                } catch (e: Exception) {
++                    // a broken layout leaves the grid empty instead of crashing
++                }
++                return layout
++            }
++        }
++    }
++
++    private fun cellToJson(cell: Cell): JSONObject = JSONObject()
++        .put("k", cell.kind.name)
++        .put("id", cell.giftId)
++        .put("t", cell.title)
++        .put("n", cell.number)
++        .put("s", cell.slug)
++        .put("c", cell.centerColor)
++        .put("e", cell.edgeColor)
++        .put("pc", cell.patternColor)
++        .put("st", cell.stars)
++        .put("l", cell.limited)
++        .put("so", cell.soldOut)
++        .put("up", cell.upgradable)
++
++    private fun cellFromJson(json: JSONObject?): Cell {
++        if (json == null) return Cell()
++        val kind = try {
++            Kind.valueOf(json.optString("k"))
++        } catch (e: Exception) {
++            Kind.EMPTY
++        }
++        return Cell(
++            kind = kind,
++            giftId = json.optLong("id"),
++            title = json.optString("t"),
++            number = json.optInt("n"),
++            slug = json.optString("s"),
++            centerColor = json.optInt("c"),
++            edgeColor = json.optInt("e"),
++            patternColor = json.optInt("pc"),
++            stars = json.optLong("st"),
++            limited = json.optBoolean("l"),
++            soldOut = json.optBoolean("so"),
++            upgradable = json.optBoolean("up")
++        )
++    }
++
++    /** Builds a cell of a gift; the number of a collectible gift is the number of the gift. */
++    @JvmStatic
++    fun cellOf(gift: TL_stars.StarGift?): Cell {
++        if (gift == null) return Cell()
++        val unique = gift is TL_stars.TL_starGiftUnique
++        val backdrop = StarsController.findAttribute(gift.attributes, TL_stars.starGiftAttributeBackdrop::class.java)
++        val cell = Cell(
++            kind = if (unique) Kind.UNIQUE else Kind.REGULAR,
++            giftId = gift.id,
++            title = gift.title ?: "",
++            number = if (unique) (gift as TL_stars.TL_starGiftUnique).num else 0,
++            slug = gift.slug ?: "",
++            centerColor = backdrop?.center_color ?: 0,
++            edgeColor = backdrop?.edge_color ?: 0,
++            patternColor = backdrop?.pattern_color ?: 0,
++            stars = gift.stars,
++            limited = gift.limited,
++            soldOut = gift.sold_out,
++            upgradable = gift.can_upgrade
++        )
++        cell.gift = gift
++        return cell
++    }
++
++    /**
++     * Finds a gift of the grid again: the regular gifts come from the catalog of Telegram, the
++     * collectibles from the gift lists that are loaded.
++     */
++    @JvmStatic
++    fun findGift(account: Int, cell: Cell): TL_stars.StarGift? {
++        if (cell.empty) return null
++        val controller = StarsController.getInstance(account)
++        if (cell.unique) {
++            for (i in 0 until controller.giftLists.size()) {
++                val list = controller.giftLists.valueAt(i)
++                for (j in 0 until list.gifts.size()) {
++                    val gift = list.gifts[j].gift
++                    if (gift != null && gift.id == cell.giftId) return gift
++                }
++            }
++            return null
++        }
++        return controller.getStarGift(cell.giftId)
++    }
++
++    /** Fills the cells of a layout with the gifts that are known right now. */
++    @JvmStatic
++    fun resolve(account: Int, layout: Layout) {
++        for (cell in layout.cells()) {
++            if (cell.empty) continue
++            val gift = cell.gift ?: findGift(account, cell)
++            cell.gift = gift
++        }
++    }
++
++    /** The saved layout of the account on this device. */
++    @JvmStatic
++    fun load(account: Int): Layout {
++        val layout = Layout.fromJson(TeleDatabaseHelper.get(KEY_PREFIX + account))
++        resolve(account, layout)
++        return layout
++    }
++
++    /** Saves the layout of the account on this device. */
++    @JvmStatic
++    fun save(account: Int, layout: Layout) {
++        TeleDatabaseHelper.put(KEY_PREFIX + account, layout.toJson())
++    }
++
++    /** The account the grid belongs to. */
++    @JvmStatic
++    fun account(): Int = UserConfig.selectedAccount
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+new file mode 100644
+index 000000000..018daf140
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+@@ -0,0 +1,115 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.view.View
++import android.widget.FrameLayout
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.UItem
++import org.telegram.ui.Components.UniversalAdapter
++import org.telegram.ui.Components.UniversalRecyclerView
++import tele.helpers.GiftGrid
++import tele.helpers.GiftGrid.Layout
++
++/** The gift grid of the studio: a table of three columns that holds gifts. */
++class TeleGiftGridActivity : BaseFragment() {
++
++    private var recycler: UniversalRecyclerView? = null
++    private var layout: Layout = Layout()
++
++    private fun reload() {
++        layout = GiftGrid.load(currentAccount)
++        recycler?.adapter?.update(true)
++    }
++
++    private fun fillItems(items: ArrayList<UItem>, adapter: UniversalAdapter) {
++        val rows = layout.rowCount()
++        for (i in 0 until rows) {
++            for (j in 0 until GiftGrid.COLUMNS) {
++                val cell = layout.cell(i * GiftGrid.COLUMNS + j) ?: continue
++                items.add(GiftGridCellFactory.asCell(cell))
++            }
++        }
++    }
++
++    override fun onFragmentCreate(): Boolean {
++        reload()
++        return super.onFragmentCreate()
++    }
++
++    override fun createView(context: Context): View {
++        val frameLayout = FrameLayout(context)
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++        fragmentView = frameLayout
++
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc("Gift grid"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                when (id) {
++                    GiftGrid.ID_EXPORT_PNG -> TeleGiftGridExport.export(this@TeleGiftGridActivity, layout)
++                    GiftGrid.ID_ADD_ROW -> {
++                        if (layout.addRow()) {
++                            GiftGrid.save(currentAccount, layout)
++                            recycler?.adapter?.update(true)
++                        }
++                    }
++                }
++            }
++        })
++
++        val menu = actionBar.createMenu()
++        menu.addItem(GiftGrid.ID_ADD_ROW, R.drawable.filled_add_album).setText(lc("Add row"))
++        menu.addItem(GiftGrid.ID_EXPORT_PNG, R.drawable.filled_share).setText(lc("Save picture"))
++
++        val recycler = UniversalRecyclerView(
++            context,
++            currentAccount,
++            0,
++            false,
++            this::fillItems,
++            { item, view, position, x, y -> onItemClick(item, view, position) },
++            null,
++            resourceProvider,
++            GiftGrid.COLUMNS,
++            1
++        )
++        this.recycler = recycler
++        recycler.setSelectorType(9)
++        recycler.setSelectorDrawableColor(0)
++        recycler.setClipToPadding(false)
++        recycler.setPadding(AndroidUtilities.dp(9f), 0, AndroidUtilities.dp(9f), 0)
++        frameLayout.addView(recycler, LayoutHelper.createFrame(
++            LayoutHelper.MATCH_PARENT,
++            LayoutHelper.MATCH_PARENT
++        ))
++        return fragmentView
++    }
++
++    /** A tap on a cell of the grid offers to take the gift out of the grid. */
++    private fun onItemClick(item: UItem, view: View?, position: Int) {
++        val cell = item.`object` as? GiftGrid.Cell ?: return
++        if (cell.empty) return
++        val scrim = view ?: return
++        val options = ItemOptions.makeOptions(parentActivity ?: return, resourceProvider, scrim)
++        options.add(lc("Remove from the grid")) {
++            layout.removeCell(position)
++            GiftGrid.save(currentAccount, layout)
++            recycler?.adapter?.update(true)
++        }
++        options.show()
++    }
++
++    override fun onFragmentDestroy() {
++        super.onFragmentDestroy()
++        recycler = null
++    }
++}
++
++private fun lc(s: String) = tele.helpers.TeleLowercase.lc(s)
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
+new file mode 100644
+index 000000000..375504ba3
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
+@@ -0,0 +1,81 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.view.View
++import android.widget.FrameLayout
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.UItem
++import org.telegram.ui.Components.UniversalAdapter
++import org.telegram.ui.Components.UniversalRecyclerView
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Gifts.GiftSheet
++import tele.helpers.GiftGrid
++import tele.helpers.GiftGrid.Cell
++
++/** The view that shows one cell of the grid. It wraps a GiftSheet.GiftCell. */
++class GiftGridCellView(
++    context: Context,
++    currentAccount: Int,
++    resourcesProvider: Theme.ResourcesProvider?
++) : FrameLayout(context) {
++
++    private val giftCell = GiftSheet.GiftCell(context, currentAccount, resourcesProvider)
++
++    init {
++        addView(giftCell, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT))
++        setClickable(true)
++    }
++
++    /** The card of the cell, so the export can draw it. */
++    fun card(): GiftSheet.GiftCell = giftCell
++
++    fun bind(cell: Cell) {
++        val gift = cell.gift ?: return
++        giftCell.setStarsGift(gift, cell.unique, false, false, false, false)
++    }
++}
++
++/** The item of one cell of the gift grid. */
++class GiftGridCellFactory : UItem.UItemFactory<GiftGridCellView>() {
++
++    override fun createView(
++        context: Context,
++        listView: RecyclerListView?,
++        currentAccount: Int,
++        classGuid: Int,
++        resourcesProvider: Theme.ResourcesProvider?
++    ): GiftGridCellView = GiftGridCellView(context, currentAccount, resourcesProvider)
++
++    override fun bindView(
++        view: View,
++        item: UItem,
++        divider: Boolean,
++        adapter: UniversalAdapter,
++        listView: UniversalRecyclerView
++    ) {
++        (view as GiftGridCellView).bind(item.`object` as Cell)
++    }
++
++    override fun equals(a: UItem, b: UItem): Boolean = contentsEquals(a, b)
++
++    override fun contentsEquals(a: UItem, b: UItem): Boolean {
++        val first = a.`object` as? Cell ?: return false
++        val second = b.`object` as? Cell ?: return false
++        return first.giftId == second.giftId && first.gift === second.gift
++    }
++
++    companion object {
++        init {
++            UItem.UItemFactory.setup(GiftGridCellFactory())
++        }
++
++        @JvmStatic
++        fun asCell(cell: Cell): UItem {
++            val item = UItem.ofFactory(GiftGridCellFactory::class.java)
++            item.spanCount = 1
++            item.`object` = cell
++            return item
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt
+new file mode 100644
+index 000000000..1e5b57495
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt
+@@ -0,0 +1,137 @@
++package tele.ui.settings
++
++import android.content.ContentValues
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.os.Build
++import android.os.Environment
++import android.provider.MediaStore
++import android.view.View
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Gifts.GiftSheet
++import tele.helpers.GiftGrid
++import tele.helpers.GiftGrid.Layout
++import java.io.File
++import java.io.FileOutputStream
++
++/**
++ * The export of the gift grid (desktop 0204): the cards of the grid are drawn into one picture and
++ * saved to the gallery.
++ */
++object TeleGiftGridExport {
++
++    /** The picture is at most this wide and this tall, so a full grid does not eat the memory. */
++    private const val MAX_WIDTH = 2048
++    private const val MAX_HEIGHT = 4096
++
++    private const val GAP = 8
++
++    /**
++     * Draws the grid and saves it as a picture. The cards are the same views that the grid shows, so
++     * the picture and the screen look alike.
++     */
++    @JvmStatic
++    fun export(fragment: BaseFragment, layout: Layout) {
++        val activity = fragment.parentActivity ?: return
++        val cells = layout.collect()
++        if (cells.isEmpty()) {
++            show(fragment, LocaleController.getString(R.string.TeleGiftGridEmpty))
++            return
++        }
++        val card = GiftSheet.GiftCell(activity, fragment.currentAccount, fragment.resourceProvider)
++        val cellWidth = AndroidUtilities.dp(120f).toInt()
++        val cellHeight = AndroidUtilities.dp(160f).toInt()
++        val columns = GiftGrid.COLUMNS
++        val rows = (cells.size + columns - 1) / columns
++
++        var scale = 1f
++        val width = columns * cellWidth + (columns + 1) * GAP
++        val height = rows * cellHeight + (rows + 1) * GAP
++        if (width > MAX_WIDTH || height > MAX_HEIGHT) {
++            scale = minOf(MAX_WIDTH.toFloat() / width, MAX_HEIGHT.toFloat() / height)
++        }
++        val bitmap = Bitmap.createBitmap(
++            (width * scale).toInt().coerceAtLeast(2),
++            (height * scale).toInt().coerceAtLeast(2),
++            Bitmap.Config.ARGB_8888
++        )
++        val canvas = Canvas(bitmap)
++        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
++        paint.color = Color.WHITE
++        canvas.drawRect(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat(), paint)
++
++        for (i in cells.indices) {
++            val cell = cells[i]
++            val gift = cell.gift ?: continue
++            val column = i % columns
++            val row = i / columns
++            card.setStarsGift(gift, cell.unique, false, false, false, false)
++            card.measure(
++                View.MeasureSpec.makeMeasureSpec(cellWidth, View.MeasureSpec.EXACTLY),
++                View.MeasureSpec.makeMeasureSpec(cellHeight, View.MeasureSpec.EXACTLY)
++            )
++            card.layout(0, 0, cellWidth, cellHeight)
++            val save = canvas.save()
++            canvas.translate(
++                (GAP + column * (cellWidth + GAP)) * scale,
++                (GAP + row * (cellHeight + GAP)) * scale
++            )
++            canvas.scale(scale, scale)
++            card.draw(canvas)
++            canvas.restoreToCount(save)
++        }
++
++        save(fragment, bitmap)
++    }
++
++    /** Saves the picture in the gallery and shows the result. */
++    private fun save(fragment: BaseFragment, bitmap: Bitmap) {
++        val activity = fragment.parentActivity ?: return
++        val name = "gift-grid-${System.currentTimeMillis()}.png"
++        var saved = false
++        try {
++            if (Build.VERSION.SDK_INT >= 29) {
++                val values = ContentValues()
++                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + File.separator + "tele")
++                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name)
++                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
++                val resolver = activity.contentResolver
++                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
++                if (uri != null) {
++                    resolver.openOutputStream(uri)?.use { output ->
++                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
++                    }
++                    saved = true
++                }
++            } else {
++                val directory = File(activity.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "tele")
++                directory.mkdirs()
++                val file = File(directory, name)
++                FileOutputStream(file).use { output ->
++                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
++                }
++                saved = file.length() > 0
++            }
++        } catch (e: Exception) {
++            FileLog.e("tele-gift-grid-export", e)
++            saved = false
++        }
++        bitmap.recycle()
++        if (saved) {
++            show(fragment, LocaleController.getString(R.string.TeleGiftGridSaved))
++        } else {
++            show(fragment, LocaleController.getString(R.string.TeleGiftGridExportFailed))
++        }
++    }
++
++    private fun show(fragment: BaseFragment, text: CharSequence) {
++        BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, text).show()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 87889628f..3926790d4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -201,6 +201,10 @@ object TeleSearch {
+             section(1498, "Gift studio catalog", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio catalog of api.changes.tg"),
+             section(1499, "Gift studio video", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio export as a video"),
+             section(1500, "Gift studio more models", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio more models"),
++            section(1513, "Gift grid", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1514, "Grid of gifts", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift grid"),
++            section(1515, "Grid of gift cards", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift grid"),
++            screen(1516, "Open the gift grid") { TeleGiftGridActivity() },
+             section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1101, "Preview calcmula results while typing", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1330, "Calcmula suggestions and sending without calculating", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index b6486f943..5ef3ca1e7 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -617,6 +617,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "server_clear" -> tele.helpers.TeleServer.clearCachedData(::showServerResult)
+                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
+                 MODE_UPDATE_ACTION -> if (tele.helpers.TeleUpdater.isReady()) tele.helpers.TeleUpdater.install(parentActivity) else tele.helpers.TeleUpdater.checkNow()
++                "gift_grid" -> presentFragment(TeleGiftGridActivity())
+                 MODE_WHATS_NEW -> tele.helpers.TeleChangelog.open(this)
+                 else -> presentFragment(TeleSettingsActivity(row.mode ?: MODE_ROOT))
+             }
+@@ -1000,6 +1001,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Search gifts" to "Adds a search field and attribute chips to the gift list; covers collectible gifts only.",
+             "Copy gift collection link" to "Adds Copy Link to the menu of a gift collection.",
+             "Retry loading gift collections" to "Try again after 3 seconds when the collections of a profile fail to load.",
++            "Gift grid" to "Adds a grid of gifts to the studio: three columns of gift cards that you can fill and save as a picture.",
+             "Send several gifts at once" to "Adds a quantity stepper to the gift sheet. The gifts are sent one by one after you confirm the total.",
+             "Open collectible gifts in see.tg" to "Open collectible gifts in the see.tg mini app.",
+             "Copy custom emoji id" to "Copy a custom emoji's ID from its menu.",
+@@ -1545,6 +1547,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Gift studio catalog of api.changes.tg", TeleConfig.GIFT_STUDIO_EXTERNAL_CATALOG),
+                 toggle("Gift studio export as a video", TeleConfig.GIFT_STUDIO_VIDEO),
+                 toggle("Gift studio more models", TeleConfig.GIFT_STUDIO_MODELS),
++                toggle("Gift grid", TeleConfig.GIFT_GRID),
++                link("Open the gift grid", "gift_grid"),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Collectibles"),
+                 toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 2ba6e89de..083f32c51 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -327,4 +327,15 @@
+     <string name="TeleGiftStudioRarityLegendary">legendary</string>
+     <string name="TeleGiftStudioError">The gift could not be saved</string>
+     <string name="TeleGiftStudioNoParts">Nothing to pick yet. The parts of the gifts of this account show here, and the catalog when it is on.</string>
++    <string name="TeleGiftGrid">Gift grid</string>
++    <string name="TeleGiftGridDescription">Adds a grid of gifts to the studio: three columns of gift cards that you can fill and save as a picture.</string>
++    <string name="TeleGiftGridAddRow">Add row</string>
++    <string name="TeleGiftGridSavePicture">Save picture</string>
++    <string name="TeleGiftGridRemove">Remove from the grid</string>
++    <string name="TeleGiftGridEmpty">The grid has no gifts yet</string>
++    <string name="TeleGiftGridSaved">The picture of the grid is saved</string>
++    <string name="TeleGiftGridExportFailed">Couldn\'t save the picture of the grid</string>
++    <string name="TeleGiftGridOpenInGrid">Open in the gift grid</string>
++    <string name="TeleGiftGridAddToGrid">Add to the gift grid</string>
++    <string name="TeleGiftGridGiftsAdded">%1$d gifts added to the grid</string>
+ </resources>

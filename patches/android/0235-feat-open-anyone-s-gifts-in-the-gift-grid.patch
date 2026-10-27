@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 23:25:10 +0300
+Subject: [PATCH 235/237] feat: open anyone's gifts in the gift grid
+
+---
+ .../ui/Gifts/ProfileGiftsContainer.java       |  2 +
+ .../main/java/tele/helpers/GiftGridPeers.kt   | 99 +++++++++++++++++++
+ 2 files changed, 101 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftGridPeers.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+index 5926f23af..bc3223e50 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+@@ -1022,6 +1022,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+                         }
+                     }).makeMultiline(false).cutTextInFancyHalf();
+                 }
++                tele.helpers.GiftGridPeers.fillMenu(o, parent.dialogId, list, currentAccount, parent.fragment);
+                 if (o.getItemsCount() <= 0) {
+                     return false;
+                 }
+@@ -1408,6 +1409,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+                     }
+                 })
+                 .addIf(isMine, R.drawable.menu_gift_add, getString(R.string.Gift2CollectionsAdd), this::addGifts)
++                .addIf(tele.helpers.GiftGridPeers.enabled(), R.drawable.filled_gift_simple, getString(R.string.TeleGiftGridAddToGrid), () -> tele.helpers.GiftGridPeers.openWithList(currentAccount, parent.dialogId, parent.collections.getListById(collection.collection_id), parent.fragment))
+                 .addIf(!TextUtils.isEmpty(username) && GiftCollectionLink.enabled(), R.drawable.msg_link, getString(R.string.CopyLink), () -> GiftCollectionLink.copy(currentAccount, username, collection.collection_id, fragment))
+                 .addIf(!TextUtils.isEmpty(username), R.drawable.msg_share, getString(R.string.Gift2CollectionsShare), () -> {
+                     final String link = MessagesController.getInstance(currentAccount).linkPrefix + "/" + username + "/c/" + collection.collection_id;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftGridPeers.kt b/TMessagesProj/src/main/java/tele/helpers/GiftGridPeers.kt
+new file mode 100644
+index 000000000..d12294d70
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftGridPeers.kt
+@@ -0,0 +1,99 @@
++package tele.helpers
++
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Stars.StarsController
++import tele.TeleConfig
++import tele.ui.settings.TeleGiftGridActivity
++
++/**
++ * opening the gifts of another profile in the gift grid (desktop 0247).
++ *
++ * the grid takes the gifts of a profile: the collectibles of the profile and, in the list of your own
++ * profile, the regular gifts too. the menu of a gift and the menu of a gift collection get the items
++ * that fill the grid with the gifts of that list and open it.
++ */
++object GiftGridPeers {
++
++    /** how many gifts of one list go into the grid; the desktop grid stops there too. */
++    const val MAX_GIFTS = 6000
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.GIFT_GRID.value
++
++    /**
++     * the items of the menu of a gift: open the grid with the gifts of the list the gift is in.
++     */
++    @JvmStatic
++    @JvmOverloads
++    fun fillMenu(
++        options: ItemOptions,
++        dialogId: Long,
++        list: StarsController.GiftsList?,
++        account: Int = UserConfig.selectedAccount,
++        fragment: BaseFragment? = null
++    ) {
++        if (!enabled()) return
++        options.add(R.drawable.filled_gift_simple, LocaleController.getString(R.string.TeleGiftGridOpenInGrid)) {
++            openWithList(account, dialogId, list, fragment)
++        }
++    }
++
++    /** the items of the menu of a gift collection: fill the grid with the gifts of the collection. */
++    @JvmStatic
++    @JvmOverloads
++    fun fillCollectionMenu(
++        options: ItemOptions,
++        dialogId: Long,
++        collectionId: Int,
++        account: Int = UserConfig.selectedAccount,
++        fragment: BaseFragment? = null
++    ) {
++        if (!enabled()) return
++        val list = StarsController.getInstance(account).getProfileGiftCollectionsList(dialogId, false)?.getListById(collectionId)
++        options.add(R.drawable.filled_gift_simple, LocaleController.getString(R.string.TeleGiftGridAddToGrid)) {
++            openWithList(account, dialogId, list, fragment)
++        }
++    }
++
++    /** puts the gifts of a list into the grid and opens the grid. */
++    @JvmStatic
++    @JvmOverloads
++    fun openWithList(
++        account: Int,
++        dialogId: Long,
++        list: StarsController.GiftsList?,
++        fragment: BaseFragment? = null
++    ) {
++        val layout = GiftGrid.load(account)
++        layout.clear()
++        if (list != null) {
++            for (i in 0 until list.gifts.size()) {
++                if (layout.count() >= MAX_GIFTS) break
++                val gift = list.gifts[i].gift ?: continue
++                if (layout.addCell(GiftGrid.cellOf(gift)) < 0) break
++            }
++        }
++        GiftGrid.save(account, layout)
++        fragment?.presentFragment(TeleGiftGridActivity())
++    }
++
++    /** puts the collectibles of another profile into the grid. */
++    @JvmStatic
++    @JvmOverloads
++    fun openWithProfile(account: Int, dialogId: Long, fragment: BaseFragment? = null) {
++        val list = StarsController.getInstance(account).getProfileGiftsList(dialogId, false)
++        openWithList(account, dialogId, list, fragment)
++    }
++
++    /** the gifts of a profile that the grid can show. */
++    @JvmStatic
++    fun giftsOf(account: Int, dialogId: Long): List<TL_stars.SavedStarGift> {
++        val list = StarsController.getInstance(account).getProfileGiftsList(dialogId, false)
++        return list?.gifts ?: emptyList()
++    }
++}

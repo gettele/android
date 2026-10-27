@@ -1,0 +1,417 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 23:17:51 +0300
+Subject: [PATCH 231/237] feat: rarity tiers in the gift studio
+
+---
+ .../ui/Gifts/ProfileGiftsContainer.java       |   1 +
+ .../src/main/java/tele/helpers/GiftStudio.kt  | 102 ++++++++++++++++--
+ .../java/tele/helpers/GiftStudioCatalog.kt    |   8 +-
+ .../src/main/java/tele/ui/RarityPillView.kt   |  78 ++++++++++++++
+ .../java/tele/ui/TeleGiftStudioActivity.kt    |  26 ++---
+ .../src/main/res/values/strings_tele.xml      |   4 +
+ 6 files changed, 192 insertions(+), 27 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/RarityPillView.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+index e48de6a39..5926f23af 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+@@ -111,6 +111,7 @@ import org.telegram.ui.Stars.StarsController;
+ import org.telegram.ui.Stories.recorder.ButtonWithCounterView;
+ import tele.helpers.GiftCollectionLink;
+ import tele.helpers.GiftDates;
++import tele.helpers.GiftStudioMenu;
+ import tele.helpers.GiftSelection;
+ import tele.helpers.GiftSearch;
+ import tele.ui.TeleDatesBarFactory;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
+index 0fe16fc40..e55d43dff 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
+@@ -10,6 +10,29 @@ import java.util.Locale
+  */
+ object GiftStudio {
+ 
++    /** The tier of a part of the catalog (desktop 0248). */
++    enum class Tier(val value: Int, val color: Int) {
++        DEFAULT(0, 0),
++        UNCOMMON(-1, 0xFF40A920.toInt()),
++        RARE(-2, 0xFF11AABE.toInt()),
++        EPIC(-3, 0xFF955CDB.toInt()),
++        LEGENDARY(-4, 0xFFBF7600.toInt());
++
++        companion object {
++            /** The tier of a name of the catalog; [DEFAULT] when the name is unknown. */
++            @JvmStatic
++            fun of(name: String?): Tier {
++                return when (name?.trim()?.lowercase()) {
++                    "uncommon" -> UNCOMMON
++                    "rare" -> RARE
++                    "epic" -> EPIC
++                    "legendary" -> LEGENDARY
++                    else -> DEFAULT
++                }
++            }
++        }
++    }
++
+     /** One value of a part: a model, a backdrop or a symbol. */
+     class Part(
+         @JvmField val name: String,
+@@ -21,7 +44,9 @@ object GiftStudio {
+         @JvmField val patternColor: Int,
+         @JvmField val textColor: Int,
+         /** The file of a custom model of the device; empty for the models of Telegram. */
+-        @JvmField val localPath: String? = null
++        @JvmField val localPath: String? = null,
++        /** The tier of the part of the catalog; [Tier.DEFAULT] when it has none. */
++        @JvmField val tier: Tier = Tier.DEFAULT
+     )
+ 
+     /** The parts of a gift. */
+@@ -39,9 +64,62 @@ object GiftStudio {
+         return String.format(Locale.US, "%.1f%%", permille / 10.0)
+     }
+ 
++    /** The name of the tier of a part; empty when the part has no tier. */
++    @JvmStatic
++    fun tierText(tier: Tier): String {
++        return when (tier) {
++            Tier.UNCOMMON -> org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.TeleGiftStudioRarityUncommon)
++            Tier.RARE -> org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.TeleGiftStudioRarityRare)
++            Tier.EPIC -> org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.TeleGiftStudioRarityEpic)
++            Tier.LEGENDARY -> org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.TeleGiftStudioRarityLegendary)
++            Tier.DEFAULT -> ""
++        }
++    }
++
++    /** The value of the rarity of a part: the tier when it has one, the permille otherwise. */
++    @JvmStatic
++    fun rarityValue(part: Part): Int {
++        if (part.tier != Tier.DEFAULT) return part.tier.value
++        return part.permille
++    }
++
++    /** The tier of an attribute of Telegram; [Tier.DEFAULT] when it has none. */
++    @JvmStatic
++    fun tierOf(attribute: TL_stars.StarGiftAttribute): Tier {
++        val rarity = attribute.rarity ?: return Tier.DEFAULT
++        return when (rarity) {
++            is TL_stars.TL_starGiftAttributeRarityUncommon -> Tier.UNCOMMON
++            is TL_stars.TL_starGiftAttributeRarityRare -> Tier.RARE
++            is TL_stars.TL_starGiftAttributeRarityEpic -> Tier.EPIC
++            is TL_stars.TL_starGiftAttributeRarityLegendary -> Tier.LEGENDARY
++            else -> Tier.DEFAULT
++        }
++    }
++
++    /** The tier of a value of a rarity; [Tier.DEFAULT] when the value is not a tier. */
++    @JvmStatic
++    fun tierOf(value: Int): Tier {
++        for (tier in Tier.values()) {
++            if (tier != Tier.DEFAULT && tier.value == value) return tier
++        }
++        return Tier.DEFAULT
++    }
++
++    /** The color of the pill of the rarity; empty when the part has no tier. */
++    @JvmStatic
++    fun rarityColor(tier: Tier): Int {
++        if (tier == Tier.DEFAULT) return 0
++        return tier.color
++    }
++
+     /** How rare the model and the backdrop together are. */
+     @JvmStatic
+     fun rarityOdds(modelPermille: Int, backdropPermille: Int): String {
++        if (modelPermille < 0) {
++            // the value of a tier is negative, so the tier of the model is the rarity of the gift
++            val tier = tierOf(modelPermille)
++            return if (tier == Tier.DEFAULT) "" else tierText(tier)
++        }
+         if (modelPermille <= 0 || backdropPermille <= 0) return ""
+         val odds = 1000000.0 / (modelPermille.toDouble() * backdropPermille)
+         return "1 in " + String.format(Locale.US, "%,d", odds.toLong())
+@@ -50,6 +128,7 @@ object GiftStudio {
+     /** The chance of the model and the backdrop together, in percent. */
+     @JvmStatic
+     fun rarityChance(modelPermille: Int, backdropPermille: Int): String {
++        if (modelPermille < 0) return ""
+         if (modelPermille <= 0 || backdropPermille <= 0) return ""
+         val percent = modelPermille * backdropPermille / 10000.0
+         var text = if (percent >= 1.0) {
+@@ -65,12 +144,11 @@ object GiftStudio {
+     /** The parts of the gifts: every model, backdrop and symbol among them. */
+     @JvmStatic
+     fun partsOfRegularGift(gift: TL_stars.StarGift): Parts {
+-        val model = GiftStudio.Part(
+-            gift.title ?: "Original", 0, gift.getDocument(), 0, 0, 0, 0, 0
+-        )
+         val own = partsOf(gift)
+         return Parts(
+-            listOf(model) + own.models,
++            listOf(GiftStudio.Part(
++                gift.title ?: "Original", 0, gift.getDocument(), 0, 0, 0, 0, 0, null, Tier.DEFAULT
++            )) + own.models,
+             own.backdrops,
+             own.symbols
+         )
+@@ -86,16 +164,17 @@ object GiftStudio {
+             for (attribute in gift.attributes) {
+                 if (attribute is TL_stars.starGiftAttributeModel) {
+                     val name = attribute.name ?: continue
+-                    models[name] = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++                    models[name] = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0, null, tierOf(attribute))
+                 } else if (attribute is TL_stars.starGiftAttributeBackdrop) {
+                     val name = attribute.name ?: continue
+                     backdrops[name] = Part(
+                         name, attribute.getRarityPermille(), null, attribute.backdrop_id,
+-                        attribute.center_color, attribute.edge_color, attribute.pattern_color, attribute.text_color
++                        attribute.center_color, attribute.edge_color, attribute.pattern_color, attribute.text_color,
++                        null, tierOf(attribute)
+                     )
+                 } else if (attribute is TL_stars.starGiftAttributePattern) {
+                     val name = attribute.name ?: continue
+-                    symbols[name] = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++                    symbols[name] = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0, null, tierOf(attribute))
+                 }
+             }
+         }
+@@ -111,16 +190,17 @@ object GiftStudio {
+         for (attribute in gift.attributes) {
+             if (attribute is TL_stars.starGiftAttributeModel) {
+                 val name = attribute.name ?: continue
+-                model = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++                model = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0, null, tierOf(attribute))
+             } else if (attribute is TL_stars.starGiftAttributeBackdrop) {
+                 val name = attribute.name ?: continue
+                 backdrop = Part(
+                     name, attribute.getRarityPermille(), null, attribute.backdrop_id,
+-                    attribute.center_color, attribute.edge_color, attribute.pattern_color, attribute.text_color
++                    attribute.center_color, attribute.edge_color, attribute.pattern_color, attribute.text_color,
++                    null, tierOf(attribute)
+                 )
+             } else if (attribute is TL_stars.starGiftAttributePattern) {
+                 val name = attribute.name ?: continue
+-                symbol = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++                symbol = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0, null, tierOf(attribute))
+             }
+         }
+         return Parts(
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+index af65099f7..e5abdf828 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+@@ -28,7 +28,7 @@ object GiftStudioCatalog {
+     class CatalogItem(
+         @JvmField val name: String,
+         @JvmField val permille: Int,
+-        @JvmField val tier: String,
++        @JvmField val tier: GiftStudio.Tier,
+         @JvmField val centerColor: Int,
+         @JvmField val edgeColor: Int,
+         @JvmField val patternColor: Int,
+@@ -84,7 +84,7 @@ object GiftStudioCatalog {
+             for (item in parseArray(bytes)) {
+                 models.add(CatalogItem(
+                     item.optString("name"), item.optInt("rarityPermille"),
+-                    item.optString("rarityTier"), 0, 0, 0, 0
++                    GiftStudio.Tier.of(item.optString("rarityTier")), 0, 0, 0, 0
+                 ))
+             }
+             check()
+@@ -93,7 +93,7 @@ object GiftStudioCatalog {
+             for (item in parseArray(bytes)) {
+                 backdrops.add(CatalogItem(
+                     item.optString("name"), item.optInt("rarityPermille"),
+-                    item.optString("rarityTier"),
++                    GiftStudio.Tier.of(item.optString("rarityTier")),
+                     item.optInt("centerColor"), item.optInt("edgeColor"),
+                     item.optInt("patternColor"), item.optInt("textColor")
+                 ))
+@@ -104,7 +104,7 @@ object GiftStudioCatalog {
+             for (item in parseArray(bytes)) {
+                 symbols.add(CatalogItem(
+                     item.optString("name"), item.optInt("rarityPermille"),
+-                    item.optString("rarityTier"), 0, 0, 0, 0
++                    GiftStudio.Tier.of(item.optString("rarityTier")), 0, 0, 0, 0
+                 ))
+             }
+             check()
+diff --git a/TMessagesProj/src/main/java/tele/ui/RarityPillView.kt b/TMessagesProj/src/main/java/tele/ui/RarityPillView.kt
+new file mode 100644
+index 000000000..4471774a6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/RarityPillView.kt
+@@ -0,0 +1,78 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.Paint
++import android.graphics.RectF
++import android.text.TextPaint
++import android.text.TextUtils
++import android.view.View
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.ui.ActionBar.Theme
++import tele.helpers.GiftStudio
++
++/**
++ * The pill of the rarity of a part (desktop 0248): the name of the tier in the color of the tier,
++ * or the permille of the part when it has no tier.
++ */
++class RarityPillView(context: Context) : View(context) {
++
++    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
++    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
++    private val rect = RectF()
++
++    private var text = ""
++    private var color = 0
++
++    init {
++        textPaint.textSize = AndroidUtilities.dp(12f)
++    }
++
++    /** The text of the pill and the color of it; a color of zero is the color of the text. */
++    fun setPill(text: String, color: Int) {
++        this.text = text
++        this.color = color
++        requestLayout()
++        invalidate()
++    }
++
++    /** The pill of a part of the studio. */
++    fun setPart(part: GiftStudio.Part?) {
++        if (part == null) {
++            setPill("", 0)
++            return
++        }
++        val tier = GiftStudio.tierText(part.tier)
++        if (tier.isNotEmpty()) {
++            setPill(tier, GiftStudio.rarityColor(part.tier))
++            return
++        }
++        setPill(GiftStudio.rarityText(part.permille), 0)
++    }
++
++    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++        val padding = AndroidUtilities.dp(10f)
++        val width = if (text.isEmpty()) 0 else (textPaint.measureText(text) + padding * 2).toInt()
++        val height = AndroidUtilities.dp(22f)
++        setMeasuredDimension(width, height)
++    }
++
++    override fun onDraw(canvas: Canvas) {
++        if (text.isEmpty()) return
++        val fill = if (color == 0) {
++            Theme.getColor(Theme.key_windowBackgroundWhite)
++        } else {
++            (color and 0x00FFFFFF) or (0x26 shl 24)
++        }
++        paint.color = fill
++        rect.set(0f, 0f, width.toFloat(), height.toFloat())
++        canvas.drawRoundRect(rect, height / 2f, height / 2f, paint)
++        textPaint.color = if (color == 0) {
++            Theme.getColor(Theme.key_windowBackgroundWhiteGrayText)
++        } else {
++            color
++        }
++        val baseline = (height - (textPaint.descent() + textPaint.ascent())) / 2f
++        canvas.drawText(text, (width - textPaint.measureText(text)) / 2f, baseline, textPaint)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+index d4a8dc942..da6865a1e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+@@ -2,7 +2,6 @@ package tele.ui
+ 
+ import android.content.Context
+ import android.graphics.Bitmap
+-import android.view.Gravity
+ import android.graphics.Canvas
+ import android.graphics.Paint
+ import android.graphics.RectF
+@@ -11,12 +10,8 @@ import android.view.View
+ import android.view.ViewGroup
+ import android.widget.FrameLayout
+ import android.widget.LinearLayout
+-import android.widget.TextView
+ import org.telegram.messenger.AndroidUtilities
+-import org.telegram.messenger.LiteMode
+-import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.R
+-import org.telegram.messenger.UserConfig
+ import org.telegram.tgnet.tl.TL_stars
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.AlertDialog
+@@ -98,6 +93,9 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         }
+         rarityRow = addRow(container, "Rarity") {}
+         rarityRow?.isEnabled = false
++        val pill = RarityPillView(context)
++        pillRow = pill
++        container.addView(pill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+ 
+         saveRow = addRow(container, "Save as a picture") { savePng() }
+         if (TeleConfig.GIFT_STUDIO_VIDEO.value) {
+@@ -187,10 +185,14 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         modelRow?.setValue(model?.name ?: "", true)
+         backdropRow?.setValue(backdrop?.name ?: "", true)
+         symbolRow?.setValue(symbol?.name ?: "", true)
+-        val modelPermille = model?.permille ?: 0
++        val modelPart = model
++        val modelTier = modelPart?.tier ?: GiftStudio.Tier.DEFAULT
++        val modelPermille = modelPart?.permille ?: 0
+         val backdropPermille = backdrop?.permille ?: 0
+-        val odds = GiftStudio.rarityOdds(modelPermille, backdropPermille)
+-        val chance = GiftStudio.rarityChance(modelPermille, backdropPermille)
++        // a tier of the catalog is the rarity of the gift, so its value is negative
++        val rarityValue = if (modelTier != GiftStudio.Tier.DEFAULT) modelTier.value else modelPermille
++        val odds = GiftStudio.rarityOdds(rarityValue, backdropPermille)
++        val chance = GiftStudio.rarityChance(rarityValue, backdropPermille)
+         rarityRow?.setValue(
+             when {
+                 odds.isEmpty() -> lc("unknown")
+@@ -269,11 +271,11 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+                     catalogRow?.setValue(picked.title, true)
+                     GiftStudioCatalog.requestParts(picked.slug) { found ->
+                         catalogParts = GiftStudio.Parts(
+-                            found.models.map { GiftStudio.Part(it.name, it.permille, null, 0, 0, 0, 0, 0) },
++                            found.models.map { GiftStudio.Part(it.name, it.permille, null, 0, 0, 0, 0, 0, null, it.tier) },
+                             found.backdrops.map {
+-                                GiftStudio.Part(it.name, it.permille, null, 0, it.centerColor, it.edgeColor, it.patternColor, it.textColor)
++                                GiftStudio.Part(it.name, it.permille, null, 0, it.centerColor, it.edgeColor, it.patternColor, it.textColor, null, it.tier)
+                             },
+-                            found.symbols.map { GiftStudio.Part(it.name, it.permille, null, 0, 0, 0, 0, 0) }
++                            found.symbols.map { GiftStudio.Part(it.name, it.permille, null, 0, 0, 0, 0, 0, null, it.tier) }
+                         )
+                         update()
+                     }
+@@ -300,7 +302,7 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         for (custom in GiftStudioModels.list()) {
+             items.add(custom.key)
+             actions.add {
+-                model = GiftStudio.Part(custom.key, 0, null, 0, 0, 0, 0, 0, GiftStudioModels.fileFor(custom.id).absolutePath)
++                model = GiftStudio.Part(custom.key, 0, null, 0, 0, 0, 0, 0, GiftStudioModels.fileFor(custom.id).absolutePath, GiftStudio.Tier.DEFAULT)
+                 update()
+             }
+         }
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index d9475ecec..9b621bbc6 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -311,6 +311,10 @@
+     <string name="TeleGiftsAddedToCollection_one">%1$d gift added to %2$s</string>
+     <string name="TeleGiftsAddedToCollection_other">%1$d gifts added to %2$s</string>
+     <string name="TeleGiftStudioSaved">The gift is saved</string>
++    <string name="TeleGiftStudioRarityUncommon">uncommon</string>
++    <string name="TeleGiftStudioRarityRare">rare</string>
++    <string name="TeleGiftStudioRarityEpic">epic</string>
++    <string name="TeleGiftStudioRarityLegendary">legendary</string>
+     <string name="TeleGiftStudioError">The gift could not be saved</string>
+     <string name="TeleGiftStudioNoParts">Nothing to pick yet. The parts of the gifts of this account show here, and the catalog when it is on.</string>
+ </resources>

@@ -1,0 +1,1531 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 26 Oct 2026 21:29:41 +0300
+Subject: [PATCH 229/237] feat: gift studio
+
+---
+ .../ui/Gifts/ProfileGiftsContainer.java       |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   6 +
+ .../src/main/java/tele/helpers/GiftStudio.kt  | 194 ++++++++++
+ .../java/tele/helpers/GiftStudioCatalog.kt    | 161 +++++++++
+ .../java/tele/helpers/GiftStudioExport.kt     | 264 ++++++++++++++
+ .../main/java/tele/helpers/GiftStudioMenu.kt  |  37 ++
+ .../java/tele/helpers/GiftStudioRenderer.kt   | 223 ++++++++++++
+ .../java/tele/ui/TeleGiftStudioActivity.kt    | 338 ++++++++++++++++++
+ .../main/java/tele/ui/TeleStudioPartsList.kt  | 174 +++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +
+ .../src/main/res/values/strings_tele.xml      |   3 +
+ 12 files changed, 1409 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftStudioExport.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+index b526c4eca..e48de6a39 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+@@ -966,6 +966,7 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+                             .set(savedStarGift, null)
+                             .onSharePressed(null);
+                     });
++                    tele.helpers.GiftStudioMenu.addAction(o, parent.fragment, currentAccount, parent.dialogId, savedStarGift);
+                 } else if (parent.canReorder() && isCollection) {
+                     o.add(R.drawable.tabs_reorder, getString(R.string.Gift2Reorder), () -> {
+                         setReordering(true);
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 7a1d96bd3..85d2f7bad 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -205,6 +205,12 @@ object TeleConfig {
+     @JvmField
+     val GIFT_COLLECTIONS_RETRY = BoolItem("gift_collections_retry", false)
+     @JvmField
++    val GIFT_STUDIO = BoolItem("gift_studio", false)
++    @JvmField
++    val GIFT_STUDIO_EXTERNAL_CATALOG = BoolItem("gift_studio_external_catalog", false)
++    @JvmField
++    val GIFT_STUDIO_VIDEO = BoolItem("gift_studio_video", false)
++    @JvmField
+     val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
+     @JvmField
+     val LOCAL_NAMES = BoolItem("local_names", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
+new file mode 100644
+index 000000000..931c4a010
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
+@@ -0,0 +1,194 @@
++package tele.helpers
++
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_stars
++import java.util.Locale
++
++/**
++ * The parts a gift is built of in the gift studio (desktop 0197): the model, the backdrop and the
++ * symbol. The parts come from the gifts of the account, so no third party is asked for them.
++ */
++object GiftStudio {
++
++    /** One value of a part: a model, a backdrop or a symbol. */
++    class Part(
++        @JvmField val name: String,
++        @JvmField val permille: Int,
++        @JvmField val document: TLRPC.Document?,
++        @JvmField val backdropId: Int,
++        @JvmField val centerColor: Int,
++        @JvmField val edgeColor: Int,
++        @JvmField val patternColor: Int,
++        @JvmField val textColor: Int
++    )
++
++    /** The parts of a gift. */
++    class Parts(
++        @JvmField val models: List<Part>,
++        @JvmField val backdrops: List<Part>,
++        @JvmField val symbols: List<Part>
++    )
++
++    /** The rarity of a part in percent; empty when the part has no rarity. */
++    @JvmStatic
++    fun rarityText(permille: Int): String {
++        if (permille <= 0) return ""
++        if (permille < 10) return "<0.1%"
++        return String.format(Locale.US, "%.1f%%", permille / 10.0)
++    }
++
++    /** How rare the model and the backdrop together are. */
++    @JvmStatic
++    fun rarityOdds(modelPermille: Int, backdropPermille: Int): String {
++        if (modelPermille <= 0 || backdropPermille <= 0) return ""
++        val odds = 1000000.0 / (modelPermille.toDouble() * backdropPermille)
++        return "1 in " + String.format(Locale.US, "%,d", odds.toLong())
++    }
++
++    /** The chance of the model and the backdrop together, in percent. */
++    @JvmStatic
++    fun rarityChance(modelPermille: Int, backdropPermille: Int): String {
++        if (modelPermille <= 0 || backdropPermille <= 0) return ""
++        val percent = modelPermille * backdropPermille / 10000.0
++        var text = if (percent >= 1.0) {
++            String.format(Locale.US, "%.2f%%", percent)
++        } else {
++            String.format(Locale.US, "%.3f%%", percent)
++        }
++        while (text.endsWith("0")) text = text.dropLast(1)
++        if (text.endsWith(".")) text = text.dropLast(1)
++        return text
++    }
++
++    /** The parts of the gifts: every model, backdrop and symbol among them. */
++    @JvmStatic
++    fun collectParts(gifts: List<TL_stars.StarGift>): Parts {
++        val models = LinkedHashMap<String, Part>()
++        val backdrops = LinkedHashMap<String, Part>()
++        val symbols = LinkedHashMap<String, Part>()
++        for (gift in gifts) {
++            for (attribute in gift.attributes) {
++                if (attribute is TL_stars.starGiftAttributeModel) {
++                    val name = attribute.name ?: continue
++                    models[name] = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++                } else if (attribute is TL_stars.starGiftAttributeBackdrop) {
++                    val name = attribute.name ?: continue
++                    backdrops[name] = Part(
++                        name, attribute.getRarityPermille(), null, attribute.backdrop_id,
++                        attribute.center_color, attribute.edge_color, attribute.pattern_color, attribute.text_color
++                    )
++                } else if (attribute is TL_stars.starGiftAttributePattern) {
++                    val name = attribute.name ?: continue
++                    symbols[name] = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++                }
++            }
++        }
++        return Parts(models.values.toList(), backdrops.values.toList(), symbols.values.toList())
++    }
++
++    /** The parts of one gift: its own model, backdrop and symbol. */
++    @JvmStatic
++    fun partsOf(gift: TL_stars.StarGift): Parts {
++        var model: Part? = null
++        var backdrop: Part? = null
++        var symbol: Part? = null
++        for (attribute in gift.attributes) {
++            if (attribute is TL_stars.starGiftAttributeModel) {
++                val name = attribute.name ?: continue
++                model = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++            } else if (attribute is TL_stars.starGiftAttributeBackdrop) {
++                val name = attribute.name ?: continue
++                backdrop = Part(
++                    name, attribute.getRarityPermille(), null, attribute.backdrop_id,
++                    attribute.center_color, attribute.edge_color, attribute.pattern_color, attribute.text_color
++                )
++            } else if (attribute is TL_stars.starGiftAttributePattern) {
++                val name = attribute.name ?: continue
++                symbol = Part(name, attribute.getRarityPermille(), attribute.document, 0, 0, 0, 0, 0)
++            }
++        }
++        return Parts(
++            listOfNotNull(model),
++            listOfNotNull(backdrop),
++            listOfNotNull(symbol)
++        )
++    }
++
++    /**
++     * A copy of the gift with the chosen parts, so the stock card shows what will be exported.
++     * The copy is only for the picture: the original gift is never touched.
++     */
++    @JvmStatic
++    fun giftWithParts(
++        gift: TL_stars.StarGift,
++        model: Part?,
++        backdrop: Part?,
++        symbol: Part?
++    ): TL_stars.StarGift {
++        val copy = TL_stars.StarGift()
++        copy.id = gift.id
++        copy.gift_id = gift.gift_id
++        copy.title = gift.title
++        copy.num = gift.num
++        copy.slug = gift.slug
++        copy.limited = gift.limited
++        copy.flags = gift.flags
++        copy.availability_issued = gift.availability_issued
++        copy.availability_total = gift.availability_total
++        copy.sticker = model?.document ?: gift.getDocument()
++        val attributes = ArrayList<TL_stars.StarGiftAttribute>()
++        for (attribute in gift.attributes) {
++            when (attribute) {
++                is TL_stars.starGiftAttributeModel -> if (model == null) attributes.add(attribute)
++                is TL_stars.starGiftAttributeBackdrop -> if (backdrop == null) attributes.add(attribute)
++                is TL_stars.starGiftAttributePattern -> if (symbol == null) attributes.add(attribute)
++                else -> attributes.add(attribute)
++            }
++        }
++        if (model != null) {
++            val attribute = TL_stars.starGiftAttributeModel()
++            attribute.name = model.name
++            attribute.document = model.document
++            attribute.rarity = rarityOf(model)
++            attributes.add(attribute)
++        }
++        if (backdrop != null) {
++            val attribute = TL_stars.starGiftAttributeBackdrop()
++            attribute.name = backdrop.name
++            attribute.backdrop_id = backdrop.backdropId
++            attribute.center_color = backdrop.centerColor
++            attribute.edge_color = backdrop.edgeColor
++            attribute.pattern_color = backdrop.patternColor
++            attribute.text_color = backdrop.textColor
++            attribute.rarity = rarityOf(backdrop)
++            attributes.add(attribute)
++        }
++        if (symbol != null) {
++            val attribute = TL_stars.starGiftAttributePattern()
++            attribute.name = symbol.name
++            attribute.document = symbol.document
++            attribute.rarity = rarityOf(symbol)
++            attributes.add(attribute)
++        }
++        copy.attributes = attributes
++        return copy
++    }
++
++    /** The rarity of a part as the server sends it: the permille, or the tier of the catalog. */
++    @JvmStatic
++    fun rarityOf(part: Part): TL_stars.StarGiftAttributeRarity? {
++        if (part.tier != Tier.DEFAULT) {
++            return when (part.tier) {
++                Tier.UNCOMMON -> TL_stars.TL_starGiftAttributeRarityUncommon()
++                Tier.RARE -> TL_stars.TL_starGiftAttributeRarityRare()
++                Tier.EPIC -> TL_stars.TL_starGiftAttributeRarityEpic()
++                Tier.LEGENDARY -> TL_stars.TL_starGiftAttributeRarityLegendary()
++                else -> null
++            }
++        }
++        if (part.permille <= 0) return null
++        val rarity = TL_stars.TL_starGiftAttributeRarity()
++        rarity.permille = part.permille
++        return rarity
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+new file mode 100644
+index 000000000..af65099f7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+@@ -0,0 +1,161 @@
++package tele.helpers
++
++import android.os.Handler
++import android.os.Looper
++import org.telegram.messenger.FileLog
++import tele.TeleConfig
++import java.net.HttpURLConnection
++import java.net.URL
++
++/**
++ * The catalog of the gift studio (desktop 0197): the parts of the gifts of a third party. The
++ * request is only made when the setting is on, and it never carries anything of the account.
++ */
++object GiftStudioCatalog {
++
++    private const val HOST = "https://api.changes.tg/"
++    private const val TIMEOUT = 20_000
++    private const val MAX_SIZE = 4 * 1024 * 1024
++
++    /** The parts of a gift of the catalog. */
++    class CatalogParts(
++        @JvmField val models: List<CatalogItem>,
++        @JvmField val backdrops: List<CatalogItem>,
++        @JvmField val symbols: List<CatalogItem>
++    )
++
++    /** One part of the catalog. */
++    class CatalogItem(
++        @JvmField val name: String,
++        @JvmField val permille: Int,
++        @JvmField val tier: String,
++        @JvmField val centerColor: Int,
++        @JvmField val edgeColor: Int,
++        @JvmField val patternColor: Int,
++        @JvmField val textColor: Int
++    )
++
++    /** The name of the gift collection of the catalog. */
++    class CatalogGift(
++        @JvmField val slug: String,
++        @JvmField val title: String
++    )
++
++    /** The setting is off: the studio never asks the third party. */
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.GIFT_STUDIO_EXTERNAL_CATALOG.value
++
++    /** The gifts of the catalog; empty when the setting is off or the request failed. */
++    @JvmStatic
++    fun requestGifts(done: (List<CatalogGift>) -> Unit) {
++        if (!enabled()) {
++            done(emptyList())
++            return
++        }
++        fetch("gifts") { bytes ->
++            val result = ArrayList<CatalogGift>()
++            for (item in parseArray(bytes)) {
++                val slug = item.optString("slug")
++                if (slug.isEmpty()) continue
++                result.add(CatalogGift(slug, item.optString("title", slug)))
++            }
++            done(result)
++        }
++    }
++
++    /** The parts of one gift of the catalog. */
++    @JvmStatic
++    fun requestParts(slug: String, done: (CatalogParts) -> Unit) {
++        if (!enabled()) {
++            done(CatalogParts(emptyList(), emptyList(), emptyList()))
++            return
++        }
++        val models = ArrayList<CatalogItem>()
++        val backdrops = ArrayList<CatalogItem>()
++        val symbols = ArrayList<CatalogItem>()
++        var left = 3
++        val check = {
++            left--
++            if (left == 0) {
++                done(CatalogParts(models, backdrops, symbols))
++            }
++        }
++        fetch("models/$slug?sorted") { bytes ->
++            for (item in parseArray(bytes)) {
++                models.add(CatalogItem(
++                    item.optString("name"), item.optInt("rarityPermille"),
++                    item.optString("rarityTier"), 0, 0, 0, 0
++                ))
++            }
++            check()
++        }
++        fetch("backdrops/$slug?sorted") { bytes ->
++            for (item in parseArray(bytes)) {
++                backdrops.add(CatalogItem(
++                    item.optString("name"), item.optInt("rarityPermille"),
++                    item.optString("rarityTier"),
++                    item.optInt("centerColor"), item.optInt("edgeColor"),
++                    item.optInt("patternColor"), item.optInt("textColor")
++                ))
++            }
++            check()
++        }
++        fetch("symbols/$slug?sorted") { bytes ->
++            for (item in parseArray(bytes)) {
++                symbols.add(CatalogItem(
++                    item.optString("name"), item.optInt("rarityPermille"),
++                    item.optString("rarityTier"), 0, 0, 0, 0
++                ))
++            }
++            check()
++        }
++    }
++
++    private fun parseArray(bytes: ByteArray): List<org.json.JSONObject> {
++        val result = ArrayList<org.json.JSONObject>()
++        try {
++            val array = org.json.JSONArray(String(bytes, Charsets.UTF_8))
++            for (index in 0 until array.length()) {
++                val item = array.optJSONObject(index) ?: continue
++                result.add(item)
++            }
++        } catch (throwable: Throwable) {
++            FileLog.e("tele gift studio catalog: " + throwable.message)
++        }
++        return result
++    }
++
++    /** The bytes of a path of the catalog; the request is made off the main thread. */
++    private fun fetch(path: String, done: (ByteArray) -> Unit) {
++        if (!enabled()) {
++            done(ByteArray(0))
++            return
++        }
++        val handler = Handler(Looper.getMainLooper())
++        Thread {
++            var bytes = ByteArray(0)
++            var connection: HttpURLConnection? = null
++            try {
++                connection = (URL(HOST + path).openConnection() as HttpURLConnection).apply {
++                    connectTimeout = TIMEOUT
++                    readTimeout = TIMEOUT
++                    instanceFollowRedirects = true
++                    requestMethod = "GET"
++                }
++                if (connection.responseCode != 200) {
++                    FileLog.d("tele gift studio catalog: " + path + " status " + connection.responseCode)
++                } else {
++                    val length = connection.contentLength
++                    if (length in 0..MAX_SIZE) {
++                        bytes = connection.inputStream.use { it.readBytes() }
++                    }
++                }
++            } catch (throwable: Throwable) {
++                FileLog.e("tele gift studio catalog: " + throwable.message)
++            } finally {
++                connection?.disconnect()
++            }
++            handler.post { done(bytes) }
++        }.start()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioExport.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioExport.kt
+new file mode 100644
+index 000000000..4b7f0394f
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioExport.kt
+@@ -0,0 +1,264 @@
++package tele.helpers
++
++import android.content.ContentValues
++import android.content.Context
++import android.content.Intent
++import android.graphics.Bitmap
++import android.media.MediaCodec
++import android.media.MediaCodecInfo
++import android.media.MediaFormat
++import android.media.MediaMuxer
++import android.net.Uri
++import android.os.Environment
++import android.provider.MediaStore
++import androidx.core.content.FileProvider
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import java.io.File
++import java.io.FileOutputStream
++import java.nio.ByteBuffer
++
++/**
++ * The export of the gift studio (desktop 0197): the picture of the gift is saved as a PNG or
++ * encoded as a video. The name of the file has no username and no id of the owner in it.
++ */
++object GiftStudioExport {
++
++    /** The formats the studio can write. */
++    enum class Format(val mime: String, val extension: String) {
++        PNG("image/png", "png"),
++        MP4("video/mp4", "mp4")
++    }
++
++    private const val VIDEO_FPS = 30
++    private const val VIDEO_FRAMES = 90
++
++    /** The name of the file of the gift: the parts of it and the number, nothing private. */
++    @JvmStatic
++    fun fileName(title: String?, number: String?, format: Format): String {
++        val safeTitle = sanitize(title)
++        val safeNumber = sanitize(number)
++        val base = when {
++            safeTitle.isEmpty() && safeNumber.isEmpty() -> "gift"
++            safeNumber.isEmpty() -> safeTitle
++            safeTitle.isEmpty() -> safeNumber
++            else -> "$safeTitle $safeNumber"
++        }
++        return "$base.${format.extension}"
++    }
++
++    private fun sanitize(value: String?): String {
++        if (value.isNullOrEmpty()) return ""
++        val builder = StringBuilder()
++        for (character in value) {
++            if (character.isLetterOrDigit() || character == ' ' || character == '-' || character == '_') {
++                builder.append(character)
++            }
++            if (builder.length >= 48) break
++        }
++        return builder.toString().trim()
++    }
++
++    /** The picture of the gift as a PNG in the pictures of the device. */
++    @JvmStatic
++    fun savePng(bitmap: Bitmap, name: String): Uri? {
++        val values = ContentValues()
++        values.put(MediaStore.MediaColumns.DISPLAY_NAME, name)
++        values.put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
++        values.put(
++            MediaStore.MediaColumns.RELATIVE_PATH,
++            Environment.DIRECTORY_PICTURES + File.separator + "tele" + File.separator
++        )
++        val uri = ApplicationLoader.applicationContext.contentResolver
++            .insert(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values)
++            ?: return null
++        val output = ApplicationLoader.applicationContext.contentResolver.openOutputStream(uri)
++            ?: return null
++        output.use {
++            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) {
++                throw IllegalStateException("the picture could not be written")
++            }
++        }
++        return uri
++    }
++
++    /** The frames of the gift as a video in the movies of the device. */
++    @JvmStatic
++    fun saveVideo(name: String, frames: List<Bitmap>): Uri? {
++        val file = File(ApplicationLoader.getFilesDirFixed("cache/tele-gift-studio"), name)
++        file.parentFile?.mkdirs()
++        if (!encodeVideo(file, frames)) return null
++        val values = ContentValues()
++        values.put(MediaStore.MediaColumns.DISPLAY_NAME, name)
++        values.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
++        values.put(
++            MediaStore.MediaColumns.RELATIVE_PATH,
++            Environment.DIRECTORY_MOVIES + File.separator + "tele" + File.separator
++        )
++        val uri = ApplicationLoader.applicationContext.contentResolver
++            .insert(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values)
++            ?: return null
++        val output = ApplicationLoader.applicationContext.contentResolver.openOutputStream(uri)
++            ?: return null
++        output.use {
++            file.inputStream().use { input -> AndroidUtilities.copyFile(input, it) }
++        }
++        file.delete()
++        return uri
++    }
++
++    /** The frames as a video file; false when the device has no encoder. */
++    private fun encodeVideo(file: File, frames: List<Bitmap>): Boolean {
++        if (frames.isEmpty()) return false
++        val width = frames[0].width
++        val height = frames[0].height
++        if (width % 2 != 0 || height % 2 != 0) return false
++        var codec: MediaCodec? = null
++        var muxer: MediaMuxer? = null
++        var track = -1
++        var started = false
++        try {
++            val format = MediaFormat.createVideoFormat("video/avc", width, height)
++            format.setInteger(
++                MediaFormat.KEY_COLOR_FORMAT,
++                MediaCodecInfo.CodecCapabilities.COLOR_FORMAT_YUV420Flexible
++            )
++            format.setInteger(MediaFormat.KEY_BIT_RATE, width * height * 4)
++            format.setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FPS)
++            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
++            codec = MediaCodec.createEncoderByType("video/avc")
++            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
++            codec.start()
++            muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
++            val info = MediaCodec.BufferInfo()
++            var presentation = 0L
++            var sent = 0
++            var done = false
++            while (!done) {
++                if (sent < frames.size) {
++                    val input = codec.dequeueInputBuffer(10000)
++                    if (input >= 0) {
++                        val buffer = codec.getInputBuffer(input)
++                        if (buffer != null) {
++                            buffer.clear()
++                            buffer.put(toYuv420(frames[sent], width, height))
++                            codec.queueInputBuffer(input, 0, width * height * 3 / 2, presentation, 0)
++                        }
++                        presentation += 1_000_000L / VIDEO_FPS
++                        sent++
++                    }
++                } else {
++                    val input = codec.dequeueInputBuffer(10000)
++                    if (input >= 0) {
++                        codec.queueInputBuffer(
++                            input, 0, 0, presentation,
++                            MediaCodec.BUFFER_FLAG_END_OF_STREAM
++                        )
++                    }
++                }
++                while (true) {
++                    val output = codec.dequeueOutputBuffer(info, 10000)
++                    if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
++                        track = muxer.addTrack(codec.outputFormat)
++                        muxer.start()
++                        started = true
++                        continue
++                    }
++                    if (output < 0) break
++                    val buffer = codec.getOutputBuffer(output)
++                    if (buffer != null && info.size > 0 && started) {
++                        buffer.position(info.offset)
++                        buffer.limit(info.offset + info.size)
++                        muxer.writeSampleData(track, buffer, info)
++                    }
++                    codec.releaseOutputBuffer(output, false)
++                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
++                        done = true
++                        break
++                    }
++                }
++            }
++        } catch (throwable: Throwable) {
++            FileLog.e("tele gift studio video: " + throwable.message)
++            return false
++        } finally {
++            try {
++                codec?.stop()
++            } catch (ignore: Throwable) {
++            }
++            codec?.release()
++            if (started) {
++                try {
++                    muxer?.stop()
++                } catch (ignore: Throwable) {
++                }
++            }
++            muxer?.release()
++        }
++        return file.length() > 0
++    }
++
++    /** The pixels of the picture as the yuv420 the encoder of the device takes. */
++    private fun toYuv420(bitmap: Bitmap, width: Int, height: Int): ByteArray {
++        val pixels = IntArray(width * height)
++        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
++        val result = ByteArray(width * height * 3 / 2)
++        var yIndex = 0
++        var uIndex = width * height
++        var vIndex = uIndex + width * height / 4
++        for (row in 0 until height) {
++            for (column in 0 until width) {
++                val color = pixels[row * width + column]
++                val red = (color shr 16) and 0xFF
++                val green = (color shr 8) and 0xFF
++                val blue = color and 0xFF
++                val y = ((66 * red + 129 * green + 25 * blue + 128) shr 8) + 16
++                val u = ((-38 * red - 74 * green + 112 * blue + 128) shr 8) + 128
++                val v = ((112 * red - 94 * green - 18 * blue + 128) shr 8) + 128
++                result[yIndex++] = y.coerceIn(0, 255).toByte()
++                if (row % 2 == 0 && column % 2 == 0) {
++                    result[uIndex++] = u.coerceIn(0, 255).toByte()
++                    result[vIndex++] = v.coerceIn(0, 255).toByte()
++                }
++            }
++        }
++        return result
++    }
++
++    /** The uri of a file to share. */
++    @JvmStatic
++    fun shareUri(context: Context, file: File): Uri {
++        return FileProvider.getUriForFile(
++            context,
++            ApplicationLoader.getApplicationId() + ".provider",
++            file
++        )
++    }
++
++    /** The intent that shares a file. */
++    @JvmStatic
++    fun shareIntent(uri: Uri, mime: String): Intent {
++        return Intent(Intent.ACTION_SEND)
++            .setType(mime)
++            .putExtra(Intent.EXTRA_STREAM, uri)
++            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++    }
++
++    @JvmStatic
++    fun savedText(): String = LocaleController.getString(R.string.TeleGiftStudioSaved)
++
++    /** The bytes of a bitmap, as a png. */
++    @JvmStatic
++    fun pngBytes(bitmap: Bitmap): ByteArray {
++        val stream = java.io.ByteArrayOutputStream()
++        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
++        return stream.toByteArray()
++    }
++
++    /** How many frames a video of the studio has. */
++    @JvmStatic
++    fun videoFrames(): Int = VIDEO_FRAMES
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt
+new file mode 100644
+index 000000000..d61c021b0
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt
+@@ -0,0 +1,37 @@
++package tele.helpers
++
++import org.telegram.messenger.R
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.Components.ItemOptions
++import tele.TeleConfig
++import tele.ui.TeleGiftStudioActivity
++
++/**
++ * The entry of the gift studio in the menu of a gift (desktop 0197). The row is only there when
++ * the setting is on, so the stock menu stays the same without it.
++ */
++object GiftStudioMenu {
++
++    /** The id of the row of the menu of the studio. */
++    const val ID_OPEN = 9690
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.GIFT_STUDIO.value
++
++    /** Adds the row of the studio to the menu of a gift. */
++    @JvmStatic
++    fun addAction(
++        options: ItemOptions,
++        fragment: BaseFragment?,
++        account: Int,
++        dialogId: Long,
++        gift: TL_stars.SavedStarGift
++    ) {
++        if (!enabled()) return
++        options.add(R.drawable.filled_gift_simple, "Open in gift studio") {
++            options.dismiss()
++            fragment?.presentFragment(TeleGiftStudioActivity(account, dialogId, gift))
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt
+new file mode 100644
+index 000000000..78eae3ba5
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt
+@@ -0,0 +1,223 @@
++package tele.helpers
++
++import android.content.Context
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.LinearGradient
++import android.graphics.Paint
++import android.graphics.RadialGradient
++import android.graphics.RectF
++import android.graphics.Shader
++import android.graphics.Typeface
++import android.text.TextPaint
++import android.text.TextUtils
++import org.telegram.messenger.ImageLocation
++import org.telegram.messenger.ImageReceiver
++import org.telegram.messenger.R
++import org.telegram.tgnet.TLRPC
++
++/**
++ * The renderer of the gift studio (desktop 0197): the parts of a gift are drawn on a canvas, so
++ * the preview and the exported picture are the same picture. The geometry is in the canvas pixels,
++ * so a bigger canvas is a bigger picture and not a stretched one.
++ */
++class GiftStudioRenderer(private val context: Context) {
++
++    /** The rectangles of the last layout, in canvas pixels. */
++    class Layout(
++        @JvmField val content: RectF,
++        @JvmField val model: RectF,
++        @JvmField val symbol: RectF
++    )
++
++    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
++    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
++        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
++    }
++    private val receiver = ImageReceiver()
++    private val symbolReceiver = ImageReceiver()
++
++    private var model: GiftStudio.Part? = null
++    private var symbol: GiftStudio.Part? = null
++    private var backdrop: GiftStudio.Part? = null
++
++    private var title = ""
++    private var number = ""
++    private var subtitle = ""
++
++    private var layout: Layout? = null
++
++    init {
++        receiver.setDelegate(object : ImageReceiver.ImageReceiverDelegate {
++            override fun didSetImage(imageReceiver: ImageReceiver, set: Boolean, thumb: Boolean, memCache: Boolean) {
++                if (set) imageReceiver.invalidate()
++            }
++        })
++        symbolReceiver.setDelegate(object : ImageReceiver.ImageReceiverDelegate {
++            override fun didSetImage(imageReceiver: ImageReceiver, set: Boolean, thumb: Boolean, memCache: Boolean) {
++                if (set) imageReceiver.invalidate()
++            }
++        })
++    }
++
++    fun setModel(part: GiftStudio.Part?) {
++        if (part === model) return
++        model = part
++        load(receiver, part?.document)
++    }
++
++    fun setSymbol(part: GiftStudio.Part?) {
++        if (part === symbol) return
++        symbol = part
++        load(symbolReceiver, part?.document)
++    }
++
++    fun setBackdrop(part: GiftStudio.Part?) {
++        if (part === backdrop) return
++        backdrop = part
++    }
++
++    fun setTexts(title: String, number: String, subtitle: String) {
++        this.title = title
++        this.number = number
++        this.subtitle = subtitle
++    }
++
++    private fun load(target: ImageReceiver, document: TLRPC.Document?) {
++        target.cancelLoadImage()
++        if (document == null) {
++            target.clearImage()
++            return
++        }
++        target.setImage(
++            ImageLocation.getForDocument(document),
++            "80_80_nolimit_pcache",
++            null,
++            null,
++            null,
++            document
++        )
++    }
++
++    fun release() {
++        receiver.cancelLoadImage()
++        symbolReceiver.cancelLoadImage()
++    }
++
++    /** The colors of the backdrop of the gift. */
++    private fun centerColor(): Int = backdrop?.centerColor?.takeIf { it != 0 } ?: 0xFF8E6CF0.toInt()
++
++    private fun edgeColor(): Int = backdrop?.edgeColor?.takeIf { it != 0 } ?: 0xFF3C2A8C.toInt()
++
++    private fun textColor(): Int = backdrop?.textColor?.takeIf { it != 0 } ?: Color.WHITE
++
++    /** The place of every part on a canvas of this size. */
++    fun computeLayout(width: Int, height: Int): Layout {
++        val content = RectF(0f, 0f, width.toFloat(), height.toFloat())
++        val side = Math.min(width, height).toFloat()
++        val modelSize = side * 0.62f
++        val modelRect = RectF(
++            content.centerX() - modelSize / 2f,
++            content.centerY() - modelSize / 2f - side * 0.06f,
++            content.centerX() + modelSize / 2f,
++            content.centerY() + modelSize / 2f - side * 0.06f
++        )
++        val symbolSize = side * 0.26f
++        val symbolRect = RectF(
++            content.centerX() - symbolSize / 2f,
++            modelRect.bottom + side * 0.02f,
++            content.centerX() + symbolSize / 2f,
++            modelRect.bottom + side * 0.02f + symbolSize
++        )
++        val result = Layout(content, modelRect, symbolRect)
++        layout = result
++        return result
++    }
++
++    /** The picture of the gift, as it is shown and as it is saved. */
++    fun draw(canvas: Canvas, width: Int, height: Int) {
++        val current = computeLayout(width, height)
++        val radius = Math.max(Math.min(width, height) * 0.35f, 1f)
++        paint.shader = RadialGradient(
++            current.content.centerX(),
++            current.content.centerY() - height * 0.12f,
++            radius,
++            intArrayOf(centerColor(), centerColor(), edgeColor()),
++            floatArrayOf(0f, 0f, 1f),
++            Shader.TileMode.CLAMP
++        )
++        canvas.drawRect(current.content, paint)
++        paint.shader = null
++
++        drawSymbol(canvas, current)
++        drawModel(canvas, current)
++        drawTexts(canvas, current)
++    }
++
++    private fun drawModel(canvas: Canvas, current: Layout) {
++        if (model?.document == null) return
++        val saved = canvas.save()
++        canvas.translate(current.model.left, current.model.top)
++        receiver.setImageCoords(0f, 0f, current.model.width(), current.model.height())
++        receiver.draw(canvas)
++        canvas.restoreToCount(saved)
++    }
++
++    private fun drawSymbol(canvas: Canvas, current: Layout) {
++        if (symbol?.document == null) return
++        val saved = canvas.save()
++        canvas.translate(current.symbol.left, current.symbol.top)
++        symbolReceiver.setImageCoords(0f, 0f, current.symbol.width(), current.symbol.height())
++        symbolReceiver.draw(canvas)
++        canvas.restoreToCount(saved)
++    }
++
++    private fun drawTexts(canvas: Canvas, current: Layout) {
++        val color = textColor()
++        val side = Math.min(current.content.width(), current.content.height())
++        val padding = side * 0.06f
++
++        textPaint.color = color
++        textPaint.textSize = side * 0.09f
++        val titleText = TextUtils.ellipsize(title, textPaint, current.content.width() - padding * 2, TextUtils.TruncateAt.END).toString()
++        canvas.drawText(titleText, padding, current.content.bottom - padding - textPaint.textSize * 0.6f, textPaint)
++
++        textPaint.textSize = side * 0.07f
++        val numberText = number
++        if (numberText.isNotEmpty()) {
++            canvas.drawText(numberText, padding, current.content.bottom - padding, textPaint)
++        }
++
++        if (subtitle.isNotEmpty()) {
++            textPaint.textSize = side * 0.055f
++            val subtitleText = TextUtils.ellipsize(subtitle, textPaint, current.content.width() - padding * 2, TextUtils.TruncateAt.END).toString()
++            canvas.drawText(subtitleText, padding, current.content.top + padding + textPaint.textSize, textPaint)
++        }
++    }
++
++    /** The picture of the gift as a bitmap of this size. */
++    fun renderBitmap(width: Int, height: Int): Bitmap {
++        val bitmap = Bitmap.createBitmap(Math.max(width, 1), Math.max(height, 1), Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(bitmap)
++        draw(canvas, bitmap.width, bitmap.height)
++        return bitmap
++    }
++
++    /** The picture of the gift for a save or a share. */
++    fun renderForExport(width: Int, height: Int): Bitmap? {
++        if (receiver.drawable == null && model?.document != null) return null
++        return renderBitmap(width, height)
++    }
++
++    companion object {
++        /** The size of an exported picture. */
++        const val EXPORT_SIZE = 512
++
++        /** The biggest picture the studio makes, so a big scale doesn't eat the memory. */
++        const val MAX_EXPORT_PIXELS = 4096 * 4096
++
++        @JvmStatic
++        fun exportSize(scale: Int): Int = EXPORT_SIZE * scale.coerceIn(1, 4)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+new file mode 100644
+index 000000000..a78db9df0
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+@@ -0,0 +1,338 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.Bitmap
++import android.view.Gravity
++import android.graphics.Canvas
++import android.graphics.Paint
++import android.graphics.RectF
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LiteMode
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.TextSettingsCell
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Stars.StarsController
++import tele.TeleConfig
++import tele.helpers.GiftStudio
++import tele.helpers.GiftStudioExport
++import tele.helpers.GiftStudioRenderer
++import tele.helpers.TeleLowercase
++import tele.helpers.TeleToast
++
++/**
++ * The gift studio (desktop 0197): a gift is built of a model, a backdrop and a symbol and the
++ * result is exported as a picture. The parts come from the gifts of the account, so nothing is
++ * asked of a third party.
++ */
++class TeleGiftStudioActivity @JvmOverloads constructor(
++    private val account: Int,
++    private val dialogId: Long,
++    private val initial: TL_stars.SavedStarGift? = null
++) : BaseFragment() {
++
++    private var preview: PreviewView? = null
++    private var renderer: GiftStudioRenderer? = null
++    private var collectionRow: TextSettingsCell? = null
++    private var modelRow: TextSettingsCell? = null
++    private var backdropRow: TextSettingsCell? = null
++    private var symbolRow: TextSettingsCell? = null
++    private var rarityRow: TextSettingsCell? = null
++    private var saveRow: TextSettingsCell? = null
++    private var videoRow: TextSettingsCell? = null
++    private var moreRow: TextSettingsCell? = null
++    private var pillRow: RarityPillView? = null
++    private var collectionCard: org.telegram.ui.Gifts.GiftSheet.GiftCell? = null
++    private val partsList by lazy { TeleStudioPartsList(parentActivity ?: context, account, resourceProvider) }
++
++    private val gifts = ArrayList<TL_stars.StarGift>()
++    private var parts: GiftStudio.Parts = GiftStudio.Parts(emptyList(), emptyList(), emptyList())
++    private var gift: TL_stars.StarGift? = null
++    private var model: GiftStudio.Part? = null
++    private var backdrop: GiftStudio.Part? = null
++    private var symbol: GiftStudio.Part? = null
++    private var generation = 0
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc("Gift studio"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment()
++            }
++        })
++
++        val container = LinearLayout(context)
++        container.orientation = LinearLayout.VERTICAL
++        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
++
++        val previewView = PreviewView(context)
++        preview = previewView
++        renderer = GiftStudioRenderer(context)
++        container.addView(previewView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(240f)))
++
++        catalogRow = addRow(container, "Catalog") { chooseCatalog() }
++        collectionRow = addRowWithCard(container, "Collection") { chooseCollection() }
++        modelRow = addRow(container, "Model") { chooseModel() }
++        backdropRow = addRow(container, "Backdrop") { chooseBackdrop() }
++        symbolRow = addRow(container, "Symbol") { chooseSymbol() }
++        rarityRow = addRow(container, "Rarity") {}
++        rarityRow?.isEnabled = false
++
++        saveRow = addRow(container, "Save as a picture") { savePng() }
++        if (TeleConfig.GIFT_STUDIO_VIDEO.value) {
++            videoRow = addRow(container, "Save as a video") { saveVideo() }
++        }
++
++        fragmentView = container
++        load()
++        return container
++    }
++
++    private fun lc(text: String): String = TeleLowercase.lc(text)
++
++    private fun addRow(container: LinearLayout, title: String, action: () -> Unit): TextSettingsCell {
++        val cell = TextSettingsCell(container.context)
++        cell.setText(lc(title), false)
++        cell.setOnClickListener { action() }
++        container.addView(cell, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        return cell
++    }
++
++    /** A row with the card of the gift on the left, like the desktop client shows it. */
++    private fun addRowWithCard(container: LinearLayout, title: String, action: () -> Unit): TextSettingsCell {
++        val cell = TextSettingsCell(container.context)
++        cell.setText(lc(title), false)
++        cell.setOnClickListener { action() }
++        val card = org.telegram.ui.Gifts.GiftSheet.GiftCell(container.context, account, resourceProvider)
++        card.setImageSize(44)
++        collectionCard = card
++        cell.addView(card, LayoutHelper.createFrame(44f, 44f, Gravity.CENTER_VERTICAL or Gravity.LEFT, 12f, 0f, 0f, 0f))
++        container.addView(cell, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(56f)))
++        return cell
++    }
++
++    private fun load() {
++        val stars = StarsController.getInstance(account)
++        val found = ArrayList<TL_stars.StarGift>()
++        for (gift in stars.gifts) {
++            found.add(gift)
++        }
++        if (dialogId != 0L) {
++            val list = stars.getProfileGiftsList(dialogId, false)
++            if (list != null) {
++                for (saved in list.gifts) {
++                    if (saved.gift is TL_stars.TL_starGiftUnique) found.add(saved.gift)
++                }
++            }
++        }
++        gifts.clear()
++        gifts.addAll(found)
++        parts = GiftStudio.collectParts(found)
++        val first = found.firstOrNull()
++        if (first != null) select(first)
++        val initialGift = initial?.gift
++        if (initialGift != null) {
++            found.add(initialGift)
++            parts = GiftStudio.collectParts(found)
++            select(initialGift)
++        }
++    }
++
++    private fun select(gift: TL_stars.StarGift) {
++        this.gift = gift
++        val own = GiftStudio.partsOf(gift)
++        model = own.models.firstOrNull() ?: parts.models.firstOrNull()
++        backdrop = own.backdrops.firstOrNull() ?: parts.backdrops.firstOrNull()
++        symbol = own.symbols.firstOrNull() ?: parts.symbols.firstOrNull()
++        update()
++    }
++
++    private fun update() {
++        val current = renderer ?: return
++        current.setModel(model)
++        current.setBackdrop(backdrop)
++        current.setSymbol(symbol)
++        val gift = gift
++        current.setTexts(
++            gift?.title ?: "",
++            gift?.num?.takeIf { it > 0 }?.let { "#$it" } ?: "",
++            listOfNotNull(model?.name, backdrop?.name, symbol?.name).joinToString(" · ")
++        )
++        collectionRow?.setValue(gift?.title ?: "", true)
++        modelRow?.setValue(model?.name ?: "", true)
++        backdropRow?.setValue(backdrop?.name ?: "", true)
++        symbolRow?.setValue(symbol?.name ?: "", true)
++        val modelPermille = model?.permille ?: 0
++        val backdropPermille = backdrop?.permille ?: 0
++        val odds = GiftStudio.rarityOdds(modelPermille, backdropPermille)
++        val chance = GiftStudio.rarityChance(modelPermille, backdropPermille)
++        rarityRow?.setValue(
++            when {
++                odds.isEmpty() -> lc("unknown")
++                chance.isEmpty() -> odds
++                else -> "$odds ($chance)"
++            },
++            true
++        )
++        pillRow?.setPart(modelPart)
++        // the card shows the gift with the chosen parts, so the picture is what will be saved
++        val built = gift?.let { GiftStudio.giftWithParts(it, model, backdrop, symbol) }
++        preview?.set(built)
++        collectionCard?.setStarsGift(built, false, false, false, false, false)
++    }
++
++    private fun chooseCollection() {
++        val rows = gifts.map { gift ->
++            TeleStudioPartsList.Row(GiftStudio.Part(gift.title ?: "", 0, gift.getDocument(), 0, 0, 0, 0, 0, null, GiftStudio.Tier.DEFAULT), gift, gift.title ?: "")
++        }
++        showDialog(partsList.dialog(lc("Collection"), rows, null, { part ->
++            val gift = gifts.firstOrNull { it.title == part.name }
++            if (gift != null) select(gift)
++        }, {}))
++    }
++
++    private fun choosePart(title: String, list: List<GiftStudio.Part>, apply: (GiftStudio.Part?) -> Unit) {
++        val rows = TeleStudioPartsList.rowsOf(list, gifts)
++        showDialog(partsList.dialog(lc(title), rows, null, { part -> apply(part) }, {}))
++    }
++
++    private fun chooseModel() {
++        choosePart("Model", parts.models) {
++            model = it
++            update()
++        }
++    }
++
++    private fun chooseBackdrop() {
++        choosePart("Backdrop", parts.backdrops) {
++            backdrop = it
++            update()
++        }
++    }
++
++    private fun chooseSymbol() {
++        choosePart("Symbol", parts.symbols) {
++            symbol = it
++            update()
++        }
++    }
++
++    private fun savePng() {
++        val current = renderer ?: return
++        val size = GiftStudioRenderer.exportSize(1)
++        val card = preview?.card()
++        val bitmap = if (card != null) {
++            // the picture of the card, so the file is what the studio shows
++            drawCard(card, size)
++        } else {
++            current.renderForExport(size, size)
++        }
++        if (bitmap == null) {
++            showError()
++            return
++        }
++        try {
++            val name = GiftStudioExport.fileName(gift?.title, gift?.num?.takeIf { it > 0 }?.let { "#$it" }, GiftStudioExport.Format.PNG)
++            val uri = GiftStudioExport.savePng(bitmap, name)
++            if (uri == null) {
++                showError()
++                return
++            }
++            showSaved()
++        } catch (throwable: Throwable) {
++            org.telegram.messenger.FileLog.e(throwable)
++            showError()
++        }
++    }
++
++    /** The card of the gift as a picture, the same way the grid saves its cards. */
++    private fun drawCard(card: org.telegram.ui.Gifts.GiftSheet.GiftCell, size: Int): Bitmap? {
++        return try {
++            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
++            val canvas = android.graphics.Canvas(bitmap)
++            card.measure(
++                View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY),
++                View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY)
++            )
++            card.layout(0, 0, size, size)
++            card.draw(canvas)
++            bitmap
++        } catch (throwable: Throwable) {
++            org.telegram.messenger.FileLog.e(throwable)
++            null
++        }
++    }
++
++    private fun saveVideo() {
++        val current = renderer ?: return
++        val size = GiftStudioRenderer.exportSize(1)
++        val frames = ArrayList<Bitmap>()
++        for (index in 0 until GiftStudioExport.videoFrames()) {
++            frames.add(current.renderBitmap(size, size))
++        }
++        val name = GiftStudioExport.fileName(gift?.title, gift?.num?.takeIf { it > 0 }?.let { "#$it" }, GiftStudioExport.Format.MP4)
++        val uri = GiftStudioExport.saveVideo(name, frames)
++        for (frame in frames) frame.recycle()
++        if (uri == null) {
++            showError()
++            return
++        }
++        showSaved()
++    }
++
++    private fun showSaved() {
++        val text = GiftStudioExport.savedText()
++        TeleToast.log("gift-studio-saved", text, account = account)
++        BulletinFactory.of(this).createSimpleBulletin(R.raw.info, text).show()
++    }
++
++    private fun showError() {
++        val text = LocaleController.getString(R.string.TeleGiftStudioError)
++        TeleToast.log("gift-studio-error", text, account = account)
++        BulletinFactory.of(this).createSimpleBulletin(R.raw.error, text).show()
++    }
++
++    override fun onFragmentDestroy() {
++        super.onFragmentDestroy()
++        renderer?.release()
++        renderer = null
++        preview = null
++    }
++
++    /** The card of the gift as it is shown: the stock one, so it looks like a gift in Telegram. */
++    private inner class PreviewView(context: Context) : FrameLayout(context) {
++
++        private val cell = org.telegram.ui.Gifts.GiftSheet.GiftCell(context, account, resourceProvider)
++
++        init {
++            cell.setImageSize(180)
++            addView(cell, LayoutHelper.createFrame(180, 180, Gravity.CENTER))
++        }
++
++        fun set(gift: TL_stars.StarGift?) {
++            if (gift == null) {
++                cell.setStarsGift(null, false, false, false, false, false)
++            } else {
++                cell.setStarsGift(gift, false, false, false, false, false)
++            }
++        }
++
++        /** The card of the gift, to draw it into a picture. */
++        fun card(): org.telegram.ui.Gifts.GiftSheet.GiftCell = cell
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt b/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
+new file mode 100644
+index 000000000..dd1bfe4da
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
+@@ -0,0 +1,174 @@
++package tele.ui
++
++import android.content.Context
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Gifts.GiftSheet
++import tele.helpers.GiftStudio
++
++/**
++ * The list of the parts of the studio (desktop 0197): every row shows the card of the gift on the
++ * left, so the choice is seen before it is made. The card is the stock one of Telegram.
++ */
++class TeleStudioPartsList(
++    private val context: Context,
++    private val account: Int,
++    private val resourcesProvider: Theme.ResourcesProvider?
++) {
++
++    /** One row of the list: a part with the gift it belongs to. */
++    class Row(
++        @JvmField val part: GiftStudio.Part,
++        @JvmField val gift: TL_stars.StarGift?,
++        @JvmField val title: String
++    )
++
++    /**
++     * The dialog of the parts, every row with the card of the gift of the part. The caller shows it.
++     *
++     * [onPick] is called with the chosen part, [onCancel] when the list is closed without a choice.
++     */
++    fun dialog(
++        title: String,
++        rows: List<Row>,
++        selected: GiftStudio.Part?,
++        onPick: (GiftStudio.Part) -> Unit,
++        onCancel: () -> Unit
++    ): AlertDialog {
++        // an empty list still opens, so the row of the setting is never dead
++        val list = if (rows.isEmpty()) emptyList(context, resourcesProvider) else partsList(context, resourcesProvider, rows, selected, onPick)
++        return AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(title)
++            .setView(list)
++            .setNegativeButton(LocaleController.getString(R.string.Cancel)) { _, _ -> onCancel() }
++            .create()
++    }
++
++    /** The list of the parts. */
++    private fun partsList(
++        context: Context,
++        resourcesProvider: Theme.ResourcesProvider?,
++        rows: List<Row>,
++        selected: GiftStudio.Part?,
++        onPick: (GiftStudio.Part) -> Unit
++    ): RecyclerListView {
++        val list = RecyclerListView(context)
++        list.layoutManager = LinearLayoutManager(context)
++        list.adapter = Adapter(rows, selected)
++        list.setOnItemClickListener { _, position ->
++            rows.getOrNull(position)?.let { onPick(it.part) }
++        }
++        return list
++    }
++
++    /** A list that only says there is nothing to pick yet. */
++    private fun emptyList(context: Context, resourcesProvider: Theme.ResourcesProvider?): View {
++        val text = TextView(context)
++        text.setText(LocaleController.getString(R.string.TeleGiftStudioNoParts))
++        text.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++        text.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourcesProvider))
++        text.setPadding(AndroidUtilities.dp(32f), AndroidUtilities.dp(48f), AndroidUtilities.dp(32f), AndroidUtilities.dp(48f))
++        return text
++    }
++
++    private inner class Adapter(
++        private val rows: List<Row>,
++        private val selected: GiftStudio.Part?
++    ) : RecyclerListView.SelectionAdapter() {
++
++        override fun getItemCount(): Int = rows.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = true
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            return Holder(RowView(context, account, resourcesProvider))
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            val row = rows[position]
++            (holder.itemView as RowView).set(row, row.part === selected)
++        }
++    }
++
++    private class Holder(val row: RowView) : RecyclerView.ViewHolder(row)
++
++    /** One row: the card of the gift on the left and the name of the part on the right. */
++    private class RowView(
++        context: Context,
++        account: Int,
++        resourcesProvider: Theme.ResourcesProvider?
++    ) : LinearLayout(context) {
++
++        private val cell: GiftSheet.GiftCell
++        private val nameView: TextView
++        private val chanceView: TextView
++
++        init {
++            orientation = HORIZONTAL
++            gravity = Gravity.CENTER_VERTICAL
++            setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(6f), AndroidUtilities.dp(16f), AndroidUtilities.dp(6f))
++            cell = GiftSheet.GiftCell(context, account, resourcesProvider)
++            cell.setImageSize(52)
++            addView(cell, LayoutHelper.createLinear(52, 52))
++            val text = LinearLayout(context)
++            text.orientation = VERTICAL
++            nameView = TextView(context)
++            nameView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++            nameView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++            chanceView = TextView(context)
++            chanceView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            chanceView.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++            text.addView(nameView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
++            text.addView(chanceView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
++            addView(text, LayoutHelper.createLinear(0, LayoutHelper.WRAP_CONTENT, 1f))
++        }
++
++        fun set(row: Row, selected: Boolean) {
++            nameView.text = row.title
++            chanceView.text = GiftStudio.rarityOdds(row.part.permille, 1000)
++            chanceView.visibility = if (chanceView.text.isEmpty()) GONE else VISIBLE
++            // the card of the gift the part belongs to
++            val gift = row.gift
++            if (gift != null) {
++                cell.setStarsGift(gift, false, false, false, false, false)
++            }
++            alpha = if (selected) 1f else 0.85f
++        }
++    }
++
++    companion object {
++        /** The rows of the parts of one kind, with the gift of every part. */
++        @JvmStatic
++        fun rowsOf(parts: List<GiftStudio.Part>, gifts: List<TL_stars.StarGift>): List<Row> {
++            val result = ArrayList<Row>()
++            for (part in parts) {
++                val gift = gifts.firstOrNull { gift ->
++                    gift.attributes.any { attribute ->
++                        when (attribute) {
++                            is TL_stars.starGiftAttributeModel -> attribute.name == part.name
++                            is TL_stars.starGiftAttributeBackdrop -> attribute.name == part.name
++                            is TL_stars.starGiftAttributePattern -> attribute.name == part.name
++                            else -> false
++                        }
++                    }
++                }
++                result.add(Row(part, gift, part.name))
++            }
++            return result
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 59b257bbc..cc57dfa4a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -194,6 +194,9 @@ object TeleSearch {
+             section(1474, "Copy gift collection link", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1475, "Retry loading gift collections", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1477, "Gift quantity", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Send several gifts at once"),
++            section(1497, "Gift studio", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio"),
++            section(1498, "Gift studio catalog", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio catalog of api.changes.tg"),
++            section(1499, "Gift studio video", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio export as a video"),
+             section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1101, "Preview calcmula results while typing", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1330, "Calcmula suggestions and sending without calculating", "sending", TeleSettingsActivity.MODE_SENDING),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 02767681f..dbd8b53eb 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1536,6 +1536,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Copy gift collection link", TeleConfig.GIFT_COLLECTION_LINK),
+                 toggle("Retry loading gift collections", TeleConfig.GIFT_COLLECTIONS_RETRY),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Gift studio"),
++                toggle("Gift studio", TeleConfig.GIFT_STUDIO),
++                toggle("Gift studio catalog of api.changes.tg", TeleConfig.GIFT_STUDIO_EXTERNAL_CATALOG),
++                toggle("Gift studio export as a video", TeleConfig.GIFT_STUDIO_VIDEO),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Collectibles"),
+                 toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),
+                 toggle("Open collectible gifts in see.tg", TeleConfig.SEETG_BUTTON),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index cdec29434..d9475ecec 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -310,4 +310,7 @@
+     <string name="TeleGiftsConverted_other">%1$d gifts converted to %2$s stars</string>
+     <string name="TeleGiftsAddedToCollection_one">%1$d gift added to %2$s</string>
+     <string name="TeleGiftsAddedToCollection_other">%1$d gifts added to %2$s</string>
++    <string name="TeleGiftStudioSaved">The gift is saved</string>
++    <string name="TeleGiftStudioError">The gift could not be saved</string>
++    <string name="TeleGiftStudioNoParts">Nothing to pick yet. The parts of the gifts of this account show here, and the catalog when it is on.</string>
+ </resources>

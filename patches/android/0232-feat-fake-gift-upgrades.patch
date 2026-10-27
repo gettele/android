@@ -1,0 +1,615 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tele <tele@local>
+Date: Mon, 26 Oct 2026 21:11:53 +0300
+Subject: [PATCH 232/237] feat: fake gift upgrades
+
+---
+ .../org/telegram/ui/Stars/StarGiftSheet.java  |  46 +++
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ .../main/java/tele/helpers/GiftFakeUpgrade.kt | 182 ++++++++++++
+ .../main/java/tele/ui/TeleGiftRollSheet.kt    | 261 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ .../src/main/res/values/strings_tele.xml      |  10 +
+ 7 files changed, 510 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
+index 5e2ee857a..1ad63008d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
+@@ -1112,6 +1112,9 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+             .addIf(canCraft(), R.drawable.outline_craft, getString(R.string.GiftCraft), () -> {
+                 openCrafting(true);
+             })
++            .addIf(tele.helpers.GiftFakeUpgrade.enabled() && getFakeUpgradeGiftId() != 0 && !canUpgradeForReal(), R.drawable.settings_gift, getString(R.string.TeleGiftFakeUpgrade), () -> {
++                startFakeUpgrade();
++            })
+             .addIf(getUniqueGift() != null && isMineWithActions(currentAccount, DialogObject.getPeerDialogId(getUniqueGift().owner_id)) && getUniqueGift().resell_amount != null, R.drawable.menu_edit_price, getString(R.string.Gift2ChangePrice), () -> {
+                 onUpdatePriceClick(null);
+             })
+@@ -6688,6 +6691,45 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+         return 0;
+     }
+ 
++    /** The id of the gift that the fake upgrade rolls, or 0 when the gift can't be rolled. */
++    private long getFakeUpgradeGiftId() {
++        if (getUniqueGift() != null) return 0;
++        if (messageObject != null) {
++            if (messageObject.messageOwner != null && messageObject.messageOwner.action instanceof TLRPC.TL_messageActionStarGift) {
++                final TLRPC.TL_messageActionStarGift action = (TLRPC.TL_messageActionStarGift) messageObject.messageOwner.action;
++                return action.gift != null ? action.gift.gift_id : 0;
++            }
++            return 0;
++        }
++        if (savedStarGift != null && savedStarGift.gift != null) {
++            return savedStarGift.gift.gift_id;
++        }
++        return 0;
++    }
++
++    /** The gift can really be upgraded, so the request of the upgrade is sent to the server. */
++    private boolean canUpgradeForReal() {
++        if (messageObject != null) {
++            if (messageObject.messageOwner != null && messageObject.messageOwner.action instanceof TLRPC.TL_messageActionStarGift) {
++                return ((TLRPC.TL_messageActionStarGift) messageObject.messageOwner.action).can_upgrade;
++            }
++            return false;
++        }
++        if (savedStarGift != null) {
++            return savedStarGift.can_upgrade || (savedStarGift.gift != null && savedStarGift.gift.can_upgrade);
++        }
++        return false;
++    }
++
++    /** Starts the fake upgrade of tele, when the gift can be rolled. */
++    private boolean startFakeUpgrade() {
++        final long giftId = getFakeUpgradeGiftId();
++        if (giftId == 0) return false;
++        final TL_stars.StarGift gift = getGift();
++        tele.helpers.GiftFakeUpgrade.openRoll(getContext(), currentAccount, resourcesProvider, giftId, gift != null ? gift.title : null);
++        return true;
++    }
++
+     private void doUpgrade() {
+         if (button.isLoading()) return;
+ 
+@@ -6715,6 +6757,10 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+         if (stars <= 0 && upgrade_form == null) {
+             return;
+         }
++        // the fake upgrade of tele: the roll runs instead of the request, nothing is bought
++        if (tele.helpers.GiftFakeUpgrade.enabled() && !canUpgradeForReal() && startFakeUpgrade()) {
++            return;
++        }
+         if (StarsLock.intercept(getContext(), resourcesProvider, StarsLock.UPGRADE, this::doUpgrade, null)) {
+             return;
+         }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index f5b53412f..b6c84312f 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -213,6 +213,10 @@ object TeleConfig {
+     @JvmField
+     val GIFT_STUDIO_MODELS = BoolItem("gift_studio_models", false)
+     @JvmField
++    val GIFT_FAKE_UPGRADE = BoolItem("gift_fake_upgrade", false)
++    @JvmField
++    val GIFT_ROLL_ANIMATION = BoolItem("gift_roll_animation", false)
++    @JvmField
+     val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
+     @JvmField
+     val LOCAL_NAMES = BoolItem("local_names", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt b/TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt
+new file mode 100644
+index 000000000..46d537400
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt
+@@ -0,0 +1,182 @@
++package tele.helpers
++
++import android.content.Context
++import android.util.Log
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.Stars.StarsController
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.BulletinFactory
++import tele.TeleConfig
++import tele.ui.TeleGiftRollSheet
++import kotlin.random.Random
++
++/**
++ * The fake upgrade of a gift (desktop 0198): the upgrade of a regular gift is not sent to the
++ * server, it is rolled locally. The result is a random model, backdrop and symbol with their
++ * rarity weights and a number that counts the local rolls of the gift.
++ *
++ * Nothing is bought and nothing is sent: the roll only picks the attributes of the preview of the
++ * gift that the server already sends for the upgrade.
++ */
++object GiftFakeUpgrade {
++
++    /** The ids of the items of the fake upgrade. */
++    const val ID_FAKE_UPGRADE = 9700
++    const val ID_ROLL_AGAIN = 9701
++    const val ID_CLEAR_HISTORY = 9702
++    const val ID_ROLL_HISTORY = 9703
++
++    private const val TAG = "TeleGiftRoll"
++    private const val HISTORY_LIMIT = 50
++    private const val SHOWN_HISTORY = 20
++
++    /** One rolled upgrade. */
++    class Result(
++        val title: String,
++        val number: Int,
++        val model: TL_stars.starGiftAttributeModel?,
++        val pattern: TL_stars.starGiftAttributePattern?,
++        val backdrop: TL_stars.starGiftAttributeBackdrop?
++    ) {
++        val modelName: String get() = model?.name ?: ""
++        val patternName: String get() = pattern?.name ?: ""
++        val backdropName: String get() = backdrop?.name ?: ""
++    }
++
++    /** The attributes of a gift that a roll picks from. */
++    class Candidates(
++        val models: List<TL_stars.starGiftAttributeModel>,
++        val patterns: List<TL_stars.starGiftAttributePattern>,
++        val backdrops: List<TL_stars.starGiftAttributeBackdrop>
++    ) {
++        val isEmpty: Boolean get() = models.isEmpty() && patterns.isEmpty() && backdrops.isEmpty()
++    }
++
++    private val histories = HashMap<Int, ArrayList<Result>>()
++    private val counters = HashMap<Long, Int>()
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.GIFT_FAKE_UPGRADE.value
++
++    /** The animation of the roll: without it the result is shown at once. */
++    @JvmStatic
++    fun animated(): Boolean = TeleConfig.GIFT_ROLL_ANIMATION.value
++
++    /** The number of the next roll of the gift. */
++    @JvmStatic
++    @Synchronized
++    fun nextNumber(giftId: Long): Int {
++        val count = (counters[giftId] ?: 0) + 1
++        counters[giftId] = count
++        return count
++    }
++
++    /** The rolls of the account, the newest first. */
++    @JvmStatic
++    fun history(account: Int): List<Result> = synchronized(histories) {
++        histories[account]?.toList() ?: emptyList()
++    }
++
++    /** The rolls of the account that the sheet shows. */
++    @JvmStatic
++    fun shownHistory(account: Int): List<Result> = history(account).take(SHOWN_HISTORY)
++
++    /** Forgets the rolls of the account. */
++    @JvmStatic
++    @Synchronized
++    fun clearHistory(account: Int) {
++        histories.remove(account)
++    }
++
++    /** Remembers a rolled upgrade. */
++    @JvmStatic
++    @Synchronized
++    private fun add(account: Int, result: Result) {
++        val list = histories.getOrPut(account) { ArrayList() }
++        list.add(0, result)
++        while (list.size > HISTORY_LIMIT) {
++            list.removeAt(list.size - 1)
++        }
++    }
++
++    /** Picks an attribute with its rarity weights. */
++    private fun <T> pick(list: List<T>, rarity: (T) -> Int): T? {
++        if (list.isEmpty()) return null
++        var total = 0
++        for (item in list) {
++            total += rarity(item)
++        }
++        if (total <= 0) {
++            return list[Random.nextInt(list.size)]
++        }
++        var left = Random.nextInt(total)
++        for (item in list) {
++            left -= rarity(item)
++            if (left < 0) return item
++        }
++        return list[list.size - 1]
++    }
++
++    /** The attributes of the preview of the gift. */
++    @JvmStatic
++    fun candidates(preview: TL_stars.starGiftUpgradePreview?): Candidates {
++        val attributes = preview?.sample_attributes ?: return Candidates(emptyList(), emptyList(), emptyList())
++        val models = ArrayList<TL_stars.starGiftAttributeModel>()
++        val patterns = ArrayList<TL_stars.starGiftAttributePattern>()
++        val backdrops = ArrayList<TL_stars.starGiftAttributeBackdrop>()
++        for (attribute in attributes) {
++            when (attribute) {
++                is TL_stars.starGiftAttributeModel -> models.add(attribute)
++                is TL_stars.starGiftAttributePattern -> patterns.add(attribute)
++                is TL_stars.starGiftAttributeBackdrop -> backdrops.add(attribute)
++            }
++        }
++        return Candidates(models, patterns, backdrops)
++    }
++
++    /** Rolls a gift and shows the result. */
++    @JvmStatic
++    fun openRoll(
++        context: Context,
++        account: Int,
++        resourcesProvider: Theme.ResourcesProvider?,
++        giftId: Long,
++        title: String?
++    ) {
++        if (!enabled()) return
++        if (giftId == 0L) return
++        StarsController.getInstance(account).getStarGiftPreview(giftId) { preview ->
++            val candidates = candidates(preview)
++            if (candidates.isEmpty) {
++                BulletinFactory.global()
++                    .createSimpleBulletin(R.raw.error, LocaleController.getString(R.string.TeleGiftFakeNoAttributes))
++                    .show()
++                return@getStarGiftPreview
++            }
++            Log.d(TAG, "fake_roll_start")
++            TeleGiftRollSheet(context, account, resourcesProvider, giftId, title, candidates).show()
++        }
++    }
++
++    /** Rolls a gift and shows the result. */
++    @JvmStatic
++    fun roll(
++        account: Int,
++        giftId: Long,
++        title: String?,
++        candidates: Candidates
++    ): Result {
++        val result = Result(
++            title ?: "",
++            nextNumber(giftId),
++            pick(candidates.models) { it.getRarityPermille() },
++            pick(candidates.patterns) { it.getRarityPermille() },
++            pick(candidates.backdrops) { it.getRarityPermille() }
++        )
++        add(account, result)
++        Log.d(TAG, "fake_roll_done")
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt
+new file mode 100644
+index 000000000..6d8c9115f
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt
+@@ -0,0 +1,261 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.drawable.GradientDrawable
++import android.os.Handler
++import android.os.Looper
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.BottomSheet
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.BackupImageView
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Stars.StarsIntroActivity
++import tele.helpers.GiftFakeUpgrade
++import kotlin.random.Random
++
++/**
++ * The sheet of the fake upgrade (desktop 0198): it rolls a gift locally and shows the result.
++ * Nothing is bought and nothing is sent.
++ */
++class TeleGiftRollSheet(
++    context: Context,
++    private val account: Int,
++    resourcesProvider: Theme.ResourcesProvider?,
++    private val giftId: Long,
++    private val giftTitle: String?,
++    private val candidates: GiftFakeUpgrade.Candidates
++) : BottomSheet(context, true, resourcesProvider) {
++
++    private val modelView = BackupImageView(context)
++    private val patternView = BackupImageView(context)
++    private val backdropView = View(context)
++    private val numberView = TextView(context)
++    private val modelNameView = TextView(context)
++    private val patternNameView = TextView(context)
++    private val backdropNameView = TextView(context)
++    private val rollButton = TextView(context)
++    private val historyLayout = LinearLayout(context)
++    private val clearHistoryView = TextView(context)
++
++    private val handler = Handler(Looper.getMainLooper())
++    private var rolling = false
++    private var result: GiftFakeUpgrade.Result? = null
++
++    private val step = Runnable {
++        if (!rolling) return@Runnable
++        showScrambled()
++        handler.postDelayed(step, ROLL_INTERVAL)
++    }
++
++    init {
++        currentAccount = account
++        fixNavigationBar()
++
++        val layout = LinearLayout(context)
++        layout.id = GiftFakeUpgrade.ID_FAKE_UPGRADE
++        layout.orientation = LinearLayout.VERTICAL
++        layout.setPadding(AndroidUtilities.dp(16f), 0, AndroidUtilities.dp(16f), 0)
++
++        val titleView = TextView(context)
++        titleView.text = giftTitle ?: LocaleController.getString(R.string.TeleGiftFakeTitle)
++        titleView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20f)
++        titleView.typeface = AndroidUtilities.bold()
++        titleView.gravity = Gravity.CENTER
++        titleView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++        layout.addView(titleView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 12, 0, 2))
++
++        val noticeView = TextView(context)
++        noticeView.text = LocaleController.getString(R.string.TeleGiftFakeNotice)
++        noticeView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        noticeView.gravity = Gravity.CENTER
++        noticeView.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++        layout.addView(noticeView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 0, 0, 8))
++
++        val preview = FrameLayout(context)
++        preview.addView(backdropView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 220))
++        preview.addView(modelView, LayoutHelper.createFrame(160, 160, Gravity.CENTER))
++        preview.addView(patternView, LayoutHelper.createFrame(64, 64, Gravity.CENTER))
++        layout.addView(preview, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 220))
++
++        numberView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
++        numberView.typeface = AndroidUtilities.bold()
++        numberView.gravity = Gravity.CENTER
++        numberView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++        layout.addView(numberView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 8, 0, 2))
++
++        val names = LinearLayout(context)
++        names.orientation = LinearLayout.VERTICAL
++        names.gravity = Gravity.CENTER
++        addName(names, modelNameView)
++        addName(names, patternNameView)
++        addName(names, backdropNameView)
++        layout.addView(names, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 0, 0, 8))
++
++        rollButton.id = GiftFakeUpgrade.ID_ROLL_AGAIN
++        rollButton.text = LocaleController.getString(R.string.TeleGiftFakeRoll)
++        rollButton.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        rollButton.typeface = AndroidUtilities.bold()
++        rollButton.gravity = Gravity.CENTER
++        rollButton.setTextColor(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider))
++        rollButton.setPadding(AndroidUtilities.dp(16f), 0, AndroidUtilities.dp(16f), 0)
++        rollButton.background = Theme.createSimpleSelectorRoundRectDrawable(
++            AndroidUtilities.dp(8f),
++            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .12f),
++            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .24f)
++        )
++        rollButton.setOnClickListener { roll() }
++        layout.addView(rollButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER, 0, 4, 0, 12))
++
++        val historyTitle = TextView(context)
++        historyTitle.text = LocaleController.getString(R.string.TeleGiftFakeHistory)
++        historyTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        historyTitle.typeface = AndroidUtilities.bold()
++        historyTitle.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++        layout.addView(historyTitle, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START, 0, 0, 0, 4))
++
++        val scroll = ScrollView(context)
++        historyLayout.id = GiftFakeUpgrade.ID_ROLL_HISTORY
++        historyLayout.orientation = LinearLayout.VERTICAL
++        scroll.addView(historyLayout, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        layout.addView(scroll, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 160))
++
++        clearHistoryView.id = GiftFakeUpgrade.ID_CLEAR_HISTORY
++        clearHistoryView.text = LocaleController.getString(R.string.TeleGiftFakeClearHistory)
++        clearHistoryView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        clearHistoryView.gravity = Gravity.CENTER
++        clearHistoryView.setTextColor(Theme.getColor(Theme.key_text_RedBold, resourcesProvider))
++        clearHistoryView.setPadding(0, AndroidUtilities.dp(10f), 0, AndroidUtilities.dp(10f))
++        clearHistoryView.setOnClickListener {
++            GiftFakeUpgrade.clearHistory(account)
++            refreshHistory()
++        }
++        layout.addView(clearHistoryView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        setCustomView(layout)
++        refreshHistory()
++        roll()
++    }
++
++    private fun addName(parent: LinearLayout, view: TextView) {
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++        view.gravity = Gravity.CENTER
++        view.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++        parent.addView(view, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 1, 0, 1))
++    }
++
++    /** The attributes that the roll shows while it runs. */
++    private fun showScrambled() {
++        val models = candidates.models
++        val patterns = candidates.patterns
++        val backdrops = candidates.backdrops
++        var model: TL_stars.starGiftAttributeModel? = null
++        var pattern: TL_stars.starGiftAttributePattern? = null
++        var backdrop: TL_stars.starGiftAttributeBackdrop? = null
++        if (models.isNotEmpty()) {
++            model = models[Random.nextInt(models.size)]
++            StarsIntroActivity.setGiftImage(modelView.getImageReceiver(), model.document, 160)
++        }
++        if (patterns.isNotEmpty()) {
++            pattern = patterns[Random.nextInt(patterns.size)]
++            StarsIntroActivity.setGiftImage(patternView.getImageReceiver(), pattern.document, 64)
++        }
++        if (backdrops.isNotEmpty()) {
++            backdrop = backdrops[Random.nextInt(backdrops.size)]
++            setBackdrop(backdrop)
++        }
++        numberView.text = "#" + (result?.number ?: 0)
++        modelNameView.text = model?.name ?: ""
++        patternNameView.text = pattern?.name ?: ""
++        backdropNameView.text = backdrop?.name ?: ""
++    }
++
++    private fun setBackdrop(backdrop: TL_stars.starGiftAttributeBackdrop) {
++        backdropView.background = GradientDrawable(
++            GradientDrawable.Orientation.TOP_BOTTOM,
++            intArrayOf(
++                backdrop.center_color or 0xFF000000.toInt(),
++                backdrop.edge_color or 0xFF000000.toInt()
++            )
++        )
++    }
++
++    /** Shows the result of the roll. */
++    private fun showResult(result: GiftFakeUpgrade.Result) {
++        numberView.text = "#" + result.number
++        modelNameView.text = result.modelName
++        patternNameView.text = result.patternName
++        backdropNameView.text = result.backdropName
++        result.model?.let { StarsIntroActivity.setGiftImage(modelView.getImageReceiver(), it.document, 160) }
++        result.pattern?.let { StarsIntroActivity.setGiftImage(patternView.getImageReceiver(), it.document, 64) }
++        result.backdrop?.let { setBackdrop(it) }
++        rollButton.text = LocaleController.getString(R.string.TeleGiftFakeRollAgain)
++    }
++
++    /** The roll of the gift: the attributes change until the roll ends. */
++    private fun roll() {
++        val rolled = GiftFakeUpgrade.roll(account, giftId, giftTitle, candidates)
++        result = rolled
++        if (!GiftFakeUpgrade.animated()) {
++            showResult(rolled)
++            return
++        }
++        rolling = true
++        handler.removeCallbacks(step)
++        handler.post(step)
++        handler.postDelayed({
++            rolling = false
++            handler.removeCallbacks(step)
++            showResult(rolled)
++        }, ROLL_DURATION)
++    }
++
++    /** The rolls of the account that the sheet shows under the button. */
++    private fun refreshHistory() {
++        historyLayout.removeAllViews()
++        val history = GiftFakeUpgrade.shownHistory(account)
++        if (history.isEmpty()) {
++            val empty = TextView(context)
++            empty.text = LocaleController.getString(R.string.TeleGiftFakeHistoryEmpty)
++            empty.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            empty.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++            historyLayout.addView(empty, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            clearHistoryView.visibility = View.GONE
++            return
++        }
++        clearHistoryView.visibility = View.VISIBLE
++        for (item in history) {
++            val view = TextView(context)
++            view.text = (item.title.ifEmpty { LocaleController.getString(R.string.TeleGiftFakeTitle) }) +
++                " #" + item.number +
++                (if (item.modelName.isNotEmpty()) " · " + item.modelName else "")
++            view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++            view.setPadding(0, AndroidUtilities.dp(4f), 0, AndroidUtilities.dp(4f))
++            historyLayout.addView(view, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        }
++    }
++
++    override fun onDetachedFromWindow() {
++        super.onDetachedFromWindow()
++        handler.removeCallbacks(step)
++        if (rolling) {
++            rolling = false
++            android.util.Log.d("TeleGiftRoll", "fake_roll_cancel")
++        }
++    }
++
++    companion object {
++        private const val ROLL_INTERVAL = 70L
++        private const val ROLL_DURATION = 1800L
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 5fb88e656..87889628f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -193,6 +193,9 @@ object TeleSearch {
+             section(1473, "Send several gifts at once", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1474, "Copy gift collection link", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1475, "Retry loading gift collections", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1510, "Fake upgrade of gifts", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1511, "Fake upgrade in the gift menu", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Fake upgrade of gifts"),
++            section(1512, "Roll animation", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1477, "Gift quantity", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Send several gifts at once"),
+             section(1497, "Gift studio", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio"),
+             section(1498, "Gift studio catalog", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Gift studio catalog of api.changes.tg"),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 325c1d75d..b6486f943 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -921,6 +921,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+         private val DESCRIPTIONS = mapOf(
+             "Send MKV files as videos" to "Only when the video track can be read; other files stay files.",
++            "Fake upgrade of gifts" to "Rolls the upgrade of a gift locally: nothing is bought and nothing is sent.",
++            "Roll animation" to "The attributes of the gift change while the roll runs.",
+             "Send audio files as voice messages" to "Adds it to the send menu of audio files and to audio messages.",
+             "Remove my messages" to "Adds it to chat menus: deletes all your messages there for everyone.",
+             "Show seconds in message times" to "Times read 14:03:21, and service messages show their time too.",
+@@ -1535,6 +1537,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Send several gifts at once", TeleConfig.GIFT_QUANTITY),
+                 toggle("Copy gift collection link", TeleConfig.GIFT_COLLECTION_LINK),
+                 toggle("Retry loading gift collections", TeleConfig.GIFT_COLLECTIONS_RETRY),
++                toggle("Fake upgrade of gifts", TeleConfig.GIFT_FAKE_UPGRADE),
++                toggle("Roll animation", TeleConfig.GIFT_ROLL_ANIMATION),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Gift studio"),
+                 toggle("Gift studio", TeleConfig.GIFT_STUDIO),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 9b621bbc6..2ba6e89de 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -258,6 +258,16 @@
+     <string name="TeleGiftsErrorSellEarly">Can\'t be sold yet</string>
+     <string name="TeleGiftsBatchCancelled">Cancelled after %1$d of %2$d.</string>
+     <string name="TeleGiftsBatchStopped">Stopped after %1$d of %2$d: %3$s</string>
++    <string name="TeleGiftFakeUpgrade">Fake upgrade</string>
++    <string name="TeleGiftFakeUpgradeNotice">The upgrade is only a local preview. Nothing is bought and nothing is sent.</string>
++    <string name="TeleGiftFakeTitle">Fake upgrade</string>
++    <string name="TeleGiftFakeNotice">A local preview. Nothing is bought and nothing is sent.</string>
++    <string name="TeleGiftFakeRoll">Roll</string>
++    <string name="TeleGiftFakeRollAgain">Roll again</string>
++    <string name="TeleGiftFakeHistory">Recent rolls</string>
++    <string name="TeleGiftFakeHistoryEmpty">The rolls show up here.</string>
++    <string name="TeleGiftFakeClearHistory">Clear the history</string>
++    <string name="TeleGiftFakeNoAttributes">This gift has no upgrade attributes.</string>
+     <string name="TeleGiftsBatchSkipped">%1$d skipped: %2$s</string>
+     <string name="TeleGiftsBatchDone">%1$d done, %2$s</string>
+     <string name="TeleGiftsBatchWaiting">%1$s, waiting %2$s for Telegram\'s limit</string>
