@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 31 Oct 2026 12:22:29 +0300
+Subject: [PATCH 240/240] fix: catalog gift pictures in the studio
+
+---
+ .../java/tele/helpers/GiftStudioCatalog.kt    | 12 +++++++++
+ .../java/tele/ui/TeleGiftStudioActivity.kt    |  9 +++----
+ .../main/java/tele/ui/TeleStudioPartsList.kt  | 26 ++++++++++++++++++-
+ 3 files changed, 40 insertions(+), 7 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+index 78c875ee1..7511313cc 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+@@ -73,6 +73,18 @@ object GiftStudioCatalog {
+         }
+     }
+ 
++    /** The picture of a gift of the catalog, as a bitmap of the given size. */
++    @JvmStatic
++    fun requestPreview(gift: String, size: Int, done: (android.graphics.Bitmap?) -> Unit) {
++        fetch("original/" + encode(gift) + ".png?size=" + size) { bytes ->
++            if (bytes.isEmpty()) {
++                done(null)
++                return@fetch
++            }
++            done(android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
++        }
++    }
++
+     /** The parts of one gift of the catalog, by the name of the gift. */
+     @JvmStatic
+     fun requestParts(gift: String, done: (CatalogParts) -> Unit) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+index 13ea6ab9c..ba54ac13d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+@@ -282,13 +282,10 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+                 if (own != null) {
+                     TeleStudioPartsList.Row(name, own, subtitle = own.title ?: "")
+                 } else {
+-                    val samples = sampleAttributes
+                     TeleStudioPartsList.Row(
+-                        name, baseGift(name),
+-                        model = samples.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull(),
+-                        backdrop = samples.filterIsInstance<TL_stars.starGiftAttributeBackdrop>().firstOrNull(),
+-                        symbol = samples.filterIsInstance<TL_stars.starGiftAttributePattern>().firstOrNull(),
+-                        subtitle = lc("catalog")
++                        name, null,
++                        subtitle = lc("catalog"),
++                        previewGift = name
+                     )
+                 }
+             }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt b/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
+index 444996061..4e84a2895 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
+@@ -19,6 +19,7 @@ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.RecyclerListView
+ import org.telegram.ui.Gifts.GiftSheet
+ import tele.helpers.GiftStudio
++import tele.helpers.GiftStudioCatalog
+ 
+ /**
+  * The list of the parts of the studio (desktop 0197): every row shows the gift card with that part
+@@ -37,7 +38,9 @@ class TeleStudioPartsList(
+         @JvmField val model: TL_stars.starGiftAttributeModel? = null,
+         @JvmField val backdrop: TL_stars.starGiftAttributeBackdrop? = null,
+         @JvmField val symbol: TL_stars.starGiftAttributePattern? = null,
+-        @JvmField val subtitle: String = ""
++        @JvmField val subtitle: String = "",
++        /** The name of the gift of the catalog: its picture is loaded from there. */
++        @JvmField val previewGift: String? = null
+     )
+ 
+     /**
+@@ -97,6 +100,7 @@ class TeleStudioPartsList(
+     ) : LinearLayout(context) {
+ 
+         private val cell = GiftSheet.GiftCell(context, account, resourcesProvider)
++        private val picture = android.widget.ImageView(context)
+         private val nameView: TextView
+         private val detailView: TextView
+ 
+@@ -106,6 +110,16 @@ class TeleStudioPartsList(
+             setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(6f), AndroidUtilities.dp(16f), AndroidUtilities.dp(6f))
+             cell.setImageSize(56)
+             addView(cell, LayoutHelper.createLinear(56, 56))
++            picture.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
++            val radius = AndroidUtilities.dp(8f).toFloat()
++            picture.outlineProvider = object : android.view.ViewOutlineProvider() {
++                override fun getOutline(view: View, outline: android.graphics.Outline) {
++                    outline.setRoundRect(0, 0, view.width, view.height, radius)
++                }
++            }
++            picture.clipToOutline = true
++            picture.visibility = GONE
++            addView(picture, LayoutHelper.createLinear(56, 56))
+             val text = LinearLayout(context)
+             text.orientation = VERTICAL
+             nameView = TextView(context)
+@@ -128,9 +142,19 @@ class TeleStudioPartsList(
+             // the card of the gift with this part applied, so the row shows what it does
+             val gift = row.gift
+             if (gift != null) {
++                cell.visibility = VISIBLE
++                picture.visibility = GONE
+                 val built = GiftStudio.giftWithAttributes(gift, row.model, row.backdrop, row.symbol)
+                 cell.setStarsGift(built, false, false, false, false, false)
+                 cell.hidePrice()
++            } else if (row.previewGift != null) {
++                // a gift of the catalog: its own picture comes from the catalog
++                cell.visibility = GONE
++                picture.visibility = VISIBLE
++                picture.setImageDrawable(null)
++                GiftStudioCatalog.requestPreview(row.previewGift, 128) { bitmap ->
++                    if (bitmap != null && picture.visibility == VISIBLE) picture.setImageBitmap(bitmap)
++                }
+             }
+         }
+     }
