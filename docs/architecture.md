@@ -95,6 +95,9 @@ fork state export/import (json) mirrors tele's settings backup: the spec table i
 - the tele server client (patches 0009/0093/…) downloads a public, hashed list over https and matches locally; it never uploads account data. the protocol is defined by tele desktop's readme and is platform-neutral.
 - how a release is built, signed and published (and what the secrets are) is in [releasing.md](releasing.md).
 - crash reports (0037) leave the device only after the user taps send, and the text is shown first.
+- a memory snapshot (`0241`) is written only for an out-of-memory crash and only when the option is on (off by default); it never leaves the device by itself — the next start offers it once, and sharing goes through the system chooser. the report only gains a `memory:` line (java/native/pss at the crash) and the snapshot size.
+- the mtproto inspector (`0242`) keeps a bounded ring per account (300 entries, 16 KB per entry) in private files, one line per send, receive or update like the desktop client, and redacts auth, secret, key, hash, token and phone fields before anything is stored; the TL console (`0243`) builds the app's own generated request classes and stops at a confirmation for irreversible and paid methods; the schema index in `res/raw` is generated from `TLRPC.java` and `tgnet/tl/*.java` by `ci/tl_index.py`. the tools live on `tele → debug`.
+- diagnostic reports (`0244`) are a `Tele-Note` from `ApplicationExitInfo` or from the freeze marker; they use the same gate and dialog as crash reports and never carry account data.
 
 ## batches and build gates
 

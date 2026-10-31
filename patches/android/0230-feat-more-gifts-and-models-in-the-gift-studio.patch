@@ -1,220 +1,25 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
-Date: Mon, 26 Oct 2026 21:49:46 +0300
-Subject: [PATCH 230/240] feat: more gifts and models in the gift studio
+Date: Tue, 3 Nov 2026 04:37:32 +0300
+Subject: [PATCH 230/244] feat: more gifts and models in the gift studio
 
 ---
- .../src/main/java/tele/TeleConfig.kt          |  2 +
- .../src/main/java/tele/helpers/GiftStudio.kt  | 18 ++++-
- .../java/tele/helpers/GiftStudioModels.kt     | 73 +++++++++++++++++++
- .../java/tele/helpers/GiftStudioRenderer.kt   | 40 ++++++----
- .../main/java/tele/ui/settings/TeleSearch.kt  |  1 +
- .../tele/ui/settings/TeleSettingsActivity.kt  |  1 +
- 6 files changed, 121 insertions(+), 14 deletions(-)
- create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftStudioModels.kt
+ TMessagesProj/src/main/java/tele/TeleConfig.kt             | 1 +
+ TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt | 1 +
+ 2 files changed, 2 insertions(+)
 
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-index 85d2f7bad..f5b53412f 100644
+index 7208f1863..7584cd9a6 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-@@ -211,6 +211,8 @@ object TeleConfig {
+@@ -213,6 +213,7 @@ object TeleConfig {
      @JvmField
-     val GIFT_STUDIO_VIDEO = BoolItem("gift_studio_video", false)
+     val GIFT_GRID = BoolItem("gift_grid", false)
      @JvmField
-+    val GIFT_STUDIO_MODELS = BoolItem("gift_studio_models", false)
 +    @JvmField
      val COPY_EMOJI_ID = BoolItem("copy_emoji_id", false)
      @JvmField
      val LOCAL_NAMES = BoolItem("local_names", false)
-diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
-index 6fbd30cce..d313c519a 100644
---- a/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
-+++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudio.kt
-@@ -19,7 +19,9 @@ object GiftStudio {
-         @JvmField val centerColor: Int,
-         @JvmField val edgeColor: Int,
-         @JvmField val patternColor: Int,
--        @JvmField val textColor: Int
-+        @JvmField val textColor: Int,
-+        /** The file of a custom model of the device; empty for the models of Telegram. */
-+        @JvmField val localPath: String? = null
-     )
- 
-     /** The parts of a gift. */
-@@ -136,6 +138,20 @@ object GiftStudio {
-         return text
-     }
- 
-+    /** The parts of the gifts: every model, backdrop and symbol among them. */
-+    @JvmStatic
-+    fun partsOfRegularGift(gift: TL_stars.StarGift): Parts {
-+        val model = GiftStudio.Part(
-+            gift.title ?: "Original", 0, gift.getDocument(), 0, 0, 0, 0, 0
-+        )
-+        val own = partsOf(gift)
-+        return Parts(
-+            listOf(model) + own.models,
-+            own.backdrops,
-+            own.symbols
-+        )
-+    }
-+
-     /** The parts of the gifts: every model, backdrop and symbol among them. */
-     @JvmStatic
-     fun collectParts(gifts: List<TL_stars.StarGift>): Parts {
-diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioModels.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioModels.kt
-new file mode 100644
-index 000000000..e13fb2f2e
---- /dev/null
-+++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioModels.kt
-@@ -0,0 +1,73 @@
-+package tele.helpers
-+
-+import android.os.Environment
-+import android.util.Base64
-+import org.telegram.messenger.ApplicationLoader
-+import org.telegram.messenger.FileLog
-+import java.io.File
-+import java.util.UUID
-+
-+/**
-+ * The custom models of the gift studio (desktop 0234): a .tgs file of the device becomes a model
-+ * of the studio. The file is stored in the fork storage, so it survives the restarts of the app.
-+ */
-+object GiftStudioModels {
-+
-+    private const val MAX_BYTES = 1024 * 1024
-+
-+    /** The folder of the fork where the custom models are kept. */
-+    @JvmStatic
-+    fun folder(): File {
-+        val folder = File(ApplicationLoader.getFilesDirFixed("tele_gift_studio_models"))
-+        folder.mkdirs()
-+        return folder
-+    }
-+
-+    /** The file of a custom model by its id. */
-+    @JvmStatic
-+    fun fileFor(id: String): File = File(folder(), id + ".tgs")
-+
-+    /** The custom models of the studio, the most recent first. */
-+    @JvmStatic
-+    fun list(): List<CustomModel> {
-+        val folder = folder()
-+        val result = ArrayList<CustomModel>()
-+        val files = folder.listFiles() ?: return result
-+        for (file in files) {
-+            if (!file.name.endsWith(".tgs")) continue
-+            val id = file.name.removeSuffix(".tgs")
-+            if (id.length != 32) continue
-+            result.add(CustomModel(id, file.name, file.length()))
-+        }
-+        result.sortByDescending { it.length }
-+        return result
-+    }
-+
-+    /** One custom model. */
-+    class CustomModel(
-+        @JvmField val id: String,
-+        @JvmField val fileName: String,
-+        @JvmField val size: Long
-+    ) {
-+        @JvmField val key = "@my/$id"
-+    }
-+
-+    /** Imports a .tgs file as a custom model. */
-+    @JvmStatic
-+    fun importModel(file: File): CustomModel? {
-+        if (!file.exists() || file.length() > MAX_BYTES) return null
-+        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
-+        if (!bytes.startsWith(byteArrayOf(0x1F, 0x8B))) return null
-+        val id = UUID.randomUUID().toString().replace("-", "")
-+        val target = fileFor(id)
-+        runCatching { target.writeBytes(bytes) }
-+        if (!target.exists()) return null
-+        return list().firstOrNull { it.id == id }
-+    }
-+
-+    /** Removes a custom model. */
-+    @JvmStatic
-+    fun remove(id: String) {
-+        runCatching { fileFor(id).delete() }
-+    }
-+}
-\ No newline at end of file
-diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt
-index 78eae3ba5..0da48e663 100644
---- a/TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt
-+++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioRenderer.kt
-@@ -16,6 +16,7 @@ import org.telegram.messenger.ImageLocation
- import org.telegram.messenger.ImageReceiver
- import org.telegram.messenger.R
- import org.telegram.tgnet.TLRPC
-+import java.io.File
- 
- /**
-  * The renderer of the gift studio (desktop 0197): the parts of a gift are drawn on a canvas, so
-@@ -64,13 +65,13 @@ class GiftStudioRenderer(private val context: Context) {
-     fun setModel(part: GiftStudio.Part?) {
-         if (part === model) return
-         model = part
--        load(receiver, part?.document)
-+        load(receiver, part)
-     }
- 
-     fun setSymbol(part: GiftStudio.Part?) {
-         if (part === symbol) return
-         symbol = part
--        load(symbolReceiver, part?.document)
-+        load(symbolReceiver, part)
-     }
- 
-     fun setBackdrop(part: GiftStudio.Part?) {
-@@ -84,20 +85,33 @@ class GiftStudioRenderer(private val context: Context) {
-         this.subtitle = subtitle
-     }
- 
--    private fun load(target: ImageReceiver, document: TLRPC.Document?) {
-+    private fun load(target: ImageReceiver, part: GiftStudio.Part?) {
-         target.cancelLoadImage()
--        if (document == null) {
--            target.clearImage()
-+        val document = part?.document
-+        if (document != null) {
-+            target.setImage(
-+                ImageLocation.getForDocument(document),
-+                "80_80_nolimit_pcache",
-+                null,
-+                null,
-+                null,
-+                document
-+            )
-             return
-         }
--        target.setImage(
--            ImageLocation.getForDocument(document),
--            "80_80_nolimit_pcache",
--            null,
--            null,
--            null,
--            document
--        )
-+        val path = part?.localPath
-+        if (path != null && File(path).exists()) {
-+            target.setImage(
-+                ImageLocation.getForPath(path),
-+                "80_80_nolimit_pcache",
-+                null,
-+                null,
-+                null,
-+                0
-+            )
-+            return
-+        }
-+        target.clearImage()
-     }
- 
-     fun release() {
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
 index cc57dfa4a..5fb88e656 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
@@ -227,15 +32,3 @@ index cc57dfa4a..5fb88e656 100644
              section(1100, "Calculate messages starting with = via calcmula.app", "sending", TeleSettingsActivity.MODE_SENDING),
              section(1101, "Preview calcmula results while typing", "sending", TeleSettingsActivity.MODE_SENDING),
              section(1330, "Calcmula suggestions and sending without calculating", "sending", TeleSettingsActivity.MODE_SENDING),
-diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index 1f00b0328..5b1f82041 100644
---- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-+++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-@@ -1539,6 +1539,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
-                 Row(TYPE_HEADER, "Gift studio"),
-                 toggle("Gift studio", TeleConfig.GIFT_STUDIO),
-                 toggle("Gift studio export as a video", TeleConfig.GIFT_STUDIO_VIDEO),
-+                toggle("Gift studio more models", TeleConfig.GIFT_STUDIO_MODELS),
-                 Row(TYPE_SHADOW),
-                 Row(TYPE_HEADER, "Collectibles"),
-                 toggle("Collectible prices at the purchase date", TeleConfig.PURCHASE_PRICE),

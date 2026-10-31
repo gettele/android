@@ -1,0 +1,454 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 3 Nov 2026 03:45:27 +0300
+Subject: [PATCH 244/244] feat: add diagnostic reports
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |   7 ++
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +
+ .../src/main/java/tele/helpers/TeleCrash.kt   |  97 +++++++++++++-
+ .../src/main/java/tele/helpers/TeleFreeze.kt  | 119 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  18 +++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  53 +++++++-
+ 6 files changed, 289 insertions(+), 7 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index fff1e3387..b73a7e203 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -126,6 +126,13 @@ object TeleConfig {
+     @JvmField
+     val MTP_UPDATES = BoolItem("mtp_updates", false)
+     @JvmField
++    val DIAG_NO_DUMP = BoolItem("diag_no_dump", false)
++    @JvmField
++    val DIAG_FREEZE = BoolItem("diag_freeze", false)
++    /** The exit of the last run that was already turned into a report, so it is not reported twice. */
++    @JvmField
++    val DIAG_LAST_EXIT = StringItem("diag_last_exit", "")
++    @JvmField
+     val AUTO_UPDATE = BoolItem("auto_update", true)
+     @JvmField
+     val SHOW_CHANGELOG = BoolItem("show_changelog", true)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 21bc91f13..199fb8ca1 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -34,7 +34,9 @@ object TeleHooks {
+         TeleConfig.init(context)
+         TeleDatabaseHelper.init(context)
+         TeleCrash.install(context)
++        Utilities.globalQueue.postRunnable { TeleCrash.prepareDiagnostics(context) }
+         Utilities.globalQueue.postRunnable { tele.helpers.TeleTl.preload() }
++        tele.helpers.TeleFreeze.start()
+         TeleServer.start()
+         tele.helpers.TeleCounters.preload()
+         tele.helpers.FolderIcons.preload()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+index 8af6cd16a..a1d836483 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+@@ -2,6 +2,7 @@ package tele.helpers
+ 
+ import android.app.Activity
+ import android.app.ActivityManager
++import android.app.ApplicationExitInfo
+ import android.content.Intent
+ import android.content.Context
+ import android.os.Build
+@@ -21,6 +22,7 @@ import java.io.StringWriter
+ 
+ object TeleCrash {
+     private const val CRASH_FILE = "tele_crash_report.txt"
++    private const val DIAG_FILE = "tele_diag_report.txt"
+     private const val DUMP_DIR = "tele_dumps"
+     private const val DUMP_FILE = "tele_oom.hprof"
+     // a heap dump takes about as much as the heap itself, so a nearly full disk is skipped
+@@ -32,10 +34,26 @@ object TeleCrash {
+     fun crashFile(context: Context = ApplicationLoader.applicationContext): File =
+         File(context.filesDir, CRASH_FILE)
+ 
++    @JvmStatic
++    fun diagFile(context: Context = ApplicationLoader.applicationContext): File =
++        File(context.filesDir, DIAG_FILE)
++
+     @JvmStatic
+     fun hasPending(context: Context = ApplicationLoader.applicationContext): Boolean =
+         crashFile(context).exists() && crashFile(context).length() > 0
+ 
++    @JvmStatic
++    fun hasDiagnostics(context: Context = ApplicationLoader.applicationContext): Boolean =
++        diagFile(context).exists() && diagFile(context).length() > 0
++
++    /** The crash report wins over the diagnostic one: it has the stack. */
++    @JvmStatic
++    fun pendingFile(context: Context = ApplicationLoader.applicationContext): File? = when {
++        hasPending(context) -> crashFile(context)
++        hasDiagnostics(context) -> diagFile(context)
++        else -> null
++    }
++
+     @JvmStatic
+     fun dumpFile(context: Context = ApplicationLoader.applicationContext): File =
+         File(File(context.filesDir, DUMP_DIR).apply { mkdirs() }, DUMP_FILE)
+@@ -141,25 +159,89 @@ object TeleCrash {
+         "memory: java $used/$max MB, native $native MB, pss $pss MB"
+     }.getOrElse { "memory: unknown" }
+ 
++    /**
++     * A run that ended without our handler: a caught freeze or an exit the system remembers. The
++     * report carries only the note, never account data.
++     */
++    @JvmStatic
++    fun prepareDiagnostics(context: Context = ApplicationLoader.applicationContext) {
++        if (!collecting()) return
++        if (hasPending(context) || hasDiagnostics(context)) return
++        if (TeleConfig.DIAG_FREEZE.value) {
++            val seconds = TeleFreeze.lastedSeconds(context)
++            if (seconds > 0) {
++                writeDiagnostics(context, "freeze " + seconds + " s", "the interface stopped for " + seconds + " s")
++                TeleFreeze.clear(context)
++                return
++            }
++        }
++        if (!TeleConfig.DIAG_NO_DUMP.value) return
++        val reason = lastExit(context) ?: return
++        TeleConfig.set(TeleConfig.DIAG_LAST_EXIT, reason.stamp)
++        writeDiagnostics(context, reason.note, reason.description)
++    }
++
++    private class Exit(@JvmField val stamp: String, @JvmField val note: String, @JvmField val description: String)
++
++    private fun lastExit(context: Context): Exit? {
++        if (Build.VERSION.SDK_INT < 30) return null
++        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
++        val infos = runCatching {
++            manager.getHistoricalProcessExitReasons(context.packageName, 0, 3)
++        }.getOrNull() ?: return null
++        val info = infos.firstOrNull { it.timestamp > 0 } ?: return null
++        val stamp = info.timestamp.toString()
++        if (stamp == TeleConfig.DIAG_LAST_EXIT.value) return null
++        val note = when (info.reason) {
++            ApplicationExitInfo.REASON_CRASH, ApplicationExitInfo.REASON_CRASH_NATIVE -> "crash without a dump"
++            ApplicationExitInfo.REASON_ANR -> "freeze killed by the system"
++            ApplicationExitInfo.REASON_LOW_MEMORY -> "out of memory"
++            ApplicationExitInfo.REASON_SIGNALED -> "killed by a signal"
++            else -> "process ended without a dump"
++        }
++        val description = runCatching { info.description.orEmpty() }.getOrDefault("")
++        return Exit(stamp, note, description)
++    }
++
++    private fun writeDiagnostics(context: Context, note: String, description: String) {
++        val report = buildString {
++            appendLine("platform: Android")
++            appendLine("Version: ${BuildVars.BUILD_VERSION_STRING} (${versionCode(context)})")
++            appendLine("tele: ${TeleBuild.BUILD}")
++            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, android ${Build.VERSION.RELEASE} (sdk ${Build.VERSION.SDK_INT})")
++            appendLine(memory(context))
++            appendLine("Tele-Note: $note")
++            if (description.isNotEmpty()) appendLine("exit: $description")
++        }
++        runCatching { diagFile(context).writeText(report) }
++    }
++
+     // the next start after a crash asks before anything leaves the device, like desktop's crash window
+     @JvmStatic
+     fun offerPending(activity: Activity) {
+         if (offered) return
+         val dump = hasDump(activity) && !offeredMarker(activity).exists()
+-        if (!hasPending(activity) && !dump) return
++        val crash = hasPending(activity)
++        val diag = hasDiagnostics(activity)
++        if (!crash && !diag && !dump) return
+         offered = true
+         if (!collecting()) {
+             clearPending(activity)
+             if (dump) offerDump(activity)
+             return
+         }
+-        if (!hasPending(activity)) {
++        if (!crash && !diag) {
+             offerDump(activity)
+             return
+         }
+         val dialog = AlertDialog.Builder(activity)
+-            .setTitle(TeleLowercase.lc("tele crashed"))
+-            .setMessage(TeleLowercase.lc("The last time tele was launched it crashed. Send the crash report to the tele server?"))
++            .setTitle(TeleLowercase.lc(if (crash) "tele crashed" else "diagnostic report"))
++            .setMessage(
++                TeleLowercase.lc(
++                    if (crash) "The last time tele was launched it crashed. Send the crash report to the tele server?"
++                    else "The last run ended without a crash dump. Send the diagnostic report to the tele server?"
++                )
++            )
+             .setPositiveButton(TeleLowercase.lc("Send")) { _, _ -> sendPendingAsync(activity) }
+             .setNegativeButton(TeleLowercase.lc("Don't send")) { _, _ -> clearPending(activity) }
+             .create()
+@@ -184,14 +266,17 @@ object TeleCrash {
+     fun clearPending(context: Context = ApplicationLoader.applicationContext) {
+         val f = crashFile(context)
+         if (f.exists()) f.delete()
++        val diag = diagFile(context)
++        if (diag.exists()) diag.delete()
+     }
+ 
+     @JvmStatic
+     fun sendPendingAsync(context: Context = ApplicationLoader.applicationContext, url: String = TeleServer.serverUrl()) {
+         val base = url
+-        if (base.isEmpty() || !hasPending(context)) return
++        val pending = pendingFile(context) ?: return
++        if (base.isEmpty()) return
+         val appContext = context.applicationContext
+-        val report = runCatching { crashFile(context).readText() }.getOrNull() ?: return
++        val report = runCatching { pending.readText() }.getOrNull() ?: return
+         Thread {
+             var connection: java.net.HttpURLConnection? = null
+             try {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt b/TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt
+new file mode 100644
+index 000000000..6b9ed0ce9
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt
+@@ -0,0 +1,119 @@
++package tele.helpers
++
++import android.content.Context
++import android.os.Build
++import android.os.Handler
++import android.os.Looper
++import android.os.SystemClock
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.BuildVars
++import org.telegram.messenger.FileLog
++import tele.TeleBuild
++import tele.TeleConfig
++import java.io.File
++import java.util.concurrent.atomic.AtomicBoolean
++import java.util.concurrent.atomic.AtomicLong
++
++/**
++ * Watches the main thread from the outside: when it stops ticking for longer than the threshold, a
++ * small marker is left for the next start, which turns it into a diagnostic report.
++ */
++object TeleFreeze {
++
++    private const val FILE = "tele_freeze.txt"
++    private const val THRESHOLD_MS = 15_000L
++    private const val TICK_MS = 1_000L
++
++    private val beat = AtomicLong(0)
++    private val reported = AtomicBoolean(false)
++    private var started = false
++    private var thread: Thread? = null
++    private val handler by lazy { Handler(Looper.getMainLooper()) }
++    private val tick = object : Runnable {
++        override fun run() {
++            beat.set(SystemClock.elapsedRealtime())
++            // the main thread is alive again: the next episode may be reported
++            reported.set(false)
++            handler.postDelayed(this, TICK_MS)
++        }
++    }
++
++    @JvmStatic
++    fun markerFile(context: Context = ApplicationLoader.applicationContext): File =
++        File(context.filesDir, FILE)
++
++    @JvmStatic
++    fun hasMarker(context: Context = ApplicationLoader.applicationContext): Boolean =
++        markerFile(context).exists() && markerFile(context).length() > 0
++
++    /** The freeze of the last run in seconds, or 0 when the marker is missing or broken. */
++    @JvmStatic
++    fun lastedSeconds(context: Context = ApplicationLoader.applicationContext): Int {
++        if (!hasMarker(context)) return 0
++        val text = runCatching { markerFile(context).readText() }.getOrNull() ?: return 0
++        val match = Regex("freeze (\\d+) s").find(text) ?: return 0
++        return match.groupValues[1].toIntOrNull() ?: 0
++    }
++
++    @JvmStatic
++    fun clear(context: Context = ApplicationLoader.applicationContext) {
++        runCatching { markerFile(context).delete() }
++    }
++
++    @JvmStatic
++    fun start() {
++        if (started || !TeleConfig.DIAG_FREEZE.value) return
++        started = true
++        beat.set(SystemClock.elapsedRealtime())
++        handler.post(tick)
++        thread = Thread({ loop() }, "tele-freeze").apply {
++            isDaemon = true
++            start()
++        }
++    }
++
++    @JvmStatic
++    fun stop() {
++        started = false
++        handler.removeCallbacks(tick)
++        thread?.interrupt()
++        thread = null
++    }
++
++    private fun loop() {
++        while (started) {
++            try {
++                Thread.sleep(TICK_MS)
++            } catch (e: InterruptedException) {
++                return
++            }
++            val gap = SystemClock.elapsedRealtime() - beat.get()
++            if (gap > THRESHOLD_MS && reported.compareAndSet(false, true)) {
++                write(gap)
++            }
++        }
++    }
++
++    private fun write(gapMs: Long) {
++        try {
++            val context = ApplicationLoader.applicationContext
++            val file = markerFile(context)
++            val tmp = File(context.filesDir, "$FILE.tmp")
++            val seconds = gapMs / 1000L
++            val text = buildString {
++                appendLine("Tele-Note: freeze $seconds s")
++                appendLine("start=${SystemClock.elapsedRealtime() - gapMs}")
++                appendLine("Version: ${BuildVars.BUILD_VERSION_STRING}")
++                appendLine("tele: ${TeleBuild.BUILD}")
++                appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, android ${Build.VERSION.RELEASE}")
++            }
++            tmp.writeText(text)
++            if (!tmp.renameTo(file)) {
++                file.delete()
++                tmp.renameTo(file)
++            }
++        } catch (e: Throwable) {
++            FileLog.e(e)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 3926790d4..5f4b4c6cb 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -375,6 +375,24 @@ object TeleSearch {
+             screen(1388, "Release notes of every version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
+             screen(1389, "New settings") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
+             screen(1390, "Settings added in a version") { TeleSettingsActivity(TeleSettingsActivity.MODE_NEW) },
++            section(1520, "Debug", "debug", TeleSettingsActivity.MODE_DEBUG),
++            section(1521, "MTProto inspector", "debug", TeleSettingsActivity.MODE_DEBUG),
++            section(1522, "Capture MTProto", "debug", TeleSettingsActivity.MODE_DEBUG, "Capture MTProto"),
++            section(1523, "MTProto log", "debug", TeleSettingsActivity.MODE_DEBUG, "Capture MTProto"),
++            section(1524, "Request inspector", "debug", TeleSettingsActivity.MODE_DEBUG, "Open the log"),
++            section(1525, "Response log", "debug", TeleSettingsActivity.MODE_DEBUG, "Open the log"),
++            section(1526, "Include incoming updates", "debug", TeleSettingsActivity.MODE_DEBUG, "Include incoming updates"),
++            section(1527, "MTProto console", "debug", TeleSettingsActivity.MODE_DEBUG, "MTProto console"),
++            section(1528, "TL console", "debug", TeleSettingsActivity.MODE_DEBUG, "MTProto console"),
++            section(1529, "Send a TL method", "debug", TeleSettingsActivity.MODE_DEBUG, "MTProto console"),
++            section(1530, "Console history", "debug", TeleSettingsActivity.MODE_DEBUG, "Clear console history"),
++            section(1531, "Report crashes without a dump", "debug", TeleSettingsActivity.MODE_DEBUG, "Report crashes without a dump"),
++            section(1532, "Crash without a dump", "debug", TeleSettingsActivity.MODE_DEBUG, "Report crashes without a dump"),
++            section(1533, "Report freezes", "debug", TeleSettingsActivity.MODE_DEBUG, "Report freezes"),
++            section(1534, "Freeze watchdog", "debug", TeleSettingsActivity.MODE_DEBUG, "Report freezes"),
++            section(1535, "TL schema", "debug", TeleSettingsActivity.MODE_DEBUG, "MTProto console"),
++            screen(1536, "Open the MTProto log") { tele.ui.TeleMtpActivity() },
++            screen(1537, "Open the MTProto console") { tele.ui.TeleMtpConsoleActivity() },
+             section(1400, "Notify when people come online", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS),
+             screen(1401, "Online notifications") { TelePeersActivity(org.telegram.messenger.UserConfig.selectedAccount, TelePeersActivity.MODE_ONLINE) },
+             section(1402, "Presence alerts", "notifications", TeleSettingsActivity.MODE_NOTIFICATIONS, "Notify when people come online"),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 247fa885d..4bb1fe9b1 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -395,6 +395,19 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         }
+     }
+ 
++    private fun clearMtpLog() {
++        val activity = parentActivity ?: return
++        AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(lc("Clear the log"))
++            .setMessage(tele.helpers.TeleMtp.sizeText(UserConfig.selectedAccount))
++            .setPositiveButton(lc("Clear")) { _, _ ->
++                tele.helpers.TeleMtp.clear(UserConfig.selectedAccount)
++                refresh()
++            }
++            .setNegativeButton(lc("Cancel"), null)
++            .show()
++    }
++
+     private fun showServerResult(text: String) {
+         if (fragmentView == null) return
+         // a server notice toast that just came up is the answer to the refresh
+@@ -558,6 +571,21 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     })
+                     return
+                 }
++                if (row.item == TeleConfig.MTP_INSPECTOR && row.item.value != true) {
++                    val activity = parentActivity ?: return
++                    AlertDialog.Builder(activity, resourceProvider)
++                        .setTitle(lc("Debug logs"))
++                        .setMessage(lc("Do you want to enable DEBUG logs? All network events will be logged."))
++                        .setPositiveButton(lc("Enable")) { _, _ ->
++                            item.checked = true
++                            (view as TextCheckCell2).setChecked(true)
++                            setValue(row.item, true)
++                            refresh()
++                        }
++                        .setNegativeButton(lc("Cancel"), null)
++                        .show()
++                    return
++                }
+                 val checked = !item.checked
+                 item.checked = checked
+                 (view as TextCheckCell2).setChecked(checked)
+@@ -617,6 +645,13 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "server_clear" -> tele.helpers.TeleServer.clearCachedData(::showServerResult)
+                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
+                 "server_share_dump" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.shareDump(it) }
++                "mtp_log" -> presentFragment(tele.ui.TeleMtpActivity())
++                "mtp_console" -> presentFragment(tele.ui.TeleMtpConsoleActivity())
++                "mtp_clear" -> clearMtpLog()
++                "mtp_history_clear" -> {
++                    tele.helpers.TeleMtpHistory.clear(UserConfig.selectedAccount)
++                    refresh()
++                }
+                 MODE_UPDATE_ACTION -> if (tele.helpers.TeleUpdater.isReady()) tele.helpers.TeleUpdater.install(parentActivity) else tele.helpers.TeleUpdater.checkNow()
+                 "gift_grid" -> presentFragment(TeleGiftGridActivity())
+                 "gift_studio" -> presentFragment(
+@@ -1056,6 +1091,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Notifications from the server" to "Notices from the tele server in the notification center.",
+             "Send crash reports" to "Offer to send crash reports to the tele server.",
+             "Memory snapshot on crashing" to "A big file that shows what filled the memory.",
++            "Capture MTProto" to "Keep recent requests and responses for the inspector.",
++            "Include incoming updates" to "Also log updates; the log grows fast.",
++            "MTProto console" to "Send any method of the built-in layer by hand.",
++            "Console history" to "Remember the last console requests on this device.",
++            "Report crashes without a dump" to "Say why a crash had no dump when it is sent.",
++            "Report freezes" to "Notice a stuck interface and offer a report.",
+             "Update automatically" to "Check GitHub for new tele releases.",
+             "Show what's new after updates" to "Release notes in the tele chat after an update.",
+             "Ignore users" to "Hide or fade the messages of people you pick, locally.",
+@@ -1592,7 +1633,17 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             )
+             MODE_DEBUG -> listOf(
+                 Row(TYPE_HEADER, "debug"),
+-                Row(TYPE_SHADOW, "The debug options of the desktop client are not in this build yet.")
++                toggle("Capture MTProto", TeleConfig.MTP_INSPECTOR),
++                toggle("Include incoming updates", TeleConfig.MTP_UPDATES),
++                Row(TYPE_LINK, title = "Open the log", mode = "mtp_log", id = "tele-mtp-log"),
++                Row(TYPE_LINK, title = "Clear the log", mode = "mtp_clear", id = "tele-mtp-clear", value = tele.helpers.TeleMtp.sizeText(UserConfig.selectedAccount)),
++                Row(TYPE_LINK, title = "MTProto console", mode = "mtp_console", id = "tele-mtp-console"),
++                Row(TYPE_LINK, title = "Clear console history", mode = "mtp_history_clear", id = "tele-mtp-history-clear", value = tele.helpers.TeleMtpHistory.sizeText(UserConfig.selectedAccount)),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "crash reports"),
++                toggle("Report crashes without a dump", TeleConfig.DIAG_NO_DUMP),
++                toggle("Report freezes", TeleConfig.DIAG_FREEZE),
++                Row(TYPE_SHADOW)
+             )
+             MODE_BACKUP -> listOf(
+                 Row(TYPE_HEADER, "backup"),

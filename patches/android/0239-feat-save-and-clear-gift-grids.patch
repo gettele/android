@@ -1,0 +1,236 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Mon, 2 Nov 2026 23:46:17 +0300
+Subject: [PATCH 239/244] feat: save and clear gift grids
+
+---
+ .../src/main/java/tele/helpers/GiftGrid.kt    | 44 +++++++++-
+ .../tele/ui/settings/TeleGiftGridActivity.kt  | 83 +++++++++++++++++++
+ .../ui/settings/TeleGiftGridCellDialog.kt     | 16 +++-
+ 3 files changed, 140 insertions(+), 3 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt b/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
+index 2440e054e..08104766c 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
+@@ -24,14 +24,16 @@ object GiftGrid {
+     const val MAX_ROWS = 50
+ 
+     /** The ids of the actions of the grid. */
+-    const val ID_OPEN_IN_GRID = 9704
+-    const val ID_COLLECTION_TO_GRID = 9705
+     const val ID_EXPORT_PNG = 9706
+     const val ID_ADD_ROW = 9707
+     const val ID_REMOVE_ROW = 9708
++    const val ID_SAVE_GRID = 9709
++    const val ID_SAVED_GRIDS = 9710
++    const val ID_CLEAR_GRID = 9711
+ 
+     private const val KEY_PREFIX = "tele_gift_grid_"
+     private const val KEY_LAST = "tele_gift_grid_last_"
++    private const val KEY_SAVED = "tele_gift_grids_"
+ 
+     enum class Kind {
+         EMPTY,
+@@ -416,6 +418,44 @@ object GiftGrid {
+         TeleDatabaseHelper.put(KEY_PREFIX + account, layout.toJson())
+     }
+ 
++    /** The named grids of the account: a name and the layout it holds. */
++    @JvmStatic
++    fun savedGrids(account: Int): LinkedHashMap<String, String> {
++        val result = LinkedHashMap<String, String>()
++        val json = TeleDatabaseHelper.get(KEY_SAVED + account) ?: return result
++        runCatching {
++            val objectJson = JSONObject(json)
++            val keys = objectJson.keys()
++            while (keys.hasNext()) {
++                val key = keys.next()
++                val value = objectJson.optString(key)
++                if (value.isNotEmpty()) result[key] = value
++            }
++        }.onFailure { org.telegram.messenger.FileLog.e(it) }
++        return result
++    }
++
++    @JvmStatic
++    fun saveGrid(account: Int, name: String, layout: Layout) {
++        if (name.isEmpty()) return
++        val grids = savedGrids(account)
++        grids[name] = layout.toJson()
++        storeGrids(account, grids)
++    }
++
++    @JvmStatic
++    fun deleteGrid(account: Int, name: String) {
++        val grids = savedGrids(account)
++        grids.remove(name)
++        storeGrids(account, grids)
++    }
++
++    private fun storeGrids(account: Int, grids: LinkedHashMap<String, String>) {
++        val objectJson = JSONObject()
++        for ((name, value) in grids) objectJson.put(name, value)
++        TeleDatabaseHelper.put(KEY_SAVED + account, objectJson.toString())
++    }
++
+     /** The collection that the last cell was made of, so a new cell starts from it. */
+     @JvmStatic
+     fun lastCollection(account: Int): String = TeleDatabaseHelper.get(KEY_LAST + account) ?: ""
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+index a8204ab29..46814b5c8 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+@@ -7,7 +7,9 @@ import androidx.recyclerview.widget.ItemTouchHelper
+ import androidx.recyclerview.widget.RecyclerView
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.R
++import org.telegram.messenger.LocaleController
+ import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Components.ItemOptions
+@@ -73,6 +75,9 @@ class TeleGiftGridActivity : BaseFragment() {
+                         }
+                     }
+                     GiftGrid.ID_REMOVE_ROW -> removeRow(layout.rowCount() - 1)
++                    GiftGrid.ID_SAVE_GRID -> saveGridAs()
++                    GiftGrid.ID_SAVED_GRIDS -> showSavedGrids()
++                    GiftGrid.ID_CLEAR_GRID -> clearGrid()
+                 }
+             }
+         })
+@@ -80,6 +85,9 @@ class TeleGiftGridActivity : BaseFragment() {
+         val menu = actionBar.createMenu()
+         menu.addItem(GiftGrid.ID_ADD_ROW, R.drawable.filled_add_album).setText(lc("Add row"))
+         menu.addItem(GiftGrid.ID_REMOVE_ROW, R.drawable.msg_delete).setText(lc("Remove row"))
++        menu.addItem(GiftGrid.ID_SAVE_GRID, R.drawable.msg_download).setText(lc("Save grid"))
++        menu.addItem(GiftGrid.ID_SAVED_GRIDS, R.drawable.msg_archive).setText(lc("Saved grids"))
++        menu.addItem(GiftGrid.ID_CLEAR_GRID, R.drawable.msg_clear).setText(lc("Clear grid"))
+         menu.addItem(GiftGrid.ID_EXPORT_PNG, R.drawable.filled_share).setText(lc("Save picture"))
+ 
+         val recycler = UniversalRecyclerView(
+@@ -183,6 +191,14 @@ class TeleGiftGridActivity : BaseFragment() {
+                 layout.removeCell(position)
+                 GiftGrid.save(currentAccount, layout)
+                 recycler?.adapter?.update(true)
++            },
++            onDuplicate = {
++                val copy = GiftGrid.cellOf(cell.gift)
++                if (layout.addCell(copy) < 0) {
++                    BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("The grid is full")).show()
++                }
++                GiftGrid.save(currentAccount, layout)
++                recycler?.adapter?.update(true)
+             }
+         ).show()
+     }
+@@ -199,6 +215,73 @@ class TeleGiftGridActivity : BaseFragment() {
+         ).also { it.gift = cell.gift }
+     }
+ 
++    /** The grid is kept on this device under a name, as the desktop menu does it. */
++    private fun saveGridAs() {
++        editText(lc("Save grid"), "") { name ->
++            if (name.isEmpty()) return@editText
++            GiftGrid.saveGrid(currentAccount, name, layout)
++            BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("Grid saved")).show()
++        }
++    }
++
++    /** The saved grids: a tap loads one, the dialog clears all of them. */
++    private fun showSavedGrids() {
++        val grids = GiftGrid.savedGrids(currentAccount)
++        if (grids.isEmpty()) {
++            BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("There are no saved grids")).show()
++            return
++        }
++        val names = grids.keys.toTypedArray()
++        AlertDialog.Builder(parentActivity ?: return, resourceProvider)
++            .setTitle(lc("Saved grids"))
++            .setItems(names) { _, which ->
++                val json = grids[names[which]] ?: return@setItems
++                layout = Layout.fromJson(json)
++                GiftGrid.resolve(currentAccount, layout)
++                GiftGrid.save(currentAccount, layout)
++                recycler?.adapter?.update(true)
++            }
++            .setNegativeButton(lc("Delete all")) { _, _ ->
++                for (name in names) GiftGrid.deleteGrid(currentAccount, name)
++            }
++            .setPositiveButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    /** Empties the grid, as the desktop menu has it. */
++    private fun clearGrid() {
++        AlertDialog.Builder(parentActivity ?: return, resourceProvider)
++            .setTitle(lc("Clear grid"))
++            .setMessage(lc("All the cells of the grid are emptied. The saved grids stay."))
++            .setPositiveButton(lc("Clear")) { _, _ ->
++                layout.clear()
++                GiftGrid.save(currentAccount, layout)
++                recycler?.adapter?.update(true)
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    /** A one line dialog with a text field, as the studio has it. */
++    private fun editText(title: String, value: String, onDone: (String) -> Unit) {
++        val context = parentActivity ?: return
++        val input = org.telegram.ui.Components.EditTextBoldCursor(context)
++        input.setText(value)
++        input.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 18f)
++        input.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        input.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        input.setBackground(null)
++        input.setPadding(AndroidUtilities.dp(23f), 0, AndroidUtilities.dp(23f), 0)
++        val frame = FrameLayout(context)
++        frame.addView(input, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48f))
++        AlertDialog.Builder(context, resourceProvider)
++            .setTitle(title)
++            .setView(frame)
++            .setPositiveButton(LocaleController.getString(R.string.Done)) { _, _ -> onDone(input.text.toString().trim()) }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
+     /** Removes a row of the grid; the last row never goes away. */
+     private fun removeRow(index: Int) {
+         if (layout.rowCount() <= 1) return
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt
+index 02cb5b098..d80364f47 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt
+@@ -39,7 +39,8 @@ class TeleGiftGridCellDialog(
+     private val resourcesProvider: Theme.ResourcesProvider?,
+     private val original: Cell,
+     private val onDone: (Cell) -> Unit,
+-    private val onRemove: (() -> Unit)? = null
++    private val onRemove: (() -> Unit)? = null,
++    private val onDuplicate: (() -> Unit)? = null
+ ) : BottomSheet(context, true, resourcesProvider) {
+ 
+     private var kind: Kind = if (original.kind == Kind.EMPTY) Kind.UNIQUE else original.kind
+@@ -210,6 +211,19 @@ class TeleGiftGridCellDialog(
+             onDone(result())
+             dismiss()
+         }
++        if (!original.empty && onDuplicate != null) {
++            val duplicate = TextView(context)
++            duplicate.text = lc("Duplicate")
++            duplicate.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++            duplicate.gravity = Gravity.CENTER
++            duplicate.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText, resourcesProvider))
++            duplicate.setPadding(0, AndroidUtilities.dp(10f), 0, AndroidUtilities.dp(10f))
++            duplicate.setOnClickListener {
++                onDuplicate.invoke()
++                dismiss()
++            }
++            content.addView(duplicate, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        }
+         if (!original.empty && onRemove != null) {
+             val remove = TextView(context)
+             remove.text = lc("Remove from the grid")

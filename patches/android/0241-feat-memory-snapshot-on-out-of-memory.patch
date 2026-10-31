@@ -1,0 +1,223 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 3 Nov 2026 01:45:40 +0300
+Subject: [PATCH 241/244] feat: memory snapshot on out of memory
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/TeleCrash.kt   | 87 ++++++++++++++++++-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  6 +-
+ .../src/main/res/xml/provider_paths.xml       |  1 +
+ 4 files changed, 93 insertions(+), 3 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 3c7378171..cfc9e91f0 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -120,6 +120,8 @@ object TeleConfig {
+     @JvmField
+     val SEND_CRASH_REPORTS = BoolItem("send_crash_reports", true)
+     @JvmField
++    val CRASH_HEAP_DUMP = BoolItem("crash_heap_dump", false)
++    @JvmField
+     val AUTO_UPDATE = BoolItem("auto_update", true)
+     @JvmField
+     val SHOW_CHANGELOG = BoolItem("show_changelog", true)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+index 30a265ed9..8af6cd16a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+@@ -2,6 +2,7 @@ package tele.helpers
+ 
+ import android.app.Activity
+ import android.app.ActivityManager
++import android.content.Intent
+ import android.content.Context
+ import android.os.Build
+ import android.os.Debug
+@@ -10,6 +11,7 @@ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.ApplicationLoader
+ import org.telegram.messenger.BuildVars
+ import org.telegram.messenger.FileLog
++import androidx.core.content.FileProvider
+ import org.telegram.ui.ActionBar.AlertDialog
+ import tele.TeleBuild
+ import tele.TeleConfig
+@@ -19,6 +21,11 @@ import java.io.StringWriter
+ 
+ object TeleCrash {
+     private const val CRASH_FILE = "tele_crash_report.txt"
++    private const val DUMP_DIR = "tele_dumps"
++    private const val DUMP_FILE = "tele_oom.hprof"
++    // a heap dump takes about as much as the heap itself, so a nearly full disk is skipped
++    private const val DUMP_SPACE = 1536L * 1024 * 1024
++    private const val DUMP_OFFERED = "tele_dump_offered"
+     private var offered = false
+ 
+     @JvmStatic
+@@ -29,11 +36,64 @@ object TeleCrash {
+     fun hasPending(context: Context = ApplicationLoader.applicationContext): Boolean =
+         crashFile(context).exists() && crashFile(context).length() > 0
+ 
++    @JvmStatic
++    fun dumpFile(context: Context = ApplicationLoader.applicationContext): File =
++        File(File(context.filesDir, DUMP_DIR).apply { mkdirs() }, DUMP_FILE)
++
++    @JvmStatic
++    fun hasDump(context: Context = ApplicationLoader.applicationContext): Boolean =
++        dumpFile(context).let { it.exists() && it.length() > 0 }
++
++    // offered once per dump, so a shared snapshot does not ask again on every start
++    private fun offeredMarker(context: Context): File = File(context.filesDir, DUMP_OFFERED)
++
++    @JvmStatic
++    fun dumpSize(context: Context = ApplicationLoader.applicationContext): String =
++        AndroidUtilities.formatFileSize(dumpFile(context).length())
++
++    @JvmStatic
++    fun shareDump(activity: Activity) {
++        val file = dumpFile(activity)
++        if (!file.exists()) return
++        try {
++            val intent = Intent(Intent.ACTION_SEND)
++            intent.type = "application/octet-stream"
++            intent.putExtra(Intent.EXTRA_STREAM, FileProvider.getUriForFile(activity, ApplicationLoader.getApplicationId() + ".provider", file))
++            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++            activity.startActivity(Intent.createChooser(intent, "Memory snapshot"))
++        } catch (e: Throwable) {
++            FileLog.e(e)
++        }
++    }
++
++    // a snapshot is the only way to see what filled the memory; the option is off by default
++    private fun dumpOnOutOfMemory(context: Context, throwable: Throwable) {
++        if (throwable !is OutOfMemoryError || !TeleConfig.CRASH_HEAP_DUMP.value) return
++        val file = dumpFile(context)
++        file.delete()
++        if (file.parentFile?.usableSpace ?: 0L < DUMP_SPACE) return
++        // a failed dump leaves a cut file that no tool can open, so the name is taken only after it works
++        val tmp = File(file.parentFile, DUMP_FILE + ".tmp")
++        tmp.delete()
++        try {
++            Debug.dumpHprofData(tmp.path)
++        } catch (e: Throwable) {
++            FileLog.e(e)
++        }
++        if (tmp.length() > 0) {
++            file.delete()
++            if (tmp.renameTo(file)) offeredMarker(context).delete() else tmp.delete()
++        } else {
++            tmp.delete()
++        }
++    }
++
+     @JvmStatic
+     fun install(context: Context = ApplicationLoader.applicationContext) {
+         val previous = Thread.getDefaultUncaughtExceptionHandler()
+         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+             try {
++                dumpOnOutOfMemory(context, throwable)
+                 writeReport(context, thread, throwable)
+             } catch (e: Exception) {
+                 FileLog.e(e)
+@@ -60,6 +120,7 @@ object TeleCrash {
+             appendLine("tele: ${TeleBuild.BUILD}")
+             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, android ${Build.VERSION.RELEASE} (sdk ${Build.VERSION.SDK_INT})")
+             appendLine(memory(context))
++            if (hasDump(context)) appendLine("snapshot: ${dumpSize(context)}")
+             appendLine("thread: ${thread.name}")
+             appendLine("report:")
+             appendLine(sw.toString())
+@@ -83,17 +144,39 @@ object TeleCrash {
+     // the next start after a crash asks before anything leaves the device, like desktop's crash window
+     @JvmStatic
+     fun offerPending(activity: Activity) {
+-        if (offered || !hasPending(activity)) return
++        if (offered) return
++        val dump = hasDump(activity) && !offeredMarker(activity).exists()
++        if (!hasPending(activity) && !dump) return
+         offered = true
+         if (!collecting()) {
+             clearPending(activity)
++            if (dump) offerDump(activity)
+             return
+         }
+-        AlertDialog.Builder(activity)
++        if (!hasPending(activity)) {
++            offerDump(activity)
++            return
++        }
++        val dialog = AlertDialog.Builder(activity)
+             .setTitle(TeleLowercase.lc("tele crashed"))
+             .setMessage(TeleLowercase.lc("The last time tele was launched it crashed. Send the crash report to the tele server?"))
+             .setPositiveButton(TeleLowercase.lc("Send")) { _, _ -> sendPendingAsync(activity) }
+             .setNegativeButton(TeleLowercase.lc("Don't send")) { _, _ -> clearPending(activity) }
++            .create()
++        if (dump) dialog.setOnDismissListener { offerDump(activity) }
++        dialog.show()
++    }
++
++    // the snapshot is too big for the crash report itself, so it is offered on the next start
++    private fun offerDump(activity: Activity) {
++        val file = dumpFile(activity)
++        if (!file.exists() || file.length() == 0L) return
++        offeredMarker(activity).writeText("")
++        AlertDialog.Builder(activity)
++            .setTitle(TeleLowercase.lc("memory snapshot"))
++            .setMessage(TeleLowercase.lc("The last crash saved a memory snapshot of " + dumpSize(activity) + ". Share it with the tele developer?"))
++            .setPositiveButton(TeleLowercase.lc("Share")) { _, _ -> shareDump(activity) }
++            .setNegativeButton(TeleLowercase.lc("Delete")) { _, _ -> file.delete() }
+             .show()
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 6385c4b40..247fa885d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -616,6 +616,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "server_refresh" -> tele.helpers.TeleServer.refresh(::showServerResult)
+                 "server_clear" -> tele.helpers.TeleServer.clearCachedData(::showServerResult)
+                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
++                "server_share_dump" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.shareDump(it) }
+                 MODE_UPDATE_ACTION -> if (tele.helpers.TeleUpdater.isReady()) tele.helpers.TeleUpdater.install(parentActivity) else tele.helpers.TeleUpdater.checkNow()
+                 "gift_grid" -> presentFragment(TeleGiftGridActivity())
+                 "gift_studio" -> presentFragment(
+@@ -1054,6 +1055,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Usernames from the server" to "Usernames and aliases from the tele server.",
+             "Notifications from the server" to "Notices from the tele server in the notification center.",
+             "Send crash reports" to "Offer to send crash reports to the tele server.",
++            "Memory snapshot on crashing" to "A big file that shows what filled the memory.",
+             "Update automatically" to "Check GitHub for new tele releases.",
+             "Show what's new after updates" to "Release notes in the tele chat after an update.",
+             "Ignore users" to "Hide or fade the messages of people you pick, locally.",
+@@ -1694,7 +1696,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 rows.add(Row(TYPE_SHADOW))
+                 rows
+             }
+-            MODE_SERVER -> listOf(
++            MODE_SERVER -> listOfNotNull(
+                 Row(TYPE_HEADER, "server"),
+                 Row(TYPE_VALUE, "Server url", value = if (TeleConfig.TELE_SERVER_URL.value.isBlank()) "Empty (disabled)" else TeleConfig.TELE_SERVER_URL.value, item = TeleConfig.TELE_SERVER_URL),
+                 Row(TYPE_LINK, title = "Refresh now", mode = "server_refresh", id = "tele-refresh-badges"),
+@@ -1702,7 +1704,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Usernames from the server", TeleConfig.SERVER_USERNAMES),
+                 toggle("Notifications from the server", TeleConfig.NOTICES_SERVER),
+                 toggle("Send crash reports", TeleConfig.SEND_CRASH_REPORTS),
++                toggle("Memory snapshot on crashing", TeleConfig.CRASH_HEAP_DUMP),
+                 Row(TYPE_LINK, title = "Send pending crash report", mode = "server_send_crash", id = "tele-send-pending-crash"),
++                if (tele.helpers.TeleCrash.hasDump()) Row(TYPE_LINK, title = "Share the snapshot", mode = "server_share_dump", id = "tele-share-dump", value = tele.helpers.TeleCrash.dumpSize()) else null,
+                 Row(TYPE_SHADOW)
+             )
+             MODE_MENU -> listOf(
+diff --git a/TMessagesProj/src/main/res/xml/provider_paths.xml b/TMessagesProj/src/main/res/xml/provider_paths.xml
+index 4bb926990..99d959ebd 100644
+--- a/TMessagesProj/src/main/res/xml/provider_paths.xml
++++ b/TMessagesProj/src/main/res/xml/provider_paths.xml
+@@ -3,5 +3,6 @@
+     <external-path name="media" path="."/>
+     <files-path name="logs" path="/logs/"/>
+     <files-path name="cache" path="/cache/"/>
++    <files-path name="dumps" path="/tele_dumps/"/>
+     <root-path name="external_files" path="/storage/" />
+ </paths>
+\ No newline at end of file

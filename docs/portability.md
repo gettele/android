@@ -283,7 +283,7 @@
 | 0194 | oversized-стикеры как файлы, как на сервере | 🟢 | `MessageObject` определяет стикер по атрибутам; `SendMessagesHelper` даёт `application/x-bad-tgsticker` |
 | 0195 | MTProto-консоль | ✅ | решение мейнтейнера: инспектор и консоль, TL-схема в комплекте; WebView + `RawTLObject` через `ConnectionsManager` |
 | 0196 | DC медиа в просмотрщике | ✅ | `PhotoViewer` дата + `StoryViewer` заголовок; тумблер `SHOW_DC` |
-| 0197 | gift studio | ✅ | решение мейнтейнера: студия подарков; `api.changes.tg` за тумблером (по умолчанию выкл., решение по умолчанию); рендер `StarGiftPatterns` |
+| 0197 | gift studio | ✅ | решение мейнтейнера: студия подарков; каталог `api.changes.tg` всегда, кредит `@GiftChanges` обязателен; рендер `StarGiftPatterns`; плеер кадров, код студии, PNG 1080/2160/4320 и MP4 |
 | 0198 | fake-апгрейд подарка | ✅ | решение мейнтейнера: с ролл-анимацией; `StarGiftSheet.doUpgrade` с подменой оплаты |
 | 0199 | цитирование rich-сообщений | ❌ | rich-редактора на Android нет |
 | 0200 | выделять сервисные сообщения | ✅ | `ChatActivity.processRowSelect`, `ChatActionCell` |
@@ -1426,8 +1426,8 @@
 
 #### 0197 — gift studio
 - **Суть:** студия картинок уникальных подарков: модель/фон/узор, пресеты, надписи, экспорт PNG/GIF/MP4/WebM/TGS, sweep, избранное.
-- **Вердикт:** ✅ переносим, решение мейнтейнера; `api.changes.tg` за тумблером (третья сторона, по умолчанию выкл. — решение по умолчанию).
-- **Android:** рендер `GiftSheet.GiftCell`/`StarGiftPatterns`; атрибуты `getStarGiftUpgradeAttributes`, `getUniqueStarGift`; PNG — `Canvas`; MP4/WebM — `MediaCodec` + rlottie; GIF — свой энкодер; `tele.db`. Семейство «студия подарков» (0197, 0204, 0234). Effort L.
+- **Вердикт:** ✅ переносим, решение мейнтейнера; каталог `api.changes.tg` используется всегда, сервис требует видимый кредит `@GiftChanges` — он внизу студии.
+- **Android:** свой рендер `Canvas` по геометрии десктопа (Cover/Tile/Sticker/Card), картинки из каталога: модель — `.tgs`, символ — `.png` для узора фона, цвета фона из `/backdrops`, всё кэшируется; плеер кадров; код студии `tele_giftstudio?...`; PNG 1080/2160/4320 и MP4. GIF/WebM/TGS не делаем (нет кодеков/композитора лотти). Семейство «студия подарков» (0197, 0204, 0234). Effort L.
 
 #### 0198 — fake gift upgrades
 - **Суть:** «Fake upgrade» открывает бокс апгрейда без оплаты, выкатывает случайные атрибуты по rarity, история.

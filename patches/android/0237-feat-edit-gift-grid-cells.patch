@@ -1,0 +1,1785 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 1 Nov 2026 20:58:32 +0300
+Subject: [PATCH 237/244] feat: edit gift grid cells
+
+---
+ .../src/main/java/tele/helpers/GiftGrid.kt    | 116 +++-
+ .../java/tele/helpers/GiftStudioCatalog.kt    |  54 +-
+ .../src/main/java/tele/ui/TeleGiftPreview.kt  | 221 +++++-
+ .../tele/ui/settings/TeleGiftCatalogPicker.kt | 164 +++++
+ .../tele/ui/settings/TeleGiftGridActivity.kt  | 123 +++-
+ .../ui/settings/TeleGiftGridCellDialog.kt     | 640 ++++++++++++++++++
+ .../tele/ui/settings/TeleGiftGridCellItem.kt  | 135 +++-
+ 7 files changed, 1387 insertions(+), 66 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleGiftCatalogPicker.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt b/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
+index f74d9772f..2440e054e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftGrid.kt
+@@ -28,8 +28,10 @@ object GiftGrid {
+     const val ID_COLLECTION_TO_GRID = 9705
+     const val ID_EXPORT_PNG = 9706
+     const val ID_ADD_ROW = 9707
++    const val ID_REMOVE_ROW = 9708
+ 
+     private const val KEY_PREFIX = "tele_gift_grid_"
++    private const val KEY_LAST = "tele_gift_grid_last_"
+ 
+     enum class Kind {
+         EMPTY,
+@@ -37,6 +39,15 @@ object GiftGrid {
+         REGULAR
+     }
+ 
++    /** The text of the ribbon of a cell, as the desktop grid has it. */
++    enum class Ribbon {
++        AUTO,
++        NONE,
++        LIMITED,
++        SOLD_OUT,
++        CUSTOM
++    }
++
+     /** One cell of the grid. The live gift is kept next to the fields that are stored. */
+     class Cell(
+         val kind: Kind = Kind.EMPTY,
+@@ -50,7 +61,17 @@ object GiftGrid {
+         val stars: Long = 0,
+         val limited: Boolean = false,
+         val soldOut: Boolean = false,
+-        val upgradable: Boolean = false
++        val upgradable: Boolean = false,
++        /** The names of the parts, so the card is drawn again after a restart. */
++        val modelName: String = "",
++        val backdropName: String = "",
++        val symbolName: String = "",
++        val ribbon: Ribbon = Ribbon.AUTO,
++        val ribbonText: String = "",
++        val ribbonColor: Int = 0,
++        val pinned: Boolean = false,
++        val price: Boolean = false,
++        val hidden: Boolean = false
+     ) {
+         /** The gift of the cell, when it is known right now. */
+         var gift: TL_stars.StarGift? = null
+@@ -207,6 +228,61 @@ object GiftGrid {
+         }
+     }
+ 
++    /** The ribbon of the cell: the number, the state of the gift or the custom text. */
++    @JvmStatic
++    fun ribbonTextOf(cell: Cell): String {
++        return ribbonText(cell.ribbon, cell.ribbonText, cell.number, cell.limited, cell.soldOut)
++    }
++
++    /**
++     * The colors of the ribbon of the desktop grid: the backdrop of a collectible, the accent of
++     * the app for a limited gift and the warning colour for a sold out one.
++     */
++    /** The colours of the ribbons of the grid, as the desktop client paints them. */
++    const val RIBBON_LIMITED = 0xFF6AB3F3.toInt()
++    const val RIBBON_SOLD_OUT = 0xFFEC3942.toInt()
++
++    @JvmStatic
++    fun ribbonColors(cell: Cell, accent: Int, warning: Int, onAccent: Int): IntArray {
++        if (cell.ribbonColor != 0) {
++            return intArrayOf(cell.ribbonColor, 0, 0xFFFFFFFF.toInt())
++        }
++        val unique = cell.unique
++        var kind = cell.ribbon
++        if (kind == Ribbon.AUTO && !unique) {
++            kind = when {
++                cell.soldOut -> Ribbon.SOLD_OUT
++                cell.limited -> Ribbon.LIMITED
++                else -> Ribbon.NONE
++            }
++        }
++        return when {
++            unique && kind != Ribbon.LIMITED && kind != Ribbon.SOLD_OUT -> intArrayOf(
++                cell.edgeColor or 0xFF000000.toInt(),
++                cell.patternColor or 0xFF000000.toInt(),
++                0xFFFFFFFF.toInt()
++            )
++            kind == Ribbon.SOLD_OUT -> intArrayOf(warning, 0, onAccent)
++            else -> intArrayOf(accent, 0, onAccent)
++        }
++    }
++
++    @JvmStatic
++    fun ribbonText(ribbon: Ribbon?, ribbonText: String, number: Int, limited: Boolean, soldOut: Boolean): String {
++        return when (ribbon) {
++            Ribbon.NONE -> ""
++            Ribbon.CUSTOM -> ribbonText
++            Ribbon.LIMITED -> "limited"
++            Ribbon.SOLD_OUT -> "sold out"
++            Ribbon.AUTO, null -> when {
++                number > 0 -> "#" + number
++                limited -> "limited"
++                soldOut -> "sold out"
++                else -> ""
++            }
++        }
++    }
++
+     private fun cellToJson(cell: Cell): JSONObject = JSONObject()
+         .put("k", cell.kind.name)
+         .put("id", cell.giftId)
+@@ -220,6 +296,15 @@ object GiftGrid {
+         .put("l", cell.limited)
+         .put("so", cell.soldOut)
+         .put("up", cell.upgradable)
++        .put("mn", cell.modelName)
++        .put("bn", cell.backdropName)
++        .put("sn", cell.symbolName)
++        .put("rb", cell.ribbon.name)
++        .put("rt", cell.ribbonText)
++        .put("rc", cell.ribbonColor)
++        .put("pb", cell.pinned)
++        .put("pr", cell.price)
++        .put("hd", cell.hidden)
+ 
+     private fun cellFromJson(json: JSONObject?): Cell {
+         if (json == null) return Cell()
+@@ -240,7 +325,20 @@ object GiftGrid {
+             stars = json.optLong("st"),
+             limited = json.optBoolean("l"),
+             soldOut = json.optBoolean("so"),
+-            upgradable = json.optBoolean("up")
++            upgradable = json.optBoolean("up"),
++            modelName = json.optString("mn"),
++            backdropName = json.optString("bn"),
++            symbolName = json.optString("sn"),
++            ribbon = try {
++                Ribbon.valueOf(json.optString("rb", Ribbon.AUTO.name))
++            } catch (e: Exception) {
++                Ribbon.AUTO
++            },
++            ribbonText = json.optString("rt"),
++            ribbonColor = json.optInt("rc"),
++            pinned = json.optBoolean("pb"),
++            price = json.optBoolean("pr"),
++            hidden = json.optBoolean("hd")
+         )
+     }
+ 
+@@ -250,11 +348,16 @@ object GiftGrid {
+         if (gift == null) return Cell()
+         val unique = gift is TL_stars.TL_starGiftUnique
+         val backdrop = StarsController.findAttribute(gift.attributes, TL_stars.starGiftAttributeBackdrop::class.java)
++        val model = StarsController.findAttribute(gift.attributes, TL_stars.starGiftAttributeModel::class.java)
++        val symbol = StarsController.findAttribute(gift.attributes, TL_stars.starGiftAttributePattern::class.java)
+         val cell = Cell(
+             kind = if (unique) Kind.UNIQUE else Kind.REGULAR,
+             giftId = gift.id,
+             title = gift.title ?: "",
+             number = if (unique) (gift as TL_stars.TL_starGiftUnique).num else 0,
++            modelName = model?.name ?: "",
++            backdropName = backdrop?.name ?: "",
++            symbolName = symbol?.name ?: "",
+             slug = gift.slug ?: "",
+             centerColor = backdrop?.center_color ?: 0,
+             edgeColor = backdrop?.edge_color ?: 0,
+@@ -313,6 +416,15 @@ object GiftGrid {
+         TeleDatabaseHelper.put(KEY_PREFIX + account, layout.toJson())
+     }
+ 
++    /** The collection that the last cell was made of, so a new cell starts from it. */
++    @JvmStatic
++    fun lastCollection(account: Int): String = TeleDatabaseHelper.get(KEY_LAST + account) ?: ""
++
++    @JvmStatic
++    fun setLastCollection(account: Int, name: String) {
++        if (name.isNotEmpty()) TeleDatabaseHelper.put(KEY_LAST + account, name)
++    }
++
+     /** The account the grid belongs to. */
+     @JvmStatic
+     fun account(): Int = UserConfig.selectedAccount
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+index 2ef45bc1b..baf4fe544 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+@@ -50,19 +50,57 @@ object GiftStudioCatalog {
+         @JvmField val symbols: List<Part>
+     )
+ 
+-    /** The names of the gifts of the catalog, the most known first. */
++    /** The names of the gifts of the catalog, the newest release first. */
+     @JvmStatic
+     fun requestGiftNames(done: (List<String>) -> Unit) {
+         fetchCached("gifts") { bytes ->
+-            val result = ArrayList<String>()
++            val names = ArrayList<String>()
+             runCatching {
+                 val array = org.json.JSONArray(String(bytes, Charsets.UTF_8))
+                 for (i in 0 until array.length()) {
+                     val name = array.optString(i)
+-                    if (name.isNotEmpty()) result.add(name)
++                    if (name.isNotEmpty()) names.add(name)
+                 }
+             }.onFailure { FileLog.e(it) }
+-            done(result)
++            if (names.isEmpty()) {
++                done(names)
++                return@fetchCached
++            }
++            // the release dates order the list from the newest gift to the oldest
++            fetchCached("ids") { idsBytes ->
++                val idToName = HashMap<Long, String>()
++                runCatching {
++                    val json = JSONObject(String(idsBytes, Charsets.UTF_8))
++                    val keys = json.keys()
++                    while (keys.hasNext()) {
++                        val key = keys.next()
++                        val id = key.toLongOrNull() ?: continue
++                        val name = json.optString(key)
++                        if (name.isNotEmpty()) idToName[id] = name
++                    }
++                }.onFailure { FileLog.e(it) }
++                fetchCached("dates") { datesBytes ->
++                    val released = HashMap<String, Long>()
++                    runCatching {
++                        val array = org.json.JSONArray(String(datesBytes, Charsets.UTF_8))
++                        for (i in 0 until array.length()) {
++                            val item = array.optJSONObject(i) ?: continue
++                            val id = item.optString("id").toLongOrNull() ?: continue
++                            val name = idToName[id] ?: continue
++                            val date = item.optLong("releasedAt")
++                            if (date > 0) released[name] = date
++                        }
++                    }.onFailure { FileLog.e(it) }
++                    if (released.isEmpty()) {
++                        done(names)
++                    } else {
++                        done(names.sortedWith(
++                            compareByDescending<String> { released[it] ?: 0L }
++                                .thenBy { it.lowercase() }
++                        ))
++                    }
++                }
++            }
+         }
+     }
+ 
+@@ -164,6 +202,14 @@ object GiftStudioCatalog {
+         return result
+     }
+ 
++    /** The model a gift comes with by default: the first one of its own order. */
++    @JvmStatic
++    fun requestDefaultModel(name: String, done: (String?) -> Unit) {
++        fetchCached("models/" + encode(name)) { bytes ->
++            done(parts(bytes).firstOrNull()?.name)
++        }
++    }
++
+     /** The .tgs of a model, kept on the device after the first download. */
+     @JvmStatic
+     fun modelTgs(gift: String, model: String, done: (ByteArray) -> Unit) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt
+index b5ceddd08..d12cd9049 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt
+@@ -124,6 +124,7 @@ class TeleGiftPreview(
+         modelBitmap = null
+         symbolDrawable = null
+         symbolBitmaps.clear()
++        if (regularGift) loadGiftPicture()
+         redraw()
+     }
+ 
+@@ -143,6 +144,78 @@ class TeleGiftPreview(
+         redraw()
+     }
+ 
++    /** Still pictures instead of the animation, for the many cards of the grid. */
++    var staticModel: Boolean = false
++
++    /** The margin between the card and the edge of the view, in dp. */
++    var paddingDp: Float = 16f
++
++    /** A regular gift has no backdrop and no pattern: its card is see-through. */
++    var regularGift: Boolean = false
++        set(value) {
++            if (field == value) return
++            field = value
++            if (value) loadGiftPicture() else giftPicture = null
++            redraw()
++        }
++
++    private var giftPicture: Bitmap? = null
++
++    /** The gift of the shop is drawn as its own sticker, as the card of the grid shows it. */
++    private fun loadGiftPicture() {
++        val name = giftName
++        giftPicture = null
++        if (name.isEmpty()) return
++        GiftStudioCatalog.giftPng(name, 256) { bitmap ->
++            if (bitmap != null && giftName == name && regularGift) {
++                giftPicture = bitmap
++                redraw()
++            }
++        }
++    }
++
++    /** The marks of the cell of the grid. */
++    var pinnedMark: Boolean = false
++        set(value) {
++            if (field == value) return
++            field = value
++            redraw()
++        }
++    var hiddenMark: Boolean = false
++        set(value) {
++            if (field == value) return
++            field = value
++            redraw()
++        }
++
++    /** The badge of the card: the number or the text of the gift, empty for no badge. */
++    var badgeText: String = ""
++        set(value) {
++            if (field == value) return
++            field = value
++            redraw()
++        }
++
++    /** The colors of the badge: the ribbon of the stock card. */
++    var badgeEdge: Int = 0
++        set(value) {
++            if (field == value) return
++            field = value
++            redraw()
++        }
++    var badgeTextColor: Int = 0
++        set(value) {
++            if (field == value) return
++            field = value
++            redraw()
++        }
++    var badgePattern: Int = 0
++        set(value) {
++            if (field == value) return
++            field = value
++            redraw()
++        }
++
+     /** The model of the gift: its .tgs is read from the catalog and played as an animation. */
+     fun setModel(part: GiftStudioCatalog.Part?) {
+         model = part
+@@ -152,7 +225,16 @@ class TeleGiftPreview(
+         frame = 0
+         redraw()
+         if (part != null && giftName.isNotEmpty()) {
+-            loadModel(part.name)
++            if (staticModel) {
++                GiftStudioCatalog.modelPng(giftName, part.name, 256) { bitmap ->
++                    if (bitmap != null && model?.name == part.name) {
++                        modelBitmap = bitmap
++                        redraw()
++                    }
++                }
++            } else {
++                loadModel(part.name)
++            }
+         }
+     }
+ 
+@@ -354,7 +436,7 @@ class TeleGiftPreview(
+         }
+     }
+ 
+-    private fun padding(): Int = AndroidUtilities.dp(16f)
++    private fun padding(): Int = AndroidUtilities.dp(paddingDp)
+ 
+     private fun scene(width: Float, height: Float): Scene {
+         return when (layout) {
+@@ -561,6 +643,36 @@ class TeleGiftPreview(
+             )
+         }
+         paint.alpha = 255
++        if (regularGift) {
++            // a regular gift card is the window itself, not the backdrop of a collectible
++            paint.shader = null
++            // the card of the catalogue of the gifts: a light grey plate, no veil
++            paint.color = 0x14808080
++            canvas.drawRoundRect(scene.background, scene.radius, scene.radius, paint)
++            paint.alpha = 255
++            canvas.restore()
++            val marks = scene
++            for (placed in marks.symbols) {
++                // no pattern on a regular gift
++            }
++            drawModel(canvas, scene)
++            canvas.save()
++            canvas.translate(scene.originX, scene.originY)
++            canvas.scale(scene.k, scene.k)
++            if (scene.clip != null) {
++                canvas.clipPath(
++                    Path().apply {
++                        addRoundRect(scene.clip, scene.radius, scene.radius, Path.Direction.CW)
++                    }
++                )
++            }
++            if (layout == Layout.Tile) {
++                drawBadge(canvas, scene)
++                drawMarks(canvas, scene)
++            }
++            canvas.restore()
++            return
++        }
+         paint.shader = RadialGradient(
+             scene.gradientX, scene.gradientY, scene.gradientRadius,
+             backdrop?.center ?: 0xFF6E7BD9.toInt(),
+@@ -572,6 +684,21 @@ class TeleGiftPreview(
+         canvas.restore()
+ 
+         // the symbols as tinted pictures, at the size of the canvas
++        val clipped = scene.clip != null
++        if (clipped) {
++            canvas.save()
++            val card = RectF(
++                scene.originX + scene.clip!!.left * scene.k,
++                scene.originY + scene.clip.top * scene.k,
++                scene.originX + scene.clip.right * scene.k,
++                scene.originY + scene.clip.bottom * scene.k
++            )
++            canvas.clipPath(
++                Path().apply {
++                    addRoundRect(card, scene.radius * scene.k, scene.radius * scene.k, Path.Direction.CW)
++                }
++            )
++        }
+         for (placed in scene.symbols) {
+             val px = Math.max(Math.round(placed.side * scene.k), 1)
+             val bitmap = symbolBitmap(px) ?: break
+@@ -585,6 +712,9 @@ class TeleGiftPreview(
+             )
+         }
+         symbolPaint.alpha = 255
++        if (clipped) {
++            canvas.restore()
++        }
+ 
+         // the model at the size of the canvas, so it is not blurred
+         drawModel(canvas, scene)
+@@ -603,6 +733,10 @@ class TeleGiftPreview(
+         when (layout) {
+             Layout.Cover -> drawCoverTexts(canvas, scene)
+             Layout.Card -> drawCardTexts(canvas, scene)
++            Layout.Tile -> {
++                drawBadge(canvas, scene)
++                drawMarks(canvas, scene)
++            }
+             else -> {}
+         }
+         canvas.restore()
+@@ -621,7 +755,8 @@ class TeleGiftPreview(
+             lottie.draw(canvas)
+             return
+         }
+-        val bitmap = modelBitmap ?: return
++        val bitmap = if (regularGift) giftPicture else modelBitmap
++        if (bitmap == null) return
+         canvas.drawBitmap(bitmap, null, RectF(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat()), paint)
+     }
+ 
+@@ -744,6 +879,86 @@ class TeleGiftPreview(
+         canvas.restore()
+     }
+ 
++    /** The marks of the grid cell: a pinned card and a gift hidden from the profile. */
++    private fun drawMarks(canvas: Canvas, scene: Scene) {
++        val card = scene.clip ?: return
++        if (hiddenMark) {
++            // the mark of the gift screen: the crossed eye on a dark circle, no veil over the card
++            paint.shader = null
++            paint.alpha = 255
++            val radius = card.width() * 0.13f
++            paint.color = 0xE6202832.toInt()
++            canvas.drawCircle(card.centerX(), card.centerY(), radius, paint)
++            val icon = hiddenDrawable ?: return
++            val size = (radius * 1.2f).toInt()
++            icon.setBounds(
++                (card.centerX() - size / 2f).toInt(), (card.centerY() - size / 2f).toInt(),
++                (card.centerX() + size / 2f).toInt(), (card.centerY() + size / 2f).toInt()
++            )
++            icon.draw(canvas)
++        }
++        if (pinnedMark) {
++            // the pin of the gift screen: the icon on a circle of the backdrop colour
++            val icon = pinnedDrawable ?: return
++            val size = (card.width() * 0.14f).toInt()
++            val pad = (card.width() * 0.04f).toInt()
++            val cx = card.left + pad + size / 2f
++            val cy = card.top + pad + size / 2f
++            val center = backdrop?.center ?: 0xFF6E7BD9.toInt()
++            paint.shader = null
++            paint.alpha = 255
++            paint.color = org.telegram.ui.ActionBar.Theme.adaptHSV(center or 0xFF000000.toInt(), 0.1f, -0.2f)
++            canvas.drawCircle(cx, cy, size * 0.62f, paint)
++            icon.setBounds(
++                (cx - size / 2f).toInt(), (cy - size / 2f).toInt(),
++                (cx + size / 2f).toInt(), (cy + size / 2f).toInt()
++            )
++            icon.draw(canvas)
++        }
++    }
++
++    private val pinnedDrawable: android.graphics.drawable.Drawable? by lazy {
++        androidx.core.content.ContextCompat.getDrawable(context, R.drawable.msg_limit_pin)?.mutate()
++    }
++    private val hiddenDrawable: android.graphics.drawable.Drawable? by lazy {
++        androidx.core.content.ContextCompat.getDrawable(context, R.drawable.mini_gift_hidden)?.mutate()
++    }
++
++    /** The badge of the desktop grid: the number or the text over the corner of the card. */
++    private fun drawBadge(canvas: Canvas, scene: Scene) {
++        val text = badgeText
++        if (text.isEmpty()) return
++        val card = scene.clip ?: return
++        val font = card.width() * 0.095f
++        ribbonTextPaint.textSize = font
++        ribbonTextPaint.color = badgeTextColor.takeIf { it != 0 } ?: Color.WHITE
++        val padding = font * 0.45f
++        val textWidth = ribbonTextPaint.measureText(text) + padding * 2f
++        val fontHeight = font * 1.2f
++        val skip = (textWidth / Math.sqrt(2.0)).toFloat()
++        val size = textWidth + fontHeight * 2f
++        val left = card.right - size
++        val top = card.top
++        val save = canvas.save()
++        canvas.clipPath(
++            Path().apply {
++                addRoundRect(card, scene.radius, scene.radius, Path.Direction.CW)
++            }
++        )
++        canvas.clipRect(left, top, left + size, top + size)
++        canvas.translate(left + size - skip, top)
++        canvas.rotate(45f)
++        val band = RectF(-textWidth * 5f, 0f, textWidth * 12f, fontHeight)
++        ribbonPaint.color = badgeEdge
++        canvas.drawRect(band, ribbonPaint)
++        if (badgePattern != 0) {
++            ribbonPaint.color = withAlpha(badgePattern, 0.5f)
++            canvas.drawRect(band, ribbonPaint)
++        }
++        canvas.drawText(text, padding, fontHeight * 0.78f, ribbonTextPaint)
++        canvas.restoreToCount(save)
++    }
++
+     private fun headline(): String {
+         val parts = ArrayList<String>()
+         if (title.isNotEmpty()) parts.add(title)
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftCatalogPicker.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftCatalogPicker.kt
+new file mode 100644
+index 000000000..03ff1e2ba
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftCatalogPicker.kt
+@@ -0,0 +1,164 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.drawable.GradientDrawable
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.GridLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.ui.ActionBar.BottomSheet
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.EditTextBoldCursor
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.helpers.GiftStudioCatalog
++
++/**
++ * The catalog of the gifts, as the sheet of a purchased gift shows it: the cards of the gifts in a
++ * grid, with the search line. Only the gift itself is chosen here; the rest of the editor sets the
++ * parts, as the desktop grid does.
++ */
++class TeleGiftCatalogPicker(
++    context: Context,
++    resourcesProvider: Theme.ResourcesProvider?,
++    private val onPick: (String) -> Unit
++) : BottomSheet(context, true, resourcesProvider) {
++
++    private val adapter = Adapter()
++    private val all = ArrayList<String>()
++
++    init {
++        fixNavigationBar()
++        val root = LinearLayout(context)
++        root.orientation = LinearLayout.VERTICAL
++
++        val handle = View(context)
++        handle.background = Theme.createRoundRectDrawable(
++            AndroidUtilities.dp(2f),
++            Theme.multAlpha(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4, resourcesProvider), 0.6f)
++        )
++        root.addView(handle, LayoutHelper.createLinear(36, 4, Gravity.CENTER_HORIZONTAL, 0, 8, 0, 0))
++
++        val title = TextView(context)
++        title.text = tele.helpers.TeleLowercase.lc("Choose a gift")
++        title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20f)
++        title.typeface = AndroidUtilities.bold()
++        title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        root.addView(title, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START, 20, 10, 20, 6))
++
++        val search = EditTextBoldCursor(context)
++        search.hint = org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Search)
++        search.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        search.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        search.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, resourcesProvider))
++        search.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        search.setBackground(null)
++        search.setSingleLine(true)
++        search.setPadding(AndroidUtilities.dp(20f), 0, AndroidUtilities.dp(20f), 0)
++        search.addTextChangedListener(object : android.text.TextWatcher {
++            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
++            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
++            override fun afterTextChanged(s: android.text.Editable?) {
++                val query = s?.toString()?.trim()?.lowercase().orEmpty()
++                adapter.submit(if (query.isEmpty()) all else all.filter { it.lowercase().contains(query) })
++            }
++        })
++        root.addView(search, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 44))
++
++        val list = RecyclerListView(context)
++        list.layoutManager = GridLayoutManager(context, 3)
++        list.adapter = adapter
++        list.setPadding(AndroidUtilities.dp(8f), AndroidUtilities.dp(4f), AndroidUtilities.dp(8f), AndroidUtilities.dp(8f))
++        list.setClipToPadding(false)
++        list.setOnItemClickListener(object : RecyclerListView.OnItemClickListener {
++            override fun onItemClick(view: View?, position: Int) {
++                val name = adapter.nameAt(position) ?: return
++                onPick(name)
++                dismiss()
++            }
++        })
++        root.addView(list, LinearLayout.LayoutParams(
++            LayoutHelper.MATCH_PARENT, (AndroidUtilities.displaySize.y * 0.62f).toInt()
++        ))
++
++        setCustomView(root)
++        GiftStudioCatalog.requestGiftNames { names ->
++            all.clear()
++            all.addAll(names)
++            adapter.submit(names)
++        }
++    }
++
++    private class Holder(view: View) : RecyclerView.ViewHolder(view)
++
++    private inner class Adapter : RecyclerView.Adapter<Holder>() {
++        private val rows = ArrayList<String>()
++
++        fun submit(names: List<String>) {
++            rows.clear()
++            rows.addAll(names)
++            notifyDataSetChanged()
++        }
++
++        fun nameAt(position: Int): String? = rows.getOrNull(position)
++
++        override fun getItemCount(): Int = rows.size
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
++            return Holder(Cell(context))
++        }
++
++        override fun onBindViewHolder(holder: Holder, position: Int) {
++            (holder.itemView as Cell).bind(rows[position])
++        }
++    }
++
++    /** One card of the catalog: the picture of the gift and its name, as the gift sheet has it. */
++    private class Cell(context: Context) : LinearLayout(context) {
++        private val picture = ImageView(context)
++        private val name = TextView(context)
++
++        init {
++            orientation = VERTICAL
++            gravity = Gravity.CENTER_HORIZONTAL
++            picture.scaleType = ImageView.ScaleType.FIT_CENTER
++            picture.setPadding(AndroidUtilities.dp(10f), AndroidUtilities.dp(10f), AndroidUtilities.dp(10f), AndroidUtilities.dp(10f))
++            addView(picture, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 0, 1f))
++            name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11f)
++            name.gravity = Gravity.CENTER
++            name.maxLines = 1
++            name.ellipsize = TextUtils.TruncateAt.END
++            name.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
++            addView(name, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            setPadding(AndroidUtilities.dp(4f), AndroidUtilities.dp(4f), AndroidUtilities.dp(4f), AndroidUtilities.dp(6f))
++        }
++
++        fun bind(gift: String) {
++            name.text = gift
++            picture.tag = gift
++            picture.setImageDrawable(null)
++            picture.background = GradientDrawable().apply {
++                cornerRadius = AndroidUtilities.dp(10f).toFloat()
++                setColor(0x14808080)
++            }
++            GiftStudioCatalog.giftPng(gift, 128) { bitmap ->
++                if (picture.tag == gift && bitmap != null) picture.setImageBitmap(bitmap)
++            }
++        }
++
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
++            val width = measuredWidth
++            picture.layoutParams.height = width - paddingLeft - paddingRight
++            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+index 3b37a8a85..a8204ab29 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+@@ -3,6 +3,8 @@ package tele.ui.settings
+ import android.content.Context
+ import android.view.View
+ import android.widget.FrameLayout
++import androidx.recyclerview.widget.ItemTouchHelper
++import androidx.recyclerview.widget.RecyclerView
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.R
+ import org.telegram.ui.ActionBar.ActionBar
+@@ -51,21 +53,6 @@ class TeleGiftGridActivity : BaseFragment() {
+         return super.onFragmentCreate()
+     }
+ 
+-    /** The gifts of a saved grid are found again from the catalog, so a restart keeps the cells. */
+-    private fun rebuildMissing() {
+-        if (rebuilding) return
+-        rebuilding = true
+-        val cells = layout.cells()
+-        var pending = false
+-        for (index in cells.indices) {
+-            val cell = cells[index]
+-            if (cell.empty || cell.gift != null || cell.title.isEmpty()) continue
+-            pending = true
+-            putGift(index, cell.title, save = false)
+-        }
+-        if (!pending) rebuilding = false
+-    }
+-
+     override fun createView(context: Context): View {
+         val frameLayout = FrameLayout(context)
+         frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+@@ -77,6 +64,7 @@ class TeleGiftGridActivity : BaseFragment() {
+         actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
+             override fun onItemClick(id: Int) {
+                 when (id) {
++                    -1 -> finishFragment()
+                     GiftGrid.ID_EXPORT_PNG -> TeleGiftGridExport.export(this@TeleGiftGridActivity, recycler ?: return, layout)
+                     GiftGrid.ID_ADD_ROW -> {
+                         if (layout.addRow()) {
+@@ -84,12 +72,14 @@ class TeleGiftGridActivity : BaseFragment() {
+                             recycler?.adapter?.update(true)
+                         }
+                     }
++                    GiftGrid.ID_REMOVE_ROW -> removeRow(layout.rowCount() - 1)
+                 }
+             }
+         })
+ 
+         val menu = actionBar.createMenu()
+         menu.addItem(GiftGrid.ID_ADD_ROW, R.drawable.filled_add_album).setText(lc("Add row"))
++        menu.addItem(GiftGrid.ID_REMOVE_ROW, R.drawable.msg_delete).setText(lc("Remove row"))
+         menu.addItem(GiftGrid.ID_EXPORT_PNG, R.drawable.filled_share).setText(lc("Save picture"))
+ 
+         val recycler = UniversalRecyclerView(
+@@ -105,7 +95,57 @@ class TeleGiftGridActivity : BaseFragment() {
+             1
+         )
+         this.recycler = recycler
+-        rebuildMissing()
++        val touchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
++            override fun getMovementFlags(
++                recyclerView: RecyclerView,
++                viewHolder: RecyclerView.ViewHolder
++            ): Int = makeMovementFlags(
++                ItemTouchHelper.UP or
++                    ItemTouchHelper.DOWN or
++                    ItemTouchHelper.LEFT or
++                    ItemTouchHelper.RIGHT,
++                0
++            )
++
++            override fun onMove(
++                recyclerView: RecyclerView,
++                viewHolder: RecyclerView.ViewHolder,
++                target: RecyclerView.ViewHolder
++            ): Boolean {
++                val from = viewHolder.adapterPosition
++                val to = target.adapterPosition
++                if (from < 0 || to < 0 || !layout.moveCell(from, to)) return false
++                recycler?.adapter?.notifyItemMoved(from, to)
++                return true
++            }
++
++            override fun onSwiped(
++                viewHolder: RecyclerView.ViewHolder,
++                direction: Int
++            ) = Unit
++
++            override fun isLongPressDragEnabled(): Boolean = true
++
++            override fun onSelectedChanged(
++                viewHolder: RecyclerView.ViewHolder?,
++                actionState: Int
++            ) {
++                super.onSelectedChanged(viewHolder, actionState)
++                // no shadow behind the card that is being dragged
++                viewHolder?.itemView?.translationZ = 0f
++            }
++
++            override fun clearView(
++                recyclerView: RecyclerView,
++                viewHolder: RecyclerView.ViewHolder
++            ) {
++                super.clearView(recyclerView, viewHolder)
++                // the list is rebuilt from the model, so a tap edits the cell it shows
++                GiftGrid.save(currentAccount, layout)
++                recycler?.adapter?.update(true)
++            }
++        })
++        touchHelper.attachToRecyclerView(recycler)
+         recycler.setSelectorType(9)
+         recycler.setSelectorDrawableColor(0)
+         recycler.setClipToPadding(false)
+@@ -117,7 +157,7 @@ class TeleGiftGridActivity : BaseFragment() {
+         return fragmentView
+     }
+ 
+-    /** A tap on a cell: an empty one takes a gift, a full one can be moved, replaced or cleared. */
++    /** A tap on a cell edits it, as the desktop grid opens its editor on a click. */
+     private fun onItemClick(item: UItem, view: View?, position: Int) {
+         val cell = item.`object` as? GiftGrid.Cell ?: return
+         if (movingIndex >= 0) {
+@@ -130,23 +170,42 @@ class TeleGiftGridActivity : BaseFragment() {
+             }
+             return
+         }
+-        if (cell.empty) {
+-            pickGift(position)
+-            return
+-        }
+-        val scrim = view ?: return
+-        val options = ItemOptions.makeOptions(this, scrim)
+-        options.add(R.drawable.msg_forward, lc("Move"), Runnable {
+-            movingIndex = position
+-            BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("Tap a cell to place the gift")).show()
+-        })
+-        options.add(R.drawable.msg_edit, lc("Replace"), Runnable { pickGift(position) })
+-        options.add(R.drawable.msg_delete, lc("Remove from the grid"), Runnable {
+-            layout.removeCell(position)
++        TeleGiftGridCellDialog(
++            parentActivity ?: return, currentAccount, resourceProvider, cell,
++            onDone = { edited ->
++                layout.setCell(position, edited)
++                GiftGrid.save(currentAccount, layout)
++                // the next free cell starts from the same collection
++                GiftGrid.setLastCollection(currentAccount, edited.title)
++                recycler?.adapter?.update(true)
++            },
++            onRemove = {
++                layout.removeCell(position)
++                GiftGrid.save(currentAccount, layout)
++                recycler?.adapter?.update(true)
++            }
++        ).show()
++    }
++
++    /** The same cell with the hidden mark switched: the editor edits the whole cell, this flips one field. */
++    private fun copyHidden(cell: GiftGrid.Cell, hidden: Boolean): GiftGrid.Cell {
++        return GiftGrid.Cell(
++            kind = cell.kind, giftId = cell.giftId, title = cell.title, number = cell.number,
++            slug = cell.slug, centerColor = cell.centerColor, edgeColor = cell.edgeColor,
++            patternColor = cell.patternColor, stars = cell.stars, limited = cell.limited,
++            soldOut = cell.soldOut, upgradable = cell.upgradable, modelName = cell.modelName,
++            backdropName = cell.backdropName, symbolName = cell.symbolName, ribbon = cell.ribbon,
++            ribbonText = cell.ribbonText, pinned = cell.pinned, price = cell.price, hidden = hidden
++        ).also { it.gift = cell.gift }
++    }
++
++    /** Removes a row of the grid; the last row never goes away. */
++    private fun removeRow(index: Int) {
++        if (layout.rowCount() <= 1) return
++        if (layout.removeRow(index)) {
+             GiftGrid.save(currentAccount, layout)
+             recycler?.adapter?.update(true)
+-        })
+-        options.show()
++        }
+     }
+ 
+     /** The gifts of the catalog as the cells of the grid: the same list the studio offers. */
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt
+new file mode 100644
+index 000000000..489c4d64e
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellDialog.kt
+@@ -0,0 +1,640 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.text.InputType
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BottomSheet
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.TextCheckCell
++import org.telegram.ui.Cells.TextSettingsCell
++import org.telegram.ui.Components.EditTextBoldCursor
++import org.telegram.ui.Components.LayoutHelper
++import tele.helpers.GiftGrid
++import tele.helpers.GiftGrid.Cell
++import tele.helpers.GiftGrid.Kind
++import tele.helpers.GiftGrid.Ribbon
++import tele.helpers.GiftStudio
++import tele.helpers.GiftStudioCatalog
++import tele.ui.TeleGiftPreview
++import tele.ui.TeleStudioPartsList
++
++/**
++ * The editor of a cell of the gift grid (desktop 0204, EditCellBox): a preview, the collectible
++ * section with the collection and its parts, the number and the ribbon, and the regular section
++ * with the gift, its ribbon and the price.
++ */
++class TeleGiftGridCellDialog(
++    private val context: Context,
++    private val account: Int,
++    private val resourcesProvider: Theme.ResourcesProvider?,
++    private val original: Cell,
++    private val onDone: (Cell) -> Unit,
++    private val onRemove: (() -> Unit)? = null
++) : BottomSheet(context, true, resourcesProvider) {
++
++    private var kind: Kind = if (original.kind == Kind.EMPTY) Kind.UNIQUE else original.kind
++    private var title: String = original.title
++    private var giftId: Long = original.giftId
++    private var modelName: String = original.modelName
++    private var backdropName: String = original.backdropName
++    private var symbolName: String = original.symbolName
++    private var centerColor: Int = original.centerColor
++    private var edgeColor: Int = original.edgeColor
++    private var patternColor: Int = original.patternColor
++    private var number: Int = original.number
++    private var ribbon: Ribbon = original.ribbon
++    private var ribbonText: String = original.ribbonText
++    private var ribbonColor: Int = original.ribbonColor
++    private var pinned: Boolean = original.pinned
++    private var price: Boolean = original.price
++    private var hidden: Boolean = original.hidden
++
++    private val preview = TeleGiftPreview(context, account, resourcesProvider).apply {
++        staticModel = true
++        setPlaying(false)
++        setLayout(TeleGiftPreview.Layout.Tile)
++    }
++    private val partsList by lazy { TeleStudioPartsList(context) }
++
++    private var collectionRow: TextSettingsCell? = null
++    private var modelRow: TextSettingsCell? = null
++    private var backdropRow: TextSettingsCell? = null
++    private var symbolRow: TextSettingsCell? = null
++    private var numberRow: TextSettingsCell? = null
++    private var ribbonRow: TextSettingsCell? = null
++    private var ribbonColorRow: TextSettingsCell? = null
++    private var regularColorRow: TextSettingsCell? = null
++    private var pinnedRow: TextCheckCell? = null
++    private var giftRow: TextSettingsCell? = null
++    private var priceRow: TextCheckCell? = null
++    private var regularRibbonRow: TextSettingsCell? = null
++    private var hiddenRow: TextCheckCell? = null
++    private class Snapshot(
++        val title: String, val giftId: Long, val modelName: String, val backdropName: String,
++        val symbolName: String, val centerColor: Int, val edgeColor: Int, val patternColor: Int,
++        val number: Int, val ribbon: Ribbon, val ribbonText: String, val ribbonColor: Int
++    )
++
++    private var uniqueSnapshot: Snapshot? = null
++    private var regularSnapshot: Snapshot? = null
++
++    private fun snapshot() = Snapshot(
++        title, giftId, modelName, backdropName, symbolName,
++        centerColor, edgeColor, patternColor, number, ribbon, ribbonText, ribbonColor
++    )
++
++    private fun restore(value: Snapshot) {
++        title = value.title
++        giftId = value.giftId
++        modelName = value.modelName
++        backdropName = value.backdropName
++        symbolName = value.symbolName
++        centerColor = value.centerColor
++        edgeColor = value.edgeColor
++        patternColor = value.patternColor
++        number = value.number
++        ribbon = value.ribbon
++        ribbonText = value.ribbonText
++        ribbonColor = value.ribbonColor
++    }
++
++    private fun clearDraft() {
++        title = ""
++        giftId = 0
++        modelName = ""
++        backdropName = ""
++        symbolName = ""
++        centerColor = 0
++        edgeColor = 0
++        patternColor = 0
++        number = 0
++        ribbon = Ribbon.AUTO
++        ribbonText = ""
++        ribbonColor = 0
++    }
++
++    private var uniqueBlock: LinearLayout? = null
++    private var regularBlock: LinearLayout? = null
++    private var uniqueTab: TextView? = null
++    private var regularTab: TextView? = null
++
++    init {
++        currentAccount = account
++        fixNavigationBar()
++        val root = LinearLayout(context)
++        root.orientation = LinearLayout.VERTICAL
++
++        // the handle of the modal, as the picker of files has it
++        val handle = View(context)
++        handle.background = Theme.createRoundRectDrawable(
++            AndroidUtilities.dp(2f),
++            Theme.multAlpha(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4, resourcesProvider), 0.6f)
++        )
++        root.addView(handle, LayoutHelper.createLinear(36, 4, Gravity.CENTER_HORIZONTAL, 0, 8, 0, 0))
++
++        // the title of the modal, as the title of the app bar
++        val titleView = TextView(context)
++        titleView.text = lc("Edit gift")
++        titleView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20f)
++        titleView.typeface = AndroidUtilities.bold()
++        titleView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        root.addView(titleView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START, 20, 10, 20, 6))
++
++        val previewHolder = FrameLayout(context)
++        val size = AndroidUtilities.dp(200f)
++        preview.view().layoutParams = FrameLayout.LayoutParams(size, size, Gravity.CENTER)
++        previewHolder.addView(preview.view())
++        root.addView(previewHolder, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, size + AndroidUtilities.dp(12f)))
++
++        val tabs = LinearLayout(context)
++        tabs.orientation = LinearLayout.HORIZONTAL
++        tabs.setPadding(AndroidUtilities.dp(12f), 0, AndroidUtilities.dp(12f), AndroidUtilities.dp(6f))
++        val uniqueTab = tab(context, "Collectible") { setKind(Kind.UNIQUE) }
++        val regularTab = tab(context, "Gift") { setKind(Kind.REGULAR) }
++        tabs.addView(uniqueTab, LayoutHelper.createLinear(0, 36, 1f, Gravity.CENTER_VERTICAL, 0, 0, 4, 0))
++        tabs.addView(regularTab, LayoutHelper.createLinear(0, 36, 1f, Gravity.CENTER_VERTICAL, 4, 0, 0, 0))
++        root.addView(tabs, LinearLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        this.uniqueTab = uniqueTab
++        this.regularTab = regularTab
++
++        val content = LinearLayout(context)
++        content.orientation = LinearLayout.VERTICAL
++
++        val unique = LinearLayout(context)
++        unique.orientation = LinearLayout.VERTICAL
++        uniqueBlock = unique
++        collectionRow = row(unique, "Collection") { pickCollection() }
++        modelRow = row(unique, "Model") { pickModel() }
++        backdropRow = row(unique, "Backdrop") { pickBackdrop() }
++        symbolRow = row(unique, "Symbol") { pickSymbol() }
++        numberRow = row(unique, "Number") { editNumber() }
++        ribbonRow = row(unique, "Ribbon") { chooseRibbon(unique = true) }
++        ribbonColorRow = row(unique, "Ribbon colour") { pickRibbonColor() }
++        pinnedRow = check(unique, "Pinned", pinned) { pinned = it; refresh() }
++        content.addView(unique, LinearLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        val regular = LinearLayout(context)
++        regular.orientation = LinearLayout.VERTICAL
++        regularBlock = regular
++        giftRow = row(regular, "Choose a gift") { pickGiftFromCatalog() }
++        priceRow = check(regular, "Show the price", price) { price = it; refresh() }
++        regularRibbonRow = row(regular, "Ribbon") { chooseRibbon(unique = false) }
++        regularColorRow = row(regular, "Ribbon colour") { pickRibbonColor() }
++        content.addView(regular, LinearLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        hiddenRow = check(content, "Hidden from the profile", hidden) { hidden = it; refresh() }
++
++
++        val done = TextView(context)
++        done.text = LocaleController.getString(R.string.Done)
++        done.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        done.typeface = AndroidUtilities.bold()
++        done.gravity = Gravity.CENTER
++        done.setTextColor(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider))
++        done.background = Theme.createSimpleSelectorRoundRectDrawable(
++            AndroidUtilities.dp(8f),
++            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .12f),
++            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .24f)
++        )
++        done.setOnClickListener {
++            onDone(result())
++            dismiss()
++        }
++        if (!original.empty && onRemove != null) {
++            val remove = TextView(context)
++            remove.text = lc("Remove from the grid")
++            remove.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++            remove.gravity = Gravity.CENTER
++            remove.setTextColor(Theme.getColor(Theme.key_text_RedBold, resourcesProvider))
++            remove.setPadding(0, AndroidUtilities.dp(12f), 0, AndroidUtilities.dp(12f))
++            remove.setOnClickListener {
++                onRemove.invoke()
++                dismiss()
++            }
++            content.addView(remove, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        }
++        content.addView(done, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER, 16, 12, 16, 12))
++        root.addView(content, LinearLayout.LayoutParams(
++            LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT
++        ))
++
++        // the content scrolls both ways: a swipe must not be taken as the dismissal of the sheet
++        setCanDismissWithSwipe(false)
++        // the editor is taller than the screen, so its list is measured up to a limit and scrolls
++        val maxHeight = (AndroidUtilities.displaySize.y * 0.78f).toInt()
++        setCustomView(BoundedScrollView(context, maxHeight).also { scroll ->
++            scroll.addView(root, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        })
++        setKind(kind)
++        refresh()
++        if (original.empty) startFromLastCollection()
++    }
++
++    /** A free cell opens with the last collection, a random gift of it and the number one. */
++    private fun startFromLastCollection() {
++        val lastName = GiftGrid.lastCollection(account)
++        GiftStudioCatalog.requestGiftNames { names ->
++            val name = when {
++                lastName.isNotEmpty() && names.contains(lastName) -> lastName
++                else -> names.firstOrNull() ?: return@requestGiftNames
++            }
++            GiftStudioCatalog.requestGift(name) { meta ->
++                if (meta == null) return@requestGift
++                title = name
++                giftId = meta.id
++                modelName = meta.models.randomOrNull()?.name ?: ""
++                backdropName = meta.backdrops.randomOrNull()?.name ?: ""
++                symbolName = meta.symbols.randomOrNull()?.name ?: ""
++                val backdrop = meta.backdrops.firstOrNull { it.name == backdropName }
++                centerColor = backdrop?.center ?: 0
++                edgeColor = backdrop?.edge ?: 0
++                patternColor = backdrop?.pattern ?: 0
++                if (number == 0) number = 1
++                refresh()
++            }
++        }
++    }
++
++    private fun result(): Cell {
++        return Cell(
++            kind = kind,
++            giftId = giftId,
++            title = title,
++            number = number,
++            centerColor = centerColor,
++            edgeColor = edgeColor,
++            patternColor = patternColor,
++            stars = original.stars,
++            limited = original.limited,
++            soldOut = original.soldOut,
++            upgradable = original.upgradable,
++            modelName = modelName,
++            backdropName = backdropName,
++            symbolName = symbolName,
++            ribbon = ribbon,
++            ribbonText = ribbonText,
++            ribbonColor = ribbonColor,
++            // a regular gift has no pin: the mark belongs to the collectibles only
++            pinned = pinned && kind != Kind.REGULAR,
++            price = price,
++            hidden = hidden
++        )
++    }
++
++    private fun setKind(value: Kind) {
++        if (kind != value) {
++            if (kind == Kind.UNIQUE) uniqueSnapshot = snapshot() else regularSnapshot = snapshot()
++            val saved = if (value == Kind.UNIQUE) uniqueSnapshot else regularSnapshot
++            if (saved != null) restore(saved) else clearDraft()
++        }
++        kind = value
++        val unique = value != Kind.REGULAR
++        uniqueBlock?.visibility = if (unique) View.VISIBLE else View.GONE
++        regularBlock?.visibility = if (unique) View.GONE else View.VISIBLE
++        val blue = Theme.getColor(Theme.key_windowBackgroundWhiteBlueText, resourcesProvider)
++        val gray = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4, resourcesProvider)
++        val selected = Theme.multAlpha(blue, 0.12f)
++        uniqueTab?.apply {
++            setTextColor(if (unique) blue else gray)
++            background = if (unique) Theme.createRoundRectDrawable(AndroidUtilities.dp(8f), selected) else null
++        }
++        regularTab?.apply {
++            setTextColor(if (unique) gray else blue)
++            background = if (!unique) Theme.createRoundRectDrawable(AndroidUtilities.dp(8f), selected) else null
++        }
++        refresh()
++        if (value == Kind.UNIQUE && title.isEmpty() && original.empty) startFromLastCollection()
++    }
++
++    private fun tab(context: Context, text: String, action: () -> Unit): TextView {
++        val view = TextView(context)
++        view.text = text
++        view.gravity = Gravity.CENTER
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        view.typeface = AndroidUtilities.bold()
++        view.setOnClickListener { action() }
++        return view
++    }
++
++    private fun row(parent: LinearLayout, title: String, action: () -> Unit): TextSettingsCell {
++        val cell = TextSettingsCell(context)
++        cell.setText(lc(title), false)
++        cell.setOnClickListener { action() }
++        parent.addView(cell, LinearLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        return cell
++    }
++
++    private fun check(parent: LinearLayout, title: String, checked: Boolean, onChange: (Boolean) -> Unit): TextCheckCell {
++        val cell = TextCheckCell(context)
++        cell.setTextAndCheck(lc(title), checked, false)
++        cell.setOnClickListener {
++            cell.isChecked = !cell.isChecked
++            onChange(cell.isChecked)
++        }
++        parent.addView(cell, LinearLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        return cell
++    }
++
++    /** The rows and the preview follow the draft. */
++    private fun refresh() {
++        preview.setGift(title)
++        if (centerColor != 0) {
++            preview.setBackdrop(
++                GiftStudioCatalog.Backdrop(
++                    backdropName, 0,
++                    centerColor or 0xFF000000.toInt(),
++                    edgeColor or 0xFF000000.toInt(),
++                    patternColor or 0xFF000000.toInt(),
++                    0xFFFFFFFF.toInt()
++                )
++            )
++        } else {
++            preview.setBackdrop(null)
++        }
++        preview.setSymbol(if (symbolName.isEmpty()) null else GiftStudioCatalog.Part(symbolName, 0))
++        preview.setModel(if (modelName.isEmpty()) null else GiftStudioCatalog.Part(modelName, 0))
++        collectionRow?.setTextAndValue(lc("Collection"), title, false)
++        modelRow?.setTextAndValue(lc("Model"), modelName, false)
++        backdropRow?.setTextAndValue(lc("Backdrop"), backdropName, false)
++        symbolRow?.setTextAndValue(lc("Symbol"), symbolName, false)
++        numberRow?.setTextAndValue(lc("Number"), number.toString(), false)
++        ribbonRow?.setTextAndValue(lc("Ribbon"), ribbonName(ribbon), false)
++        val shownNumber = if (kind == Kind.UNIQUE) number else 0
++        preview.badgeText = GiftGrid.ribbonText(ribbon, ribbonText, shownNumber, original.limited, original.soldOut)
++        val unique = kind == Kind.UNIQUE
++        var effective = ribbon
++        if (effective == Ribbon.AUTO && !unique) {
++            effective = when {
++                original.soldOut -> Ribbon.SOLD_OUT
++                original.limited -> Ribbon.LIMITED
++                else -> Ribbon.NONE
++            }
++        }
++        val accent = GiftGrid.RIBBON_LIMITED
++        val warning = GiftGrid.RIBBON_SOLD_OUT
++        val onAccent = Theme.getColor(Theme.key_windowBackgroundWhite, resourcesProvider)
++        when {
++            ribbonColor != 0 -> {
++                preview.badgeEdge = ribbonColor
++                preview.badgePattern = 0
++                preview.badgeTextColor = 0xFFFFFFFF.toInt()
++            }
++            unique && effective != Ribbon.LIMITED && effective != Ribbon.SOLD_OUT -> {
++                preview.badgeEdge = edgeColor or 0xFF000000.toInt()
++                preview.badgePattern = patternColor or 0xFF000000.toInt()
++                preview.badgeTextColor = 0xFFFFFFFF.toInt()
++            }
++            effective == Ribbon.SOLD_OUT -> {
++                preview.badgeEdge = warning
++                preview.badgePattern = 0
++                preview.badgeTextColor = onAccent
++            }
++            else -> {
++                preview.badgeEdge = accent
++                preview.badgePattern = 0
++                preview.badgeTextColor = onAccent
++            }
++        }
++        preview.regularGift = kind == Kind.REGULAR
++        preview.pinnedMark = pinned
++        preview.hiddenMark = hidden
++        giftRow?.setTextAndValue(lc("Choose a gift"), title.ifEmpty { lc("nothing chosen") }, false)
++        regularRibbonRow?.setTextAndValue(lc("Ribbon"), ribbonName(ribbon), false)
++        val colorText = if (ribbonColor == 0) lc("default") else String.format("#%06X", 0xFFFFFF and ribbonColor)
++        ribbonColorRow?.setTextAndValue(lc("Ribbon colour"), colorText, false)
++        regularColorRow?.setTextAndValue(lc("Ribbon colour"), colorText, false)
++    }
++
++    private fun ribbonName(value: Ribbon): String = when (value) {
++        Ribbon.NONE -> lc("none")
++        Ribbon.CUSTOM -> ribbonText.ifEmpty { lc("custom text") }
++        Ribbon.LIMITED -> lc("limited")
++        Ribbon.SOLD_OUT -> lc("sold out")
++        Ribbon.AUTO -> if (number > 0) "#$number" else lc("number")
++    }
++
++    /** The catalogue of the gifts, as the sheet of a purchased gift opens it. */
++    private fun pickGiftFromCatalog() {
++        TeleGiftCatalogPicker(context, resourcesProvider) { name ->
++            applyCollection(name)
++        }.show()
++    }
++
++    private fun applyCollection(name: String) {
++        title = name
++        modelName = ""
++        refresh()
++        GiftStudioCatalog.requestGift(name) { meta ->
++            if (meta == null) return@requestGift
++            giftId = meta.id
++            // the gift comes with the model of its own card, not a random one
++            GiftStudioCatalog.requestDefaultModel(name) { default ->
++                modelName = default ?: meta.models.firstOrNull()?.name ?: modelName
++                refresh()
++            }
++            if (backdropName.isEmpty() || centerColor == 0) {
++                val backdrop = meta.backdrops.firstOrNull()
++                backdropName = backdrop?.name ?: ""
++                centerColor = backdrop?.center ?: 0
++                edgeColor = backdrop?.edge ?: 0
++                patternColor = backdrop?.pattern ?: 0
++            }
++            if (symbolName.isEmpty()) {
++                symbolName = meta.symbols.firstOrNull()?.name ?: ""
++            }
++            refresh()
++        }
++    }
++
++    private fun pickCollection() {
++        GiftStudioCatalog.requestGiftNames { names ->
++            val rows = names.map { TeleStudioPartsList.Row(it, lc("catalog"), gift = it) }
++            val dialog = partsList.create(lc("Collection"), rows) { row ->
++                // the name is shown at once, the parts come from the catalog a moment later
++                title = row.name
++                refresh()
++                GiftStudioCatalog.requestGift(row.name) { meta ->
++                    if (meta == null) return@requestGift
++                    giftId = meta.id
++                    // the backdrop and the symbol stay as they were: the model belongs to the gift
++                    modelName = meta.models.firstOrNull()?.name ?: modelName
++                    if (backdropName.isEmpty() || centerColor == 0) {
++                        val backdrop = meta.backdrops.firstOrNull()
++                        backdropName = backdrop?.name ?: ""
++                        centerColor = backdrop?.center ?: 0
++                        edgeColor = backdrop?.edge ?: 0
++                        patternColor = backdrop?.pattern ?: 0
++                    }
++                    if (symbolName.isEmpty()) {
++                        symbolName = meta.symbols.firstOrNull()?.name ?: ""
++                    }
++                    refresh()
++                }
++            }
++            // the picker is its own window, so it stays above the sheet
++            dialog.show()
++        }
++    }
++
++    private fun pickModel() {
++        GiftStudioCatalog.requestGift(title) { meta ->
++            val rows = meta?.models.orEmpty().map {
++                TeleStudioPartsList.Row(it.name, title, GiftStudio.rarityText(it.permille), owner = title, model = it.name)
++            }
++            if (rows.isEmpty()) return@requestGift
++            partsList.create(lc("Model"), rows) { row ->
++                modelName = row.name
++                refresh()
++            }.also { it.show() }
++        }
++    }
++
++    private fun pickBackdrop() {
++        GiftStudioCatalog.requestGift(title) { meta ->
++            val rows = meta?.backdrops.orEmpty().map {
++                TeleStudioPartsList.Row(it.name, title, GiftStudio.rarityText(it.permille), backdrop = it)
++            }
++            if (rows.isEmpty()) return@requestGift
++            partsList.create(lc("Backdrop"), rows) { row ->
++                val found = meta?.backdrops?.firstOrNull { it.name == row.name }
++                backdropName = row.name
++                centerColor = found?.center ?: centerColor
++                edgeColor = found?.edge ?: edgeColor
++                patternColor = found?.pattern ?: patternColor
++                refresh()
++            }.also { it.show() }
++        }
++    }
++
++    private fun pickSymbol() {
++        GiftStudioCatalog.requestGift(title) { meta ->
++            val rows = meta?.symbols.orEmpty().map {
++                TeleStudioPartsList.Row(it.name, title, GiftStudio.rarityText(it.permille), owner = title, symbol = it.name)
++            }
++            if (rows.isEmpty()) return@requestGift
++            partsList.create(lc("Symbol"), rows) { row ->
++                symbolName = row.name
++                refresh()
++            }.also { it.show() }
++        }
++    }
++
++    private fun editNumber() {
++        val input = EditTextBoldCursor(context)
++        input.setText(number.toString())
++        input.setSelection(input.text.length)
++        input.inputType = InputType.TYPE_CLASS_NUMBER
++        input.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18f)
++        input.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        input.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        input.setBackground(null)
++        input.setPadding(AndroidUtilities.dp(23f), 0, AndroidUtilities.dp(23f), 0)
++        val frame = FrameLayout(context)
++        frame.addView(input, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48f))
++        AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(lc("Number"))
++            .setView(frame)
++            .setPositiveButton(LocaleController.getString(R.string.Done)) { _, _ ->
++                number = input.text.toString().toIntOrNull() ?: 0
++                refresh()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun chooseRibbon(unique: Boolean) {
++        val values = if (unique) {
++            arrayOf(Ribbon.AUTO, Ribbon.NONE, Ribbon.CUSTOM)
++        } else {
++            arrayOf(Ribbon.NONE, Ribbon.LIMITED, Ribbon.SOLD_OUT, Ribbon.CUSTOM)
++        }
++        val labels = if (unique) {
++            arrayOf(lc("number"), lc("none"), lc("custom text"))
++        } else {
++            arrayOf(lc("none"), lc("limited"), lc("sold out"), lc("custom text"))
++        }
++        AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(lc("Ribbon"))
++            .setItems(labels) { _, which ->
++                ribbon = values[which]
++                if (ribbon == Ribbon.CUSTOM) editRibbonText() else refresh()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    /** The colour of the ribbon: the stock picker of the app, as the desktop swatch opens it. */
++    private fun pickRibbonColor() {
++        val sheet = BottomSheet(context, true, resourcesProvider)
++        sheet.fixNavigationBar()
++        val root = LinearLayout(context)
++        root.orientation = LinearLayout.VERTICAL
++        val picker = org.telegram.ui.Components.ColorPicker(context, false) { color, _, _ ->
++            ribbonColor = color
++            refresh()
++        }
++        root.addView(picker, LinearLayout.LayoutParams(
++            LayoutHelper.MATCH_PARENT, (AndroidUtilities.displaySize.y * 0.45f).toInt()
++        ))
++        val reset = TextView(context)
++        reset.text = lc("Default colour")
++        reset.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        reset.gravity = Gravity.CENTER
++        reset.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText, resourcesProvider))
++        reset.setPadding(0, AndroidUtilities.dp(12f), 0, AndroidUtilities.dp(12f))
++        reset.setOnClickListener {
++            ribbonColor = 0
++            refresh()
++            sheet.dismiss()
++        }
++        root.addView(reset, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        sheet.setCustomView(root)
++        sheet.show()
++    }
++
++    private fun editRibbonText() {
++        val input = EditTextBoldCursor(context)
++        input.setText(ribbonText)
++        input.setSelection(input.text.length)
++        input.inputType = InputType.TYPE_CLASS_TEXT
++        input.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18f)
++        input.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        input.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        input.setBackground(null)
++        input.setPadding(AndroidUtilities.dp(23f), 0, AndroidUtilities.dp(23f), 0)
++        val frame = FrameLayout(context)
++        frame.addView(input, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48f))
++        AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(lc("Ribbon text"))
++            .setView(frame)
++            .setPositiveButton(LocaleController.getString(R.string.Done)) { _, _ ->
++                ribbonText = input.text.toString().trim()
++                if (ribbonText.isEmpty()) ribbon = Ribbon.AUTO
++                refresh()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .show()
++    }
++
++    private fun lc(text: String): String = tele.helpers.TeleLowercase.lc(text)
++
++    /** A scroll view that never grows past the height of the screen, so its content scrolls. */
++    private class BoundedScrollView(context: Context, private val maxHeight: Int) : ScrollView(context) {
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            super.onMeasure(
++                widthMeasureSpec,
++                MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST)
++            )
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
+index c22d53414..9aeeef420 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
+@@ -4,6 +4,7 @@ import android.content.Context
+ import android.graphics.Canvas
+ import android.graphics.DashPathEffect
+ import android.graphics.Paint
++import android.graphics.Path
+ import android.graphics.RectF
+ import android.view.View
+ import android.widget.FrameLayout
+@@ -14,21 +15,30 @@ import org.telegram.ui.Components.RecyclerListView
+ import org.telegram.ui.Components.UItem
+ import org.telegram.ui.Components.UniversalAdapter
+ import org.telegram.ui.Components.UniversalRecyclerView
+-import org.telegram.ui.Gifts.GiftSheet
+ import tele.helpers.GiftGrid
+ import tele.helpers.GiftGrid.Cell
++import tele.helpers.GiftStudioCatalog
++import tele.ui.TeleGiftPreview
+ 
+ /**
+- * The view that shows one cell of the grid: the card of a gift, or the dotted place of a gift that
+- * is not there yet, as the desktop grid draws it.
++ * One cell of the grid: the tile of the studio for a gift, or the dotted place of a gift that is
++ * not there yet, as the desktop grid draws it.
+  */
+ class GiftGridCellView(
+     context: Context,
+-    currentAccount: Int,
+-    resourcesProvider: Theme.ResourcesProvider?
++    private val currentAccount: Int,
++    private val resourcesProvider: Theme.ResourcesProvider?
+ ) : FrameLayout(context) {
+ 
+-    private val giftCell = GiftSheet.GiftCell(context, currentAccount, resourcesProvider)
++    private val preview = TeleGiftPreview(context, currentAccount, resourcesProvider).apply {
++        staticModel = true
++        setPlaying(false)
++        // the card of the grid is the tile of the studio: no texts, the same pattern
++        setLayout(TeleGiftPreview.Layout.Tile)
++        // a small gap between the cards, as the grid of the profile has
++        paddingDp = 3f
++    }
++
+     private val dotted = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+         style = Paint.Style.STROKE
+         strokeWidth = AndroidUtilities.dp(1.5f).toFloat()
+@@ -43,41 +53,80 @@ class GiftGridCellView(
+         color = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4, resourcesProvider)
+         alpha = 170
+     }
++    private val ribbonPaint = Paint(Paint.ANTI_ALIAS_FLAG)
++    private val ribbonText = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
++        typeface = android.graphics.Typeface.DEFAULT_BOLD
++    }
++    private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
++    private val pricePaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
++        typeface = android.graphics.Typeface.DEFAULT_BOLD
++    }
+     private val rect = RectF()
+     private var empty = true
++    private var cell: Cell? = null
++    private var boundKey = ""
+ 
+     init {
+-        addView(giftCell, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+-        giftCell.visibility = View.GONE
++        addView(preview.view(), LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+         // the list handles the taps: a clickable child would eat them
+         isClickable = false
+         isFocusable = false
+         setWillNotDraw(false)
+     }
+ 
+-    /** The card of the cell, so the export can draw it. */
+-    fun card(): GiftSheet.GiftCell = giftCell
+-
++    /** The picture of the cell, as it is drawn on the screen and in the export. */
+     fun bind(cell: Cell) {
+-        // a gift that is not loaded yet is drawn as a free cell, not as a broken card
+-        empty = cell.empty || cell.gift == null
+-        giftCell.visibility = if (empty) View.GONE else View.VISIBLE
+-        val gift = cell.gift
+-        if (gift != null) {
+-            giftCell.setStarsGift(gift, cell.unique, false, false, false, false)
+-            // the grid shows the gift itself, not its price
+-            giftCell.hidePrice()
++        this.cell = cell
++        empty = cell.empty || cell.title.isEmpty() || cell.modelName.isEmpty()
++        preview.view().visibility = if (empty) View.GONE else View.VISIBLE
++        if (!empty) {
++            val key = cell.title + "|" + cell.modelName + "|" + cell.backdropName + "|" + cell.symbolName +
++                "|" + cell.centerColor + "|" + cell.edgeColor + "|" + cell.patternColor
++            if (key != boundKey) {
++                boundKey = key
++                preview.setGift(cell.title)
++                preview.setBackdrop(
++                    GiftStudioCatalog.Backdrop(
++                        cell.backdropName, 0,
++                        cell.centerColor or 0xFF000000.toInt(),
++                        cell.edgeColor or 0xFF000000.toInt(),
++                        cell.patternColor or 0xFF000000.toInt(),
++                        0xFFFFFFFF.toInt()
++                    )
++                )
++                preview.setSymbol(if (cell.symbolName.isEmpty()) null else GiftStudioCatalog.Part(cell.symbolName, 0))
++                preview.setModel(if (cell.modelName.isEmpty()) null else GiftStudioCatalog.Part(cell.modelName, 0))
++                preview.badgeEdge = cell.edgeColor
++                preview.badgePattern = cell.patternColor
++            }
++            preview.badgeText = if (empty) "" else GiftGrid.ribbonTextOf(cell)
++            val colors = GiftGrid.ribbonColors(
++                cell,
++                GiftGrid.RIBBON_LIMITED,
++                GiftGrid.RIBBON_SOLD_OUT,
++                Theme.getColor(Theme.key_windowBackgroundWhite, resourcesProvider)
++            )
++            preview.badgeEdge = colors[0]
++            preview.badgePattern = colors[1]
++            preview.badgeTextColor = colors[2]
++            preview.regularGift = cell.kind == GiftGrid.Kind.REGULAR
++            preview.pinnedMark = cell.pinned && cell.kind != GiftGrid.Kind.REGULAR
++            preview.hiddenMark = cell.hidden
+         }
+         invalidate()
+     }
+ 
++    override fun onDetachedFromWindow() {
++        super.onDetachedFromWindow()
++        preview.release()
++    }
++
+     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+-        // the card keeps the shape of a gift card: the cell has no content of its own
++        // the card is a square, as the gift cards of the desktop grid
+         val width = MeasureSpec.getSize(widthMeasureSpec)
+-        val height = (width * 4f / 3f).toInt()
+         super.onMeasure(
+             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+-            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
++            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY)
+         )
+     }
+ 
+@@ -86,8 +135,8 @@ class GiftGridCellView(
+             super.onDraw(canvas)
+             return
+         }
+-        val inset = AndroidUtilities.dp(6f).toFloat()
+-        val radius = AndroidUtilities.dp(12f).toFloat()
++        val inset = AndroidUtilities.dp(3f).toFloat()
++        val radius = width * 0.10f
+         rect.set(inset, inset, width - inset, height - inset)
+         canvas.drawRoundRect(rect, radius, radius, dotted)
+         val cx = width / 2f
+@@ -96,6 +145,38 @@ class GiftGridCellView(
+         canvas.drawLine(cx - arm, cy, cx + arm, cy, plus)
+         canvas.drawLine(cx, cy - arm, cx, cy + arm, plus)
+     }
++
++    override fun dispatchDraw(canvas: Canvas) {
++        super.dispatchDraw(canvas)
++        val cell = this.cell ?: return
++        if (empty) return
++        // the ribbon is drawn on the card of the tile, which is inset by the padding of the preview
++        val pad = AndroidUtilities.dp(1f).toFloat()
++        val cardLeft = pad
++        val cardRight = width - pad
++        val cardSize = cardRight - cardLeft
++        val radius = cardSize * 0.10f
++        val inset = cardLeft + AndroidUtilities.dp(1f).toFloat()
++        // the mark of a pinned cell
++        // the price of a regular gift, when it is asked for
++        if (cell.price && cell.stars > 0) {
++            pricePaint.textSize = AndroidUtilities.dp(11f).toFloat()
++            pricePaint.color = 0xFFFFFFFF.toInt()
++            val text = "★ " + java.text.NumberFormat.getIntegerInstance().format(cell.stars)
++            val pillWidth = pricePaint.measureText(text) + AndroidUtilities.dp(16f)
++            val pillHeight = AndroidUtilities.dp(18f).toFloat()
++            rect.set(
++                (width - pillWidth) / 2f, height - pillHeight - AndroidUtilities.dp(6f).toFloat(),
++                (width + pillWidth) / 2f, height - AndroidUtilities.dp(6f).toFloat()
++            )
++            pillPaint.color = 0x66000000
++            canvas.drawRoundRect(rect, pillHeight / 2f, pillHeight / 2f, pillPaint)
++            canvas.drawText(
++                text, (width - pricePaint.measureText(text)) / 2f,
++                rect.top + pillHeight * 0.70f, pricePaint
++            )
++        }
++    }
+ }
+ 
+ /** The item of one cell of the gift grid. */
+@@ -124,7 +205,11 @@ class GiftGridCellFactory : UItem.UItemFactory<GiftGridCellView>() {
+     override fun contentsEquals(a: UItem, b: UItem): Boolean {
+         val first = a.`object` as? Cell ?: return false
+         val second = b.`object` as? Cell ?: return false
+-        return first.giftId == second.giftId && first.gift === second.gift && first.empty == second.empty
++        return first.giftId == second.giftId && first.gift === second.gift &&
++            first.empty == second.empty && first.modelName == second.modelName &&
++            first.backdropName == second.backdropName && first.symbolName == second.symbolName &&
++            first.ribbon == second.ribbon && first.ribbonText == second.ribbonText &&
++            first.pinned == second.pinned && first.price == second.price && first.hidden == second.hidden
+     }
+ 
+     companion object {

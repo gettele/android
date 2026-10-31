@@ -1,0 +1,797 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 3 Nov 2026 03:45:27 +0300
+Subject: [PATCH 243/244] feat: add the mtproto console
+
+---
+ .../main/java/tele/helpers/TeleMtpDanger.kt   | 179 ++++++++
+ .../main/java/tele/helpers/TeleMtpHistory.kt  |  39 ++
+ .../java/tele/ui/TeleMtpConsoleActivity.kt    | 411 ++++++++++++++++++
+ .../main/java/tele/ui/TeleMtpHelpActivity.kt  | 128 ++++++
+ 4 files changed, 757 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleMtpHistory.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleMtpConsoleActivity.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleMtpHelpActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt b/TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt
+new file mode 100644
+index 000000000..502d1492d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt
+@@ -0,0 +1,179 @@
++package tele.helpers
++
++import org.json.JSONObject
++import org.telegram.tgnet.TLObject
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import tele.helpers.TeleLowercase.lc
++
++/**
++ * The console can send any method, so the irreversible and paid ones stop at a dialog first; the
++ * payments go through the local password of the stars options, like the rest of tele.
++ */
++object TeleMtpDanger {
++
++    private val EXACT = setOf(
++        "account.deleteAccount",
++        "account.resetAuthorization",
++        "auth.resetAuthorizations",
++        "auth.logOut",
++        "account.updatePasswordSettings",
++        "channels.deleteChannel",
++        "channels.deleteHistory",
++        "messages.deleteHistory",
++        "messages.deleteChat",
++        "messages.deleteMessages",
++        "channels.deleteMessages",
++        "messages.editChatCreator",
++        "channels.deleteParticipantHistory",
++        "messages.deleteSavedHistory",
++        "messages.deleteScheduledMessages",
++        "photos.deletePhotos",
++        "stories.deleteStories",
++        "stickers.deleteStickerSet",
++        "contacts.deleteContacts",
++        "contacts.deleteByPhones",
++        "channels.leaveChannel",
++        "messages.deleteChatUser",
++        "account.setAccountTTL",
++        "payments.sendStarsForm",
++        "payments.sendPaymentForm",
++        "payments.transferStarGift",
++        "payments.convertStarGift",
++        "payments.upgradeStarGift",
++        "payments.updateStarGiftPrice",
++        "payments.resolveStarGiftOffer",
++        "payments.sendStarGiftOffer",
++        "payments.craftStarGift",
++        "messages.sendPaidReaction",
++        "payments.fulfillStarsSubscription"
++    )
++
++    private val ACTIONS = mapOf(
++        "payments.sendStarsForm" to StarsLock.BOT_PAYMENTS,
++        "payments.sendPaymentForm" to StarsLock.BUY,
++        "payments.transferStarGift" to StarsLock.TRANSFER,
++        "payments.sendStarGiftOffer" to StarsLock.TRANSFER,
++        "payments.convertStarGift" to StarsLock.CONVERT,
++        "payments.upgradeStarGift" to StarsLock.UPGRADE,
++        "payments.craftStarGift" to StarsLock.UPGRADE,
++        "payments.resolveStarGiftOffer" to StarsLock.SELL,
++        "payments.updateStarGiftPrice" to StarsLock.SELL,
++        "messages.sendPaidReaction" to StarsLock.REACTIONS,
++        "payments.fulfillStarsSubscription" to StarsLock.SUBSCRIPTIONS
++    )
++
++    private val INVOICES = mapOf(
++        "inputInvoiceMessage" to StarsLock.PAID_MEDIA,
++        "inputInvoiceSlug" to StarsLock.PAID_MEDIA,
++        "inputInvoiceChatInviteSubscription" to StarsLock.SUBSCRIPTIONS,
++        "inputInvoiceStarGift" to StarsLock.SEND,
++        "inputInvoicePremiumGiftStars" to StarsLock.SEND,
++        "inputInvoiceStarGiftUpgrade" to StarsLock.UPGRADE,
++        "inputInvoiceStarGiftPrepaidUpgrade" to StarsLock.UPGRADE,
++        "inputInvoiceStarGiftDropOriginalDetails" to StarsLock.UPGRADE,
++        "inputInvoiceStarGiftTransfer" to StarsLock.TRANSFER,
++        "inputInvoiceStarGiftResale" to StarsLock.BUY,
++        "inputInvoiceStarGiftAuctionBid" to StarsLock.BUY
++    )
++
++    /** The account and money methods that need the local password too, not just the dialog. */
++    private val PASSWORD_FIRST = setOf(
++        "account.deleteAccount",
++        "account.resetAuthorization",
++        "auth.resetAuthorizations",
++        "auth.logOut",
++        "account.updatePasswordSettings"
++    )
++
++    @JvmStatic
++    fun isDangerous(method: String): Boolean {
++        if (EXACT.contains(method)) return true
++        val name = method.substringAfterLast('.')
++        return method.contains(".delete") || method.contains("leave") ||
++            (method.endsWith("TTL") && !name.startsWith("get"))
++    }
++
++    /** The payment kind of a request, looked up by the method and by the invoice it carries. */
++    @JvmStatic
++    fun actionFor(request: TLObject): String? {
++        val method = TeleMtp.methodName(request)
++        ACTIONS[method]?.let { return it }
++        for (field in TeleTl.fields(request.javaClass)) {
++            val value = runCatching { field.get(request) }.getOrNull() ?: continue
++            val name = TeleTl.constructorOf(value)
++            INVOICES[name]?.let { return it }
++        }
++        return null
++    }
++
++    /** The dialog always comes first; the password of the matching stars option follows for payments. */
++    @JvmStatic
++    fun confirm(fragment: BaseFragment?, method: String, argsSummary: String, onAllowed: Runnable, onCancelled: Runnable? = null) {
++        if (!isDangerous(method)) {
++            onAllowed.run()
++            return
++        }
++        val context = fragment?.parentActivity ?: run {
++            onCancelled?.run()
++            return
++        }
++        val spends = method.startsWith("payments.") || method == "messages.sendPaidReaction"
++        val text = StringBuilder(method)
++        if (argsSummary.isNotEmpty()) text.append('\n').append(argsSummary)
++        text.append("\n\n")
++        text.append(lc(if (spends) "This spends stars or gifts." else "This cannot be undone."))
++        AlertDialog.Builder(context, fragment.resourceProvider)
++            .setTitle(lc("Dangerous method"))
++            .setMessage(text.toString())
++            .setPositiveButton(lc("Send")) { _, _ -> allowed(fragment, method, argsSummary, onAllowed, onCancelled) }
++            .setNegativeButton(lc("Cancel")) { _, _ -> onCancelled?.run() }
++            .setOnCancelListener { onCancelled?.run() }
++            .show()
++    }
++
++    private fun allowed(fragment: BaseFragment?, method: String, argsSummary: String, onAllowed: Runnable, onCancelled: Runnable?) {
++        val action = when {
++            PASSWORD_FIRST.contains(method) -> return StarsLock.confirm(fragment?.parentActivity, fragment?.resourceProvider, onAllowed)
++            else -> actionOf(method)
++        }
++        if (action == null) {
++            onAllowed.run()
++            return
++        }
++        StarsLock.guard(fragment, action, onAllowed, onCancelled)
++    }
++
++    private fun actionOf(method: String): String? = ACTIONS[method]
++
++    /** A short, redacted line for the dialog: the fields the request actually sets. */
++    @JvmStatic
++    fun summary(request: TLObject): String {
++        val parts = ArrayList<String>()
++        for (field in TeleTl.fields(request.javaClass)) {
++            val value = runCatching { field.get(request) }.getOrNull() ?: continue
++            if (value is Number && value.toLong() == 0L) continue
++            if (value is Boolean && !value) continue
++            if (value is Collection<*> && value.isEmpty()) continue
++            val name = field.name
++            if (name.contains("password") || name.contains("auth") || name.contains("hash") || name.contains("phone")) {
++                parts.add("$name=<redacted>")
++            } else {
++                val text = TeleTl.constructorOf(value).take(60)
++                parts.add("$name=$text")
++            }
++            if (parts.size >= 4) break
++        }
++        return parts.joinToString(", ")
++    }
++
++    /** For tests and the schema json: whether a method is dangerous, without any UI. */
++    @JvmStatic
++    fun dumpMethods(): JSONObject {
++        val result = JSONObject()
++        for (method in TeleTl.methods()) {
++            if (isDangerous(method.name)) result.put(method.name, true)
++        }
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleMtpHistory.kt b/TMessagesProj/src/main/java/tele/helpers/TeleMtpHistory.kt
+new file mode 100644
+index 000000000..fdae1c4aa
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleMtpHistory.kt
+@@ -0,0 +1,39 @@
++package tele.helpers
++
++/** The last console requests of this device, kept in memory only and only when the option is on. */
++object TeleMtpHistory {
++
++    class Item(
++        @JvmField val method: String,
++        @JvmField val args: String,
++        @JvmField val result: String,
++        @JvmField val timeMillis: Long
++    )
++
++    private const val MAX = 20
++    private val lock = Any()
++    private val lists = HashMap<Int, ArrayDeque<Item>>()
++
++    @JvmStatic
++    fun add(account: Int, method: String, args: String, result: String) {
++        synchronized(lock) {
++            val list = lists.getOrPut(account) { ArrayDeque() }
++            list.addFirst(Item(method, args.take(400), result.take(400), System.currentTimeMillis()))
++            while (list.size > MAX) list.removeLast()
++        }
++    }
++
++    @JvmStatic
++    fun items(account: Int): List<Item> = synchronized(lock) { ArrayList(lists[account].orEmpty()) }
++
++    @JvmStatic
++    fun clear(account: Int) {
++        synchronized(lock) { lists.remove(account) }
++    }
++
++    @JvmStatic
++    fun sizeText(account: Int): String {
++        val count = synchronized(lock) { lists[account]?.size ?: 0 }
++        return "$count ${if (count == 1) "request" else "requests"}"
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMtpConsoleActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleMtpConsoleActivity.kt
+new file mode 100644
+index 000000000..9bd9ff097
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMtpConsoleActivity.kt
+@@ -0,0 +1,411 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.drawable.GradientDrawable
++import android.text.Editable
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.TextUtils
++import android.text.TextWatcher
++import android.text.style.ForegroundColorSpan
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.EditText
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.SearchField
++import tele.helpers.TeleCopies
++import tele.helpers.TeleLowercase.lc
++import tele.helpers.TeleMtp
++import tele.helpers.TeleMtpDanger
++import tele.helpers.TeleMtpHistory
++import tele.helpers.TeleTl
++import java.lang.reflect.Field
++
++/** Sends any method of the app's own TL layer; the form marks the fields the schema requires. */
++class TeleMtpConsoleActivity : BaseFragment() {
++
++    private val account get() = UserConfig.selectedAccount
++    private var container: FrameLayout? = null
++    private var formShown = false
++    private var query = ""
++
++    private val methods by lazy { TeleTl.methods() }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc("MTProto console"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                when (id) {
++                    -1 -> onBack()
++                    MENU_HELP -> presentFragment(TeleMtpHelpActivity())
++                }
++            }
++        })
++        actionBar.createMenu().addItem(MENU_HELP, R.drawable.msg_help).setText(lc("Syntax"))
++        val root = FrameLayout(context)
++        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray, resourceProvider))
++        container = root
++        fragmentView = root
++        showList(context)
++        return root
++    }
++
++    private fun onBack() {
++        if (formShown) {
++            showList(container?.context ?: return)
++        } else {
++            finishFragment()
++        }
++    }
++
++    override fun onBackPressed(backButton: Boolean): Boolean {
++        if (formShown) {
++            onBack()
++            return true
++        }
++        return super.onBackPressed(backButton)
++    }
++
++    private fun showList(context: Context) {
++        formShown = false
++        val root = container ?: return
++        root.removeAllViews()
++        val column = LinearLayout(context)
++        column.orientation = LinearLayout.VERTICAL
++
++        // the search band shares the card color of the method rows below it
++        val band = LinearLayout(context)
++        band.orientation = LinearLayout.VERTICAL
++        band.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        val search = object : SearchField(context, true, resourceProvider) {
++            override fun onTextChange(text: String) {
++                query = text.trim().lowercase()
++                refreshList()
++            }
++        }
++        search.setHint(lc("Search methods"))
++        band.addView(search, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48))
++        column.addView(band, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        val list = RecyclerListView(context)
++        list.layoutManager = LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false)
++        list.isVerticalScrollBarEnabled = false
++        val adapter = MethodAdapter(context)
++        list.adapter = adapter
++        list.setOnItemClickListener { _, position -> adapter.methodAt(position)?.let { showForm(it) } }
++        this.adapter = adapter
++        column.addView(list, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 0, 1f))
++
++        val footer = TextView(context)
++        footer.text = lc("layer ") + TeleTl.layer().toString() + " · " + methods.size + lc(" methods")
++        footer.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        footer.gravity = Gravity.CENTER
++        footer.setPadding(0, AndroidUtilities.dp(6f), 0, AndroidUtilities.dp(6f))
++        footer.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++        column.addView(footer, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        root.addView(column, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        refreshList()
++    }
++
++    private var adapter: MethodAdapter? = null
++
++    private fun refreshList() {
++        val result = if (query.isEmpty()) methods else methods.filter { it.name.lowercase().contains(query) }
++        adapter?.submit(result)
++    }
++
++    private fun showForm(method: TeleTl.Method) {
++        val context = container?.context ?: return
++        val instance = TeleTl.newInstance(method.fqn) ?: return
++        val fields = TeleTl.fields(instance.javaClass)
++        formShown = true
++
++        val root = container ?: return
++        root.removeAllViews()
++        val scroll = ScrollView(context)
++        val column = LinearLayout(context)
++        column.orientation = LinearLayout.VERTICAL
++        column.setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(8f), AndroidUtilities.dp(16f), AndroidUtilities.dp(8f))
++
++        val header = TextView(context)
++        header.text = method.name
++        header.typeface = android.graphics.Typeface.MONOSPACE
++        header.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        header.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        column.addView(header, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        val sub = TextView(context)
++        sub.text = "0x" + java.lang.Long.toHexString(method.ctor) + " · " + fields.size + lc(" fields")
++        sub.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        sub.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++        column.addView(sub, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        val edits = ArrayList<Pair<Field, EditText>>()
++        val preview = TextView(context)
++        val error = TextView(context)
++        val updatePreview = {
++            preview.text = previewText(method, edits)
++        }
++
++        for (field in fields) {
++            val required = required(method, field)
++            column.addView(label(context, field.name, TeleTl.typeLabel(field), required))
++            val edit = input(context, TeleTl.typeLabel(field))
++            edits.add(field to edit)
++            edit.addTextChangedListener(object : TextWatcher {
++                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
++                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
++                override fun afterTextChanged(s: Editable?) {
++                    edit.background = fieldBackground(false)
++                    updatePreview()
++                }
++            })
++            column.addView(edit, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0f, 2f, 0f, 8f))
++        }
++
++        // the desktop form shows the request it is about to send, then the answer area
++        preview.typeface = android.graphics.Typeface.MONOSPACE
++        preview.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        preview.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        preview.setPadding(0, AndroidUtilities.dp(6f), 0, AndroidUtilities.dp(4f))
++        column.addView(preview, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        updatePreview()
++
++        error.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        error.setTextColor(Theme.getColor(Theme.key_text_RedRegular, resourceProvider))
++        error.visibility = View.GONE
++        column.addView(error, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        val send = TextView(context)
++        send.text = lc("Send")
++        send.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        send.gravity = Gravity.CENTER
++        send.setPadding(0, AndroidUtilities.dp(12f), 0, AndroidUtilities.dp(12f))
++        send.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText, resourceProvider))
++        column.addView(send, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        val hint = TextView(context)
++        hint.text = lc("Send a request to see the response here.") + "\n" + lc("Schema layer ") + TeleTl.layer()
++        hint.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        hint.typeface = android.graphics.Typeface.MONOSPACE
++        hint.setPadding(0, AndroidUtilities.dp(12f), 0, 0)
++        hint.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++        column.addView(hint, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        send.setOnClickListener {
++            val missing = ArrayList<String>()
++            for ((field, edit) in edits) {
++                val text = edit.text?.toString().orEmpty()
++                if (text.isEmpty()) {
++                    if (required(method, field)) {
++                        missing.add(field.name)
++                        edit.background = fieldBackground(true)
++                    }
++                    continue
++                }
++                val problem = TeleTl.set(instance, field, text)
++                if (problem != null) {
++                    missing.add(field.name + ": " + problem)
++                    edit.background = fieldBackground(true)
++                }
++            }
++            if (missing.isNotEmpty()) {
++                error.text = lc("Fill the required fields: ") + TextUtils.join(", ", missing)
++                error.visibility = View.VISIBLE
++                return@setOnClickListener
++            }
++            error.visibility = View.GONE
++            val args = previewText(method, edits).toString()
++            TeleMtpDanger.confirm(this, method.name, args, onAllowed = Runnable { send(instance, method.name) })
++        }
++
++        scroll.addView(column, FrameLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        root.addView(scroll, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++    }
++
++    /** The schema says a field is optional when it lives behind a flags bit, like the desktop's `flags.N?`. */
++    private fun required(method: TeleTl.Method, field: Field): Boolean {
++        if (field.type == Boolean::class.javaPrimitiveType || field.type == java.lang.Boolean::class.java) return false
++        return !TeleTl.isOptional(method.display, field.name)
++    }
++
++    private fun previewText(method: TeleTl.Method, edits: List<Pair<Field, EditText>>): CharSequence {
++        val text = SpannableStringBuilder()
++        text.append(method.name)
++        for ((field, edit) in edits) {
++            val value = edit.text?.toString().orEmpty()
++            if (value.isEmpty()) continue
++            text.append(' ')
++            val start = text.length
++            text.append(field.name)
++            text.setSpan(
++                ForegroundColorSpan(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText, resourceProvider)),
++                start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
++            )
++            text.append(':')
++            text.append(TeleTl.typeLabel(field))
++        }
++        return text
++    }
++
++    private fun label(context: Context, name: String, type: String, required: Boolean): TextView {
++        val view = TextView(context)
++        val text = SpannableStringBuilder()
++        text.append(name)
++        if (required) {
++            val start = text.length
++            text.append('*')
++            text.setSpan(
++                ForegroundColorSpan(Theme.getColor(Theme.key_text_RedRegular, resourceProvider)),
++                start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
++            )
++        }
++        text.append("  ")
++        text.append(type)
++        view.text = text
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        view.typeface = android.graphics.Typeface.MONOSPACE
++        view.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider))
++        view.setPadding(0, AndroidUtilities.dp(6f), 0, AndroidUtilities.dp(2f))
++        return view
++    }
++
++    private fun fieldBackground(invalid: Boolean): GradientDrawable {
++        val drawable = GradientDrawable()
++        drawable.cornerRadius = AndroidUtilities.dp(8f).toFloat()
++        drawable.setColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        drawable.setStroke(
++            AndroidUtilities.dp(if (invalid) 1.5f else 1f),
++            Theme.getColor(if (invalid) Theme.key_text_RedRegular else Theme.key_divider, resourceProvider)
++        )
++        return drawable
++    }
++
++    private fun input(context: Context, hint: String): EditText {
++        val edit = EditText(context)
++        edit.hint = hint
++        edit.setSingleLine(true)
++        edit.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        edit.typeface = android.graphics.Typeface.MONOSPACE
++        edit.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        edit.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, resourceProvider))
++        edit.background = fieldBackground(false)
++        edit.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(8f), AndroidUtilities.dp(12f), AndroidUtilities.dp(8f))
++        return edit
++    }
++
++    private fun send(request: TLObject, method: String) {
++        val activity = parentActivity
++        val captured = account
++        try {
++            ConnectionsManager.getInstance(captured).sendRequest(request) { response: TLObject?, error: TLRPC.TL_error? ->
++                val result = when {
++                    error != null -> error.code.toString() + " " + error.text.orEmpty()
++                    response != null -> TeleMtp.json(response)
++                    else -> ""
++                }
++                TeleMtpHistory.add(captured, method, "", result)
++                AndroidUtilities.runOnUIThread {
++                    if (activity != null) showResult(activity, method, result)
++                }
++            }
++        } catch (e: Throwable) {
++            if (activity != null) showResult(activity, method, e.message ?: "failed")
++        }
++    }
++
++    private fun showResult(activity: Context, method: String, result: String) {
++        val body = TextView(activity)
++        body.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        body.typeface = android.graphics.Typeface.MONOSPACE
++        body.text = result.ifEmpty { lc("empty result") }
++        body.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourceProvider))
++        body.setPadding(AndroidUtilities.dp(20f), AndroidUtilities.dp(8f), AndroidUtilities.dp(20f), AndroidUtilities.dp(8f))
++        val holder = FrameLayout(activity)
++        holder.addView(body, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
++        AlertDialog.Builder(activity, resourceProvider)
++            .setTitle(method)
++            .setView(holder)
++            .setPositiveButton(lc("Copy")) { _, _ ->
++                if (result.isNotEmpty() && AndroidUtilities.addToClipboard(result)) {
++                    TeleCopies.log(account, lc("MTProto result"), result)
++                }
++            }
++            .setNegativeButton(lc("Close"), null)
++            .show()
++    }
++
++    private inner class MethodAdapter(context: Context) : RecyclerListView.SelectionAdapter() {
++
++        private val items = ArrayList<TeleTl.Method>()
++        private val context = context
++
++        fun submit(list: List<TeleTl.Method>) {
++            items.clear()
++            items.addAll(list)
++            notifyDataSetChanged()
++        }
++
++        fun methodAt(position: Int): TeleTl.Method? = items.getOrNull(position)
++
++        override fun getItemCount(): Int = items.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = true
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val row = LinearLayout(context)
++            row.orientation = LinearLayout.VERTICAL
++            row.setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(8f), AndroidUtilities.dp(16f), AndroidUtilities.dp(8f))
++            row.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++            val name = TextView(context)
++            name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            name.typeface = android.graphics.Typeface.MONOSPACE
++            name.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++            name.maxLines = 1
++            name.ellipsize = TextUtils.TruncateAt.END
++            row.addView(name, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            val ctor = TextView(context)
++            ctor.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11f)
++            ctor.typeface = android.graphics.Typeface.MONOSPACE
++            ctor.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++            row.addView(ctor, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            row.layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
++            return Holder(row)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            val method = items.getOrNull(position) ?: return
++            val row = holder.itemView as LinearLayout
++            (row.getChildAt(0) as TextView).text = method.name
++            (row.getChildAt(1) as TextView).text = "0x" + java.lang.Long.toHexString(method.ctor)
++        }
++    }
++
++    private class Holder(view: View) : RecyclerView.ViewHolder(view)
++
++    companion object {
++        private const val MENU_HELP = 9713
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMtpHelpActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleMtpHelpActivity.kt
+new file mode 100644
+index 000000000..14f415587
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMtpHelpActivity.kt
+@@ -0,0 +1,128 @@
++package tele.ui
++
++import android.content.Context
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.style.ForegroundColorSpan
++import android.text.style.TypefaceSpan
++import android.util.TypedValue
++import android.view.View
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import tele.helpers.TeleLowercase.lc
++import tele.helpers.TeleTl
++
++/** What the console fields accept, in the shape of the desktop's syntax panel. */
++class TeleMtpHelpActivity : BaseFragment() {
++
++    private class Section(val title: String, val body: String, val note: String? = null)
++
++    private val sections = listOf(
++        Section(
++            "Fields",
++            "bot_id: 1000\nscope: \"messages\"",
++            "one input per field of the constructor; the type is shown next to the name"
++        ),
++        Section(
++            "Required",
++            "bot_id*\nvalue_hashes*",
++            "the star marks a field the schema does not hide behind a flags bit; an empty one stops the send"
++        ),
++        Section(
++            "Numbers",
++            "10  -100123  +5  0x1f",
++            "kept exactly as typed; 64-bit ids are safe"
++        ),
++        Section(
++            "Strings",
++            "hello  C:\\path",
++            "typed as is, single line"
++        ),
++        Section(
++            "Flags and Bool",
++            "silent: true\nreply_to: false",
++            "a boolean turns its flags bit on or off; an empty optional field leaves the bit off"
++        ),
++        Section(
++            "Vectors",
++            "1, 2, 3\nx, y",
++            "comma separated; an empty field sends no vector"
++        ),
++        Section(
++            "Bytes",
++            "de ad be ef\ndeadbeef",
++            "hex, spaces allowed"
++        ),
++        Section(
++            "Objects",
++            "{inputPeerUser user_id=1 access_hash=2}\ninputPeerUser{user_id=1;access_hash=2}\ninputPeerSelf",
++            "a constructor with fields or a bare constructor without them"
++        ),
++        Section(
++            "Dangerous methods",
++            "messages.deleteMessages",
++            "a confirmation always comes first; paid ones ask for the local password too"
++        )
++    )
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc("Syntax"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) finishFragment()
++            }
++        })
++        val scroll = ScrollView(context)
++        val column = LinearLayout(context)
++        column.orientation = LinearLayout.VERTICAL
++        column.setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(8f), AndroidUtilities.dp(16f), AndroidUtilities.dp(24f))
++        for (section in sections) {
++            val title = TextView(context)
++            title.text = section.title
++            title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText, resourceProvider))
++            title.setPadding(0, AndroidUtilities.dp(10f), 0, AndroidUtilities.dp(2f))
++            column.addView(title, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++            val body = TextView(context)
++            val text = SpannableStringBuilder()
++            val start = text.length
++            text.append(section.body)
++            text.setSpan(TypefaceSpan("monospace"), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++            body.text = text
++            body.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            body.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++            column.addView(body, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++            val note = section.note
++            if (note != null) {
++                val hint = TextView(context)
++                hint.text = note
++                hint.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++                hint.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++                column.addView(hint, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            }
++        }
++        val layer = TextView(context)
++        layer.text = lc("Schema layer ") + TeleTl.layer()
++        layer.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        layer.typeface = android.graphics.Typeface.MONOSPACE
++        layer.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++        layer.setPadding(0, AndroidUtilities.dp(16f), 0, 0)
++        column.addView(layer, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        scroll.addView(column, FrameLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        fragmentView = scroll
++        return scroll
++    }
++}

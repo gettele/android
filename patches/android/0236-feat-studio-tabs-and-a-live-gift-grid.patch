@@ -1,0 +1,1226 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sun, 1 Nov 2026 19:09:50 +0300
+Subject: [PATCH 236/244] feat: studio tabs and a live gift grid
+
+---
+ .../src/main/java/tele/TeleConfig.kt          |   6 +-
+ .../main/java/tele/helpers/GiftFakeUpgrade.kt |   4 -
+ .../main/java/tele/helpers/GiftStudioMenu.kt  |  11 +-
+ .../main/java/tele/ui/TeleGiftRollPanel.kt    | 258 ++++++++++++++++++
+ .../main/java/tele/ui/TeleGiftRollSheet.kt    | 248 +----------------
+ .../java/tele/ui/TeleGiftStudioActivity.kt    | 151 ++++++++--
+ .../tele/ui/settings/TeleGiftGridActivity.kt  |  86 +++++-
+ .../tele/ui/settings/TeleGiftGridCellItem.kt  |  74 ++++-
+ .../tele/ui/settings/TeleGiftGridExport.kt    |  75 ++---
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   8 +-
+ 10 files changed, 598 insertions(+), 323 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleGiftRollPanel.kt
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 7208f1863..3c7378171 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -205,11 +205,11 @@ object TeleConfig {
+     @JvmField
+     val GIFT_COLLECTIONS_RETRY = BoolItem("gift_collections_retry", false)
+     @JvmField
+-    val GIFT_STUDIO = BoolItem("gift_studio", false)
++    val GIFT_STUDIO_MENU = BoolItem("gift_studio_menu", true)
+     @JvmField
+-    val GIFT_FAKE_UPGRADE = BoolItem("gift_fake_upgrade", false)
++    val GIFT_STUDIO_MAIN_MENU = BoolItem("gift_studio_main_menu", false)
+     @JvmField
+-    val GIFT_ROLL_ANIMATION = BoolItem("gift_roll_animation", false)
++    val GIFT_FAKE_UPGRADE = BoolItem("gift_fake_upgrade", false)
+     @JvmField
+     val GIFT_GRID = BoolItem("gift_grid", false)
+     @JvmField
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt b/TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt
+index 46d537400..e90e30b72 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftFakeUpgrade.kt
+@@ -60,10 +60,6 @@ object GiftFakeUpgrade {
+     @JvmStatic
+     fun enabled(): Boolean = TeleConfig.GIFT_FAKE_UPGRADE.value
+ 
+-    /** The animation of the roll: without it the result is shown at once. */
+-    @JvmStatic
+-    fun animated(): Boolean = TeleConfig.GIFT_ROLL_ANIMATION.value
+-
+     /** The number of the next roll of the gift. */
+     @JvmStatic
+     @Synchronized
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt
+index c03c52e1a..278641c18 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioMenu.kt
+@@ -16,8 +16,13 @@ object GiftStudioMenu {
+     /** The id of the row of the menu of the studio. */
+     const val ID_OPEN = 9690
+ 
++    /** The row of the studio in the menus of a gift. */
+     @JvmStatic
+-    fun enabled(): Boolean = TeleConfig.GIFT_STUDIO.value
++    fun giftMenusEnabled(): Boolean = TeleConfig.GIFT_STUDIO_MENU.value
++
++    /** The row of the studio in the main menu of the chat list. */
++    @JvmStatic
++    fun mainMenuEnabled(): Boolean = TeleConfig.GIFT_STUDIO_MAIN_MENU.value
+ 
+     /** Adds the row of the studio to the menu of a gift. */
+     @JvmStatic
+@@ -28,7 +33,7 @@ object GiftStudioMenu {
+         dialogId: Long,
+         gift: TL_stars.SavedStarGift
+     ) {
+-        if (!enabled()) return
++        if (!giftMenusEnabled()) return
+         options.add(R.drawable.filled_gift_simple, "Open in gift studio") {
+             options.dismiss()
+             fragment?.presentFragment(TeleGiftStudioActivity(account, dialogId, gift))
+@@ -38,7 +43,7 @@ object GiftStudioMenu {
+     /** The studio in the main menu of the chat list, like the desktop client. */
+     @JvmStatic
+     fun addMainMenuItem(fragment: BaseFragment, options: ItemOptions) {
+-        if (!enabled()) return
++        if (!mainMenuEnabled()) return
+         val account = org.telegram.messenger.UserConfig.selectedAccount
+         options.add(R.drawable.filled_gift_simple, "Gift studio") {
+             options.dismiss()
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftRollPanel.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftRollPanel.kt
+new file mode 100644
+index 000000000..2aad15448
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftRollPanel.kt
+@@ -0,0 +1,258 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.drawable.GradientDrawable
++import android.os.Handler
++import android.os.Looper
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.widget.FrameLayout
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.BackupImageView
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Stars.StarsIntroActivity
++import tele.helpers.GiftFakeUpgrade
++import kotlin.random.Random
++
++/**
++ * The roll of the fake upgrade (desktop 0198): it rolls a gift locally and shows the result.
++ * Nothing is bought and nothing is sent. The panel lives inside the studio tab of the desktop
++ * client and inside the sheet that the gift menus open.
++ */
++class TeleGiftRollPanel(
++    private val context: Context,
++    private val account: Int,
++    private val resourcesProvider: Theme.ResourcesProvider?,
++    private val giftId: Long,
++    private val giftTitle: String?,
++    private val candidates: GiftFakeUpgrade.Candidates,
++    private val showTitle: Boolean = true
++) {
++
++    private val modelView = BackupImageView(context)
++    private val patternView = BackupImageView(context)
++    private val backdropView = View(context)
++    private val numberView = TextView(context)
++    private val modelNameView = TextView(context)
++    private val patternNameView = TextView(context)
++    private val backdropNameView = TextView(context)
++    private val rollButton = TextView(context)
++    private val historyLayout = LinearLayout(context)
++    private val clearHistoryView = TextView(context)
++    private val root = LinearLayout(context)
++
++    private val handler = Handler(Looper.getMainLooper())
++    private var rolling = false
++    private var result: GiftFakeUpgrade.Result? = null
++
++    private val step: Runnable = Runnable {
++        if (!rolling) return@Runnable
++        showScrambled()
++        handler.postDelayed(step, ROLL_INTERVAL)
++    }
++
++    init {
++        root.id = GiftFakeUpgrade.ID_FAKE_UPGRADE
++        root.orientation = LinearLayout.VERTICAL
++        root.setPadding(AndroidUtilities.dp(16f), 0, AndroidUtilities.dp(16f), 0)
++
++        if (showTitle) {
++            val titleView = TextView(context)
++            titleView.text = giftTitle ?: LocaleController.getString(R.string.TeleGiftFakeTitle)
++            titleView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20f)
++            titleView.typeface = AndroidUtilities.bold()
++            titleView.gravity = Gravity.CENTER
++            titleView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++            root.addView(titleView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 12, 0, 2))
++        }
++
++        val noticeView = TextView(context)
++        noticeView.text = LocaleController.getString(R.string.TeleGiftFakeNotice)
++        noticeView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++        noticeView.gravity = Gravity.CENTER
++        noticeView.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++        root.addView(noticeView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 8, 0, 8))
++
++        val preview = FrameLayout(context)
++        preview.addView(backdropView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 220f))
++        preview.addView(modelView, LayoutHelper.createFrame(160, 160, Gravity.CENTER))
++        preview.addView(patternView, LayoutHelper.createFrame(64, 64, Gravity.CENTER))
++        root.addView(preview, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 220))
++
++        numberView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
++        numberView.typeface = AndroidUtilities.bold()
++        numberView.gravity = Gravity.CENTER
++        numberView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++        root.addView(numberView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 8, 0, 2))
++
++        val names = LinearLayout(context)
++        names.orientation = LinearLayout.VERTICAL
++        names.gravity = Gravity.CENTER
++        addName(names, modelNameView)
++        addName(names, patternNameView)
++        addName(names, backdropNameView)
++        root.addView(names, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 0, 0, 8))
++
++        rollButton.id = GiftFakeUpgrade.ID_ROLL_AGAIN
++        rollButton.text = LocaleController.getString(R.string.TeleGiftFakeRoll)
++        rollButton.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        rollButton.typeface = AndroidUtilities.bold()
++        rollButton.gravity = Gravity.CENTER
++        rollButton.setTextColor(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider))
++        rollButton.setPadding(AndroidUtilities.dp(16f), 0, AndroidUtilities.dp(16f), 0)
++        rollButton.background = Theme.createSimpleSelectorRoundRectDrawable(
++            AndroidUtilities.dp(8f),
++            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .12f),
++            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .24f)
++        )
++        rollButton.setOnClickListener { roll() }
++        root.addView(rollButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER, 0, 4, 0, 12))
++
++        val historyTitle = TextView(context)
++        historyTitle.text = LocaleController.getString(R.string.TeleGiftFakeHistory)
++        historyTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        historyTitle.typeface = AndroidUtilities.bold()
++        historyTitle.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++        root.addView(historyTitle, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START, 0, 0, 0, 4))
++
++        val scroll = ScrollView(context)
++        historyLayout.id = GiftFakeUpgrade.ID_ROLL_HISTORY
++        historyLayout.orientation = LinearLayout.VERTICAL
++        scroll.addView(historyLayout, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        root.addView(scroll, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 160))
++
++        clearHistoryView.id = GiftFakeUpgrade.ID_CLEAR_HISTORY
++        clearHistoryView.text = LocaleController.getString(R.string.TeleGiftFakeClearHistory)
++        clearHistoryView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        clearHistoryView.gravity = Gravity.CENTER
++        clearHistoryView.setTextColor(Theme.getColor(Theme.key_text_RedBold, resourcesProvider))
++        clearHistoryView.setPadding(0, AndroidUtilities.dp(10f), 0, AndroidUtilities.dp(10f))
++        clearHistoryView.setOnClickListener {
++            GiftFakeUpgrade.clearHistory(account)
++            refreshHistory()
++        }
++        root.addView(clearHistoryView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++
++        refreshHistory()
++        roll()
++    }
++
++    /** The view of the roll, to be put into a sheet or into the studio. */
++    fun view(): View = root
++
++    /** Stops a roll that the screen no longer shows. */
++    fun release() {
++        handler.removeCallbacks(step)
++        rolling = false
++        handler.removeCallbacksAndMessages(null)
++    }
++
++    private fun addName(parent: LinearLayout, view: TextView) {
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++        view.gravity = Gravity.CENTER
++        view.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++        parent.addView(view, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 1, 0, 1))
++    }
++
++    /** The attributes that the roll shows while it runs. */
++    private fun showScrambled() {
++        val models = candidates.models
++        val patterns = candidates.patterns
++        val backdrops = candidates.backdrops
++        var pattern: TL_stars.starGiftAttributePattern? = null
++        var backdrop: TL_stars.starGiftAttributeBackdrop? = null
++        if (models.isNotEmpty()) {
++            // the model of the gift stays hidden until the roll ends
++            modelView.getImageReceiver().clearImage()
++        }
++        if (patterns.isNotEmpty()) {
++            pattern = patterns[Random.nextInt(patterns.size)]
++            StarsIntroActivity.setGiftImage(patternView.getImageReceiver(), pattern.document, 64)
++        }
++        if (backdrops.isNotEmpty()) {
++            backdrop = backdrops[Random.nextInt(backdrops.size)]
++            setBackdrop(backdrop)
++        }
++        // the number and the model stay hidden until the roll ends
++        numberView.text = ""
++        modelNameView.text = ""
++        patternNameView.text = pattern?.name ?: ""
++        backdropNameView.text = backdrop?.name ?: ""
++    }
++
++    private fun setBackdrop(backdrop: TL_stars.starGiftAttributeBackdrop) {
++        backdropView.background = GradientDrawable(
++            GradientDrawable.Orientation.TOP_BOTTOM,
++            intArrayOf(
++                backdrop.center_color or 0xFF000000.toInt(),
++                backdrop.edge_color or 0xFF000000.toInt()
++            )
++        )
++    }
++
++    /** Shows the result of the roll. */
++    private fun showResult(result: GiftFakeUpgrade.Result) {
++        numberView.text = "#" + result.number
++        modelNameView.text = result.modelName
++        patternNameView.text = result.patternName
++        backdropNameView.text = result.backdropName
++        result.model?.let { StarsIntroActivity.setGiftImage(modelView.getImageReceiver(), it.document, 160) }
++        result.pattern?.let { StarsIntroActivity.setGiftImage(patternView.getImageReceiver(), it.document, 64) }
++        result.backdrop?.let { setBackdrop(it) }
++        rollButton.text = LocaleController.getString(R.string.TeleGiftFakeRollAgain)
++    }
++
++    /** The roll of the gift: the attributes change until the roll ends. */
++    private fun roll() {
++        val rolled = GiftFakeUpgrade.roll(account, giftId, giftTitle, candidates)
++        result = rolled
++        rolling = true
++        handler.removeCallbacks(step)
++        handler.post(step)
++        handler.postDelayed({
++            rolling = false
++            handler.removeCallbacks(step)
++            showResult(rolled)
++        }, ROLL_DURATION)
++    }
++
++    /** The rolls of the account that the sheet shows under the button. */
++    private fun refreshHistory() {
++        historyLayout.removeAllViews()
++        val history = GiftFakeUpgrade.shownHistory(account)
++        if (history.isEmpty()) {
++            val empty = TextView(context)
++            empty.text = LocaleController.getString(R.string.TeleGiftFakeHistoryEmpty)
++            empty.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            empty.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++            historyLayout.addView(empty, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            clearHistoryView.visibility = View.GONE
++            return
++        }
++        clearHistoryView.visibility = View.VISIBLE
++        for (item in history) {
++            val view = TextView(context)
++            view.text = (item.title.ifEmpty { LocaleController.getString(R.string.TeleGiftFakeTitle) }) +
++                " #" + item.number +
++                (if (item.modelName.isNotEmpty()) " · " + item.modelName else "")
++            view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++            view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
++            view.setPadding(0, AndroidUtilities.dp(4f), 0, AndroidUtilities.dp(4f))
++            historyLayout.addView(view, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        }
++    }
++
++
++    companion object {
++        private const val ROLL_INTERVAL = 70L
++        private const val ROLL_DURATION = 1800L
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt
+index bd6150a10..3e8796703 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftRollSheet.kt
+@@ -1,261 +1,31 @@
+ package tele.ui
+ 
+ import android.content.Context
+-import android.graphics.drawable.GradientDrawable
+-import android.os.Handler
+-import android.os.Looper
+-import android.util.TypedValue
+-import android.view.Gravity
+ import android.view.View
+-import android.widget.FrameLayout
+-import android.widget.LinearLayout
+-import android.widget.ScrollView
+-import android.widget.TextView
+-import org.telegram.messenger.AndroidUtilities
+-import org.telegram.messenger.LocaleController
+-import org.telegram.messenger.R
+-import org.telegram.tgnet.tl.TL_stars
+ import org.telegram.ui.ActionBar.BottomSheet
+ import org.telegram.ui.ActionBar.Theme
+-import org.telegram.ui.Components.BackupImageView
+-import org.telegram.ui.Components.LayoutHelper
+-import org.telegram.ui.Stars.StarsIntroActivity
+ import tele.helpers.GiftFakeUpgrade
+-import kotlin.random.Random
+ 
+ /**
+- * The sheet of the fake upgrade (desktop 0198): it rolls a gift locally and shows the result.
+- * Nothing is bought and nothing is sent.
++ * The sheet of the fake upgrade (desktop 0198): the panel of the roll, opened from a gift menu.
+  */
+ class TeleGiftRollSheet(
+     context: Context,
+     private val account: Int,
+     resourcesProvider: Theme.ResourcesProvider?,
+-    private val giftId: Long,
+-    private val giftTitle: String?,
+-    private val candidates: GiftFakeUpgrade.Candidates
++    giftId: Long,
++    giftTitle: String?,
++    candidates: GiftFakeUpgrade.Candidates
+ ) : BottomSheet(context, true, resourcesProvider) {
+ 
+-    private val modelView = BackupImageView(context)
+-    private val patternView = BackupImageView(context)
+-    private val backdropView = View(context)
+-    private val numberView = TextView(context)
+-    private val modelNameView = TextView(context)
+-    private val patternNameView = TextView(context)
+-    private val backdropNameView = TextView(context)
+-    private val rollButton = TextView(context)
+-    private val historyLayout = LinearLayout(context)
+-    private val clearHistoryView = TextView(context)
+-
+-    private val handler = Handler(Looper.getMainLooper())
+-    private var rolling = false
+-    private var result: GiftFakeUpgrade.Result? = null
+-
+-    private val step: Runnable = Runnable {
+-        if (!rolling) return@Runnable
+-        showScrambled()
+-        handler.postDelayed(step, ROLL_INTERVAL)
+-    }
++    private val panel = TeleGiftRollPanel(
++        context, account, resourcesProvider, giftId, giftTitle, candidates
++    )
+ 
+     init {
+         currentAccount = account
+         fixNavigationBar()
+-
+-        val layout = LinearLayout(context)
+-        layout.id = GiftFakeUpgrade.ID_FAKE_UPGRADE
+-        layout.orientation = LinearLayout.VERTICAL
+-        layout.setPadding(AndroidUtilities.dp(16f), 0, AndroidUtilities.dp(16f), 0)
+-
+-        val titleView = TextView(context)
+-        titleView.text = giftTitle ?: LocaleController.getString(R.string.TeleGiftFakeTitle)
+-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20f)
+-        titleView.typeface = AndroidUtilities.bold()
+-        titleView.gravity = Gravity.CENTER
+-        titleView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
+-        layout.addView(titleView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 12, 0, 2))
+-
+-        val noticeView = TextView(context)
+-        noticeView.text = LocaleController.getString(R.string.TeleGiftFakeNotice)
+-        noticeView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
+-        noticeView.gravity = Gravity.CENTER
+-        noticeView.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
+-        layout.addView(noticeView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 0, 0, 8))
+-
+-        val preview = FrameLayout(context)
+-        preview.addView(backdropView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 220f))
+-        preview.addView(modelView, LayoutHelper.createFrame(160, 160, Gravity.CENTER))
+-        preview.addView(patternView, LayoutHelper.createFrame(64, 64, Gravity.CENTER))
+-        layout.addView(preview, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 220))
+-
+-        numberView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
+-        numberView.typeface = AndroidUtilities.bold()
+-        numberView.gravity = Gravity.CENTER
+-        numberView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
+-        layout.addView(numberView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 8, 0, 2))
+-
+-        val names = LinearLayout(context)
+-        names.orientation = LinearLayout.VERTICAL
+-        names.gravity = Gravity.CENTER
+-        addName(names, modelNameView)
+-        addName(names, patternNameView)
+-        addName(names, backdropNameView)
+-        layout.addView(names, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 0, 0, 8))
+-
+-        rollButton.id = GiftFakeUpgrade.ID_ROLL_AGAIN
+-        rollButton.text = LocaleController.getString(R.string.TeleGiftFakeRoll)
+-        rollButton.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
+-        rollButton.typeface = AndroidUtilities.bold()
+-        rollButton.gravity = Gravity.CENTER
+-        rollButton.setTextColor(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider))
+-        rollButton.setPadding(AndroidUtilities.dp(16f), 0, AndroidUtilities.dp(16f), 0)
+-        rollButton.background = Theme.createSimpleSelectorRoundRectDrawable(
+-            AndroidUtilities.dp(8f),
+-            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .12f),
+-            Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .24f)
+-        )
+-        rollButton.setOnClickListener { roll() }
+-        layout.addView(rollButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER, 0, 4, 0, 12))
+-
+-        val historyTitle = TextView(context)
+-        historyTitle.text = LocaleController.getString(R.string.TeleGiftFakeHistory)
+-        historyTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
+-        historyTitle.typeface = AndroidUtilities.bold()
+-        historyTitle.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
+-        layout.addView(historyTitle, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START, 0, 0, 0, 4))
+-
+-        val scroll = ScrollView(context)
+-        historyLayout.id = GiftFakeUpgrade.ID_ROLL_HISTORY
+-        historyLayout.orientation = LinearLayout.VERTICAL
+-        scroll.addView(historyLayout, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
+-        layout.addView(scroll, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 160))
+-
+-        clearHistoryView.id = GiftFakeUpgrade.ID_CLEAR_HISTORY
+-        clearHistoryView.text = LocaleController.getString(R.string.TeleGiftFakeClearHistory)
+-        clearHistoryView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
+-        clearHistoryView.gravity = Gravity.CENTER
+-        clearHistoryView.setTextColor(Theme.getColor(Theme.key_text_RedBold, resourcesProvider))
+-        clearHistoryView.setPadding(0, AndroidUtilities.dp(10f), 0, AndroidUtilities.dp(10f))
+-        clearHistoryView.setOnClickListener {
+-            GiftFakeUpgrade.clearHistory(account)
+-            refreshHistory()
+-        }
+-        layout.addView(clearHistoryView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
+-
+-        setOnHideListener {
+-            // a roll that is closed before it ends is cancelled
+-            handler.removeCallbacks(step)
+-            if (rolling) {
+-                rolling = false
+-                android.util.Log.d("TeleGiftRoll", "fake_roll_cancel")
+-            }
+-        }
+-        setCustomView(layout)
+-        refreshHistory()
+-        roll()
+-    }
+-
+-    private fun addName(parent: LinearLayout, view: TextView) {
+-        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+-        view.gravity = Gravity.CENTER
+-        view.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
+-        parent.addView(view, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 0, 1, 0, 1))
+-    }
+-
+-    /** The attributes that the roll shows while it runs. */
+-    private fun showScrambled() {
+-        val models = candidates.models
+-        val patterns = candidates.patterns
+-        val backdrops = candidates.backdrops
+-        var pattern: TL_stars.starGiftAttributePattern? = null
+-        var backdrop: TL_stars.starGiftAttributeBackdrop? = null
+-        if (models.isNotEmpty()) {
+-            // the model of the gift stays hidden until the roll ends
+-            modelView.getImageReceiver().clearImage()
+-        }
+-        if (patterns.isNotEmpty()) {
+-            pattern = patterns[Random.nextInt(patterns.size)]
+-            StarsIntroActivity.setGiftImage(patternView.getImageReceiver(), pattern.document, 64)
+-        }
+-        if (backdrops.isNotEmpty()) {
+-            backdrop = backdrops[Random.nextInt(backdrops.size)]
+-            setBackdrop(backdrop)
+-        }
+-        // the number and the model stay hidden until the roll ends
+-        numberView.text = ""
+-        modelNameView.text = ""
+-        patternNameView.text = pattern?.name ?: ""
+-        backdropNameView.text = backdrop?.name ?: ""
+-    }
+-
+-    private fun setBackdrop(backdrop: TL_stars.starGiftAttributeBackdrop) {
+-        backdropView.background = GradientDrawable(
+-            GradientDrawable.Orientation.TOP_BOTTOM,
+-            intArrayOf(
+-                backdrop.center_color or 0xFF000000.toInt(),
+-                backdrop.edge_color or 0xFF000000.toInt()
+-            )
+-        )
+-    }
+-
+-    /** Shows the result of the roll. */
+-    private fun showResult(result: GiftFakeUpgrade.Result) {
+-        numberView.text = "#" + result.number
+-        modelNameView.text = result.modelName
+-        patternNameView.text = result.patternName
+-        backdropNameView.text = result.backdropName
+-        result.model?.let { StarsIntroActivity.setGiftImage(modelView.getImageReceiver(), it.document, 160) }
+-        result.pattern?.let { StarsIntroActivity.setGiftImage(patternView.getImageReceiver(), it.document, 64) }
+-        result.backdrop?.let { setBackdrop(it) }
+-        rollButton.text = LocaleController.getString(R.string.TeleGiftFakeRollAgain)
+-    }
+-
+-    /** The roll of the gift: the attributes change until the roll ends. */
+-    private fun roll() {
+-        val rolled = GiftFakeUpgrade.roll(account, giftId, giftTitle, candidates)
+-        result = rolled
+-        if (!GiftFakeUpgrade.animated()) {
+-            showResult(rolled)
+-            return
+-        }
+-        rolling = true
+-        handler.removeCallbacks(step)
+-        handler.post(step)
+-        handler.postDelayed({
+-            rolling = false
+-            handler.removeCallbacks(step)
+-            showResult(rolled)
+-        }, ROLL_DURATION)
+-    }
+-
+-    /** The rolls of the account that the sheet shows under the button. */
+-    private fun refreshHistory() {
+-        historyLayout.removeAllViews()
+-        val history = GiftFakeUpgrade.shownHistory(account)
+-        if (history.isEmpty()) {
+-            val empty = TextView(context)
+-            empty.text = LocaleController.getString(R.string.TeleGiftFakeHistoryEmpty)
+-            empty.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+-            empty.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
+-            historyLayout.addView(empty, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
+-            clearHistoryView.visibility = View.GONE
+-            return
+-        }
+-        clearHistoryView.visibility = View.VISIBLE
+-        for (item in history) {
+-            val view = TextView(context)
+-            view.text = (item.title.ifEmpty { LocaleController.getString(R.string.TeleGiftFakeTitle) }) +
+-                " #" + item.number +
+-                (if (item.modelName.isNotEmpty()) " · " + item.modelName else "")
+-            view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+-            view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
+-            view.setPadding(0, AndroidUtilities.dp(4f), 0, AndroidUtilities.dp(4f))
+-            historyLayout.addView(view, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
+-        }
+-    }
+-
+-
+-    companion object {
+-        private const val ROLL_INTERVAL = 70L
+-        private const val ROLL_DURATION = 1800L
++        setCustomView(panel.view())
++        setOnHideListener { panel.release() }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+index c2fe02726..842449106 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+@@ -32,6 +32,7 @@ import org.telegram.ui.Components.EditTextBoldCursor
+ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.PlayPauseDrawable
+ import org.telegram.ui.Components.SeekBarView
++import tele.helpers.GiftFakeUpgrade
+ import tele.helpers.GiftStudio
+ import tele.helpers.GiftStudioCatalog
+ import tele.helpers.GiftStudioExport
+@@ -61,6 +62,14 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+     private var numberRow: TextSettingsCell? = null
+     private var saveRow: TextSettingsCell? = null
+ 
++    private var studioBlock: LinearLayout? = null
++    private var rollBlock: LinearLayout? = null
++    private var rollPanel: TeleGiftRollPanel? = null
++    private var studioTab: TextView? = null
++    private var rollTab: TextView? = null
++    private var rollMode = false
++    private var rollForGift = 0L
++
+     private var playerRow: LinearLayout? = null
+     private var playButton: android.widget.ImageView? = null
+     private var playDrawable: PlayPauseDrawable? = null
+@@ -92,31 +101,50 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         container.orientation = LinearLayout.VERTICAL
+         container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+ 
++        // the two sections of the desktop studio
++        val tabs = LinearLayout(context)
++        tabs.orientation = LinearLayout.HORIZONTAL
++        tabs.gravity = Gravity.CENTER_VERTICAL
++        tabs.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(6f), AndroidUtilities.dp(12f), AndroidUtilities.dp(6f))
++        val studioTab = tabButton(context, "Studio") { switchMode(false) }
++        val rollTab = tabButton(context, "Roll") { switchMode(true) }
++        this.studioTab = studioTab
++        this.rollTab = rollTab
++        tabs.addView(studioTab, LayoutHelper.createLinear(0, 36, 1f, Gravity.CENTER_VERTICAL, 0, 0, 4, 0))
++        tabs.addView(rollTab, LayoutHelper.createLinear(0, 36, 1f, Gravity.CENTER_VERTICAL, 4, 0, 0, 0))
++        container.addView(tabs, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++
++        // the studio section: the preview, the player and the rows of the parts
++        val studio = LinearLayout(context)
++        studio.orientation = LinearLayout.VERTICAL
++        studioBlock = studio
++        container.addView(studio, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++
+         preview = TeleGiftPreview(context, account, resourceProvider)
+         preview.onFrameChanged = { frame, total -> showFrame(frame, total) }
+         previewParams = LinearLayout.LayoutParams(
+             ViewGroup.LayoutParams.MATCH_PARENT,
+             preview.heightFor(preview.layout, AndroidUtilities.displaySize.x)
+         )
+-        container.addView(preview.view(), previewParams)
++        studio.addView(preview.view(), previewParams)
+ 
+         val player = buildPlayerRow(context)
+         playerRow = player
+-        container.addView(player, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(48f)))
+-
+-        layoutRow = addRow(container, "Layout") { chooseLayout() }
+-        addPictureRow(container, "Collection") { chooseCollection() }
+-        modelRow = addRow(container, "Model") { chooseModel() }
+-        backdropRow = addRow(container, "Backdrop") { chooseBackdrop() }
+-        symbolRow = addRow(container, "Symbol") { chooseSymbol() }
+-        rarityRow = addRow(container, "Rarity") {}
++        studio.addView(player, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(48f)))
++
++        layoutRow = addRow(studio, "Layout") { chooseLayout() }
++        addPictureRow(studio, "Collection") { chooseCollection() }
++        modelRow = addRow(studio, "Model") { chooseModel() }
++        backdropRow = addRow(studio, "Backdrop") { chooseBackdrop() }
++        symbolRow = addRow(studio, "Symbol") { chooseSymbol() }
++        rarityRow = addRow(studio, "Rarity") {}
+         rarityRow?.isEnabled = false
+-        titleRow = addRow(container, lc("Title")) { editTitle() }
+-        numberRow = addRow(container, lc("Number")) { editNumber() }
+-        saveRow = addRow(container, "Save") { chooseSave() }
+-        addRow(container, "Save all layouts") { saveAll() }
+-        addRow(container, "Copy studio code") { copyCode() }
+-        addRow(container, "Load studio code") { loadCode() }
++        titleRow = addRow(studio, lc("Title")) { editTitle() }
++        numberRow = addRow(studio, lc("Number")) { editNumber() }
++        saveRow = addRow(studio, "Save") { chooseSave() }
++        addRow(studio, "Save all layouts") { saveAll() }
++        addRow(studio, "Copy studio code") { copyCode() }
++        addRow(studio, "Load studio code") { loadCode() }
+ 
+         // the credit the catalog asks for
+         val credit = TextView(context)
+@@ -128,7 +156,13 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         credit.movementMethod = LinkMovementMethod.getInstance()
+         credit.highlightColor = android.graphics.Color.TRANSPARENT
+         credit.setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(14f), AndroidUtilities.dp(24f), AndroidUtilities.dp(18f))
+-        container.addView(credit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        studio.addView(credit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++
++        val roll = LinearLayout(context)
++        roll.orientation = LinearLayout.VERTICAL
++        roll.visibility = View.GONE
++        rollBlock = roll
++        container.addView(roll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+ 
+         fragmentView = android.widget.ScrollView(context).also { scroll ->
+             scroll.addView(container, LayoutHelper.createScroll(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP))
+@@ -146,6 +180,7 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         }
+         showFrame(0, 1)
+         setRow(layoutRow, "Layout", preview.layout.name)
++        updateTabs()
+         return fragmentView
+     }
+ 
+@@ -498,6 +533,88 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         showSaved()
+     }
+ 
++    /** A section of the studio: the tab that is on is blue and filled. */
++    private fun tabButton(context: Context, title: String, action: () -> Unit): TextView {
++        val button = TextView(context)
++        button.text = title
++        button.gravity = Gravity.CENTER
++        button.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++        button.typeface = AndroidUtilities.bold()
++        button.isClickable = true
++        button.setOnClickListener { action() }
++        return button
++    }
++
++    /** Switches between the studio and the roll, as the sections of the desktop client. */
++    private fun switchMode(roll: Boolean) {
++        if (rollMode == roll && rollBlock?.childCount ?: 0 > 0) {
++            return
++        }
++        rollMode = roll
++        studioBlock?.visibility = if (roll) View.GONE else View.VISIBLE
++        rollBlock?.visibility = if (roll) View.VISIBLE else View.GONE
++        updateTabs()
++        if (roll) {
++            buildRoll()
++        }
++    }
++
++    private fun updateTabs() {
++        val blue = Theme.getColor(Theme.key_windowBackgroundWhiteBlueText)
++        val gray = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4)
++        val selected = Theme.multAlpha(blue, 0.12f)
++        studioTab?.let {
++            it.setTextColor(if (rollMode) gray else blue)
++            it.background = if (rollMode) null else Theme.createRoundRectDrawable(AndroidUtilities.dp(8f), selected)
++        }
++        rollTab?.let {
++            it.setTextColor(if (rollMode) blue else gray)
++            it.background = if (rollMode) Theme.createRoundRectDrawable(AndroidUtilities.dp(8f), selected) else null
++        }
++    }
++
++    /** The roll of the collection: its panel is built when the section is opened. */
++    private fun buildRoll() {
++        val block = rollBlock ?: return
++        val meta = giftMeta
++        if (meta == null || meta.id == 0L) {
++            if (block.childCount > 0) return
++            val empty = TextView(this.context)
++            empty.text = lc("Pick a collection in the studio first")
++            empty.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++            empty.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4))
++            empty.gravity = Gravity.CENTER
++            empty.setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(24f), AndroidUtilities.dp(24f), 0)
++            block.addView(empty, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++            return
++        }
++        if (rollPanel != null && rollForGift == meta.id) return
++        rollPanel?.release()
++        rollPanel = null
++        rollForGift = meta.id
++        block.removeAllViews()
++        val stars = org.telegram.ui.Stars.StarsController.getInstance(account)
++        stars.getStarGiftPreview(meta.id) { preview ->
++            if (!rollMode || giftMeta?.id != meta.id) return@getStarGiftPreview
++            val candidates = GiftFakeUpgrade.candidates(preview)
++            if (candidates.isEmpty) {
++                val empty = TextView(this.context)
++                empty.text = LocaleController.getString(R.string.TeleGiftFakeNoAttributes)
++                empty.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15f)
++                empty.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4))
++                empty.gravity = Gravity.CENTER
++                empty.setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(24f), AndroidUtilities.dp(24f), 0)
++                block.addView(empty, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++                return@getStarGiftPreview
++            }
++            val panel = TeleGiftRollPanel(
++                this.context, account, resourceProvider, meta.id, giftName, candidates, showTitle = false
++            )
++            rollPanel = panel
++            block.addView(panel.view(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        }
++    }
++
+     /** The credit line of the catalog: the channel is a blue tag, the rest stays gray. */
+     private fun creditSpan(text: String): SpannableString {
+         val span = SpannableString(text)
+@@ -654,6 +771,8 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+ 
+     override fun onFragmentDestroy() {
+         super.onFragmentDestroy()
++        rollPanel?.release()
++        rollPanel = null
+         preview.release()
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+index 2be8d9b91..3b37a8a85 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridActivity.kt
+@@ -12,15 +12,24 @@ import org.telegram.ui.Components.ItemOptions
+ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.UItem
+ import org.telegram.ui.Components.UniversalAdapter
++import org.telegram.ui.Components.BulletinFactory
+ import org.telegram.ui.Components.UniversalRecyclerView
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.Stars.StarsController
+ import tele.helpers.GiftGrid
+ import tele.helpers.GiftGrid.Layout
++import tele.helpers.GiftStudio
++import tele.helpers.GiftStudioCatalog
++import tele.ui.TeleStudioPartsList
+ 
+ /** The gift grid of the studio: a table of three columns that holds gifts. */
+ class TeleGiftGridActivity : BaseFragment() {
+ 
+     private var recycler: UniversalRecyclerView? = null
+     private var layout: Layout = Layout()
++    private var rebuilding = false
++    private var movingIndex = -1
++    private val picker by lazy { TeleStudioPartsList(parentActivity ?: context) }
+ 
+     private fun reload() {
+         layout = GiftGrid.load(currentAccount)
+@@ -42,6 +51,21 @@ class TeleGiftGridActivity : BaseFragment() {
+         return super.onFragmentCreate()
+     }
+ 
++    /** The gifts of a saved grid are found again from the catalog, so a restart keeps the cells. */
++    private fun rebuildMissing() {
++        if (rebuilding) return
++        rebuilding = true
++        val cells = layout.cells()
++        var pending = false
++        for (index in cells.indices) {
++            val cell = cells[index]
++            if (cell.empty || cell.gift != null || cell.title.isEmpty()) continue
++            pending = true
++            putGift(index, cell.title, save = false)
++        }
++        if (!pending) rebuilding = false
++    }
++
+     override fun createView(context: Context): View {
+         val frameLayout = FrameLayout(context)
+         frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+@@ -53,7 +77,7 @@ class TeleGiftGridActivity : BaseFragment() {
+         actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
+             override fun onItemClick(id: Int) {
+                 when (id) {
+-                    GiftGrid.ID_EXPORT_PNG -> TeleGiftGridExport.export(this@TeleGiftGridActivity, layout)
++                    GiftGrid.ID_EXPORT_PNG -> TeleGiftGridExport.export(this@TeleGiftGridActivity, recycler ?: return, layout)
+                     GiftGrid.ID_ADD_ROW -> {
+                         if (layout.addRow()) {
+                             GiftGrid.save(currentAccount, layout)
+@@ -81,6 +105,7 @@ class TeleGiftGridActivity : BaseFragment() {
+             1
+         )
+         this.recycler = recycler
++        rebuildMissing()
+         recycler.setSelectorType(9)
+         recycler.setSelectorDrawableColor(0)
+         recycler.setClipToPadding(false)
+@@ -92,20 +117,71 @@ class TeleGiftGridActivity : BaseFragment() {
+         return fragmentView
+     }
+ 
+-    /** A tap on a cell of the grid offers to take the gift out of the grid. */
++    /** A tap on a cell: an empty one takes a gift, a full one can be moved, replaced or cleared. */
+     private fun onItemClick(item: UItem, view: View?, position: Int) {
+         val cell = item.`object` as? GiftGrid.Cell ?: return
+-        if (cell.empty) return
++        if (movingIndex >= 0) {
++            val from = movingIndex
++            movingIndex = -1
++            if (layout.moveCell(from, position)) {
++                GiftGrid.save(currentAccount, layout)
++                recycler?.adapter?.update(true)
++                BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("Gift moved")).show()
++            }
++            return
++        }
++        if (cell.empty) {
++            pickGift(position)
++            return
++        }
+         val scrim = view ?: return
+         val options = ItemOptions.makeOptions(this, scrim)
+-        options.add(lc("Remove from the grid")) {
++        options.add(R.drawable.msg_forward, lc("Move"), Runnable {
++            movingIndex = position
++            BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("Tap a cell to place the gift")).show()
++        })
++        options.add(R.drawable.msg_edit, lc("Replace"), Runnable { pickGift(position) })
++        options.add(R.drawable.msg_delete, lc("Remove from the grid"), Runnable {
+             layout.removeCell(position)
+             GiftGrid.save(currentAccount, layout)
+             recycler?.adapter?.update(true)
+-        }
++        })
+         options.show()
+     }
+ 
++    /** The gifts of the catalog as the cells of the grid: the same list the studio offers. */
++    private fun pickGift(position: Int) {
++        GiftStudioCatalog.requestGiftNames { names ->
++            val rows = names.map { TeleStudioPartsList.Row(it, lc("catalog"), gift = it) }
++            if (rows.isEmpty()) return@requestGiftNames
++            showDialog(picker.create(lc("Gift for the cell"), rows) { row -> putGift(position, row.name) })
++        }
++    }
++
++    /** Puts the gift with its model, backdrop and symbol into the cell, as the studio builds it. */
++    private fun putGift(position: Int, name: String, save: Boolean = true) {
++        GiftStudioCatalog.requestGift(name) { meta ->
++            if (meta == null) return@requestGift
++            val stars = StarsController.getInstance(currentAccount)
++            stars.getStarGiftPreview(meta.id) { preview ->
++                val attributes = preview?.sample_attributes.orEmpty()
++                val base = TL_stars.StarGift()
++                base.id = meta.id
++                base.gift_id = meta.id
++                base.title = name
++                val built = GiftStudio.giftWithAttributes(
++                    base,
++                    attributes.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull(),
++                    attributes.filterIsInstance<TL_stars.starGiftAttributeBackdrop>().firstOrNull(),
++                    attributes.filterIsInstance<TL_stars.starGiftAttributePattern>().firstOrNull()
++                )
++                layout.setCell(position, GiftGrid.cellOf(built))
++                if (save) GiftGrid.save(currentAccount, layout)
++                recycler?.adapter?.update(true)
++            }
++        }
++    }
++
+     override fun onFragmentDestroy() {
+         super.onFragmentDestroy()
+         recycler = null
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
+index 712418a39..c22d53414 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridCellItem.kt
+@@ -1,19 +1,27 @@
+ package tele.ui.settings
+ 
+ import android.content.Context
++import android.graphics.Canvas
++import android.graphics.DashPathEffect
++import android.graphics.Paint
++import android.graphics.RectF
+ import android.view.View
+ import android.widget.FrameLayout
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Components.LayoutHelper
+ import org.telegram.ui.Components.RecyclerListView
+ import org.telegram.ui.Components.UItem
+ import org.telegram.ui.Components.UniversalAdapter
+ import org.telegram.ui.Components.UniversalRecyclerView
+-import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Gifts.GiftSheet
+ import tele.helpers.GiftGrid
+ import tele.helpers.GiftGrid.Cell
+ 
+-/** The view that shows one cell of the grid. It wraps a GiftSheet.GiftCell. */
++/**
++ * The view that shows one cell of the grid: the card of a gift, or the dotted place of a gift that
++ * is not there yet, as the desktop grid draws it.
++ */
+ class GiftGridCellView(
+     context: Context,
+     currentAccount: Int,
+@@ -21,18 +29,72 @@ class GiftGridCellView(
+ ) : FrameLayout(context) {
+ 
+     private val giftCell = GiftSheet.GiftCell(context, currentAccount, resourcesProvider)
++    private val dotted = Paint(Paint.ANTI_ALIAS_FLAG).apply {
++        style = Paint.Style.STROKE
++        strokeWidth = AndroidUtilities.dp(1.5f).toFloat()
++        pathEffect = DashPathEffect(floatArrayOf(AndroidUtilities.dp(5f).toFloat(), AndroidUtilities.dp(4f).toFloat()), 0f)
++        color = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4, resourcesProvider)
++        alpha = 110
++    }
++    private val plus = Paint(Paint.ANTI_ALIAS_FLAG).apply {
++        style = Paint.Style.STROKE
++        strokeWidth = AndroidUtilities.dp(2f).toFloat()
++        strokeCap = Paint.Cap.ROUND
++        color = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4, resourcesProvider)
++        alpha = 170
++    }
++    private val rect = RectF()
++    private var empty = true
+ 
+     init {
+         addView(giftCell, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+-        setClickable(true)
++        giftCell.visibility = View.GONE
++        // the list handles the taps: a clickable child would eat them
++        isClickable = false
++        isFocusable = false
++        setWillNotDraw(false)
+     }
+ 
+     /** The card of the cell, so the export can draw it. */
+     fun card(): GiftSheet.GiftCell = giftCell
+ 
+     fun bind(cell: Cell) {
+-        val gift = cell.gift ?: return
+-        giftCell.setStarsGift(gift, cell.unique, false, false, false, false)
++        // a gift that is not loaded yet is drawn as a free cell, not as a broken card
++        empty = cell.empty || cell.gift == null
++        giftCell.visibility = if (empty) View.GONE else View.VISIBLE
++        val gift = cell.gift
++        if (gift != null) {
++            giftCell.setStarsGift(gift, cell.unique, false, false, false, false)
++            // the grid shows the gift itself, not its price
++            giftCell.hidePrice()
++        }
++        invalidate()
++    }
++
++    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++        // the card keeps the shape of a gift card: the cell has no content of its own
++        val width = MeasureSpec.getSize(widthMeasureSpec)
++        val height = (width * 4f / 3f).toInt()
++        super.onMeasure(
++            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
++            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
++        )
++    }
++
++    override fun onDraw(canvas: Canvas) {
++        if (!empty) {
++            super.onDraw(canvas)
++            return
++        }
++        val inset = AndroidUtilities.dp(6f).toFloat()
++        val radius = AndroidUtilities.dp(12f).toFloat()
++        rect.set(inset, inset, width - inset, height - inset)
++        canvas.drawRoundRect(rect, radius, radius, dotted)
++        val cx = width / 2f
++        val cy = height / 2f
++        val arm = AndroidUtilities.dp(13f).toFloat()
++        canvas.drawLine(cx - arm, cy, cx + arm, cy, plus)
++        canvas.drawLine(cx, cy - arm, cx, cy + arm, plus)
+     }
+ }
+ 
+@@ -62,7 +124,7 @@ class GiftGridCellFactory : UItem.UItemFactory<GiftGridCellView>() {
+     override fun contentsEquals(a: UItem, b: UItem): Boolean {
+         val first = a.`object` as? Cell ?: return false
+         val second = b.`object` as? Cell ?: return false
+-        return first.giftId == second.giftId && first.gift === second.gift
++        return first.giftId == second.giftId && first.gift === second.gift && first.empty == second.empty
+     }
+ 
+     companion object {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt
+index 1e5b57495..0285e659a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleGiftGridExport.kt
+@@ -38,57 +38,42 @@ object TeleGiftGridExport {
+      * the picture and the screen look alike.
+      */
+     @JvmStatic
+-    fun export(fragment: BaseFragment, layout: Layout) {
++    fun export(fragment: BaseFragment, recycler: android.view.ViewGroup, layout: Layout) {
+         val activity = fragment.parentActivity ?: return
+-        val cells = layout.collect()
+-        if (cells.isEmpty()) {
++        if (layout.collect().isEmpty()) {
+             show(fragment, LocaleController.getString(R.string.TeleGiftGridEmpty))
+             return
+         }
+-        val card = GiftSheet.GiftCell(activity, fragment.currentAccount, fragment.resourceProvider)
+-        val cellWidth = AndroidUtilities.dp(120f).toInt()
+-        val cellHeight = AndroidUtilities.dp(160f).toInt()
+-        val columns = GiftGrid.COLUMNS
+-        val rows = (cells.size + columns - 1) / columns
+-
+-        var scale = 1f
+-        val width = columns * cellWidth + (columns + 1) * GAP
+-        val height = rows * cellHeight + (rows + 1) * GAP
+-        if (width > MAX_WIDTH || height > MAX_HEIGHT) {
+-            scale = minOf(MAX_WIDTH.toFloat() / width, MAX_HEIGHT.toFloat() / height)
+-        }
+-        val bitmap = Bitmap.createBitmap(
+-            (width * scale).toInt().coerceAtLeast(2),
+-            (height * scale).toInt().coerceAtLeast(2),
+-            Bitmap.Config.ARGB_8888
++        if (recycler.width <= 0) return
++        // the list is measured at the height of all its rows, so every card is drawn by itself
++        val width = recycler.width
++        val height = (AndroidUtilities.dp(160f) + GAP) * layout.rowCount() + GAP
++        recycler.measure(
++            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
++            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
+         )
+-        val canvas = Canvas(bitmap)
+-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+-        paint.color = Color.WHITE
+-        canvas.drawRect(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat(), paint)
+-
+-        for (i in cells.indices) {
+-            val cell = cells[i]
+-            val gift = cell.gift ?: continue
+-            val column = i % columns
+-            val row = i / columns
+-            card.setStarsGift(gift, cell.unique, false, false, false, false)
+-            card.measure(
+-                View.MeasureSpec.makeMeasureSpec(cellWidth, View.MeasureSpec.EXACTLY),
+-                View.MeasureSpec.makeMeasureSpec(cellHeight, View.MeasureSpec.EXACTLY)
+-            )
+-            card.layout(0, 0, cellWidth, cellHeight)
+-            val save = canvas.save()
+-            canvas.translate(
+-                (GAP + column * (cellWidth + GAP)) * scale,
+-                (GAP + row * (cellHeight + GAP)) * scale
++        recycler.layout(0, 0, width, height)
++        // the cards of the rows that came into view load their pictures a moment later
++        AndroidUtilities.runOnUIThread({
++            val bitmap = Bitmap.createBitmap(
++                recycler.width.coerceAtLeast(2),
++                recycler.height.coerceAtLeast(2),
++                Bitmap.Config.ARGB_8888
+             )
+-            canvas.scale(scale, scale)
+-            card.draw(canvas)
+-            canvas.restoreToCount(save)
+-        }
+-
+-        save(fragment, bitmap)
++            recycler.draw(Canvas(bitmap))
++            // the rows end above the measured height, so the empty strip under them is cut away
++            val last = recycler.getChildAt(recycler.childCount - 1)
++            val bottom = ((last?.bottom ?: recycler.height) + GAP).coerceIn(2, bitmap.height)
++            val cropped = if (bottom < bitmap.height) {
++                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bottom).also { bitmap.recycle() }
++            } else {
++                bitmap
++            }
++            // the grid goes back to the size of the screen
++            recycler.requestLayout()
++            recycler.invalidate()
++            save(fragment, cropped)
++        }, 700)
+     }
+ 
+     /** Saves the picture in the gallery and shows the result. */
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 42563178f..6385c4b40 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -618,6 +618,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
+                 MODE_UPDATE_ACTION -> if (tele.helpers.TeleUpdater.isReady()) tele.helpers.TeleUpdater.install(parentActivity) else tele.helpers.TeleUpdater.checkNow()
+                 "gift_grid" -> presentFragment(TeleGiftGridActivity())
++                "gift_studio" -> presentFragment(
++                    tele.ui.TeleGiftStudioActivity(UserConfig.selectedAccount, 0L, null)
++                )
+                 MODE_WHATS_NEW -> tele.helpers.TeleChangelog.open(this)
+                 else -> presentFragment(TeleSettingsActivity(row.mode ?: MODE_ROOT))
+             }
+@@ -1540,10 +1543,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Copy gift collection link", TeleConfig.GIFT_COLLECTION_LINK),
+                 toggle("Retry loading gift collections", TeleConfig.GIFT_COLLECTIONS_RETRY),
+                 toggle("Fake upgrade of gifts", TeleConfig.GIFT_FAKE_UPGRADE),
+-                toggle("Roll animation", TeleConfig.GIFT_ROLL_ANIMATION),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Gift studio"),
+-                toggle("Gift studio", TeleConfig.GIFT_STUDIO),
++                link("Open the gift studio", "gift_studio"),
++                toggle("Gift studio item in gift menus", TeleConfig.GIFT_STUDIO_MENU),
++                toggle("Gift menu in Chats menu", TeleConfig.GIFT_STUDIO_MAIN_MENU),
+                 toggle("Gift grid", TeleConfig.GIFT_GRID),
+                 link("Open the gift grid", "gift_grid"),
+                 Row(TYPE_SHADOW),
