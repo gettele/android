@@ -1,0 +1,649 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 31 Oct 2026 12:16:37 +0300
+Subject: [PATCH 239/239] fix: studio previews like the client
+
+---
+ .../java/tele/helpers/GiftStudioCatalog.kt    |  21 ++
+ .../src/main/java/tele/ui/TeleGiftPreview.kt  |  34 ++-
+ .../java/tele/ui/TeleGiftStudioActivity.kt    | 239 ++++++++++++------
+ .../main/java/tele/ui/TeleStudioPartsList.kt  | 117 +++------
+ 4 files changed, 242 insertions(+), 169 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+index d4bb80ede..78c875ee1 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftStudioCatalog.kt
+@@ -52,6 +52,27 @@ object GiftStudioCatalog {
+         }
+     }
+ 
++    /** The ids of the gifts of the catalog: the gift id to its name. */
++    @JvmStatic
++    fun requestIds(done: (Map<Long, String>) -> Unit) {
++        fetch("ids") { bytes ->
++            val result = LinkedHashMap<Long, String>()
++            try {
++                val json = org.json.JSONObject(String(bytes, Charsets.UTF_8))
++                val keys = json.keys()
++                while (keys.hasNext()) {
++                    val key = keys.next()
++                    val id = key.toLongOrNull()
++                    val name = json.optString(key)
++                    if (id != null && id != 0L && name.isNotEmpty()) result[id] = name
++                }
++            } catch (throwable: Throwable) {
++                FileLog.e(throwable)
++            }
++            done(result)
++        }
++    }
++
+     /** The parts of one gift of the catalog, by the name of the gift. */
+     @JvmStatic
+     fun requestParts(gift: String, done: (CatalogParts) -> Unit) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt
+index 45aa6d104..ab856f760 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftPreview.kt
+@@ -116,15 +116,23 @@ class TeleGiftPreview(
+         cell.setImageSize(150)
+         cell.setStarsGift(gift, false, false, false, false, false)
+         cell.hidePrice()
+-        column.addView(cell, LinearLayout.LayoutParams(AndroidUtilities.dp(280f), AndroidUtilities.dp(300f)))
+-        if (!compact) {
+-            val title = TextView(context)
+-            title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 20f)
+-            title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
+-            title.text = GiftStudio.cardTitle(parts.title, parts.number)
+-            title.gravity = Gravity.CENTER
+-            column.addView(title, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0f, 12f, 0f, 0f))
+-            textViews.add(title)
++        column.addView(cell, LinearLayout.LayoutParams(AndroidUtilities.dp(240f), AndroidUtilities.dp(240f)))
++        // the tile says "Saved Gift" over the name, the card shows the name alone, like the desktop client
++        val headline = TextView(context)
++        headline.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 20f)
++        headline.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider))
++        headline.text = if (withButton) "Saved Gift" else GiftStudio.cardTitle(parts.title, parts.number)
++        headline.gravity = Gravity.CENTER
++        column.addView(headline, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0f, 12f, 0f, 0f))
++        textViews.add(headline)
++        if (withButton) {
++            val name = TextView(context)
++            name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 15f)
++            name.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourcesProvider))
++            name.text = GiftStudio.cardTitle(parts.title, parts.number)
++            name.gravity = Gravity.CENTER
++            column.addView(name, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            textViews.add(name)
+         }
+         for (row in GiftStudio.rowsOf(parts.model, parts.symbol, parts.backdrop)) {
+             val line = TextView(context)
+@@ -142,7 +150,13 @@ class TeleGiftPreview(
+             button.setText(LocaleController.getString(R.string.Gift2ViewInProfile))
+             button.gravity = Gravity.CENTER
+             button.setBackgroundColor(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider))
+-            column.addView(button, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, AndroidUtilities.dp(44f), 0f, 16f, 0f, 0f))
++            val buttonParams = LinearLayout.LayoutParams(
++                LinearLayout.LayoutParams.WRAP_CONTENT, AndroidUtilities.dp(44f)
++            )
++            buttonParams.gravity = Gravity.CENTER_HORIZONTAL
++            buttonParams.topMargin = AndroidUtilities.dp(16f)
++            button.setPadding(AndroidUtilities.dp(24f), 0, AndroidUtilities.dp(24f), 0)
++            column.addView(button, buttonParams)
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+index 4a78f009c..13ea6ab9c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftStudioActivity.kt
+@@ -43,6 +43,7 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+ ) : BaseFragment() {
+ 
+     private var giftPreview: TeleGiftPreview? = null
++    private var previewParams: LinearLayout.LayoutParams? = null
+     private var layoutRow: TextSettingsCell? = null
+     private var collectionCard: org.telegram.ui.Gifts.GiftSheet.GiftCell? = null
+     private var usedCatalogGift: String? = null
+@@ -81,7 +82,8 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+ 
+         giftPreview = TeleGiftPreview(context, account, resourceProvider)
+-        container.addView(giftPreview?.view(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(340f)))
++        previewParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(340f))
++        container.addView(giftPreview?.view(), previewParams)
+         layoutRow = addRow(container, "Layout") { chooseLayout() }
+         collectionRow = addRowWithCard(container, "Collection") { chooseCollection() }
+         modelRow = addRow(container, "Model") { chooseModel() }
+@@ -98,13 +100,20 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+             videoRow = addRow(container, "Save as a video") { saveVideo() }
+         }
+ 
+-        fragmentView = container
++        fragmentView = android.widget.ScrollView(context).also { scroll ->
++            scroll.addView(container, LayoutHelper.createScroll(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP))
++        }
+         load()
+-        return container
++        return fragmentView
+     }
+ 
+     private fun lc(text: String): String = TeleLowercase.lc(text)
+ 
++    /** The title and the value of a row in one call: a value set alone stays empty in this cell. */
++    private fun setRow(cell: TextSettingsCell?, title: String, value: String) {
++        cell?.setTextAndValue(lc(title), value, false)
++    }
++
+     private fun addRow(container: LinearLayout, title: String, action: () -> Unit): TextSettingsCell {
+         val cell = TextSettingsCell(container.context)
+         cell.setText(lc(title), false)
+@@ -132,40 +141,69 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         for (gift in stars.gifts) {
+             found.add(gift)
+         }
+-        if (dialogId != 0L) {
+-            val list = stars.getProfileGiftsList(dialogId, false)
+-            if (list != null) {
+-                for (saved in list.gifts) {
+-                    found.add(saved.gift)
+-                }
++        // the gifts of the profile of this account: dialogId 0 is the own profile, and the list loads on demand
++        val list = stars.getProfileGiftsList(dialogId, true)
++        if (list != null) {
++            for (saved in list.gifts) {
++                found.add(saved.gift)
+             }
+         }
+         gifts.clear()
+         gifts.addAll(found)
+         // the preview of the gift of the account carries the sample attributes with real documents
+-        val giftId = gifts.firstOrNull()?.gift_id ?: initial?.gift?.gift_id ?: 0L
++        val apply = { preview: TL_stars.starGiftUpgradePreview? ->
++            if (preview != null) {
++                sampleAttributes = preview.sample_attributes
++                val first = initial?.gift ?: gifts.firstOrNull() ?: catalogGift()
++                if (first != null) select(first) else update()
++            }
++        }
++        val ownGift = list?.gifts?.firstOrNull()?.gift ?: found.firstOrNull()
++        val giftId = ownGift?.gift_id ?: ownGift?.id ?: 0L
++        val fromCatalog = {
++            // no gifts of this account yet: the parts of a gift of the catalog are used
++            GiftStudioCatalog.requestIds { ids ->
++                // a stable pick: the map has no order, so the name decides
++                val entry = ids.entries.minByOrNull { it.value } ?: return@requestIds
++                usedCatalogGift = entry.value
++                stars.getStarGiftPreview(entry.key, apply)
++            }
++        }
+         if (giftId != 0L) {
+-            stars.getStarGiftPreview(giftId) { preview ->
+-                if (preview != null) {
+-                    sampleAttributes = preview.sample_attributes
+-                    if (gift == null) {
+-                        val first = initial?.gift ?: gifts.firstOrNull()
+-                        if (first != null) select(first)
+-                    }
+-                    update()
++            stars.getStarGiftPreview(giftId, apply)
++        } else if (list != null && !list.endReached) {
++            // the list of the profile is still loading: its gifts carry the gift ids
++            list.load()
++            AndroidUtilities.runOnUIThread({
++                val loaded = list.gifts.firstOrNull()?.gift
++                if (loaded != null && loaded.gift_id != 0L) {
++                    // the list finished loading: its gift is the one the studio builds
++                    gifts.add(loaded)
++                    stars.getStarGiftPreview(loaded.gift_id, apply)
++                } else {
++                    fromCatalog()
+                 }
+-            }
++            }, 1500)
++        } else {
++            fromCatalog()
+         }
+-        val first = initial?.gift ?: gifts.firstOrNull()
+-        if (first != null) select(first)
++    }
++
++    /** A stand-in gift when the account has none: the name of the catalog, or a plain one. */
++    private fun catalogGift(): TL_stars.StarGift {
++        val gift = TL_stars.StarGift()
++        gift.title = usedCatalogGift ?: "Gift"
++        gift.gift_id = 0L
++        gift.sticker = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull()?.document
++        return gift
+     }
+ 
+     private fun select(gift: TL_stars.StarGift) {
+         this.gift = gift
+-        // the samples of the preview carry the real documents of every part
+-        model = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull()
+-        backdrop = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeBackdrop>().firstOrNull()
+-        symbol = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributePattern>().firstOrNull()
++        // the parts of the gift are taken again by update()
++        model = null
++        backdrop = null
++        symbol = null
+         update()
+     }
+ 
+@@ -175,29 +213,45 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         val builder = AlertDialog.Builder(parentActivity, resourceProvider)
+             .setTitle(lc("Layout"))
+             .setItems(layouts) { _, which ->
+-                giftPreview?.setLayout(TeleGiftPreview.Layout.entries[which])
++                val layout = TeleGiftPreview.Layout.entries[which]
++                giftPreview?.setLayout(layout)
++                // the card modes carry a table under the picture, so they get the room for it
++                previewParams?.height = AndroidUtilities.dp(
++                    if (layout == TeleGiftPreview.Layout.Cover || layout == TeleGiftPreview.Layout.Sticker) 340f else 480f
++                )
++                giftPreview?.view()?.layoutParams = previewParams
++                giftPreview?.view()?.requestLayout()
++                setRow(layoutRow, "Layout", layout.name)
++                update()
+             }
+         builder.show()
+     }
+ 
+     private fun update() {
++        if (gift == null) gift = catalogGift()
+         val gift = gift
+-        collectionRow?.setValue(gift?.title ?: "", true)
+-        modelRow?.setValue(model?.name ?: "", true)
+-        backdropRow?.setValue(backdrop?.name ?: "", true)
+-        symbolRow?.setValue(symbol?.name ?: "", true)
++        // the samples of the server preview carry the real documents; the gift's own attributes are the fallback
++        val samples = if (sampleAttributes.isNotEmpty()) sampleAttributes else gift?.attributes ?: emptyList()
++        if (model == null) model = samples.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull()
++        if (backdrop == null) backdrop = samples.filterIsInstance<TL_stars.starGiftAttributeBackdrop>().firstOrNull()
++        if (symbol == null) symbol = samples.filterIsInstance<TL_stars.starGiftAttributePattern>().firstOrNull()
++        setRow(collectionRow, "Collection", gift?.title ?: "")
++        setRow(modelRow, "Model", model?.name ?: "")
++        setRow(backdropRow, "Backdrop", backdrop?.name ?: "")
++        setRow(symbolRow, "Symbol", symbol?.name ?: "")
+         val modelPermille = model?.getRarityPermille() ?: 0
+         val backdropPermille = backdrop?.getRarityPermille() ?: 0
+         val odds = GiftStudio.rarityOdds(modelPermille, backdropPermille)
+         val chance = GiftStudio.rarityChance(modelPermille, backdropPermille)
+-        rarityRow?.setValue(
++        setRow(
++            rarityRow, "Rarity",
+             when {
+                 odds.isEmpty() -> lc("unknown")
+                 chance.isEmpty() -> odds
+                 else -> "$odds ($chance)"
+-            },
+-            true
++            }
+         )
++        setRow(layoutRow, "Layout", giftPreview?.currentLayout()?.name ?: "")
+         giftPreview?.setParts(
+             TeleGiftPreview.Parts(
+                 title = gift?.title ?: "",
+@@ -210,6 +264,7 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+         )
+         val built = gift?.let { GiftStudio.giftWithAttributes(it, model, backdrop, symbol) }
+         if (built != null) {
++            giftPreview?.remember(built)
+             collectionCard?.setStarsGift(built, false, false, false, false, false)
+         } else {
+             collectionCard?.hidePrice()
+@@ -217,86 +272,106 @@ class TeleGiftStudioActivity @JvmOverloads constructor(
+     }
+ 
+     private fun chooseCollection() {
+-        // every gift the studio knows: the ones of the account and the catalog, so the collection
+-        // list is never a single row
++        // every gift the studio knows: the ones of the account and the catalog
+         val names = LinkedHashSet<String>()
+-        for (gift in gifts) names.add(gift.title ?: "")
++        for (g in gifts) names.add(g.title ?: "")
+         GiftStudioCatalog.requestGifts { catalog ->
+             names.addAll(catalog)
+-            val list = names.toList()
+-            val builder = AlertDialog.Builder(parentActivity, resourceProvider)
+-                .setTitle(lc("Collection"))
+-                .setItems(list.toTypedArray()) { _, which ->
+-                    val picked = list[which]
+-                    val own = gifts.firstOrNull { it.title == picked }
+-                    if (own != null) {
+-                        select(own)
+-                    } else {
+-                        loadPreviewOf(picked)
+-                    }
++            val rows = names.filter { it.isNotEmpty() }.map { name ->
++                val own = gifts.firstOrNull { it.title == name }
++                if (own != null) {
++                    TeleStudioPartsList.Row(name, own, subtitle = own.title ?: "")
++                } else {
++                    val samples = sampleAttributes
++                    TeleStudioPartsList.Row(
++                        name, baseGift(name),
++                        model = samples.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull(),
++                        backdrop = samples.filterIsInstance<TL_stars.starGiftAttributeBackdrop>().firstOrNull(),
++                        symbol = samples.filterIsInstance<TL_stars.starGiftAttributePattern>().firstOrNull(),
++                        subtitle = lc("catalog")
++                    )
+                 }
+-            showDialog(builder.create())
++            }
++            showDialog(partsList.dialog(lc("Collection"), rows) { row ->
++                val own = gifts.firstOrNull { it.title == row.name }
++                if (own != null) select(own) else loadPreviewOf(row.name)
++            })
+         }
+     }
+ 
+-    /** The parts of a gift of the catalog: they are loaded from its own preview request. */
++    /** The parts of a gift of the catalog: its own preview request. */
+     private fun loadPreviewOf(name: String) {
+         val stars = StarsController.getInstance(account)
+-        val giftId = stars.gifts.firstOrNull { it.title == name }?.gift_id ?: stars.gifts.firstOrNull()?.gift_id ?: return
+-        stars.getStarGiftPreview(giftId) { preview ->
+-            if (preview == null) return@getStarGiftPreview
+-            sampleAttributes = preview.sample_attributes
+-            model = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull()
+-            backdrop = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeBackdrop>().firstOrNull()
+-            symbol = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributePattern>().firstOrNull()
+-            collectionRow?.setValue(name, true)
+-            update()
++        val own = stars.gifts.firstOrNull { it.title == name }
++        if (own != null) {
++            select(own)
++            return
++        }
++        GiftStudioCatalog.requestIds { ids ->
++            val entry = ids.entries.firstOrNull { it.value == name } ?: return@requestIds
++            usedCatalogGift = entry.value
++            stars.getStarGiftPreview(entry.key) { preview ->
++                if (preview == null) return@getStarGiftPreview
++                sampleAttributes = preview.sample_attributes
++                model = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeModel>().firstOrNull()
++                backdrop = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeBackdrop>().firstOrNull()
++                symbol = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributePattern>().firstOrNull()
++                val base = baseGift(name)
++                if (base != null) select(base)
++                update()
++            }
+         }
+     }
+ 
++    /** A stand-in gift with this name, for the parts of the catalog. */
++    private fun baseGift(name: String): TL_stars.StarGift? {
++        gifts.firstOrNull { it.title == name }?.let { return it }
++        val first = gifts.firstOrNull() ?: return null
++        val copy = GiftStudio.giftWithAttributes(first, model, backdrop, symbol)
++        copy.title = name
++        return copy
++    }
++
+     private fun models(): List<TL_stars.starGiftAttributeModel> = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeModel>()
+ 
+     private fun backdrops(): List<TL_stars.starGiftAttributeBackdrop> = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributeBackdrop>()
+ 
+     private fun symbols(): List<TL_stars.starGiftAttributePattern> = sampleAttributes.filterIsInstance<TL_stars.starGiftAttributePattern>()
+ 
++    /** The row of the gift the studio builds now, so every picker previews on the same gift. */
++    private fun baseGiftOrNull(): TL_stars.StarGift? = gift ?: catalogGift()
++
+     private fun chooseModel() {
+         val list = models()
+         if (list.isEmpty()) return
+-        val names = list.map { it.name }.toTypedArray()
+-        val builder = AlertDialog.Builder(parentActivity, resourceProvider)
+-            .setTitle(lc("Model"))
+-            .setItems(names) { _, which ->
+-                model = list[which]
+-                update()
+-            }
+-        builder.show()
++        val base = baseGiftOrNull()
++        val rows = list.map { TeleStudioPartsList.Row(it.name, base, model = it) }
++        showDialog(partsList.dialog(lc("Model"), rows) { row ->
++            model = row.model
++            update()
++        })
+     }
+ 
+     private fun chooseBackdrop() {
+         val list = backdrops()
+         if (list.isEmpty()) return
+-        val names = list.map { it.name }.toTypedArray()
+-        val builder = AlertDialog.Builder(parentActivity, resourceProvider)
+-            .setTitle(lc("Backdrop"))
+-            .setItems(names) { _, which ->
+-                backdrop = list[which]
+-                update()
+-            }
+-        builder.show()
++        val base = baseGiftOrNull()
++        val rows = list.map { TeleStudioPartsList.Row(it.name, base, backdrop = it) }
++        showDialog(partsList.dialog(lc("Backdrop"), rows) { row ->
++            backdrop = row.backdrop
++            update()
++        })
+     }
+ 
+     private fun chooseSymbol() {
+         val list = symbols()
+         if (list.isEmpty()) return
+-        val names = list.map { it.name }.toTypedArray()
+-        val builder = AlertDialog.Builder(parentActivity, resourceProvider)
+-            .setTitle(lc("Symbol"))
+-            .setItems(names) { _, which ->
+-                symbol = list[which]
+-                update()
+-            }
+-        builder.show()
++        val base = baseGiftOrNull()
++        val rows = list.map { TeleStudioPartsList.Row(it.name, base, symbol = it) }
++        showDialog(partsList.dialog(lc("Symbol"), rows) { row ->
++            symbol = row.symbol
++            update()
++        })
+     }
+ 
+     private fun savePng() {
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt b/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
+index dd1bfe4da..444996061 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleStudioPartsList.kt
+@@ -21,8 +21,8 @@ import org.telegram.ui.Gifts.GiftSheet
+ import tele.helpers.GiftStudio
+ 
+ /**
+- * The list of the parts of the studio (desktop 0197): every row shows the card of the gift on the
+- * left, so the choice is seen before it is made. The card is the stock one of Telegram.
++ * The list of the parts of the studio (desktop 0197): every row shows the gift card with that part
++ * applied, so the choice is seen before it is made. The card is the stock one of Telegram.
+  */
+ class TeleStudioPartsList(
+     private val context: Context,
+@@ -30,53 +30,41 @@ class TeleStudioPartsList(
+     private val resourcesProvider: Theme.ResourcesProvider?
+ ) {
+ 
+-    /** One row of the list: a part with the gift it belongs to. */
++    /** One row of the list: a part of the gift and the gift it is applied to. */
+     class Row(
+-        @JvmField val part: GiftStudio.Part,
++        @JvmField val name: String,
+         @JvmField val gift: TL_stars.StarGift?,
+-        @JvmField val title: String
++        @JvmField val model: TL_stars.starGiftAttributeModel? = null,
++        @JvmField val backdrop: TL_stars.starGiftAttributeBackdrop? = null,
++        @JvmField val symbol: TL_stars.starGiftAttributePattern? = null,
++        @JvmField val subtitle: String = ""
+     )
+ 
+     /**
+-     * The dialog of the parts, every row with the card of the gift of the part. The caller shows it.
+-     *
+-     * [onPick] is called with the chosen part, [onCancel] when the list is closed without a choice.
++     * The dialog of the parts, every row with the card of the gift with that part. The caller shows it.
+      */
+-    fun dialog(
+-        title: String,
+-        rows: List<Row>,
+-        selected: GiftStudio.Part?,
+-        onPick: (GiftStudio.Part) -> Unit,
+-        onCancel: () -> Unit
+-    ): AlertDialog {
+-        // an empty list still opens, so the row of the setting is never dead
+-        val list = if (rows.isEmpty()) emptyList(context, resourcesProvider) else partsList(context, resourcesProvider, rows, selected, onPick)
++    fun dialog(title: String, rows: List<Row>, onPick: (Row) -> Unit): AlertDialog {
++        val list = if (rows.isEmpty()) empty(context) else partsList(rows, onPick)
+         return AlertDialog.Builder(context, resourcesProvider)
+             .setTitle(title)
+             .setView(list)
+-            .setNegativeButton(LocaleController.getString(R.string.Cancel)) { _, _ -> onCancel() }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+             .create()
+     }
+ 
+     /** The list of the parts. */
+-    private fun partsList(
+-        context: Context,
+-        resourcesProvider: Theme.ResourcesProvider?,
+-        rows: List<Row>,
+-        selected: GiftStudio.Part?,
+-        onPick: (GiftStudio.Part) -> Unit
+-    ): RecyclerListView {
++    private fun partsList(rows: List<Row>, onPick: (Row) -> Unit): RecyclerListView {
+         val list = RecyclerListView(context)
+         list.layoutManager = LinearLayoutManager(context)
+-        list.adapter = Adapter(rows, selected)
++        list.adapter = Adapter(rows)
+         list.setOnItemClickListener { _, position ->
+-            rows.getOrNull(position)?.let { onPick(it.part) }
++            rows.getOrNull(position)?.let(onPick)
+         }
+         return list
+     }
+ 
+-    /** A list that only says there is nothing to pick yet. */
+-    private fun emptyList(context: Context, resourcesProvider: Theme.ResourcesProvider?): View {
++    /** A list that only says there is nothing to pick. */
++    private fun empty(context: Context): View {
+         val text = TextView(context)
+         text.setText(LocaleController.getString(R.string.TeleGiftStudioNoParts))
+         text.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+@@ -85,90 +73,65 @@ class TeleStudioPartsList(
+         return text
+     }
+ 
+-    private inner class Adapter(
+-        private val rows: List<Row>,
+-        private val selected: GiftStudio.Part?
+-    ) : RecyclerListView.SelectionAdapter() {
++    private inner class Adapter(private val rows: List<Row>) : RecyclerListView.SelectionAdapter() {
+ 
+         override fun getItemCount(): Int = rows.size
+ 
+         override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = true
+ 
+-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+-            return Holder(RowView(context, account, resourcesProvider))
+-        }
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder =
++            Holder(RowView(context, account, resourcesProvider))
+ 
+         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+-            val row = rows[position]
+-            (holder.itemView as RowView).set(row, row.part === selected)
++            (holder.itemView as RowView).set(rows[position])
+         }
+     }
+ 
+     private class Holder(val row: RowView) : RecyclerView.ViewHolder(row)
+ 
+-    /** One row: the card of the gift on the left and the name of the part on the right. */
++    /** One row: the card of the gift with the part on the left and the name on the right. */
+     private class RowView(
+         context: Context,
+         account: Int,
+         resourcesProvider: Theme.ResourcesProvider?
+     ) : LinearLayout(context) {
+ 
+-        private val cell: GiftSheet.GiftCell
++        private val cell = GiftSheet.GiftCell(context, account, resourcesProvider)
+         private val nameView: TextView
+-        private val chanceView: TextView
++        private val detailView: TextView
+ 
+         init {
+             orientation = HORIZONTAL
+             gravity = Gravity.CENTER_VERTICAL
+             setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(6f), AndroidUtilities.dp(16f), AndroidUtilities.dp(6f))
+-            cell = GiftSheet.GiftCell(context, account, resourcesProvider)
+-            cell.setImageSize(52)
+-            addView(cell, LayoutHelper.createLinear(52, 52))
++            cell.setImageSize(56)
++            addView(cell, LayoutHelper.createLinear(56, 56))
+             val text = LinearLayout(context)
+             text.orientation = VERTICAL
+             nameView = TextView(context)
+             nameView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
+             nameView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider))
+-            chanceView = TextView(context)
+-            chanceView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
+-            chanceView.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
++            detailView = TextView(context)
++            detailView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            detailView.setTextColor(Theme.getColor(Theme.key_dialogTextGray2, resourcesProvider))
+             text.addView(nameView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
+-            text.addView(chanceView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
++            text.addView(detailView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
+             addView(text, LayoutHelper.createLinear(0, LayoutHelper.WRAP_CONTENT, 1f))
+         }
+ 
+-        fun set(row: Row, selected: Boolean) {
+-            nameView.text = row.title
+-            chanceView.text = GiftStudio.rarityOdds(row.part.permille, 1000)
+-            chanceView.visibility = if (chanceView.text.isEmpty()) GONE else VISIBLE
+-            // the card of the gift the part belongs to
++        fun set(row: Row) {
++            nameView.text = row.name
++            val rarity = row.model?.getRarityPermille() ?: row.backdrop?.getRarityPermille() ?: row.symbol?.getRarityPermille() ?: 0
++            val odds = GiftStudio.rarityText(rarity)
++            detailView.text = if (row.subtitle.isNotEmpty()) row.subtitle else odds
++            detailView.visibility = if (detailView.text.isEmpty()) GONE else VISIBLE
++            // the card of the gift with this part applied, so the row shows what it does
+             val gift = row.gift
+             if (gift != null) {
+-                cell.setStarsGift(gift, false, false, false, false, false)
+-            }
+-            alpha = if (selected) 1f else 0.85f
+-        }
+-    }
+-
+-    companion object {
+-        /** The rows of the parts of one kind, with the gift of every part. */
+-        @JvmStatic
+-        fun rowsOf(parts: List<GiftStudio.Part>, gifts: List<TL_stars.StarGift>): List<Row> {
+-            val result = ArrayList<Row>()
+-            for (part in parts) {
+-                val gift = gifts.firstOrNull { gift ->
+-                    gift.attributes.any { attribute ->
+-                        when (attribute) {
+-                            is TL_stars.starGiftAttributeModel -> attribute.name == part.name
+-                            is TL_stars.starGiftAttributeBackdrop -> attribute.name == part.name
+-                            is TL_stars.starGiftAttributePattern -> attribute.name == part.name
+-                            else -> false
+-                        }
+-                    }
+-                }
+-                result.add(Row(part, gift, part.name))
++                val built = GiftStudio.giftWithAttributes(gift, row.model, row.backdrop, row.symbol)
++                cell.setStarsGift(built, false, false, false, false, false)
++                cell.hidePrice()
+             }
+-            return result
+         }
+     }
+ }
