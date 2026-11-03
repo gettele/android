@@ -6,11 +6,11 @@ Subject: [PATCH 244/244] feat: add diagnostic reports
 ---
  .../src/main/java/tele/TeleConfig.kt          |   7 ++
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +
- .../src/main/java/tele/helpers/TeleCrash.kt   |  97 +++++++++++++-
+ .../src/main/java/tele/helpers/TeleCrash.kt   | 102 ++++++++++++++-
  .../src/main/java/tele/helpers/TeleFreeze.kt  | 119 ++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |  18 +++
  .../tele/ui/settings/TeleSettingsActivity.kt  |  53 +++++++-
- 6 files changed, 289 insertions(+), 7 deletions(-)
+ 6 files changed, 294 insertions(+), 7 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt
 
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
@@ -46,7 +46,7 @@ index 21bc91f13..199fb8ca1 100644
          tele.helpers.TeleCounters.preload()
          tele.helpers.FolderIcons.preload()
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
-index 8af6cd16a..a1d836483 100644
+index 8af6cd16a..7bacc5c6f 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
 @@ -2,6 +2,7 @@ package tele.helpers
@@ -92,7 +92,7 @@ index 8af6cd16a..a1d836483 100644
      @JvmStatic
      fun dumpFile(context: Context = ApplicationLoader.applicationContext): File =
          File(File(context.filesDir, DUMP_DIR).apply { mkdirs() }, DUMP_FILE)
-@@ -141,25 +159,89 @@ object TeleCrash {
+@@ -141,25 +159,94 @@ object TeleCrash {
          "memory: java $used/$max MB, native $native MB, pss $pss MB"
      }.getOrElse { "memory: unknown" }
  
@@ -124,20 +124,25 @@ index 8af6cd16a..a1d836483 100644
 +        if (Build.VERSION.SDK_INT < 30) return null
 +        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 +        val infos = runCatching {
-+            manager.getHistoricalProcessExitReasons(context.packageName, 0, 3)
++            manager.getHistoricalProcessExitReasons(context.packageName, 0, 5)
 +        }.getOrNull() ?: return null
-+        val info = infos.firstOrNull { it.timestamp > 0 } ?: return null
-+        val stamp = info.timestamp.toString()
-+        if (stamp == TeleConfig.DIAG_LAST_EXIT.value) return null
-+        val note = when (info.reason) {
-+            ApplicationExitInfo.REASON_CRASH, ApplicationExitInfo.REASON_CRASH_NATIVE -> "crash without a dump"
-+            ApplicationExitInfo.REASON_ANR -> "freeze killed by the system"
-+            ApplicationExitInfo.REASON_LOW_MEMORY -> "out of memory"
-+            ApplicationExitInfo.REASON_SIGNALED -> "killed by a signal"
-+            else -> "process ended without a dump"
++        // a normal stop (the user swiped the app away, android reclaimed it) is not worth a report:
++        // only the endings that leave no dump of their own are, and the newest of them wins
++        for (info in infos) {
++            if (info.timestamp <= 0) continue
++            val note = when (info.reason) {
++                ApplicationExitInfo.REASON_CRASH, ApplicationExitInfo.REASON_CRASH_NATIVE -> "crash without a dump"
++                ApplicationExitInfo.REASON_ANR -> "freeze killed by the system"
++                ApplicationExitInfo.REASON_LOW_MEMORY -> "out of memory"
++                ApplicationExitInfo.REASON_SIGNALED -> "killed by a signal"
++                else -> continue
++            }
++            val stamp = info.timestamp.toString()
++            if (stamp == TeleConfig.DIAG_LAST_EXIT.value) return null
++            val description = runCatching { info.description.orEmpty() }.getOrDefault("")
++            return Exit(stamp, note, description)
 +        }
-+        val description = runCatching { info.description.orEmpty() }.getOrDefault("")
-+        return Exit(stamp, note, description)
++        return null
 +    }
 +
 +    private fun writeDiagnostics(context: Context, note: String, description: String) {
@@ -186,7 +191,7 @@ index 8af6cd16a..a1d836483 100644
              .setPositiveButton(TeleLowercase.lc("Send")) { _, _ -> sendPendingAsync(activity) }
              .setNegativeButton(TeleLowercase.lc("Don't send")) { _, _ -> clearPending(activity) }
              .create()
-@@ -184,14 +266,17 @@ object TeleCrash {
+@@ -184,14 +271,17 @@ object TeleCrash {
      fun clearPending(context: Context = ApplicationLoader.applicationContext) {
          val f = crashFile(context)
          if (f.exists()) f.delete()
