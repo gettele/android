@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 3 Nov 2026 15:09:51 +0300
+Subject: [PATCH] fix: spread pasted wallet words
+
+---
+ .../ui/Wallet/WalletImportFragment.java       | 19 +++++
+ .../telegram/ui/Wallet/WalletWordCell.java    | 74 +++++++++++++++----
+ 2 files changed, 79 insertions(+), 14 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
+index b8e75316d..41d5f66f2 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
+@@ -203,6 +203,7 @@ public class WalletImportFragment extends BaseFragment {
+             WalletWordCell cell = new WalletWordCell(context, i, i == 0, resourceProvider);
+             cell.setOnTextChangedListener(this::updateImportButton);
+             cell.setOnPasteListener(() -> fillRemainingFromClipboard(index));
++            cell.setOnPasteWordsListener(words -> fillWords(index, words));
+             cell.setOnNextListener(() -> {
+                 if (index + 1 < cells.size()) {
+                     cells.get(index + 1).requestFieldFocus();
+@@ -228,6 +229,24 @@ public class WalletImportFragment extends BaseFragment {
+         }
+     }
+ 
++    /** Spreads pasted words over the cells from the one they were pasted into. */
++    private void fillWords(int startIndex, String[] words) {
++        int c = startIndex;
++        for (String word : words) {
++            if (c >= cells.size()) break;
++            if (!TextUtils.isEmpty(word)) {
++                cells.get(c).setText(word);
++                c++;
++            }
++        }
++        if (c < cells.size()) {
++            cells.get(c).requestFieldFocus();
++        } else {
++            AndroidUtilities.hideKeyboard(cells.get(cells.size() - 1));
++        }
++        updateImportButton();
++    }
++
+     private void fillRemainingFromClipboard(int startIndex) {
+         try {
+             android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletWordCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletWordCell.java
+index 3cffab9e1..d575efb7c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletWordCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletWordCell.java
+@@ -50,6 +50,8 @@ public class WalletWordCell extends FrameLayout {
+     private final Theme.ResourcesProvider resourcesProvider;
+     private Runnable onTextChangedListener;
+     private Runnable onPasteListener;
++    private org.telegram.messenger.Utilities.Callback<String[]> onPasteWordsListener;
++    private int lastInserted;
+     private Runnable onErrorClearListener;
+     private Runnable onNextListener;
+ 
+@@ -75,7 +77,22 @@ public class WalletWordCell extends FrameLayout {
+ 
+         setClipChildren(false);
+ 
+-        editText = new EditText(context);
++        editText = new EditText(context) {
++            @Override
++            public boolean onTextContextMenuItem(int id) {
++                if (id == android.R.id.paste) {
++                    final String pasted = readClipboard();
++                    if (pasted != null) {
++                        final String[] words = pasted.trim().toLowerCase().split("\\s+");
++                        if (words.length > 1 && onPasteWordsListener != null) {
++                            onPasteWordsListener.run(words);
++                            return true;
++                        }
++                    }
++                }
++                return super.onTextContextMenuItem(id);
++            }
++        };
+         editText.setTextSize(16);
+         editText.setGravity(Gravity.CENTER_VERTICAL);
+         editText.setBackground(null);
+@@ -103,10 +120,21 @@ public class WalletWordCell extends FrameLayout {
+             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+ 
+             @Override
+-            public void onTextChanged(CharSequence s, int start, int before, int count) {}
++            public void onTextChanged(CharSequence s, int start, int before, int count) {
++                lastInserted = count;
++            }
+ 
+             @Override
+             public void afterTextChanged(Editable s) {
++                // a single multi-character insertion is a paste, not typing: spread the words
++                if (lastInserted > 1 && onPasteWordsListener != null && s.toString().trim().matches(".*\\s+.*")) {
++                    final String[] words = s.toString().trim().toLowerCase().split("\\s+");
++                    if (words.length > 1) {
++                        editText.setText("");
++                        onPasteWordsListener.run(words);
++                        return;
++                    }
++                }
+                 if (error && !s.toString().trim().toLowerCase().matches(".*\\s+.*") && isWordValid()) {
+                     clearError();
+                 }
+@@ -489,21 +517,34 @@ public class WalletWordCell extends FrameLayout {
+         }
+     }
+ 
+-    private void pasteFromClipboard() {
++    /** The text of the clipboard, or null when there is nothing to paste. */
++    private String readClipboard() {
+         try {
+-            ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
++            final ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+             if (clipboard != null && clipboard.hasPrimaryClip() && clipboard.getPrimaryClip() != null && clipboard.getPrimaryClip().getItemCount() > 0) {
+-                CharSequence text = clipboard.getPrimaryClip().getItemAt(0).getText();
+-                if (text != null) {
+-                    editText.setText(text.toString().trim());
+-                    editText.setSelection(editText.getText().length());
+-                    if (onPasteListener != null) {
+-                        onPasteListener.run();
+-                    }
+-                }
++                final CharSequence text = clipboard.getPrimaryClip().getItemAt(0).getText();
++                return text == null ? null : text.toString();
+             }
+-        } catch (Exception e) {
+-            // ignore
++        } catch (Exception ignore) {
++        }
++        return null;
++    }
++
++    private void pasteFromClipboard() {
++        final String pasted = readClipboard();
++        if (pasted == null) {
++            return;
++        }
++        final String[] words = pasted.trim().toLowerCase().split("\\s+");
++        if (words.length > 1 && onPasteWordsListener != null) {
++            editText.setText("");
++            onPasteWordsListener.run(words);
++            return;
++        }
++        editText.setText(pasted.trim());
++        editText.setSelection(editText.getText().length());
++        if (onPasteListener != null) {
++            onPasteListener.run();
+         }
+     }
+ 
+@@ -540,6 +581,11 @@ public class WalletWordCell extends FrameLayout {
+         this.onPasteListener = listener;
+     }
+ 
++    /** A paste of several words: the screen spreads them over the numbered cells. */
++    public void setOnPasteWordsListener(org.telegram.messenger.Utilities.Callback<String[]> listener) {
++        this.onPasteWordsListener = listener;
++    }
++
+     public void setOnNextListener(Runnable listener) {
+         this.onNextListener = listener;
+     }
