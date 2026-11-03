@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Tue, 3 Nov 2026 13:32:55 +0300
-Subject: [PATCH 246/246] feat: wallet keys
+Subject: [PATCH] feat: wallet keys
 
 ---
  .../jni/wallet/WalletEngineBridge.cpp         |  87 +++++++
@@ -15,16 +15,16 @@ Subject: [PATCH 246/246] feat: wallet keys
  .../org/telegram/ui/PasscodeActivity.java     |   2 +-
  .../java/org/telegram/ui/ProfileActivity.java |   2 +-
  .../org/telegram/ui/SettingsActivity.java     |   4 +-
- .../org/telegram/ui/Wallet/GramWallet.java    |   2 +-
+ .../org/telegram/ui/Wallet/GramWallet.java    |  50 +++-
  .../ui/Wallet/ProfileWalletCardDialog.java    |   2 +-
  .../org/telegram/ui/Wallet/WalletEngine2.java |  45 ++++
  .../ui/Wallet/WalletImportFragment.java       |   8 +
- .../ui/Wallet/WalletKeysBackupFragment.java   |  74 ++++++
+ .../ui/Wallet/WalletKeysBackupFragment.java   |  81 +++++++
  .../ui/Wallet/WalletPrivateKeyFragment.java   | 229 ++++++++++++++++++
  .../ui/Wallet/WalletSecretPhraseFragment.java |  31 +++
  .../src/main/java/tele/TeleConfig.kt          |   8 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   8 +
- 20 files changed, 510 insertions(+), 15 deletions(-)
+ 20 files changed, 557 insertions(+), 23 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java
 
 diff --git a/TMessagesProj/jni/wallet/WalletEngineBridge.cpp b/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
@@ -295,7 +295,7 @@ index acf27c768..3ea8e0ca0 100644
              items.add(SettingCell.Factory.of(25, 0, 0, Theme.isCurrentThemeDark() ? R.drawable.settings_wallet_dark : R.drawable.settings_wallet, TextCell.applyNewSpanTimed(getString(R.string.WalletAttachMoney), 1790679020), null, wallet.getBalance() > 0 ? GramWallet.formatGrams(wallet.getBalance()) : null));
              items.add(UItem.asShadow(null));
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
-index 50f838e53..1f0a0b9fc 100644
+index 50f838e53..8630d3bbc 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
 @@ -153,7 +153,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
@@ -307,6 +307,77 @@ index 50f838e53..1f0a0b9fc 100644
              whenDone.run();
              return;
          }
+@@ -1206,6 +1206,18 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+     }
+ 
+     public void enableBackup(Utilities.Callback<String> whenDone) {
++        log("enable backup: checking the secret");
++        // a private key cannot be restored from the cloud backup of another client
++        getSecretPhrase(true, false, (test, error0) -> {
++            if (test != null && WalletEngine2.detectPrivateKey(test)) {
++                whenDone.run("PRIVATE_KEY_NO_BACKUP");
++                return;
++            }
++            enableBackupChecked(whenDone);
++        });
++    }
++
++    private void enableBackupChecked(Utilities.Callback<String> whenDone) {
+         log("enable backup: when ready...");
+         whenReady(() -> {
+             log("enable backup: ready! getting secret phrase...");
+@@ -2041,16 +2053,28 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+     }
+ 
+     public void importWallet(boolean sheet, boolean progress, SecretPhrase phrase, Utilities.Callback<String> whenDone) {
+-        try {
+-            if (!WalletEngine2.isTgWalletSecretPhrase(phrase)) {
+-                whenDone.run("WRONG_CONTRACT");
+-                return;
+-            }
+-        } catch (Exception e) {}
++        // a raw private key is not a mnemonic, so the phrase validation does not apply to it
++        final boolean privateKey = WalletEngine2.detectPrivateKey(phrase);
++        if (!privateKey) {
++            try {
++                if (!WalletEngine2.isTgWalletSecretPhrase(phrase)) {
++                    whenDone.run("WRONG_CONTRACT");
++                    return;
++                }
++            } catch (Exception e) {}
++        }
+         final byte[] public_key, anchor_public_key;
+         try {
+-            public_key = WalletEngine2.secretPhraseToPublicKey(phrase);
+-            anchor_public_key = WalletEngine2.secretPhraseToAnchorPublicKey(phrase);
++            if (privateKey) {
++                // the anchor is the key itself; after a rotation the signing half is the 12 words
++                anchor_public_key = WalletEngine2.privateKeyPublicKey(phrase);
++                public_key = phrase.wordCount() > 1
++                    ? WalletEngine2.secretPhraseToPublicKey(phrase.lastWords(12))
++                    : anchor_public_key;
++            } else {
++                public_key = WalletEngine2.secretPhraseToPublicKey(phrase);
++                anchor_public_key = WalletEngine2.secretPhraseToAnchorPublicKey(phrase);
++            }
+         } catch (Exception e) {
+             whenDone.run("INVALID_PHRASE");
+             return;
+@@ -3402,6 +3426,14 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+         public synchronized byte[] copyBytes() { checkOpen(); return bytes.clone(); }
+         public synchronized SecretPhrase copy() { checkOpen(); return new SecretPhrase(bytes); }
+ 
++        public synchronized SecretPhrase lastWords(int count) {
++            checkOpen();
++            if (count <= 0) throw new IllegalArgumentException("Invalid word count");
++            final ArrayList<String> all = toWordsForDisplay();
++            if (count > all.size()) throw new IllegalArgumentException("Not enough recovery words");
++            return fromWords(all.subList(all.size() - count, all.size()));
++        }
++
+         public synchronized SecretPhrase firstWords(int count) {
+             checkOpen();
+             if (count <= 0) throw new IllegalArgumentException("Invalid word count");
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/ProfileWalletCardDialog.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/ProfileWalletCardDialog.java
 index efa1a57ac..0fb766a81 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/ProfileWalletCardDialog.java
@@ -396,7 +467,7 @@ index 1cfd813cf..b8e75316d 100644
          updateImportButton();
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
-index 08a9e2560..45ada4178 100644
+index 08a9e2560..14767c7df 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
 @@ -116,6 +116,44 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
@@ -457,7 +528,7 @@ index 08a9e2560..45ada4178 100644
          items.add(UItem.asButton(BTN_DELETE, LocaleController.getString(R.string.WalletDeleteWallet)).red());
  
          final List<GramWallet.PreviousWallet> localWallets = wallet.getPreviousWallets();
-@@ -563,6 +607,36 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
+@@ -563,9 +607,46 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
                  showDialog(dialog);
                  dialog.makeRed(AlertDialog.BUTTON_POSITIVE);
              });
@@ -494,6 +565,16 @@ index 08a9e2560..45ada4178 100644
          } else if (item.id == BTN_ENABLE_BACKUP) {
              final GramWallet wallet = GramWallet.getInstance(currentAccount);
              wallet.enableBackup(error -> {
++                if ("PRIVATE_KEY_NO_BACKUP".equalsIgnoreCase(error)) {
++                    BulletinFactory.of(this)
++                        .createSimpleBulletin(R.raw.error, "A wallet imported by a private key cannot be backed up. Keep the key.")
++                        .setDuration(org.telegram.ui.Components.Bulletin.DURATION_PROLONG)
++                        .show();
++                    return;
++                }
+                 if (error != null) {
+                     BulletinFactory.of(this).showForError(error);
+                     return;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java
 new file mode 100644
 index 000000000..d31a82f76
