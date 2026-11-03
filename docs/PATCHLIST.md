@@ -522,7 +522,7 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0302 | скриптинг (QuickJS, grants, TL, веб-платформа) (частично) | built | `0254-feat-add-android-scripting-runtime`; `ConnectionsManager`, `MessagesController`, NDK quickjs-ng, `tele_script_*` JNI/Kotlin, `OkHttp`; L; зависит от 0088, скриптинг; реш.: скриптинг порт всё; по умолч.: папка + SAF; без виджет-слоя и Monaco; в 0302 уже влиты grant «display» (consent, прежняя строка 0303) и веб-платформа/fetch-API (прежняя строка 0320); десктопный фикс 0320 (падение при listing accounts из скрипта) — учесть в `tg`-мосте |
+| 0302 | скриптинг (QuickJS, grants, TL, веб-платформа, ссылки и папка) (частично) | built | `0254-feat-add-android-scripting-runtime`; импорт по ссылке (`tg://tele/script?url=`) и SAF-папка со сменой/сбросом, `ConnectionsManager`, `MessagesController`, NDK quickjs-ng, `tele_script_*` JNI/Kotlin, `OkHttp`; L; зависит от 0088, скриптинг; реш.: скриптинг порт всё; по умолч.: папка + SAF; без виджет-слоя и Monaco; в 0302 уже влиты grant «display» (consent, прежняя строка 0303) и веб-платформа/fetch-API (прежняя строка 0320); десктопный фикс 0320 (падение при listing accounts из скрипта) — учесть в `tg`-мосте |
 | 0329 | иконки у пунктов меню скриптов | built | `0255-feat-give-script-menus-icons`; `tele/scripting`, меню; S; зависит от 0302, скриптинг; скрипт задаёт иконку пункта меню |
 
 ## пачка 29 — html-пузыри .tgw
