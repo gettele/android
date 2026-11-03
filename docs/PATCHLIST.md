@@ -488,12 +488,12 @@ wallet-engine из gettele/money: дифф переносится на реви�
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0278 | кошелёк до включения Telegram | todo | `AppGlobalConfig.walletAvailable`; S; зависит от деньги; реш.: деньги портируются; один хунк, нужен рестарт |
-| 0308 | wallet-engine из gettele/money | todo | `jni/wallet-engine`, `jni/gram-wallet`, `Rust/NDK`; L; зависит от деньги; реш.: re-port diff + пересборка Rust; ревизия отличается от десктопа |
-| 0309 | импорт кошельков по приватному ключу | todo | `WalletImportFragment`, `GramWalletStorage`, `WalletEngine2`; L; зависит от 0308, 0278, деньги; реш.: включая приватные ключи; безопасность критична |
-| 0285 | секретная фраза кошелька без бэкапа | todo | деньги: `GramWallet`, `WalletKeysBackupFragment`; M; зависит от 0278; реш.: 0285 порт+тест-кошелёк; проверять на тестовом кошельке; MODE_MONEY |
-| 0307 | квота комиссии смены ключа (BoC) (частично) | todo | Rust `gram-wallet`; S; зависит от 0285, 0308, деньги; реш.: money порт всё; проверка движка после 0308 |
-| 0310 | копировать секретные слова без ожидания | todo | `WalletKeysBackupFragment`, `WalletSecretPhraseFragment`; S; зависит от деньги; default off, очистка буфера 60 с |
+| 0278 | кошелёк до включения Telegram | built | `0246-feat-wallet-keys`; `AppGlobalConfig.walletAvailable()`: локальный `force_wallet` или серверный флаг; тумблер `Force the wallet` (tele → debug, по умолчанию выкл.), заменил все чтения `config.walletAvailable.get()`; рестарт не нужен |
+| 0308 | wallet-engine из gettele/money | built | `0245-build-wallet-engine-with-private-keys`; `jni/gram-wallet/engine-private-key.patch` (порт патча `gettele/money` на ревизию `dkaraush/wallet-engine@5c65e47`: `detect_private_key`, `private_key_address`, `private_key_public_key`, `recover_wallet_secret`, ключ как anchor и после ротации ключ + 12 слов); CI накладывает патч на сабмодуль и пересобирает движок (`rustup` 1.96.1 + 4 android-таргета, `build_wallet_engine.sh`), локально то же самое; 347 тестов движка проходят |
+| 0309 | импорт кошельков по приватному ключу | built | `0246-feat-wallet-keys`; `WalletEngine2.nativeDetectPrivateKey/privateKeyPublicKey/privateKeyAddress` + JNI в `WalletEngineBridge.cpp`, экран `WalletPrivateKeyFragment` (hex/base64 ключ, после ротации ключ + 12 слов), ссылка «Import a private key» на экране импорта; тумблер `Import wallets from private keys` (по умолчанию выкл.); ключ не участвует в облачном бэкапе; `recover_wallet_secret` (адрес + 12 слов) в движке есть, отдельного UI-входа пока нет |
+| 0285 | секретная фраза кошелька без бэкапа | built | `0246-feat-wallet-keys`; строка `Update the secret phrase` на экране ключей, когда бэкап выключен: квота через `emulateDisableBackup`, проверка баланса, `prepareDisableBackup` + подтверждение новой фразы, затем `disableBackup`; тумблер `Rotate the wallet phrase` (по умолчанию выкл.) |
+| 0307 | квота комиссии смены ключа (BoC) (частично) | built | `0245`/`0246`; на Android BoC для смены ключа строит сам движок (десктопный парсер `gram_boc.cpp` не участвует), квота берётся из `emulateRotateKey`; тесты движка на ротацию и fee проходят, отдельного кода не потребовалось |
+| 0310 | копировать секретные слова без ожидания | built | `0246-feat-wallet-keys`; кнопка `Copy the words` на экране фразы: слова в буфер и через 60 с буфер очищается, если его не заменили; тумблер `Copy wallet words` (по умолчанию выкл.) |
 
 ## пачка 27 — деньги: интерфейс и карта
 

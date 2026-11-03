@@ -262,6 +262,17 @@ settings → tele → server.
 | usernames from the server | the tele server can give accounts extra @usernames: they show in the usernames of profiles, open the real chat, and are offered in @ suggestions | tele → server | on | [0070](patches/android/0070-feat-show-tele-server-usernames) | [91](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0091-feat-usernames-from-the-tele-server.patch) |
 | send crash reports | when tele crashed, the next start asks whether to send the report (version, build, device) to the tele server. nothing leaves without your tap. send pending crash report sends one by hand | tele → server | on | [0067](patches/android/0067-feat-add-a-tele-crash-reporter-skeleton), [0075](patches/android/0075-feat-offer-to-send-crash-reports-on-start) | [37](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0037-feat-send-crash-reports-to-the-tele-server.patch) |
 
+## money
+
+settings → tele → debug: the wallet switches of the fork.
+
+| feature | what it does | where | default | android | desktop |
+|---|---|---|---|---|---|
+| force the wallet | shows the money wallet even when the server flag is off | tele → debug | off | [0246](patches/android/0246-feat-wallet-keys) | [278](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0278-feat-turn-on-the-wallet-before-telegram-does.patch) |
+| import wallets from private keys | imports a wallet from a raw ed25519 key (hex or base64), or from the key and the 12 words a rotation generated; the key never goes into the cloud backup | tele → debug, wallet → import | off | [0245](patches/android/0245-build-wallet-engine-with-private-keys), [0246](patches/android/0246-feat-wallet-keys) | [308](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0308-build-take-wallet-engine-from-gettele-money-for-priv.patch), [309](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0309-feat-import-wallets-from-private-keys.patch) |
+| rotate the wallet phrase | updates the secret phrase of a wallet whose backup is off, with the fee quote and the usual confirmation | tele → debug, wallet → keys | off | [0246](patches/android/0246-feat-wallet-keys) | [285](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0285-feat-update-the-secret-phrase-of-wallets-without-a-b.patch) |
+| copy wallet words | a copy button on the secret phrase screen; the clipboard clears in a minute unless something replaced it | tele → debug | off | [0246](patches/android/0246-feat-wallet-keys) | [310](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0310-feat-copy-secret-words-without-waiting.patch) |
+
 ## debug
 
 settings → tele → debug.

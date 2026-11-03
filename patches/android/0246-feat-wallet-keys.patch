@@ -1,0 +1,825 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 3 Nov 2026 13:32:55 +0300
+Subject: [PATCH 246/246] feat: wallet keys
+
+---
+ .../jni/wallet/WalletEngineBridge.cpp         |  87 +++++++
+ .../telegram/messenger/AppGlobalConfig.java   |   5 +
+ .../java/org/telegram/ui/ChatActivity.java    |   4 +-
+ .../ui/Components/ChatAttachAlert.java        |   2 +-
+ .../boosts/UserSelectorBottomSheet.java       |   4 +-
+ .../java/org/telegram/ui/DialogsActivity.java |   2 +-
+ .../java/org/telegram/ui/LinkManager.java     |   4 +-
+ .../java/org/telegram/ui/LogoutActivity.java  |   2 +-
+ .../org/telegram/ui/PasscodeActivity.java     |   2 +-
+ .../java/org/telegram/ui/ProfileActivity.java |   2 +-
+ .../org/telegram/ui/SettingsActivity.java     |   4 +-
+ .../org/telegram/ui/Wallet/GramWallet.java    |   2 +-
+ .../ui/Wallet/ProfileWalletCardDialog.java    |   2 +-
+ .../org/telegram/ui/Wallet/WalletEngine2.java |  45 ++++
+ .../ui/Wallet/WalletImportFragment.java       |   8 +
+ .../ui/Wallet/WalletKeysBackupFragment.java   |  74 ++++++
+ .../ui/Wallet/WalletPrivateKeyFragment.java   | 229 ++++++++++++++++++
+ .../ui/Wallet/WalletSecretPhraseFragment.java |  31 +++
+ .../src/main/java/tele/TeleConfig.kt          |   8 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   8 +
+ 20 files changed, 510 insertions(+), 15 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java
+
+diff --git a/TMessagesProj/jni/wallet/WalletEngineBridge.cpp b/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
+index 2367076fa..b4448e69f 100644
+--- a/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
++++ b/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
+@@ -571,6 +571,93 @@ Java_org_telegram_ui_Wallet_WalletEngine2_nativeSecretPhraseToAddress(
+     return nullptr;
+ }
+ 
++namespace {
++
++// A private-key secret is whitespace separated: the key, and after a rotation the 12 words.
++std::vector<std::string> split_secret(const std::string &phrase) {
++    std::vector<std::string> words;
++    std::string current;
++    for (const auto byte : phrase) {
++        const bool separator = byte == ' ' || byte == '\t' || byte == '\n'
++            || byte == '\r' || byte == '\f' || byte == 11;
++        if (separator) {
++            if (!current.empty()) {
++                words.push_back(std::move(current));
++                current.clear();
++            }
++        } else {
++            current.push_back(static_cast<char>(byte));
++        }
++    }
++    if (!current.empty()) words.push_back(std::move(current));
++    return words;
++}
++
++} // namespace
++
++extern "C" JNIEXPORT jboolean JNICALL
++Java_org_telegram_ui_Wallet_WalletEngine2_nativeDetectPrivateKey(
++        JNIEnv *env, jclass, jbyteArray secret) {
++    if (!secret) return JNI_FALSE;
++    try {
++        const jsize length = env->GetArrayLength(secret);
++        SensitiveString phrase(static_cast<size_t>(length));
++        env->GetByteArrayRegion(secret, 0, length, reinterpret_cast<jbyte *>(phrase.value.data()));
++        if (env->ExceptionCheck()) return JNI_FALSE;
++        return we::detect_private_key(split_secret(phrase.value)) ? JNI_TRUE : JNI_FALSE;
++    } catch (...) {
++        // A key that does not parse is simply not a private key.
++        return JNI_FALSE;
++    }
++}
++
++extern "C" JNIEXPORT jbyteArray JNICALL
++Java_org_telegram_ui_Wallet_WalletEngine2_nativePrivateKeyPublicKey(
++        JNIEnv *env, jclass, jbyteArray secret) {
++    if (!secret) {
++        throw_java(env, "java/lang/IllegalArgumentException", "Private key is required");
++        return nullptr;
++    }
++    try {
++        const jsize length = env->GetArrayLength(secret);
++        SensitiveString phrase(static_cast<size_t>(length));
++        env->GetByteArrayRegion(secret, 0, length, reinterpret_cast<jbyte *>(phrase.value.data()));
++        if (env->ExceptionCheck()) return nullptr;
++        const auto key = we::private_key_public_key(phrase.value);
++        if (key.size() != 32) throw std::runtime_error("Unexpected public key size");
++        jbyteArray result = env->NewByteArray(32);
++        if (result) env->SetByteArrayRegion(result, 0, 32, reinterpret_cast<const jbyte *>(key.data()));
++        return result;
++    } catch (const std::bad_alloc &) {
++        throw_java(env, "java/lang/OutOfMemoryError", "Could not derive the wallet key");
++    } catch (...) {
++        throw_java(env, "java/lang/IllegalArgumentException", "Invalid private key");
++    }
++    return nullptr;
++}
++
++extern "C" JNIEXPORT jstring JNICALL
++Java_org_telegram_ui_Wallet_WalletEngine2_nativePrivateKeyAddress(
++        JNIEnv *env, jclass, jbyteArray secret) {
++    if (!secret) {
++        throw_java(env, "java/lang/IllegalArgumentException", "Private key is required");
++        return nullptr;
++    }
++    try {
++        const jsize length = env->GetArrayLength(secret);
++        SensitiveString phrase(static_cast<size_t>(length));
++        env->GetByteArrayRegion(secret, 0, length, reinterpret_cast<jbyte *>(phrase.value.data()));
++        if (env->ExceptionCheck()) return nullptr;
++        const auto address = we::private_key_address(phrase.value, we::Network::kMainnet);
++        return env->NewStringUTF(address.c_str());
++    } catch (const std::bad_alloc &) {
++        throw_java(env, "java/lang/OutOfMemoryError", "Could not derive the wallet address");
++    } catch (...) {
++        throw_java(env, "java/lang/IllegalArgumentException", "Invalid private key");
++    }
++    return nullptr;
++}
++
+ extern "C" JNIEXPORT jboolean JNICALL
+ Java_org_telegram_ui_Wallet_WalletEngine2_isValidCellBoc(JNIEnv *env, jclass, jstring boc) {
+     try {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java
+index 20941ffa8..adec3316d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java
+@@ -113,6 +113,11 @@ public class AppGlobalConfig {
+     public final ConfigStringSet botAllowedSuffixes = ofStringSet("bot_allowed_suffixes", Collections.singleton("bot"));
+ 
+     public final ConfigBoolean walletAvailable = ofBoolean("wallet_available", BuildVars.DEBUG_VERSION);
++
++    /** The wallet of the server or the local force, like the desktop client (tele 0278). */
++    public boolean walletAvailable() {
++        return tele.TeleConfig.FORCE_WALLET.getValue() || walletAvailable.get();
++    }
+     public final ConfigBoolean walletPaidMessageRecipientMessageAmountCheck = ofBoolean("wallet_paid_message_recipient_message_amount_check", true);
+     public final ConfigLong walletTransferMinNanos = ofLong("wallet_transfer_min_nanos", 100_000_000);
+     public final ConfigLong walletGaslessMinNanos = ofLong("wallet_gasless_min_nanos", 100_000_000);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 5bd1f9ad2..28e5b056b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -46397,7 +46397,7 @@ public class ChatActivity extends BaseFragment implements
+             final ItemOptions options = ItemOptions.makeOptions(ChatActivity.this, cell, true);
+             final ScrimOptions dialog = new ScrimOptions(getContext(), themeDelegate);
+             options.setOnDismiss(dialog::dismissFast);
+-            if (valid && getMessagesController().config.walletAvailable.get()) {
++            if (valid && getMessagesController().config.walletAvailable()) {
+                 options.add(R.drawable.ic_gram, getString(R.string.WalletSendMoney), () -> {
+                     presentFragment(new WalletSendEnterAmount(address));
+                 });
+@@ -48128,7 +48128,7 @@ public class ChatActivity extends BaseFragment implements
+             }
+         }
+ 
+-        if (getMessagesController().config.walletAvailable.get() &&
++        if (getMessagesController().config.walletAvailable() &&
+                 selectedObject.messageOwner.action instanceof TLRPC.TL_messageActionGramTransfer
+                 && selectedObject.getDialogId() > 0
+                 && getMessagesController().getUser(selectedObject.getDialogId()) != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index bf4645a69..56b04c1da 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -6819,7 +6819,7 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+                 final boolean paidUser = user != null && ((ChatActivity) baseFragment).getMessagesController().getSendPaidMessagesStars(user.id) > 0;
+                 galleryButton = buttonsCount++;
+                 documentButton = buttonsCount++;
+-                if (MessagesController.getInstance(currentAccount).config.walletAvailable.get() && ((ChatActivity) baseFragment).getChatMode() == ChatActivity.MODE_DEFAULT && isMoneyTabRecipient(user)) {
++                if (MessagesController.getInstance(currentAccount).config.walletAvailable() && ((ChatActivity) baseFragment).getChatMode() == ChatActivity.MODE_DEFAULT && isMoneyTabRecipient(user)) {
+                     moneyButton = buttonsCount++;
+                 }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/Premium/boosts/UserSelectorBottomSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/Premium/boosts/UserSelectorBottomSheet.java
+index 407ed85a7..98a48036c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/Premium/boosts/UserSelectorBottomSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/Premium/boosts/UserSelectorBottomSheet.java
+@@ -928,7 +928,7 @@ public class UserSelectorBottomSheet extends BottomSheetWithRecyclerListView imp
+                 }
+                 items.add(Item.asCustomUser(5, myGiftsIcon, getString(R.string.Gift2MoveToMyGifts), ""));
+             }
+-            if (includeTonOption && type == TYPE_TRANSFER && MessagesController.getInstance(currentAccount).config.walletAvailable.get()) {
++            if (includeTonOption && type == TYPE_TRANSFER && MessagesController.getInstance(currentAccount).config.walletAvailable()) {
+                 if (myWalletIcon == null) {
+                     final Drawable drawable = getContext().getResources().getDrawable(R.drawable.filled_wallet_move).mutate();
+                     drawable.setColorFilter(new PorterDuffColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN));
+@@ -947,7 +947,7 @@ public class UserSelectorBottomSheet extends BottomSheetWithRecyclerListView imp
+                 }
+                 items.add(Item.asCustomUser(4, myWalletIcon, getString(R.string.Gift2MoveToMyWallet), walletSubtitle));
+             }
+-            if (includeTonOption && type == TYPE_TRANSFER && !MessagesController.getInstance(currentAccount).config.walletAvailable.get()) {
++            if (includeTonOption && type == TYPE_TRANSFER && !MessagesController.getInstance(currentAccount).config.walletAvailable()) {
+                 if (tonIcon == null) {
+                     final Drawable drawable = getContext().getResources().getDrawable(R.drawable.fragment).mutate();
+                     drawable.setColorFilter(new PorterDuffColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 360e8935a..a2ef3e5e3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -13858,7 +13858,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         if (ApplicationLoader.applicationLoaderInstance != null) {
+             ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
+         }
+-        if (getMessagesController().config.walletAvailable.get()) {
++        if (getMessagesController().config.walletAvailable()) {
+             io.add(R.drawable.ic_gram, LocaleController.getString(R.string.WalletAttachMoney), () -> {
+                 presentFragment(new WalletActivity());
+             });
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
+index a3a206411..3badd40ff 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
+@@ -1468,7 +1468,7 @@ public class LinkManager {
+     }
+ 
+     private boolean handleSendGrams(Uri uri) {
+-        if (!getMessagesController().config.walletAvailable.get()) return false;
++        if (!getMessagesController().config.walletAvailable()) return false;
+         final Uri tonConnectUri = parseTonConnectStartApp(uri.getQueryParameter("startapp"));
+         if (tonConnectUri != null) {
+             handleTc(tonConnectUri);
+@@ -1546,7 +1546,7 @@ public class LinkManager {
+     }
+ 
+     private boolean handleTon(Uri uri) {
+-        if (!getMessagesController().config.walletAvailable.get()) return false;
++        if (!getMessagesController().config.walletAvailable()) return false;
+         uri = normalizeTgUri(uri);
+ 
+         final List<String> _segments = uri.getPathSegments();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LogoutActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LogoutActivity.java
+index b0089fa09..9dde51119 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LogoutActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LogoutActivity.java
+@@ -170,7 +170,7 @@ public class LogoutActivity extends BaseFragment {
+         GramWallet.ensureLocalWalletBalances(currentAccount, () -> {
+             progressDialog.dismiss();
+             long localGramBalance = 0L;
+-            if (MessagesController.getInstance(currentAccount).config.walletAvailable.get()) {
++            if (MessagesController.getInstance(currentAccount).config.walletAvailable()) {
+                 final GramWallet wallet = GramWallet.getInstance(currentAccount);
+                 if (wallet.getBalance() > 0 && !wallet.isBackupEnabled() && !wallet.cantAccessWallet()) {
+                     localGramBalance += wallet.getBalance();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PasscodeActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/PasscodeActivity.java
+index e136a783c..93a130c31 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PasscodeActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PasscodeActivity.java
+@@ -848,7 +848,7 @@ public class PasscodeActivity extends BaseFragment implements NotificationCenter
+         autoLockRow = rowCount++;
+         autoLockDetailRow = rowCount++;
+ 
+-        if (getMessagesController().config.walletAvailable.get()) {
++        if (getMessagesController().config.walletAvailable()) {
+             walletHeaderRow = rowCount++;
+             walletPasscodeRow = rowCount++;
+             if (GramWalletStorage.deviceHasFingerprint(ApplicationLoader.applicationContext)) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index e04be1b80..4c33fc7dc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -12450,7 +12450,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                         otherItem.addSubItem(gift_premium, R.drawable.msg_gift_premium, LocaleController.getString(R.string.ProfileSendAGift));
+                         giftAction = true;
+                     }
+-                    if (getMessagesController().config.walletAvailable.get() && !MessagesController.isSupportUser(user) && !UserObject.isService(user.id)) {
++                    if (getMessagesController().config.walletAvailable() && !MessagesController.isSupportUser(user) && !UserObject.isService(user.id)) {
+                         otherItem.addSubItem(send_money, R.drawable.ic_gram, LocaleController.getString(R.string.WalletSendMoney));
+                     }
+                     otherItem.addSubItem(start_secret_chat, R.drawable.msg_secret, LocaleController.getString(R.string.StartEncryptedChat));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+index acf27c768..3ea8e0ca0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SettingsActivity.java
+@@ -712,7 +712,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+         }
+ 
+         final boolean walletAbove = getConnectionsManager().getCurrentTime() - 1791538462 < 4 * 7 * 24 * 60 * 60;
+-        if (walletAbove && getMessagesController().config.walletAvailable.get()) {
++        if (walletAbove && getMessagesController().config.walletAvailable()) {
+             final GramWallet wallet = GramWallet.getInstance(currentAccount);
+             items.add(SettingCell.Factory.of(25, 0, 0, Theme.isCurrentThemeDark() ? R.drawable.settings_wallet_dark : R.drawable.settings_wallet, TextCell.applyNewSpanTimed(getString(R.string.WalletAttachMoney), 1790679020), null, wallet.getBalance() > 0 ? GramWallet.formatGrams(wallet.getBalance()) : null));
+             items.add(UItem.asShadow(null));
+@@ -731,7 +731,7 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
+         items.add(UItem.asShadow(null));
+         items.add(SettingCell.Factory.of(90, IconBackgroundColors.BLUE.top, IconBackgroundColors.BLUE.bottom, R.drawable.tele_settings_icon_padded, "tele", tele.helpers.TeleLowercase.lc("Interface, Privacy, Debug")));
+         items.add(UItem.asShadow(null));
+-        if (!walletAbove && getMessagesController().config.walletAvailable.get()) {
++        if (!walletAbove && getMessagesController().config.walletAvailable()) {
+             final GramWallet wallet = GramWallet.getInstance(currentAccount);
+             items.add(SettingCell.Factory.of(25, 0, 0, Theme.isCurrentThemeDark() ? R.drawable.settings_wallet_dark : R.drawable.settings_wallet, TextCell.applyNewSpanTimed(getString(R.string.WalletAttachMoney), 1790679020), null, wallet.getBalance() > 0 ? GramWallet.formatGrams(wallet.getBalance()) : null));
+             items.add(UItem.asShadow(null));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+index 50f838e53..1f0a0b9fc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+@@ -153,7 +153,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+     }
+ 
+     public static void ensureLocalWalletBalances(int currentAccount, Runnable whenDone) {
+-        if (!MessagesController.getInstance(currentAccount).config.walletAvailable.get()) {
++        if (!MessagesController.getInstance(currentAccount).config.walletAvailable()) {
+             whenDone.run();
+             return;
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/ProfileWalletCardDialog.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/ProfileWalletCardDialog.java
+index efa1a57ac..0fb766a81 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/ProfileWalletCardDialog.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/ProfileWalletCardDialog.java
+@@ -99,7 +99,7 @@ public class ProfileWalletCardDialog extends Dialog {
+         this.anchor = anchor;
+         this.profileCard = profileCard;
+         isSelf = user != null && user.id == UserConfig.getInstance(fragment.getCurrentAccount()).getClientUserId();
+-        showSendMoney = user != null && !isSelf && MessagesController.getInstance(fragment.getCurrentAccount()).config.walletAvailable.get();
++        showSendMoney = user != null && !isSelf && MessagesController.getInstance(fragment.getCurrentAccount()).config.walletAvailable();
+         showHowItWorks = user != null && !isSelf && !showSendMoney;
+         anchor.getButtonBoundsOnScreen(source);
+         AndroidUtilities.enableEdgeToEdge(getWindow());
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java
+index 91852c1fa..b8ad2d7f4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java
+@@ -91,6 +91,51 @@ public class WalletEngine2 implements AutoCloseable {
+         }
+     }
+ 
++    private static native boolean nativeDetectPrivateKey(byte[] secret);
++    private static native byte[] nativePrivateKeyPublicKey(byte[] secret);
++    private static native String nativePrivateKeyAddress(byte[] secret);
++
++    /**
++     * Whether the secret is a raw Ed25519 private key: the key alone, or the key followed by the
++     * 12 words a rotation generated. Telegram's own phrases never match, so the two cannot be
++     * confused. Call off the UI thread.
++     */
++    public static boolean detectPrivateKey(@Nullable SecretPhrase secretPhrase) {
++        if (secretPhrase == null || secretPhrase.isEmpty()) return false;
++        byte[] bytes = secretPhrase.copyBytes();
++        try {
++            return nativeDetectPrivateKey(bytes);
++        } finally {
++            Arrays.fill(bytes, (byte) 0);
++        }
++    }
++
++    /** The anchor public key of a private-key secret, the same key a phrase would give. */
++    public static byte[] privateKeyPublicKey(SecretPhrase secretPhrase) {
++        if (secretPhrase == null || secretPhrase.isEmpty()) {
++            throw new IllegalArgumentException("Private key is required");
++        }
++        byte[] bytes = secretPhrase.copyBytes();
++        try {
++            return nativePrivateKeyPublicKey(bytes);
++        } finally {
++            Arrays.fill(bytes, (byte) 0);
++        }
++    }
++
++    /** The mainnet wallet address the private key opens, before importing. */
++    public static String privateKeyAddress(SecretPhrase secretPhrase) {
++        if (secretPhrase == null || secretPhrase.isEmpty()) {
++            throw new IllegalArgumentException("Private key is required");
++        }
++        byte[] bytes = secretPhrase.copyBytes();
++        try {
++            return nativePrivateKeyAddress(bytes);
++        } finally {
++            Arrays.fill(bytes, (byte) 0);
++        }
++    }
++
+     /**
+      * Returns the 32-byte address anchor public key derived from the first 12 words.
+      * Accepts 12- or 24-word Rotation phrases; only the anchor half is validated.
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
+index 1cfd813cf..b8e75316d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
+@@ -170,6 +170,14 @@ public class WalletImportFragment extends BaseFragment {
+         importButton.setOnClickListener(v -> onImportPressed());
+         root.addView(importButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER_HORIZONTAL, 0, 24, 0, 0));
+ 
++        if (tele.TeleConfig.WALLET_PRIVATE_KEYS.getValue() && matchPublicKey == null) {
++            final ButtonWithCounterView privateKeyButton = new ButtonWithCounterView(context, resourceProvider);
++            privateKeyButton.setRound();
++            privateKeyButton.setText("Import a private key");
++            privateKeyButton.setOnClickListener(v -> presentFragment(new WalletPrivateKeyFragment()));
++            root.addView(privateKeyButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER_HORIZONTAL, 0, 12, 0, 0));
++        }
++
+         buildCells(context);
+         updateImportButton();
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
+index 08a9e2560..45ada4178 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
+@@ -116,6 +116,44 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
+     private final int BTN_ENABLE_BACKUP = 2;
+     private final int BTN_DISABLE_BACKUP = 3;
+     private final int BTN_DELETE = 4;
++    private final int BTN_ROTATE = 5;
++
++    /** Rotates the key without a backup (tele 0285): the address stays, the phrase changes. */
++    private void startPhraseUpdate(GramWallet wallet) {
++        final AlertDialog progressDialog = new AlertDialog(getContext(), AlertDialog.ALERT_TYPE_SPINNER);
++        progressDialog.showDelayed(300);
++        wallet.prepareDisableBackup((prepared, error2) -> {
++            progressDialog.dismiss();
++            if (prepared == null) {
++                BulletinFactory.of(this).showForError(error2 == null ? "NULL_ERROR" : error2);
++                return;
++            }
++            if (destroyed) { prepared.close(); return; }
++            preparedBackups.add(prepared);
++            presentFragment(
++                new WalletSecretPhraseFragment()
++                    .setPhrase(prepared.newSecretPhrase)
++                    .onTested(() -> new AlertDialog.Builder(getContext(), getResourceProvider())
++                        .setTitle(LocaleController.getString(R.string.WalletDisableBackupTitle))
++                        .setMessage(LocaleController.getString(R.string.WalletDisableBackupConfirmInfo))
++                        .setNegativeButton(getString(R.string.Cancel), null)
++                        .setPositiveButton(LocaleController.getString(R.string.WalletDisable), (di3, w3) -> {
++                            final Browser.Progress progress3 = di3.makeButtonLoading(w3);
++                            progress3.init();
++                            wallet.disableBackup(prepared, error3 -> {
++                                progress3.end();
++                                if (error3 != null) {
++                                    BulletinFactory.of(this).showForError(error3);
++                                    return;
++                                }
++                                returnToWallet();
++                            });
++                        })
++                        .makeRed(AlertDialog.BUTTON_POSITIVE)
++                        .show())
++            );
++        });
++    }
+ 
+     @Override
+     protected void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
+@@ -138,6 +176,12 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
+             }
+         }
+ 
++        if (!wallet.isBackupEnabled() && tele.TeleConfig.WALLET_ROTATE.getValue() && wallet.canExportPhrase()) {
++            items.add(UItem.asHeader("The secret phrase"));
++            items.add(UItem.asButton(BTN_ROTATE, "Update the secret phrase").accent());
++            items.add(UItem.asShadow("A new phrase replaces the old one. The address and the funds stay, the old phrase stops working."));
++        }
++
+         items.add(UItem.asButton(BTN_DELETE, LocaleController.getString(R.string.WalletDeleteWallet)).red());
+ 
+         final List<GramWallet.PreviousWallet> localWallets = wallet.getPreviousWallets();
+@@ -563,6 +607,36 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
+                 showDialog(dialog);
+                 dialog.makeRed(AlertDialog.BUTTON_POSITIVE);
+             });
++        } else if (item.id == BTN_ROTATE) {
++            final GramWallet wallet = GramWallet.getInstance(currentAccount);
++            final AlertDialog progressDialog = new AlertDialog(getContext(), AlertDialog.ALERT_TYPE_SPINNER);
++            progressDialog.showDelayed(500);
++            wallet.emulateDisableBackup((fee, error) -> {
++                progressDialog.dismiss();
++                if (fee == null) {
++                    BulletinFactory.of(this).showForError(error == null ? "NULL_ERROR" : error);
++                    return;
++                }
++                if (wallet.getBalance() < fee) {
++                    new AlertDialog.Builder(getContext(), getResourceProvider())
++                        .setTitle(LocaleController.getString(R.string.WalletNotEnoughGram))
++                        .setMessage(LocaleController.formatSpannable(R.string.WalletUpdateSecretPhraseInsufficientFunds, GramWallet.formatGramCapital(fee), wallet.formatCurrency(fee, true)))
++                        .setNegativeButton(LocaleController.getString(R.string.WalletNotNow), null)
++                        .setPositiveButton(LocaleController.getString(R.string.WalletTopUp), (di3, w3) -> {
++                            final Browser.Progress progress3 = di3.makeButtonLoading(w3);
++                            progress3.init();
++                            WalletActivity.openOnramp(currentAccount, 0, error3 -> {
++                                progress3.end();
++                                if (!TextUtils.isEmpty(error3)) {
++                                    BulletinFactory.of(this).showForError(error3);
++                                }
++                            });
++                        })
++                        .show();
++                    return;
++                }
++                startPhraseUpdate(wallet);
++            });
+         } else if (item.id == BTN_ENABLE_BACKUP) {
+             final GramWallet wallet = GramWallet.getInstance(currentAccount);
+             wallet.enableBackup(error -> {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java
+new file mode 100644
+index 000000000..d31a82f76
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java
+@@ -0,0 +1,229 @@
++package org.telegram.ui.Wallet;
++
++import static org.telegram.messenger.AndroidUtilities.dp;
++import static org.telegram.messenger.AndroidUtilities.getAccountInProduction;
++import static org.telegram.messenger.LocaleController.getString;
++
++import android.content.Context;
++import android.graphics.PorterDuff;
++import android.graphics.PorterDuffColorFilter;
++import android.text.Editable;
++import android.text.InputType;
++import android.text.TextUtils;
++import android.text.TextWatcher;
++import android.util.TypedValue;
++import android.view.Gravity;
++import android.view.View;
++import android.widget.EditText;
++import android.widget.FrameLayout;
++import android.widget.ImageView;
++import android.widget.LinearLayout;
++import android.widget.ScrollView;
++import android.widget.TextView;
++
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.FileLog;
++import org.telegram.messenger.MediaDataController;
++import org.telegram.messenger.R;
++import org.telegram.messenger.UserConfig;
++import org.telegram.messenger.Utilities;
++import org.telegram.ui.ActionBar.AlertDialog;
++import org.telegram.ui.ActionBar.BaseFragment;
++import org.telegram.ui.ActionBar.Theme;
++import org.telegram.ui.Components.BackupImageView;
++import org.telegram.ui.Components.BulletinFactory;
++import org.telegram.ui.Components.LayoutHelper;
++import org.telegram.ui.Stories.recorder.ButtonWithCounterView;
++import org.telegram.ui.Wallet.GramWallet.SecretPhrase;
++import org.telegram.ui.Wallet.WalletEngine2;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++
++/**
++ * Imports a wallet from a raw Ed25519 private key (tele 0309). The key stays in the protected
++ * storage; Telegram's phrase backup does not accept it, so the screen says so up front.
++ */
++public class WalletPrivateKeyFragment extends BaseFragment {
++
++    private EditText input;
++    private TextView status;
++    private ButtonWithCounterView importButton;
++    private String detectedAddress;
++    private SecretPhrase detectedPhrase;
++    private int generation;
++
++    private void check(String text) {
++        final int current = ++generation;
++        final String[] words = text.trim().split("\\s+");
++        final ArrayList<String> list = new ArrayList<>();
++        for (String word : words) {
++            if (!word.isEmpty()) list.add(word);
++        }
++        if (list.isEmpty()) {
++            detectedAddress = null;
++            status.setVisibility(View.GONE);
++            importButton.setEnabled(false);
++            return;
++        }
++        Utilities.globalQueue.postRunnable(() -> {
++            String address = null;
++            boolean isKey = false;
++            SecretPhrase phrase = null;
++            try {
++                phrase = SecretPhrase.fromWords(list);
++                isKey = WalletEngine2.detectPrivateKey(phrase);
++                if (isKey) address = WalletEngine2.privateKeyAddress(phrase);
++            } catch (Throwable e) {
++                FileLog.e(e);
++            }
++            final boolean key = isKey;
++            final String found = address;
++            final SecretPhrase result = phrase;
++            AndroidUtilities.runOnUIThread(() -> {
++                if (current != generation) {
++                    if (result != null) result.close();
++                    return;
++                }
++                if (detectedPhrase != null) detectedPhrase.close();
++                detectedPhrase = result;
++                detectedAddress = found;
++                status.setVisibility(View.VISIBLE);
++                if (key && found != null) {
++                    status.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider));
++                    status.setText("Address: " + found);
++                    importButton.setEnabled(true);
++                } else {
++                    status.setTextColor(Theme.getColor(Theme.key_text_RedRegular, resourceProvider));
++                    status.setText("This is not a private key.");
++                    importButton.setEnabled(false);
++                }
++            });
++        });
++    }
++
++    @Override
++    public View createView(Context context) {
++        actionBar.setAddToContainer(false);
++        actionBar.setOccupyStatusBar(false);
++
++        final FrameLayout container = new FrameLayout(context);
++        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider));
++        fragmentView = container;
++
++        final ScrollView scroll = new ScrollView(context);
++        scroll.setFillViewport(true);
++        scroll.setVerticalScrollBarEnabled(false);
++        scroll.setClipToPadding(false);
++        scroll.setPadding(0, dp(96), 0, dp(24));
++        container.addView(scroll, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
++
++        final LinearLayout root = new LinearLayout(context);
++        root.setOrientation(LinearLayout.VERTICAL);
++        root.setPadding(dp(36), 0, dp(36), dp(24));
++        scroll.addView(root, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
++
++        final ImageView closeButton = new ImageView(context);
++        closeButton.setScaleType(ImageView.ScaleType.CENTER);
++        closeButton.setColorFilter(new PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider), PorterDuff.Mode.SRC_IN));
++        closeButton.setImageResource(R.drawable.ic_ab_close);
++        closeButton.setBackground(Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector, resourceProvider), 3));
++        closeButton.setOnClickListener(v -> finishFragment());
++        container.addView(closeButton, LayoutHelper.createFrame(48, 48, Gravity.TOP | Gravity.LEFT, 4, 12, 0, 0));
++
++        final BackupImageView stickerView = new BackupImageView(context);
++        stickerView.setAspectFit(true);
++        stickerView.getImageReceiver().setCurrentAccount(getAccountInProduction());
++        MediaDataController.getInstance(getAccountInProduction()).setPlaceholderImage(stickerView, "RestrictedEmoji", "\uD83D\uDD11", "100_100");
++        root.addView(stickerView, LayoutHelper.createLinear(100, 100, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 12));
++
++        final TextView title = new TextView(context);
++        title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20);
++        title.setTypeface(AndroidUtilities.bold());
++        title.setGravity(Gravity.CENTER_HORIZONTAL);
++        title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider));
++        title.setText("Import a private key");
++        root.addView(title, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 32, 0, 32, 10));
++
++        final TextView subtitle = new TextView(context);
++        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
++        subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
++        subtitle.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider));
++        subtitle.setText("The key stays on this device. Telegram's backup does not accept it, so keep it somewhere safe. After a rotation, add the 12 words.");
++        root.addView(subtitle, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 32, 0, 32, 12));
++
++        input = new EditText(context);
++        input.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
++        input.setTypeface(AndroidUtilities.getTypeface("fonts/rmono.ttf"));
++        input.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider));
++        input.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, resourceProvider));
++        input.setHint("hex or base64 key, then the 12 words");
++        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
++        input.setBackground(Theme.createRoundRectDrawable(dp(10), Theme.getColor(Theme.key_windowBackgroundGray, resourceProvider)));
++        input.setPadding(dp(12), dp(12), dp(12), dp(12));
++        input.addTextChangedListener(new TextWatcher() {
++            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
++            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
++            @Override public void afterTextChanged(Editable s) {
++                check(s == null ? "" : s.toString());
++            }
++        });
++        root.addView(input, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, dp(120), 0, 0, 0, 0, 8));
++
++        status = new TextView(context);
++        status.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
++        status.setTypeface(AndroidUtilities.getTypeface("fonts/rmono.ttf"));
++        status.setVisibility(View.GONE);
++        root.addView(status, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0, 0, 0, 8));
++
++        importButton = new ButtonWithCounterView(context, resourceProvider);
++        importButton.setRound();
++        importButton.setText(getString(R.string.WalletImportButton));
++        importButton.setEnabled(false);
++        importButton.setOnClickListener(v -> onImportPressed());
++        root.addView(importButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER_HORIZONTAL, 0, 12, 0, 0));
++
++        return fragmentView;
++    }
++
++    private void onImportPressed() {
++        if (importButton.isLoading()) return;
++        final String address = detectedAddress;
++        if (TextUtils.isEmpty(address) || detectedPhrase == null) return;
++        final SecretPhrase phrase = detectedPhrase.copy();
++        final GramWallet wallet = GramWallet.getInstance(currentAccount);
++        final String pastAddress = wallet.getAddress();
++        importButton.setLoading(true);
++        wallet.importWallet(phrase, error -> {
++            importButton.setLoading(false);
++            if ("WRONG_CONTRACT".equalsIgnoreCase(error) || "INVALID_PHRASE".equalsIgnoreCase(error)) {
++                new AlertDialog.Builder(getContext(), resourceProvider)
++                    .setTitle(getString(R.string.WalletInvalidRecoveryPhrase))
++                    .setMessage(getString(R.string.WalletInvalidRecoveryPhraseInfo))
++                    .setPositiveButton(getString(R.string.WalletOK), null)
++                    .show();
++                return;
++            }
++            if (error != null) {
++                BulletinFactory.of(this).showForError(error);
++                return;
++            }
++            finishFragment();
++            wallet.notifyUpdate();
++        });
++    }
++
++    @Override
++    public void onFragmentDestroy() {
++        if (detectedPhrase != null) {
++            detectedPhrase.close();
++            detectedPhrase = null;
++        }
++        super.onFragmentDestroy();
++    }
++
++    @Override
++    public boolean isSupportEdgeToEdge() {
++        return true;
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletSecretPhraseFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletSecretPhraseFragment.java
+index 470aacba3..550e9c627 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletSecretPhraseFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletSecretPhraseFragment.java
+@@ -117,6 +117,17 @@ public class WalletSecretPhraseFragment extends BaseFragment {
+         columns.setGravity(Gravity.CENTER_HORIZONTAL);
+         root.addView(columns, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 4, 24, 4, 0));
+ 
++        if (tele.TeleConfig.WALLET_COPY_WORDS.getValue()) {
++            final TextView copy = new TextView(context);
++            copy.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
++            copy.setGravity(Gravity.CENTER);
++            copy.setText("Copy the words");
++            copy.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText, resourceProvider));
++            copy.setPadding(dp(12), dp(10), dp(12), dp(10));
++            copy.setOnClickListener(v -> copyWords());
++            root.addView(copy, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, 12, 0, 0));
++        }
++
+         root.addView(new View(context), LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 0, 1.0f));
+ 
+         continueButton = new ButtonWithCounterView(context, resourceProvider);
+@@ -129,6 +140,26 @@ public class WalletSecretPhraseFragment extends BaseFragment {
+         return fragmentView;
+     }
+ 
++    /** The words go to the clipboard and leave it again in a minute, unless something replaced them. */
++    private void copyWords() {
++        if (words.isEmpty()) return;
++        final String text = TextUtils.join(" ", words);
++        if (!AndroidUtilities.addToClipboard(text)) return;
++        final Context context = getContext();
++        if (context == null) return;
++        AndroidUtilities.runOnUIThread(() -> {
++            try {
++                final android.content.ClipboardManager manager = (android.content.ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
++                if (manager == null || manager.getPrimaryClip() == null || manager.getPrimaryClip().getItemCount() == 0) return;
++                final CharSequence current = manager.getPrimaryClip().getItemAt(0).coerceToText(context);
++                if (TextUtils.equals(current, text)) {
++                    manager.setPrimaryClip(android.content.ClipData.newPlainText("", ""));
++                }
++            } catch (Throwable ignore) {
++            }
++        }, 60_000);
++    }
++
+     private void updateWords() {
+         if (columns == null) {
+             return;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index b73a7e203..c195cca53 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -129,6 +129,14 @@ object TeleConfig {
+     val DIAG_NO_DUMP = BoolItem("diag_no_dump", false)
+     @JvmField
+     val DIAG_FREEZE = BoolItem("diag_freeze", false)
++    @JvmField
++    val FORCE_WALLET = BoolItem("force_wallet", false)
++    @JvmField
++    val WALLET_COPY_WORDS = BoolItem("wallet_copy_words", false)
++    @JvmField
++    val WALLET_PRIVATE_KEYS = BoolItem("wallet_private_keys", false)
++    @JvmField
++    val WALLET_ROTATE = BoolItem("wallet_rotate", false)
+     /** The exit of the last run that was already turned into a report, so it is not reported twice. */
+     @JvmField
+     val DIAG_LAST_EXIT = StringItem("diag_last_exit", "")
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 4bb1fe9b1..26d52c2ed 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1096,6 +1096,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "MTProto console" to "Send any method of the built-in layer by hand.",
+             "Console history" to "Remember the last console requests on this device.",
+             "Report crashes without a dump" to "Say why a crash had no dump when it is sent.",
++            "Force the wallet" to "Show the money wallet even when the server has it off.",
++            "Copy wallet words" to "A copy button on the secret phrase screen; the clipboard clears in a minute.",
++            "Import wallets from private keys" to "Import a wallet from a raw ed25519 key instead of words.",
++            "Rotate the wallet phrase" to "Update the secret phrase of a wallet without a backup.",
+             "Report freezes" to "Notice a stuck interface and offer a report.",
+             "Update automatically" to "Check GitHub for new tele releases.",
+             "Show what's new after updates" to "Release notes in the tele chat after an update.",
+@@ -1641,6 +1645,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_LINK, title = "Clear console history", mode = "mtp_history_clear", id = "tele-mtp-history-clear", value = tele.helpers.TeleMtpHistory.sizeText(UserConfig.selectedAccount)),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "crash reports"),
++                toggle("Force the wallet", TeleConfig.FORCE_WALLET),
++                toggle("Import wallets from private keys", TeleConfig.WALLET_PRIVATE_KEYS),
++                toggle("Copy wallet words", TeleConfig.WALLET_COPY_WORDS),
++                toggle("Rotate the wallet phrase", TeleConfig.WALLET_ROTATE),
+                 toggle("Report crashes without a dump", TeleConfig.DIAG_NO_DUMP),
+                 toggle("Report freezes", TeleConfig.DIAG_FREEZE),
+                 Row(TYPE_SHADOW)
