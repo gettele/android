@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tangenx <me@tangenx.dev>
 Date: Tue, 3 Nov 2026 13:32:55 +0300
-Subject: [PATCH] feat: wallet keys
+Subject: [PATCH 246/247] feat: wallet keys
 
 ---
  .../jni/wallet/WalletEngineBridge.cpp         |  87 +++++++
@@ -15,16 +15,16 @@ Subject: [PATCH] feat: wallet keys
  .../org/telegram/ui/PasscodeActivity.java     |   2 +-
  .../java/org/telegram/ui/ProfileActivity.java |   2 +-
  .../org/telegram/ui/SettingsActivity.java     |   4 +-
- .../org/telegram/ui/Wallet/GramWallet.java    |  50 +++-
+ .../org/telegram/ui/Wallet/GramWallet.java    | 112 ++++++++-
  .../ui/Wallet/ProfileWalletCardDialog.java    |   2 +-
  .../org/telegram/ui/Wallet/WalletEngine2.java |  45 ++++
  .../ui/Wallet/WalletImportFragment.java       |   8 +
- .../ui/Wallet/WalletKeysBackupFragment.java   |  81 +++++++
+ .../ui/Wallet/WalletKeysBackupFragment.java   | 118 +++++++++
  .../ui/Wallet/WalletPrivateKeyFragment.java   | 229 ++++++++++++++++++
  .../ui/Wallet/WalletSecretPhraseFragment.java |  31 +++
  .../src/main/java/tele/TeleConfig.kt          |   8 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   8 +
- 20 files changed, 557 insertions(+), 23 deletions(-)
+ 20 files changed, 654 insertions(+), 25 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletPrivateKeyFragment.java
 
 diff --git a/TMessagesProj/jni/wallet/WalletEngineBridge.cpp b/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
@@ -295,10 +295,33 @@ index acf27c768..3ea8e0ca0 100644
              items.add(SettingCell.Factory.of(25, 0, 0, Theme.isCurrentThemeDark() ? R.drawable.settings_wallet_dark : R.drawable.settings_wallet, TextCell.applyNewSpanTimed(getString(R.string.WalletAttachMoney), 1790679020), null, wallet.getBalance() > 0 ? GramWallet.formatGrams(wallet.getBalance()) : null));
              items.add(UItem.asShadow(null));
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
-index 50f838e53..8630d3bbc 100644
+index 50f838e53..e15e3d975 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
-@@ -153,7 +153,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+@@ -94,10 +94,22 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+         public String msg_hash;
+         public SecretPhrase secretPhrase;
+         public byte[] publicKey;
++        /** A rotation of a wallet that has no backup: only save the new phrase. */
++        public boolean keepBackupOff;
+ 
+         public void disableBackup() {
+             final SecretPhrase owned = secretPhrase;
+             secretPhrase = null;
++            if (keepBackupOff) {
++                try {
++                    storage.init(UserConfig.getInstance(currentAccount).getClientUserId(), publicKey, owned, error -> {
++                        if (error != null) err("key rotation: failed to save the new phrase: " + error);
++                    });
++                } finally {
++                    owned.close();
++                }
++                return;
++            }
+             try {
+                 proveChallenge(owned, (proof, error4) -> {
+                     if (proof == null) {
+@@ -153,7 +165,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
      }
  
      public static void ensureLocalWalletBalances(int currentAccount, Runnable whenDone) {
@@ -307,7 +330,79 @@ index 50f838e53..8630d3bbc 100644
              whenDone.run();
              return;
          }
-@@ -1206,6 +1206,18 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+@@ -1038,8 +1050,44 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+             });
+         });
+     }
++    /** Prepares a key rotation of a wallet without a backup; the phrase is saved only after the send. */
++    public void prepareKeyRotation(Utilities.Callback2<PreparedDisableBackup, String> whenDone) {
++        log("prepare key rotation");
++        getSecretPhrase(true, false, (secretPhrase, error) -> {
++            if (secretPhrase == null) {
++                err("prepare key rotation, cant get secret phrase: " + (error == null ? "NULL_ERROR" : error));
++                whenDone.run(null, error == null ? "NULL_ERROR" : error);
++                return;
++            }
++            if (engine == null) {
++                whenDone.run(null, "NULL_ENGINE");
++                return;
++            }
++            engine.prepareRotateKey(secretPhrase, null, (transfer, newSecretPhrase, newPublicKey, error2) -> {
++                if (transfer == null || newSecretPhrase == null || newPublicKey == null) {
++                    err("prepare key rotation, failed to prepare transfer: " + (error2 == null ? "NULL_ERROR" : error2));
++                    whenDone.run(null, error2 == null ? "NULL_ERROR" : error2);
++                    return;
++                }
++                final PreparedDisableBackup prepared = new PreparedDisableBackup();
++                prepared.newPublicKey = newPublicKey;
++                prepared.newSecretPhrase = newSecretPhrase.copy();
++                prepared.transfer = transfer;
++                whenDone.run(prepared, null);
++            });
++        });
++    }
++
++    public void sendKeyRotation(PreparedDisableBackup prepared, Utilities.Callback<String> whenSent) {
++        sendPreparedRotation(prepared, false, whenSent);
++    }
++
+     public void disableBackup(PreparedDisableBackup prepared, Utilities.Callback<String> whenSent) {
+-        log("disable backup: getting phrase...");
++        sendPreparedRotation(prepared, true, whenSent);
++    }
++
++    private void sendPreparedRotation(PreparedDisableBackup prepared, boolean disableBackupOnServer, Utilities.Callback<String> whenSent) {
++        log("rotation: getting phrase...");
+         getSecretPhrase((currentPhrase, error) -> {
+             if (currentPhrase == null) {
+                 err("disable backup: no current phrase " + (error == null ? "NULL_ERROR" : error));
+@@ -1113,7 +1161,16 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+                 if (updates != null) processTransferUpdates(updates);
+                 if (sentTransfer == null || !isValidMessageHash(sentTransfer.msg_hash)) {
+                     fail.run();
+-                    err("disable backup: sendTransfer: " + (error3 != null && error3.text != null ? error3.text : "NULL_ERROR"));
++                    final String reason = error3 != null && !TextUtils.isEmpty(error3.text) ? error3.text : null;
++                    err("key rotation: sendTransfer: " + (reason == null ? "NULL_ERROR" : reason));
++                    if (reason != null) {
++                        AndroidUtilities.runOnUIThread(() -> {
++                            final org.telegram.ui.ActionBar.BaseFragment lastFragment = LaunchActivity.getSafeLastFragment();
++                            if (lastFragment != null) {
++                                org.telegram.ui.Components.BulletinFactory.of(lastFragment).createErrorBulletin(reason).show();
++                            }
++                        });
++                    }
+                     return;
+                 }
+                 log("disable backup: transfer is sent, msg_hash=" + sentTransfer.msg_hash + ", gasless=" + sentTransfer.gasless);
+@@ -1121,6 +1178,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+                 pending.msg_hash = sentTransfer.msg_hash;
+                 pending.publicKey = prepared.newPublicKey;
+                 pending.secretPhrase = replacement;
++                pending.keepBackupOff = !disableBackupOnServer;
+ //                pending.publicKey = publicKey;
+ //                pending.secretPhrase = currentPhrase;
+                 if (sentTransfer.transaction != null) {
+@@ -1206,6 +1264,18 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
      }
  
      public void enableBackup(Utilities.Callback<String> whenDone) {
@@ -326,7 +421,7 @@ index 50f838e53..8630d3bbc 100644
          log("enable backup: when ready...");
          whenReady(() -> {
              log("enable backup: ready! getting secret phrase...");
-@@ -2041,16 +2053,28 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+@@ -2041,16 +2111,28 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
      }
  
      public void importWallet(boolean sheet, boolean progress, SecretPhrase phrase, Utilities.Callback<String> whenDone) {
@@ -363,7 +458,7 @@ index 50f838e53..8630d3bbc 100644
          } catch (Exception e) {
              whenDone.run("INVALID_PHRASE");
              return;
-@@ -3402,6 +3426,14 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+@@ -3402,6 +3484,14 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
          public synchronized byte[] copyBytes() { checkOpen(); return bytes.clone(); }
          public synchronized SecretPhrase copy() { checkOpen(); return new SecretPhrase(bytes); }
  
@@ -467,14 +562,51 @@ index 1cfd813cf..b8e75316d 100644
          updateImportButton();
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
-index 08a9e2560..14767c7df 100644
+index 08a9e2560..dea4438e3 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletKeysBackupFragment.java
-@@ -116,6 +116,44 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
+@@ -116,6 +116,81 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
      private final int BTN_ENABLE_BACKUP = 2;
      private final int BTN_DISABLE_BACKUP = 3;
      private final int BTN_DELETE = 4;
 +    private final int BTN_ROTATE = 5;
++
++    /** Rotates the key of a wallet without a backup (tele 0285): the address stays, the phrase changes. */
++    private void startKeyRotation(GramWallet wallet) {
++        final AlertDialog progressDialog = new AlertDialog(getContext(), AlertDialog.ALERT_TYPE_SPINNER);
++        progressDialog.showDelayed(300);
++        wallet.prepareKeyRotation((prepared, error2) -> {
++            progressDialog.dismiss();
++            if (prepared == null) {
++                BulletinFactory.of(this).showForError(error2 == null ? "NULL_ERROR" : error2);
++                return;
++            }
++            if (destroyed) { prepared.close(); return; }
++            preparedBackups.add(prepared);
++            presentFragment(
++                new WalletSecretPhraseFragment()
++                    .setPhrase(prepared.newSecretPhrase)
++                    .onTested(() -> new AlertDialog.Builder(getContext(), getResourceProvider())
++                        .setTitle(LocaleController.getString(R.string.WalletDisableBackupTitle))
++                        .setMessage(LocaleController.getString(R.string.WalletDisableBackupConfirmInfo))
++                        .setNegativeButton(getString(R.string.Cancel), null)
++                        .setPositiveButton(LocaleController.getString(R.string.WalletDisable), (di3, w3) -> {
++                            final Browser.Progress progress3 = di3.makeButtonLoading(w3);
++                            progress3.init();
++                            wallet.sendKeyRotation(prepared, error3 -> {
++                                progress3.end();
++                                if (error3 != null) {
++                                    BulletinFactory.of(this).showForError(error3);
++                                    return;
++                                }
++                                returnToWallet();
++                            });
++                        })
++                        .makeRed(AlertDialog.BUTTON_POSITIVE)
++                        .show())
++            );
++        });
++    }
 +
 +    /** Rotates the key without a backup (tele 0285): the address stays, the phrase changes. */
 +    private void startPhraseUpdate(GramWallet wallet) {
@@ -515,7 +647,7 @@ index 08a9e2560..14767c7df 100644
  
      @Override
      protected void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {
-@@ -138,6 +176,12 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
+@@ -138,6 +213,12 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
              }
          }
  
@@ -528,7 +660,7 @@ index 08a9e2560..14767c7df 100644
          items.add(UItem.asButton(BTN_DELETE, LocaleController.getString(R.string.WalletDeleteWallet)).red());
  
          final List<GramWallet.PreviousWallet> localWallets = wallet.getPreviousWallets();
-@@ -563,9 +607,46 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
+@@ -563,9 +644,46 @@ public class WalletKeysBackupFragment extends UniversalFragment implements Notif
                  showDialog(dialog);
                  dialog.makeRed(AlertDialog.BUTTON_POSITIVE);
              });
@@ -560,7 +692,7 @@ index 08a9e2560..14767c7df 100644
 +                        .show();
 +                    return;
 +                }
-+                startPhraseUpdate(wallet);
++                startKeyRotation(wallet);
 +            });
          } else if (item.id == BTN_ENABLE_BACKUP) {
              final GramWallet wallet = GramWallet.getInstance(currentAccount);
