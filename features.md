@@ -279,6 +279,18 @@ settings → tele → money: the wallet switches of the fork and the money displ
 
 the gift-designed card, the gifts you place on the card and the gift cards of the collectible list are telegram's own money features; tele doesn't reimplement them.
 
+## scripting
+
+settings → tele → scripts: JavaScript and TypeScript scripts that run on their own thread, one QuickJS runtime per script and account. Scripts live in the app's external files folder, are off until you enable them, and only get the permissions you approve.
+
+| feature | what it does | where | default | android | desktop |
+|---|---|---|---|---|---|
+| scripts | run `.js`, `.mjs`, `.ts` and `.mts` scripts from the app's external files folder, one runtime per script and account, with `defineScript`, `tg.call`, messages, updates, storage, timers and a bounded log. imported code is untrusted; a script is off until you enable it | tele → scripts | off | [0254](patches/android/0254-feat-add-android-scripting-runtime) | [302](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0301-feat-scripting-prototype.patch) |
+| script permissions | every declared grant is shown before a script starts, dangerous ones are called out, and `display(messages)` lets a script change what you see on this device only. turning a script off forgets its approvals | tele → scripts → a script | off | [0254](patches/android/0254-feat-add-android-scripting-runtime) | [302](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0301-feat-scripting-prototype.patch) |
+| import a script | pick a script with the system file picker; it is copied into the scripts folder atomically and stays off until you enable it and allow its permissions | tele → scripts → import a script | off | [0254](patches/android/0254-feat-add-android-scripting-runtime) | [302](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0301-feat-scripting-prototype.patch) |
+| script web access | `fetch` with a per-host grant, bounded time, response size and redirects, no Telegram credentials and the same offline switches as the rest of tele | tele → scripts | off | [0254](patches/android/0254-feat-add-android-scripting-runtime) | [302](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0301-feat-scripting-prototype.patch) |
+| menu item icons | a script gives its message-menu item one of the app's own icons; an unknown name leaves the item without an icon | tele → scripts | off | [0255](patches/android/0255-feat-give-script-menus-icons) | [321](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0321-feat-let-scripts-give-their-menu-items-icons.patch) |
+
 ## debug
 
 settings → tele → debug.
