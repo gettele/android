@@ -499,18 +499,20 @@ wallet-engine из gettele/money: дифф переносится на реви�
 
 отключение money, тусклые группы адреса, ссылки на транзакции (tonscan.org), 2D и 3D-шейдер карты, подарки как gift-cards. effort: S×6, L×2.
 
-ворота: debug-apk, на устройстве: money выключается целиком (нужен рестарт); ссылки на транзакции открываются; карта 2D и 3D, подарки стикерами на карте; на тестовом кошельке.
+**итог 13.1.1:** money уже в стоке и включён сервером, а три строки закрыты самим стоком: карта с подарком (`wallet_card_bg_gifts` + `StarGiftSheet` wallet card/color delegates), подарки-стикеры на карте (`WalletGiftStickers`, 2331 строка, drag-and-drop и persisted placements) и gift-карточки коллекций в money (`WalletGiftCell extends GiftSheet.GiftCell`) — 0305/0314/0322 переносить нечего, сняты в skip. остальные пять портированы: 0249–0253.
+
+ворота: debug-apk, на устройстве: money выключается целиком (нужен рестарт); ссылки на транзакции открываются; на тестовом кошельке.
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0288 | выключить money целиком | todo | `AppGlobalConfig.walletAvailable`, `MessageObject`, `ChatActionCell`; S; зависит от деньги; override флага + ранние возвраты |
-| 0290 | тусклые группы адреса | todo | `WalletActivity.formatTransactionAddress`; S; зависит от деньги; раскомментировать диммирование |
-| 0311 | скрыть «you also have …» над картой | todo | `WalletActivity.updateWalletTopPanel`; S; зависит от деньги; под тумблер MODE_MONEY |
-| 0286 | копировать ссылки на транзакции | todo | деньги: `WalletActivity.openTransactionSheet`; S; зависит от деньги; реш.: 0286/0296 tonscan.org; tonscan вместо серверного explorer |
-| 0296 | ссылка на транзакцию из перевода | todo | `ChatActivity.fillMessageMenu`; S; зависит от 0286, деньги; реш.: 0286/0296 tonscan.org; пункт только при найденной транзакции |
-| 0305 | дизайн карточки money подарком (частично) | todo | `WalletCardComponent`, `WalletCard3D`, `WalletCard2DView`; L; зависит от 0278, деньги; реш.: 0305/0314 2D+3D; 3D-шейдер включён |
-| 0314 | подарки стикерами на карте money (частично) | todo | `WalletActivity`, `WalletCardView`; L; зависит от 0305, деньги, студия подарков; реш.: 0305/0314 2D+3D; драг и анимации |
-| 0322 | подарки в money как gift-cards | todo | `WalletActivity`, `WalletCardView`, тайл подарка (`tele_gift_tile`); S; зависит от деньги; вместе с 0314: карточка подарка вместо размытой аватарки |
+| 0288 | выключить money целиком | built | `0249-feat-turn-off-money`; `AppGlobalConfig.walletAvailable()` гейтит NO_MONEY раньше FORCE_WALLET (приоритет как в решении); `GramWallet.requestState/requestGaslessInfo/requestWaltBalance/refreshPreviousWallets` не ходят в сеть; `MessagesController` не применяет `TL_updateWallet*`/`TL_updateSentWalletTransaction`; `ChatActionCell.hasWalletActionLayout` возвращает обычный сервисный текст перевода; `LinkManager.handleSendGrams/handleTon/handleTc` показывают буллетин «Money is off in the tele settings» вместо перехода; settings/wallet/ton-connect/link входы закрыты общим `config.walletAvailable()`. Появилась страница `MODE_MONEY` (`tele → money`, поиск 1153+1540–1549): «Turn off Money» (рестарт), на неё же перенесены из debug `Force the wallet`/`Import wallets from private keys`/`Copy wallet words`/`Rotate the wallet phrase` (при включённом NO_MONEY остальные строки скрыты). Проверено на эмуляторе: off→restart — строки Money в настройках нет, `tg://sendgrams` даёт буллетин; on→restart — кошелёк возвращается. |
+| 0290 | тусклые группы адреса | built | `0250-feat-dim-wallet-address-groups`; `WalletActivity.formatTransactionAddress` — шахматка `(row+column) % 2` как в desktop `tele_wallet_address.cpp`, alpha 0.6, копируемое значение не меняется; тумблер `Dim wallet address groups` (money → addresses and balances, off). Проверено на эмуляторе: детали транзакции — ровно чередующиеся группы, off возвращает сток. |
+| 0311 | скрыть «you also have …» над картой | built | `0251-feat-hide-wallet-balances`; `WalletActivity.updateWalletTopPanel` — три `setViewVisible` (walt/old wallets/earnings) за тумблером `Hide other balances` (money, off), панель схлопывается сама; баланс карты не тронут. |
+| 0286 | копировать ссылки на транзакции | built | `0252-feat-copy-wallet-transaction-links`; `tele/helpers/WalletLinks.kt` — `https://tonscan.org/tx/<hex>` из hex или base64url `tx_hash`, невалидный → null; «View in explorer» в шите переведён с серверного `tonBlockchainExplorerUrl` на tonscan (решение 0286/0296); в меню ⋮ шита — «Copy transaction link» (буллетин), в истории — long-press пункты copy/open только при валидном хеше; тумблер `Transaction links` (money, off). Проверено на эмуляторе: URL `https://tonscan.org/tx/cb29fe76…`, буллетин «Transaction link copied». |
+| 0296 | ссылка на транзакцию из перевода | built | `0253-feat-open-transfer-transaction-links`; `ChatActivity.fillMessageMenu` — «Copy transaction link»/«Open in explorer» для `TL_messageActionGramTransfer` при включённом `Transaction links`, доступном wallet и найденной через `GramWallet.findTransaction` транзакции с валидным хешем; pending/без хеша и незагруженная история действий не показывают; пункты в реестре `MessageMenu` (copy_tx_link/open_tx_link), системный браузер. |
+| 0305 | дизайн карточки money подарком (частично) | skip | **уже в стоке 13.1.1**: `wallet_card_bg_gifts` (сервер) + `StarGiftSheet` wallet card/color delegates + `WalletGiftStickers.toggleColor` — карта берёт цвета/паттерн подарка, 2D и 3D. переносить нечего |
+| 0314 | подарки стикерами на карте money (частично) | skip | **уже в стоке 13.1.1**: `WalletGiftStickers` — drag-and-drop подарков на карту, добавление/снятие из меню подарка и ячейки, persisted placements; переиспользовать, не дублировать |
+| 0322 | подарки в money как gift-cards | skip | **уже в стоке 13.1.1**: коллекции money рисуются `WalletGiftCell extends GiftSheet.GiftCell`, то есть настоящими gift-карточками, а не размытой аватаркой |
 
 ## пачка 28 — скриптинг
 
@@ -621,7 +623,10 @@ litehtml через NDK (сборка), карточки в `ChatMessageCell` ч
 | 0294 | бокс «сохранить черновик» не блокирует | ❌ нет бокса ожидания облака (`RichEditor`) |
 | 0297 | ресайз окна money | ❌ оконная фича Qt; реш.: money «порт всё», но окна нет |
 | 0304 | zoom колесом в viewer | ❌ колесо мыши (`PhotoViewer`) |
+| 0305 | дизайн карточки money подарком | 🟢 в стоке 13.1.1: `wallet_card_bg_gifts` + wallet card/color delegates в `StarGiftSheet` (`WalletGiftStickers.toggleColor`), 2D и 3D |
 | 0306 | плавные глайды колеса | ❌ колесо мыши |
+| 0314 | подарки стикерами на карте money | 🟢 в стоке 13.1.1: `WalletGiftStickers` (drag-and-drop, add/remove из меню, persisted placements) |
+| 0322 | подарки в money как gift-cards | 🟢 в стоке 13.1.1: `WalletGiftCell extends GiftSheet.GiftCell` — настоящие gift-карточки, не размытая аватарка |
 | 0318 | глайды в боксах не затирают чаты под ними | ❌ Qt-глайды в боксах |
 | 0319 | dock-иконка при обновлении на macOS | ❌ macOS |
 | 0323 | passkey-запрос не считается фризом | ❌ Windows (webauthn + watchdog) |
@@ -654,7 +659,7 @@ litehtml через NDK (сборка), карточки в `ChatMessageCell` ч
 
 ## сводка
 
-- пачек: 31 (0–30): 0–11 собраны (в них остаются отдельные `queued`), 12–30 — план, все строки `todo`
+- пачек: 31 (0–30): 0–26 собраны (в них остаются отдельные `queued`), 27 собрана (0305/0314/0322 закрыты стоком 13.1.1), 28–30 — план, все строки `todo`
 - строк в плане (пачки 12–30): 150 — новые патчи десктопа (0125–0332), 4 строки по прежним номерам (остатки старых пачек 11–12: пины, папки, сообщества, первое сообщение, мгновенные перемещения, lowercase, шаблон заголовка, фоны чатов, test-аккаунты, mtproto-инспектор) и 4 доработки перенесённого (0017, 0077, 0095, 0006)
 - вне плана: 81 (14 прежних + 67 новых: ❌ нет аналога или десктопная специфика, 🟢 уже в стоке, 🔁 уже перенесено; см. skip)
 - порядок реализации строго по пачкам; зависимости: игнор-лист, per-chat ghost и ghost-schedule (пачка 11) → 0166, 0227, 0228, 0229 — сделаны; 0169 (пачка 13) → 0170, 0241, 0244; 0171 → 0255, 0295; 0187 (пачка 23) → 0184–0193, 0217, подарочные платежи, консоль 0195; 0205 (пачка 22) → 0206, 0212, 0213, 0232, 0239, 0240, 0246; 0175 → 0236; 0197/0204 → 0198, 0201, 0234, 0247, 0248, 0230; 0308 → 0309, 0307, 0285, затем 0278 → карта 0305 → 0314 → 0322; 0302 → 0313, 0329; 0312 → 0313; 0195 → 0218, 0298 (прежние: 0101/0121 → 0071; 0012/0081/0108 → 0009; 0080 → 0045; 0118/0119 → 0050)

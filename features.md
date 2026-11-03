@@ -10,7 +10,7 @@ tele for android ports the features of [tele for desktop](https://github.com/nit
 
 a patch that fixed something says what it changed after its link, in the same cell.
 
-[interface](#interface) · [privacy](#privacy) · [links](#links) · [ids](#ids) · [sending](#sending) · [your data](#your-data) · [server](#server) · [updates](#updates) · [everywhere](#everywhere) · [build](#build)
+[interface](#interface) · [privacy](#privacy) · [links](#links) · [ids](#ids) · [sending](#sending) · [your data](#your-data) · [server](#server) · [money](#money) · [debug](#debug) · [updates](#updates) · [everywhere](#everywhere) · [build](#build)
 
 ## settings
 
@@ -264,14 +264,20 @@ settings → tele → server.
 
 ## money
 
-settings → tele → debug: the wallet switches of the fork.
+settings → tele → money: the wallet switches of the fork and the money display options. money itself is telegram's wallet and is on when telegram turns it on; these switches only turn it off or change how it looks.
 
 | feature | what it does | where | default | android | desktop |
 |---|---|---|---|---|---|
-| force the wallet | shows the money wallet even when the server flag is off | tele → debug | off | [0246](patches/android/0246-feat-wallet-keys) | [278](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0278-feat-turn-on-the-wallet-before-telegram-does.patch) |
-| import wallets from private keys | imports a wallet from a raw ed25519 key (hex or base64), or from the key and the 12 words a rotation generated; the key never goes into the cloud backup | tele → debug, wallet → import | off | [0245](patches/android/0245-build-wallet-engine-with-private-keys), [0246](patches/android/0246-feat-wallet-keys) | [308](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0308-build-take-wallet-engine-from-gettele-money-for-priv.patch), [309](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0309-feat-import-wallets-from-private-keys.patch) |
-| rotate the wallet phrase | updates the secret phrase of a wallet whose backup is off, with the fee quote and the usual confirmation | tele → debug, wallet → keys | off | [0246](patches/android/0246-feat-wallet-keys) | [285](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0285-feat-update-the-secret-phrase-of-wallets-without-a-b.patch) |
-| copy wallet words | a copy button on the secret phrase screen; the clipboard clears in a minute unless something replaced it. pasting several words into one phrase cell spreads them over the numbered cells, and the 24-word sheet scrolls on small screens | tele → debug | off | [0246](patches/android/0246-feat-wallet-keys), [0247](patches/android/0247-fix-spread-pasted-wallet-words), [0248](patches/android/0248-fix-scroll-the-wallet-phrase-sheet) | [310](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0310-feat-copy-secret-words-without-waiting.patch) |
+| turn off money | money is gone from the app: the settings row, the wallet and its send and add-funds screens, ton connect links, money deep links and the transfer cards in chats all turn off, and transfer messages read as plain service messages. your keys, address, history and phrases stay on the device. takes a restart | tele → money | off | [0249](patches/android/0249-feat-turn-off-money) | [288](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0288-feat-turn-off-money.patch) |
+| force the wallet | shows the money wallet even when the server has it off | tele → money | off | [0246](patches/android/0246-feat-wallet-keys) | [278](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0278-feat-turn-on-the-wallet-before-telegram-does.patch) |
+| import wallets from private keys | imports a wallet from a raw ed25519 key (hex or base64), or from the key and the 12 words a rotation generated; the key never goes into the cloud backup | tele → money, wallet → import | off | [0245](patches/android/0245-build-wallet-engine-with-private-keys), [0246](patches/android/0246-feat-wallet-keys) | [308](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0308-build-take-wallet-engine-from-gettele-money-for-priv.patch), [309](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0309-feat-import-wallets-from-private-keys.patch) |
+| rotate the wallet phrase | updates the secret phrase of a wallet whose backup is off, with the fee quote and the usual confirmation | tele → money, wallet → keys | off | [0246](patches/android/0246-feat-wallet-keys) | [285](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0285-feat-update-the-secret-phrase-of-wallets-without-a-b.patch) |
+| copy wallet words | a copy button on the secret phrase screen; the clipboard clears in a minute unless something replaced it. pasting several words into one phrase cell spreads them over the numbered cells, and the 24-word sheet scrolls on small screens | tele → money | off | [0246](patches/android/0246-feat-wallet-keys), [0247](patches/android/0247-fix-spread-pasted-wallet-words), [0248](patches/android/0248-fix-scroll-the-wallet-phrase-sheet) | [310](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0310-feat-copy-secret-words-without-waiting.patch) |
+| dim wallet address groups | wallet addresses dim every other group of four, like on ios, so the groups are easier to check by eye; the copied address stays one plain string | tele → money → addresses and balances | off | [0250](patches/android/0250-feat-dim-wallet-address-groups) | [290](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0290-feat-dim-every-other-address-group-like-ios.patch) |
+| hide other balances | hides the rows above the card: the balance of the wallets you used before and the earnings. the balance of the card itself stays | tele → money → addresses and balances | off | [0251](patches/android/0251-feat-hide-wallet-balances) | [311](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0311-feat-hide-the-other-balances-above-the-money-card.patch) |
+| transaction links | copy or open a transaction on [tonscan.org](https://tonscan.org): a copy and an open item in the ⋮ menu of a transaction, a long-press menu on the history rows, and copy and open items in the menu of a money transfer message in a chat, when the history already knows that transaction | tele → money → transactions | off | [0252](patches/android/0252-feat-copy-wallet-transaction-links), [0253](patches/android/0253-feat-open-transfer-transaction-links) | [286](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0286-feat-copy-links-to-wallet-transactions.patch), [296](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0296-feat-copy-and-open-transaction-links-from-money-tran.patch) |
+
+the gift-designed card, the gifts you place on the card and the gift cards of the collectible list are telegram's own money features; tele doesn't reimplement them.
 
 ## debug
 

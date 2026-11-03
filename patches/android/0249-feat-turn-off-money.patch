@@ -1,0 +1,287 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 3 Nov 2026 17:51:57 +0300
+Subject: [PATCH] feat: turn off money
+
+---
+ .../telegram/messenger/AppGlobalConfig.java   |  3 ++-
+ .../messenger/MessagesController.java         |  8 +++----
+ .../org/telegram/ui/Cells/ChatActionCell.java |  3 ++-
+ .../java/org/telegram/ui/LinkManager.java     | 11 +++++++--
+ .../org/telegram/ui/Wallet/GramWallet.java    |  4 ++++
+ .../src/main/java/tele/TeleConfig.kt          |  2 ++
+ .../java/tele/helpers/TeleSettingsLinks.kt    |  2 ++
+ .../main/java/tele/ui/settings/TeleSearch.kt  | 15 ++++++++++--
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 23 +++++++++++++++----
+ .../src/main/res/values/strings_tele.xml      |  1 +
+ 10 files changed, 58 insertions(+), 14 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java
+index adec3316d..29c51014f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AppGlobalConfig.java
+@@ -114,8 +114,9 @@ public class AppGlobalConfig {
+ 
+     public final ConfigBoolean walletAvailable = ofBoolean("wallet_available", BuildVars.DEBUG_VERSION);
+ 
+-    /** The wallet of the server or the local force, like the desktop client (tele 0278). */
++    /** The wallet of the server or the local force, like the desktop client (tele 0278); the turn-off switch wins (tele 0288). */
+     public boolean walletAvailable() {
++        if (tele.TeleConfig.NO_MONEY.getValue()) return false;
+         return tele.TeleConfig.FORCE_WALLET.getValue() || walletAvailable.get();
+     }
+     public final ConfigBoolean walletPaidMessageRecipientMessageAmountCheck = ofBoolean("wallet_paid_message_recipient_message_amount_check", true);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 8a9986c33..0ac6648dd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -20471,13 +20471,13 @@ public class MessagesController extends BaseController implements NotificationCe
+                         getMediaDataController().loadSavedReactions(true);
+                     } else if (baseUpdate instanceof TL_update.TL_updateSavedReactionTags) {
+                         getSavedReactionTags(0, true);
+-                    } else if (baseUpdate instanceof TL_update.TL_updateSentWalletTransaction) {
++                    } else if (baseUpdate instanceof TL_update.TL_updateSentWalletTransaction && !tele.TeleConfig.NO_MONEY.getValue()) {
+                         GramWallet.getInstance(currentAccount).onUpdate((TL_update.TL_updateSentWalletTransaction) baseUpdate);
+-                    } else if (baseUpdate instanceof TL_update.TL_updateWalletGaslessInfo) {
++                    } else if (baseUpdate instanceof TL_update.TL_updateWalletGaslessInfo && !tele.TeleConfig.NO_MONEY.getValue()) {
+                         GramWallet.getInstance(currentAccount).onUpdate((TL_update.TL_updateWalletGaslessInfo) baseUpdate);
+-                    } else if (baseUpdate instanceof TL_update.TL_updateWalletState) {
++                    } else if (baseUpdate instanceof TL_update.TL_updateWalletState && !tele.TeleConfig.NO_MONEY.getValue()) {
+                         GramWallet.getInstance(currentAccount).onUpdate((TL_update.TL_updateWalletState) baseUpdate);
+-                    } else if (baseUpdate instanceof TL_update.TL_updateWalletTonConnectSession) {
++                    } else if (baseUpdate instanceof TL_update.TL_updateWalletTonConnectSession && !tele.TeleConfig.NO_MONEY.getValue()) {
+                         GramWallet.getInstance(currentAccount).tonConnect.onSessionUpdate(((TL_update.TL_updateWalletTonConnectSession) baseUpdate).session);
+                     } else if (baseUpdate instanceof TL_update.TL_updateFavedStickers) {
+                         getMediaDataController().loadRecents(MediaDataController.TYPE_FAVE, false, false, true);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
+index 54704f247..7a9ec9f64 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
+@@ -2141,7 +2141,8 @@ public class ChatActionCell extends BaseCell implements DownloadController.FileD
+     private boolean hasWalletActionLayout() {
+         return currentMessageObject != null
+             && currentMessageObject.messageOwner != null
+-            && currentMessageObject.messageOwner.action instanceof TLRPC.TL_messageActionGramTransfer;
++            && currentMessageObject.messageOwner.action instanceof TLRPC.TL_messageActionGramTransfer
++            && !tele.TeleConfig.NO_MONEY.getValue();
+     }
+ 
+     public boolean playWalletReceiveAnimation(float visibleTop, float visibleBottom, Runnable onEnd) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
+index 3badd40ff..3e1d0c3a0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
+@@ -1467,8 +1467,14 @@ public class LinkManager {
+         return true;
+     }
+ 
++    private boolean walletRefused() {
++        if (!tele.TeleConfig.NO_MONEY.getValue()) return false;
++        getBulletinFactory().createSimpleBulletin(R.raw.error, LocaleController.getString(R.string.TeleMoneyOff)).show();
++        return true;
++    }
++
+     private boolean handleSendGrams(Uri uri) {
+-        if (!getMessagesController().config.walletAvailable()) return false;
++        if (!getMessagesController().config.walletAvailable()) return walletRefused();
+         final Uri tonConnectUri = parseTonConnectStartApp(uri.getQueryParameter("startapp"));
+         if (tonConnectUri != null) {
+             handleTc(tonConnectUri);
+@@ -1546,7 +1552,7 @@ public class LinkManager {
+     }
+ 
+     private boolean handleTon(Uri uri) {
+-        if (!getMessagesController().config.walletAvailable()) return false;
++        if (!getMessagesController().config.walletAvailable()) return walletRefused();
+         uri = normalizeTgUri(uri);
+ 
+         final List<String> _segments = uri.getPathSegments();
+@@ -1679,6 +1685,7 @@ public class LinkManager {
+     }
+ 
+     private boolean handleTc(Uri uri) {
++        if (tele.TeleConfig.NO_MONEY.getValue()) return walletRefused();
+         uri = normalizeTgUri(uri);
+ 
+         final List<String> _segments = uri.getPathSegments();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+index e15e3d975..2f0193474 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+@@ -499,6 +499,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+     private int requestingStateId = -1;
+ 
+     private void requestState() {
++        if (tele.TeleConfig.NO_MONEY.getValue()) return;
+         log("requesting state");
+         requestingStateId = getConnectionsManager().sendRequestTyped(new TL_wallet.getState(), AndroidUtilities::runOnUIThread, (state, err) -> {
+             requestingStateId = -1;
+@@ -529,6 +530,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+ 
+     private int requestingGaslessInfoId = -1;
+     private void requestGaslessInfo() {
++        if (tele.TeleConfig.NO_MONEY.getValue()) return;
+         log("requesting gasless info");
+         requestingGaslessInfoId = getConnectionsManager().sendRequestTyped(new TL_wallet.getGaslessInfo(), AndroidUtilities::runOnUIThread, (gasless, err) -> {
+             requestingGaslessInfoId = -1;
+@@ -542,6 +544,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+ 
+     private int requestingWaltId = -1;
+     private void requestWaltBalance() {
++        if (tele.TeleConfig.NO_MONEY.getValue()) return;
+         log("requesting has walt balance");
+         requestingWaltId = getConnectionsManager().sendRequestTyped(new TL_wallet.getExistingWaltBalance(), AndroidUtilities::runOnUIThread, (balance, error) -> {
+             requestingWaltId = -1;
+@@ -1848,6 +1851,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+     }
+ 
+     private void refreshPreviousWallets() {
++        if (tele.TeleConfig.NO_MONEY.getValue()) return;
+         previousWalletAddress = getAddress();
+         final ArrayList<String> addresses = GramWalletStorage.getWallets(ApplicationLoader.applicationContext,
+                 UserConfig.getInstance(currentAccount).getClientUserId());
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index c195cca53..02d7c770c 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -132,6 +132,8 @@ object TeleConfig {
+     @JvmField
+     val FORCE_WALLET = BoolItem("force_wallet", false)
+     @JvmField
++    val NO_MONEY = BoolItem("no_money", false)
++    @JvmField
+     val WALLET_COPY_WORDS = BoolItem("wallet_copy_words", false)
+     @JvmField
+     val WALLET_PRIVATE_KEYS = BoolItem("wallet_private_keys", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+index 3341814de..9856365ed 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -23,6 +23,7 @@ object TeleSettingsLinks {
+         "ids" to TeleSettingsActivity.MODE_PROFILES_IDS,
+         "bots" to TeleSettingsActivity.MODE_BOTS,
+         "debug" to TeleSettingsActivity.MODE_DEBUG,
++        "money" to TeleSettingsActivity.MODE_MONEY,
+         "server" to TeleSettingsActivity.MODE_SERVER,
+         "backup" to TeleSettingsActivity.MODE_BACKUP,
+         "data" to TeleSettingsActivity.MODE_BACKUP,
+@@ -35,6 +36,7 @@ object TeleSettingsLinks {
+ 
+     // desktop option id -> our row id, for the options that are named differently; the first id of a row is the one that gets copied
+     private val DESKTOP_IDS: List<Pair<String, String>> = listOf(
++        "tele-no-money" to optionId(TeleConfig.NO_MONEY.key),
+         "tele-title" to optionId(TeleConfig.TITLE_TEMPLATE.key),
+         "tele-lowercase" to optionId(TeleConfig.LOWERCASE_INTERFACE.key),
+         "tele-hide-all-chats" to optionId(TeleConfig.HIDE_ALL_CHATS_FOLDER.key),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 5f4b4c6cb..f73f961fa 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -56,7 +56,8 @@ object TeleSearch {
+             Triple("tele debug", "debug", TeleSettingsActivity.MODE_DEBUG),
+             Triple("tele server", "server", TeleSettingsActivity.MODE_SERVER),
+             Triple("tele backup", "backup", TeleSettingsActivity.MODE_BACKUP),
+-            Triple("tele updates", "updates", TeleSettingsActivity.MODE_UPDATES)
++            Triple("tele updates", "updates", TeleSettingsActivity.MODE_UPDATES),
++            Triple("tele money", "money", TeleSettingsActivity.MODE_MONEY)
+         )
+         pages.forEachIndexed { index, page ->
+             results.add(section(GUID_PAGES + index, page.first, page.second, page.third))
+@@ -425,7 +426,17 @@ object TeleSearch {
+             section(1468, "Local password for paid media", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Paid media"),
+             section(1469, "Local password for subscriptions", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Subscriptions"),
+             section(1470, "Local password for paid messages", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Paid messages and suggested posts"),
+-            section(1471, "Local password for bot payments", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Bot payments")
++            section(1471, "Local password for bot payments", "privacy", TeleSettingsActivity.MODE_PRIVACY, "Bot payments"),
++            section(1540, "Money", "money", TeleSettingsActivity.MODE_MONEY),
++            section(1541, "Turn off Money", "money", TeleSettingsActivity.MODE_MONEY, "Turn off Money"),
++            section(1542, "Disable money", "money", TeleSettingsActivity.MODE_MONEY, "Turn off Money"),
++            section(1543, "No money", "money", TeleSettingsActivity.MODE_MONEY, "Turn off Money"),
++            section(1544, "Wallet", "money", TeleSettingsActivity.MODE_MONEY),
++            section(1545, "Force the wallet", "money", TeleSettingsActivity.MODE_MONEY),
++            section(1546, "Import wallets from private keys", "money", TeleSettingsActivity.MODE_MONEY),
++            section(1547, "Copy wallet words", "money", TeleSettingsActivity.MODE_MONEY),
++            section(1548, "Rotate the wallet phrase", "money", TeleSettingsActivity.MODE_MONEY, "Rotate the wallet phrase"),
++            section(1549, "Update the secret phrase", "money", TeleSettingsActivity.MODE_MONEY, "Rotate the wallet phrase")
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 26d52c2ed..2febb45fe 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -428,6 +428,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         MODE_PRIVACY -> "tele · Privacy"
+         MODE_PROFILES_IDS -> "tele · Profiles and IDs"
+         MODE_BOTS -> "tele · Bots"
++        MODE_MONEY -> "tele · Money"
+         MODE_DEBUG -> "tele · Debug"
+         MODE_SERVER -> "tele · Server"
+         MODE_BACKUP -> "tele · Backup"
+@@ -891,6 +892,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         const val MODE_PRIVACY = "privacy"
+         const val MODE_PROFILES_IDS = "profiles-ids"
+         const val MODE_BOTS = "bots"
++        const val MODE_MONEY = "money"
+         const val MODE_DEBUG = "debug"
+         const val MODE_SERVER = "server"
+         const val MODE_BACKUP = "backup"
+@@ -1096,6 +1098,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "MTProto console" to "Send any method of the built-in layer by hand.",
+             "Console history" to "Remember the last console requests on this device.",
+             "Report crashes without a dump" to "Say why a crash had no dump when it is sent.",
++            "Turn off Money" to "Money is gone from the app, links and messages included. Needs a restart.",
+             "Force the wallet" to "Show the money wallet even when the server has it off.",
+             "Copy wallet words" to "A copy button on the secret phrase screen; the clipboard clears in a minute.",
+             "Import wallets from private keys" to "Import a wallet from a raw ed25519 key instead of words.",
+@@ -1185,6 +1188,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             Section(MODE_PRIVACY, "privacy", R.drawable.msg2_secret),
+             Section(MODE_PROFILES_IDS, "profiles and ids", R.drawable.msg2_data),
+             Section(MODE_BOTS, "bots", R.drawable.msg2_ask_question),
++            Section(MODE_MONEY, "money", R.drawable.settings_gram_24),
+             Section(MODE_DEBUG, "debug", R.drawable.msg2_battery),
+             Section(MODE_SERVER, "server", R.drawable.msg2_devices),
+             Section(MODE_BACKUP, "backup", R.drawable.msg2_link2),
+@@ -1635,6 +1639,21 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Inline results without via", TeleConfig.INLINE_NO_VIA),
+                 Row(TYPE_SHADOW)
+             )
++            MODE_MONEY -> {
++                val rows = ArrayList<Row>()
++                rows.add(Row(TYPE_HEADER, "money"))
++                rows.add(toggle("Turn off Money", TeleConfig.NO_MONEY))
++                if (!TeleConfig.NO_MONEY.value) {
++                    rows.add(Row(TYPE_SHADOW))
++                    rows.add(Row(TYPE_HEADER, "Wallet"))
++                    rows.add(toggle("Force the wallet", TeleConfig.FORCE_WALLET))
++                    rows.add(toggle("Import wallets from private keys", TeleConfig.WALLET_PRIVATE_KEYS))
++                    rows.add(toggle("Copy wallet words", TeleConfig.WALLET_COPY_WORDS))
++                    rows.add(toggle("Rotate the wallet phrase", TeleConfig.WALLET_ROTATE))
++                }
++                rows.add(Row(TYPE_SHADOW))
++                rows
++            }
+             MODE_DEBUG -> listOf(
+                 Row(TYPE_HEADER, "debug"),
+                 toggle("Capture MTProto", TeleConfig.MTP_INSPECTOR),
+@@ -1645,10 +1664,6 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_LINK, title = "Clear console history", mode = "mtp_history_clear", id = "tele-mtp-history-clear", value = tele.helpers.TeleMtpHistory.sizeText(UserConfig.selectedAccount)),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "crash reports"),
+-                toggle("Force the wallet", TeleConfig.FORCE_WALLET),
+-                toggle("Import wallets from private keys", TeleConfig.WALLET_PRIVATE_KEYS),
+-                toggle("Copy wallet words", TeleConfig.WALLET_COPY_WORDS),
+-                toggle("Rotate the wallet phrase", TeleConfig.WALLET_ROTATE),
+                 toggle("Report crashes without a dump", TeleConfig.DIAG_NO_DUMP),
+                 toggle("Report freezes", TeleConfig.DIAG_FREEZE),
+                 Row(TYPE_SHADOW)
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index d9a5d1e94..94aa163bb 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -339,4 +339,5 @@
+     <string name="TeleGiftGridOpenInGrid">Open in the gift grid</string>
+     <string name="TeleGiftGridAddToGrid">Add to the gift grid</string>
+     <string name="TeleGiftGridGiftsAdded">%1$d gifts added to the grid</string>
++    <string name="TeleMoneyOff">Money is off in the tele settings</string>
+ </resources>

@@ -1,0 +1,195 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Tue, 3 Nov 2026 18:33:28 +0300
+Subject: [PATCH] feat: copy wallet transaction links
+
+---
+ .../telegram/ui/Wallet/WalletActivity.java    | 46 ++++++++++++++-----
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/WalletLinks.kt | 25 ++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  6 ++-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  4 ++
+ .../src/main/res/values/strings_tele.xml      |  2 +
+ 6 files changed, 73 insertions(+), 12 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/WalletLinks.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
+index 3ac1311e7..7e4417236 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
+@@ -3306,6 +3306,18 @@ public class WalletActivity extends UniversalFragment implements NotificationCen
+                 moreButton
+             );
+             if (!TextUtils.isEmpty(transaction[0].tx_hash)) {
++                final String txUrl = tele.helpers.WalletLinks.transactionUrl(transaction[0].tx_hash);
++                if (txUrl != null && tele.TeleConfig.WALLET_TRANSACTION_LINKS.getValue()) {
++                    options.add(
++                        R.drawable.msg_copy,
++                        LocaleController.getString(R.string.TeleWalletCopyTxLink),
++                        () -> {
++                            AndroidUtilities.addToClipboard(txUrl);
++                            BulletinFactory.of(sheet[0].topBulletinContainer, resourceProvider)
++                                    .createSimpleBulletin(R.raw.copy, LocaleController.getString(R.string.TeleWalletTxLinkCopied)).show(false);
++                        }
++                    );
++                }
+                 options.add(
+                     R.drawable.msg_search,
+                     LocaleController.getString(R.string.WalletViewInExplorer),
+@@ -3326,16 +3338,11 @@ public class WalletActivity extends UniversalFragment implements NotificationCen
+         if (TextUtils.isEmpty(hash)) {
+             return;
+         }
+-        String baseUrl = MessagesController.getInstance(currentAccount).tonBlockchainExplorerUrl;
+-        if (TextUtils.isEmpty(baseUrl)) {
+-            baseUrl = "https://tonviewer.com/";
+-        } else if (!baseUrl.endsWith("/")) {
+-            baseUrl += "/";
++        final String url = tele.helpers.WalletLinks.transactionUrl(hash);
++        if (url == null) {
++            return;
+         }
+-        Browser.openUrlInSystemBrowser(
+-                context,
+-                baseUrl + "transaction/" + Uri.encode(hash)
+-        );
++        Browser.openUrlInSystemBrowser(context, url);
+     }
+ 
+     private static CharSequence formatTransactionAmount(long nanotons, boolean recolorIcon) {
+@@ -3395,7 +3402,7 @@ public class WalletActivity extends UniversalFragment implements NotificationCen
+             return LocaleController.getString(R.string.WalletUnknown);
+         }
+         final SpannableStringBuilder formatted = new SpannableStringBuilder();
+-        final boolean dim = tele.TeleConfig.DIM_WALLET_ADDRESS.value;
++        final boolean dim = tele.TeleConfig.DIM_WALLET_ADDRESS.getValue();
+         int from = 0;
+         int group = 0;
+         for (int i = 0; i < address.length(); i++) {
+@@ -3587,7 +3594,7 @@ public class WalletActivity extends UniversalFragment implements NotificationCen
+         if (walletTopPanel == null) return;
+         final GramWallet wallet = GramWallet.getInstance(currentAccount);
+         final boolean animated = walletTopPanel.isAttachedToWindow() && walletTopPanel.isLaidOut();
+-        final boolean hideExtra = tele.TeleConfig.HIDE_OTHER_WALLET_BALANCES.value;
++        final boolean hideExtra = tele.TeleConfig.HIDE_OTHER_WALLET_BALANCES.getValue();
+         walletTopPanel.setViewVisible(waltButton, !hideExtra && wallet.hasWaltBalance(), animated);
+         final long previousWalletsBalance = wallet.getBalanceOfPreviousWallets();
+         final boolean showOldWallets = !hideExtra && previousWalletsBalance > 500_000_000L;
+@@ -3818,6 +3825,23 @@ public class WalletActivity extends UniversalFragment implements NotificationCen
+             giftStickers.showMenu((WalletGiftCell) view);
+             return true;
+         }
++        if (tele.TeleConfig.WALLET_TRANSACTION_LINKS.getValue() && item.object instanceof TL_wallet.walletTransaction) {
++            final TL_wallet.walletTransaction tx = (TL_wallet.walletTransaction) item.object;
++            final String url = tele.helpers.WalletLinks.transactionUrl(tx.tx_hash);
++            if (url == null) {
++                return false;
++            }
++            final ItemOptions options = ItemOptions.makeOptions(WalletActivity.this, view, true);
++            options.add(R.drawable.msg_copy, LocaleController.getString(R.string.TeleWalletCopyTxLink), () -> {
++                AndroidUtilities.addToClipboard(url);
++                BulletinFactory.of(WalletActivity.this)
++                        .createSimpleBulletin(R.raw.copy, LocaleController.getString(R.string.TeleWalletTxLinkCopied)).show(false);
++            });
++            options.add(R.drawable.msg_search, LocaleController.getString(R.string.WalletViewInExplorer),
++                    () -> Browser.openUrlInSystemBrowser(getContext(), url));
++            options.show();
++            return true;
++        }
+         return false;
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 333b2a535..bc97c8e09 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -138,6 +138,8 @@ object TeleConfig {
+     @JvmField
+     val HIDE_OTHER_WALLET_BALANCES = BoolItem("hide_other_wallet_balances", false)
+     @JvmField
++    val WALLET_TRANSACTION_LINKS = BoolItem("wallet_transaction_links", false)
++    @JvmField
+     val WALLET_COPY_WORDS = BoolItem("wallet_copy_words", false)
+     @JvmField
+     val WALLET_PRIVATE_KEYS = BoolItem("wallet_private_keys", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/WalletLinks.kt b/TMessagesProj/src/main/java/tele/helpers/WalletLinks.kt
+new file mode 100644
+index 000000000..d20b392e9
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/WalletLinks.kt
+@@ -0,0 +1,25 @@
++package tele.helpers
++
++import android.util.Base64
++
++// the links to a wallet transaction on tonscan.org; the desktop client builds the same url (tele 0286)
++object WalletLinks {
++
++    private const val BASE = "https://tonscan.org/tx/"
++    private val HEX64 = Regex("[0-9a-fA-F]{64}")
++
++    @JvmStatic
++    fun transactionUrl(hash: String?): String? {
++        if (hash.isNullOrEmpty()) return null
++        if (HEX64.matches(hash)) return BASE + hash.lowercase()
++        val cleaned = hash.replace('-', '+').replace('_', '/')
++        val padded = cleaned + "=".repeat((4 - cleaned.length % 4) % 4)
++        val bytes = try {
++            Base64.decode(padded, Base64.DEFAULT)
++        } catch (e: IllegalArgumentException) {
++            return null
++        }
++        if (bytes.size != 32) return null
++        return BASE + bytes.joinToString("") { "%02x".format(it) }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 38848bbae..f3afbd3ae 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -442,7 +442,11 @@ object TeleSearch {
+             section(1552, "Address groups", "money", TeleSettingsActivity.MODE_MONEY, "Dim wallet address groups"),
+             section(1553, "Hide other balances", "money", TeleSettingsActivity.MODE_MONEY, "Hide other balances"),
+             section(1554, "Other balances", "money", TeleSettingsActivity.MODE_MONEY, "Hide other balances"),
+-            section(1555, "Hide the balances above the card", "money", TeleSettingsActivity.MODE_MONEY, "Hide other balances")
++            section(1555, "Hide the balances above the card", "money", TeleSettingsActivity.MODE_MONEY, "Hide other balances"),
++            section(1556, "Transaction links", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
++            section(1557, "Copy transaction link", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
++            section(1558, "Open in explorer", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
++            section(1559, "tonscan", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links")
+         ))
+         return results.toTypedArray()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index ea39f7a05..24fbd4cc8 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1101,6 +1101,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Turn off Money" to "Money is gone from the app, links and messages included. Needs a restart.",
+             "Dim wallet address groups" to "Dims every other group of four in an address, like on iOS.",
+             "Hide other balances" to "Hides the rows above the card — the old wallets' balance and the earnings. Your balance stays.",
++            "Transaction links" to "Copy or open a transaction on tonscan.org from the history and from a transfer message.",
+             "Force the wallet" to "Show the money wallet even when the server has it off.",
+             "Copy wallet words" to "A copy button on the secret phrase screen; the clipboard clears in a minute.",
+             "Import wallets from private keys" to "Import a wallet from a raw ed25519 key instead of words.",
+@@ -1656,6 +1657,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                     rows.add(Row(TYPE_HEADER, "Addresses and balances"))
+                     rows.add(toggle("Dim wallet address groups", TeleConfig.DIM_WALLET_ADDRESS))
+                     rows.add(toggle("Hide other balances", TeleConfig.HIDE_OTHER_WALLET_BALANCES))
++                    rows.add(Row(TYPE_SHADOW))
++                    rows.add(Row(TYPE_HEADER, "Transactions"))
++                    rows.add(toggle("Transaction links", TeleConfig.WALLET_TRANSACTION_LINKS))
+                 }
+                 rows.add(Row(TYPE_SHADOW))
+                 rows
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 94aa163bb..be01e41eb 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -340,4 +340,6 @@
+     <string name="TeleGiftGridAddToGrid">Add to the gift grid</string>
+     <string name="TeleGiftGridGiftsAdded">%1$d gifts added to the grid</string>
+     <string name="TeleMoneyOff">Money is off in the tele settings</string>
++    <string name="TeleWalletCopyTxLink">Copy transaction link</string>
++    <string name="TeleWalletTxLinkCopied">Transaction link copied</string>
+ </resources>
