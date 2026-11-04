@@ -1,0 +1,391 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 4 Nov 2026 15:09:32 +0300
+Subject: [PATCH] feat: send silent videos as gifs
+
+---
+ .../messenger/SendMessagesHelper.java         | 26 +++++------
+ .../telegram/messenger/VideoEditedInfo.java   |  2 +
+ .../java/org/telegram/ui/PhotoViewer.java     | 43 ++++++++++++++-----
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/SilentVideo.kt | 29 +++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 24 +++++++++--
+ .../src/main/res/values/strings_tele.xml      |  1 +
+ 8 files changed, 104 insertions(+), 25 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/SilentVideo.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index e22cb1f1d..3f3b5c24f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -3441,7 +3441,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                     }
+                     uploadedDocument.mime_type = document.mime_type;
+                     uploadedDocument.attributes = document.attributes;
+-                    if (!messageObject.isGif() && (videoEditedInfo == null || !videoEditedInfo.muted)) {
++                    if (!messageObject.isGif() && (videoEditedInfo == null || !videoEditedInfo.muted || tele.helpers.SilentVideo.asVideo())) {
+                         uploadedDocument.nosound_video = true;
+                         if (BuildVars.DEBUG_VERSION) {
+                             FileLog.d("nosound_video = true");
+@@ -5778,7 +5778,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             uploadedDocument.flags |= 128;
+                             uploadedDocument.video_timestamp = (int) (sendMessageParams.livePhotoTimestamp / 1000.0);
+                         }
+-                        if (forceNoSoundVideo || !MessageObject.isRoundVideoDocument(document) && (videoEditedInfo == null || !videoEditedInfo.muted && !videoEditedInfo.roundVideo)) {
++                        if (forceNoSoundVideo || !MessageObject.isRoundVideoDocument(document) && (videoEditedInfo == null || (!videoEditedInfo.muted || tele.helpers.SilentVideo.asVideo()) && !videoEditedInfo.roundVideo)) {
+                             uploadedDocument.nosound_video = true;
+                             if (BuildVars.DEBUG_VERSION) {
+                                 FileLog.d("nosound_video = true");
+@@ -11362,6 +11362,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         } else {
+                             videoEditedInfo = info.videoEditedInfo != null ? info.videoEditedInfo : createCompressionSettings(info.path, info.livePhotoVideoOffset);
+                         }
++                        tele.helpers.SilentVideo.apply(videoEditedInfo, info.path, !forceDocument && !info.isLivePhoto && !isEncrypted && info.ttl == 0);
+ 
+                         if (!forceDocument && (videoEditedInfo != null || info.path.endsWith("mp4") || tele.helpers.MkvVideo.isVideo(info.path)) || info.isLivePhoto) {
+                             if (info.path == null && info.searchImage != null) {
+@@ -11376,12 +11377,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             String originalPath = info.path;
+                             File temp = new File(originalPath);
+                             long startTime = 0;
+-                            boolean muted = false;
++                            boolean asGif = false;
+ 
+                             originalPath += temp.length() + "_" + temp.lastModified();
+                             if (videoEditedInfo != null) {
+-                                muted = videoEditedInfo.muted;
+-                                originalPath += videoEditedInfo.estimatedDuration + "_" + videoEditedInfo.startTime + "_" + videoEditedInfo.endTime + (videoEditedInfo.muted ? "_m" : "");
++                                asGif = tele.helpers.SilentVideo.sendsAsGif(videoEditedInfo);
++                                originalPath += videoEditedInfo.estimatedDuration + "_" + videoEditedInfo.startTime + "_" + videoEditedInfo.endTime + (videoEditedInfo.muted ? (asGif ? "_m" : "_mv") : "");
+                                 if (videoEditedInfo.resultWidth != videoEditedInfo.originalWidth) {
+                                     originalPath += "_" + videoEditedInfo.resultWidth;
+                                 }
+@@ -11389,7 +11390,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             }
+                             TLRPC.TL_document document = null;
+                             String parentObject = null;
+-                            if (!isEncrypted && info.ttl == 0 && !forceDisableCheckSentMedia && (videoEditedInfo == null || videoEditedInfo.filterState == null && videoEditedInfo.paintPath == null && videoEditedInfo.mediaEntities == null && videoEditedInfo.cropState == null)) {
++                            if (!isEncrypted && info.ttl == 0 && !forceDisableCheckSentMedia && (videoEditedInfo == null || !videoEditedInfo.muted) && (videoEditedInfo == null || videoEditedInfo.filterState == null && videoEditedInfo.paintPath == null && videoEditedInfo.mediaEntities == null && videoEditedInfo.cropState == null)) {
+                                 Object[] sentData = accountInstance.getMessagesStorage().getSentFile(originalPath, !isEncrypted ? MessagesStorage.SENT_FILE_TYPE_VIDEO : MessagesStorage.SENT_FILE_TYPE_VIDEO_ENCRYPTED);
+                                 if (sentData != null && sentData[0] instanceof TLRPC.TL_document) {
+                                     document = (TLRPC.TL_document) sentData[0];
+@@ -11484,7 +11485,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                                 document.attributes.add(attributeVideo);
+                                 tele.helpers.MkvVideo.label(document, attributeVideo, info.path, videoEditedInfo);
+                                 if (videoEditedInfo != null && (videoEditedInfo.needConvert() || !info.isVideo)) {
+-                                    if (info.isVideo && videoEditedInfo.muted) {
++                                    if (info.isVideo && asGif) {
+                                         fillVideoAttribute(info.path, attributeVideo, videoEditedInfo);
+                                         videoEditedInfo.originalWidth = attributeVideo.w;
+                                         videoEditedInfo.originalHeight = attributeVideo.h;
+@@ -11544,7 +11545,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             if (cover == null && info.coverPhoto != null) {
+                                 cover = new ImageLoader.PhotoSizeFromPhoto(info.coverPhoto);
+                             }
+-                            if (videoEditedInfo != null && videoEditedInfo.muted) {
++                            if (asGif) {
+                                 boolean found = false;
+                                 for (int b = 0, N = document.attributes.size(); b < N; b++) {
+                                     if (document.attributes.get(b) instanceof TLRPC.TL_documentAttributeAnimated) {
+@@ -11580,7 +11581,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             if (parentFinal != null) {
+                                 params.put("parentObject", parentFinal);
+                             }
+-                            if (!muted && groupMediaFinal) {
++                            if (!asGif && groupMediaFinal) {
+                                 mediaCount++;
+                                 params.put("groupId", "" + groupId);
+                                 if (!forcedPollDoNotSendFinal && (pollSendParams == null && mediaCount == 10 || a == count -1)) {
+@@ -12213,6 +12214,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+             boolean isEncrypted = DialogObject.isEncryptedDialog(dialogId);
+ 
+             boolean isRound = videoEditedInfo != null && videoEditedInfo.roundVideo;
++            tele.helpers.SilentVideo.apply(videoEditedInfo, videoPath, !isRound && !isEncrypted && ttl == 0 && storyItem == null && !forceDocument);
+             Bitmap thumb = null;
+             String thumbKey = null;
+ 
+@@ -12225,7 +12227,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 originalPath += temp.length() + "_" + temp.lastModified();
+                 if (videoEditedInfo != null) {
+                     if (!isRound) {
+-                        originalPath += videoEditedInfo.estimatedDuration + "_" + videoEditedInfo.startTime + "_" + videoEditedInfo.endTime + (videoEditedInfo.muted ? "_m" : "");
++                        originalPath += videoEditedInfo.estimatedDuration + "_" + videoEditedInfo.startTime + "_" + videoEditedInfo.endTime + (videoEditedInfo.muted ? (tele.helpers.SilentVideo.sendsAsGif(videoEditedInfo) ? "_m" : "_mv") : "");
+                         if (videoEditedInfo.resultWidth != videoEditedInfo.originalWidth) {
+                             originalPath += "_" + videoEditedInfo.resultWidth;
+                         }
+@@ -12234,7 +12236,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 }
+                 TLRPC.TL_document document = null;
+                 String parentObject = null;
+-                if (!isEncrypted && ttl == 0 && (videoEditedInfo == null || videoEditedInfo.filterState == null && videoEditedInfo.paintPath == null && videoEditedInfo.mediaEntities == null && videoEditedInfo.cropState == null)) {
++                if (!isEncrypted && ttl == 0 && (videoEditedInfo == null || !videoEditedInfo.muted) && (videoEditedInfo == null || videoEditedInfo.filterState == null && videoEditedInfo.paintPath == null && videoEditedInfo.mediaEntities == null && videoEditedInfo.cropState == null)) {
+                     Object[] sentData = accountInstance.getMessagesStorage().getSentFile(originalPath, !isEncrypted ? MessagesStorage.SENT_FILE_TYPE_VIDEO : MessagesStorage.SENT_FILE_TYPE_VIDEO_ENCRYPTED);
+                     if (sentData != null && sentData[0] instanceof TLRPC.TL_document) {
+                         document = (TLRPC.TL_document) sentData[0];
+@@ -12299,7 +12301,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                         attributeVideo.duration = videoEditedInfo.estimatedDuration / 1000.0;
+                         document.size = videoEditedInfo.estimatedSize;
+                     } else if (videoEditedInfo != null && videoEditedInfo.needConvert()) {
+-                        if (videoEditedInfo.muted) {
++                        if (tele.helpers.SilentVideo.sendsAsGif(videoEditedInfo)) {
+                             document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+                             fillVideoAttribute(videoPath, attributeVideo, videoEditedInfo);
+                             videoEditedInfo.originalWidth = attributeVideo.w;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/VideoEditedInfo.java b/TMessagesProj/src/main/java/org/telegram/messenger/VideoEditedInfo.java
+index 7f57bbe9e..2f8635cfa 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/VideoEditedInfo.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/VideoEditedInfo.java
+@@ -62,6 +62,8 @@ public class VideoEditedInfo {
+     public long estimatedDuration;
+     public boolean roundVideo;
+     public boolean muted;
++    // the picker asked for a video even when the source is a gif or has no sound
++    public boolean tele_asVideo;
+     public float volume = 1f;
+     public long originalDuration;
+     public TLRPC.InputFile file;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+index 1ca8de53f..d6308cda4 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+@@ -6745,7 +6745,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+             if (muteVideo) {
+                 final HintView2 hint = new HintView2(parentActivity, HintView2.DIRECTION_BOTTOM);
+                 hint.setMultilineText(true);
+-                hint.setText(getString(R.string.EditorMuteHint));
++                hint.setText(getString(tele.helpers.SilentVideo.asVideo() ? R.string.TeleEditorMuteHintVideo : R.string.EditorMuteHint));
+                 hint.setMaxWidthPx(HintView2.cutInFancyHalf(hint.getText(), hint.getTextPaint()));
+                 hint.setPadding(dp(6), 0, dp(6), 0);
+                 hint.setJoint(0, 12 + 16 - 6);
+@@ -7658,11 +7658,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+         compressItem.setBackground(Theme.createInsetRoundRectDrawable(0x10FFFFFF, dp(22), dp(4), dp(6)));
+ 
+         selectedCompression = selectCompression();
+-        compressItem.setState(videoConvertSupported && compressionsCount > 1, muteVideo, Math.min(resultWidth, resultHeight));
++        compressItem.setState(videoConvertSupported && compressionsCount > 1, muteVideo && !tele.helpers.SilentVideo.asVideo(), Math.min(resultWidth, resultHeight));
+         compressItem.setContentDescription(getString("AccDescrVideoQuality", R.string.AccDescrVideoQuality));
+         itemsLayout.addView(compressItem, LayoutHelper.createLinear(48, 48));
+         compressItem.setOnClickListener(v -> {
+-            if (isCaptionOpen() || muteVideo) {
++            if (isCaptionOpen() || (muteVideo && !tele.helpers.SilentVideo.asVideo())) {
+                 return;
+             }
+             if (currentIndex >= 0 && currentIndex < imagesArrLocals.size()) {
+@@ -8129,6 +8129,27 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                 }
+             }
+             VideoEditedInfo videoEditedInfo = getCurrentVideoEditedInfo();
++            if (videoEditedInfo == null && muteVideo && isCurrentVideo && !forceDocument) {
++                // a streamed or cached video may have no full editor state; the mute is still the user's
++                videoEditedInfo = new VideoEditedInfo();
++                videoEditedInfo.muted = true;
++                videoEditedInfo.tele_asVideo = tele.helpers.SilentVideo.asVideo();
++                videoEditedInfo.originalPath = currentImagePath;
++                videoEditedInfo.estimatedDuration = (long) (videoDuration * 1000);
++                videoEditedInfo.originalDuration = videoEditedInfo.estimatedDuration;
++                videoEditedInfo.startTime = 0;
++                videoEditedInfo.endTime = videoEditedInfo.estimatedDuration;
++                videoEditedInfo.start = 0f;
++                videoEditedInfo.end = 1f;
++                videoEditedInfo.originalWidth = originalWidth;
++                videoEditedInfo.originalHeight = originalHeight;
++                videoEditedInfo.resultWidth = resultWidth > 0 ? resultWidth : originalWidth;
++                videoEditedInfo.resultHeight = resultHeight > 0 ? resultHeight : originalHeight;
++                videoEditedInfo.bitrate = bitrate > 0 ? bitrate : 1;
++                videoEditedInfo.framerate = videoFramerate > 0 ? videoFramerate : 25;
++                videoEditedInfo.estimatedSize = estimatedSize > 0 ? estimatedSize : 1;
++                videoEditedInfo.compressQuality = selectedCompression;
++            }
+             if (!imagesArrLocals.isEmpty() && currentIndex >= 0 && currentIndex < imagesArrLocals.size()) {
+                 Object entry = imagesArrLocals.get(currentIndex);
+                 if (entry instanceof MediaController.MediaEditState) {
+@@ -9894,12 +9915,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+             videoEditedInfo.mediaEntities = editState.mediaEntities != null && !editState.mediaEntities.isEmpty() ? editState.mediaEntities : null;
+         }
+ 
+-        if (sendPhotoType != SELECT_TYPE_AVATAR && !muteVideo && (compressItem.getTag() == null || (videoEditedInfo.resultWidth == originalWidth && videoEditedInfo.resultHeight == originalHeight))) {
++        final boolean gifMute = muteVideo && !tele.helpers.SilentVideo.asVideo();
++        if (sendPhotoType != SELECT_TYPE_AVATAR && !gifMute && (compressItem.getTag() == null || (videoEditedInfo.resultWidth == originalWidth && videoEditedInfo.resultHeight == originalHeight))) {
+             videoEditedInfo.resultWidth = originalWidth;
+             videoEditedInfo.resultHeight = originalHeight;
+             videoEditedInfo.bitrate = muteVideo ? -1 : originalBitrate;
+         } else {
+-            if (muteVideo || sendPhotoType == SELECT_TYPE_AVATAR) {
++            if (gifMute || sendPhotoType == SELECT_TYPE_AVATAR) {
+                 selectedCompression = 1;
+                 updateWidthHeightBitrateForCompression();
+             }
+@@ -21312,8 +21334,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                 }
+                 muteDrawable.setMuted(true, true);
+                 if (compressItem.getTag() != null) {
+-                    compressItem.setAlpha(0.5f);
+-                    compressItem.setEnabled(false);
++                    final boolean asVideo = tele.helpers.SilentVideo.asVideo();
++                    compressItem.setAlpha(asVideo ? 1.0f : 0.5f);
++                    compressItem.setEnabled(asVideo);
+                 }
+                 if (sendPhotoType == SELECT_TYPE_AVATAR) {
+                     videoTimelineView.setMaxProgressDiff(9600.0f / videoDuration);
+@@ -21379,7 +21402,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+             return;
+         }
+         if (!centerImageIsLivePhoto) {
+-            compressItem.setState(videoConvertSupported && compressionsCount > 1, muteVideo, Math.min(resultWidth, resultHeight));
++            compressItem.setState(videoConvertSupported && compressionsCount > 1, muteVideo && !tele.helpers.SilentVideo.asVideo(), Math.min(resultWidth, resultHeight));
+         }
+         itemsLayout.requestLayout();
+ 
+@@ -21774,7 +21797,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                         }
+ 
+                         if (!centerImageIsLivePhoto) {
+-                            compressItem.setState(compressionsCount > 1, muteVideo, Math.min(resultWidth, resultHeight));
++                            compressItem.setState(compressionsCount > 1, muteVideo && !tele.helpers.SilentVideo.asVideo(), Math.min(resultWidth, resultHeight));
+                         }
+                         if (BuildVars.LOGS_ENABLED) {
+                             FileLog.d("compressionsCount = " + compressionsCount + " w = " + originalWidth + " h = " + originalHeight + " r = " + rotationValue);
+@@ -21782,7 +21805,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                         qualityChooseView.invalidate();
+                     } else {
+                         if (!centerImageIsLivePhoto) {
+-                            compressItem.setState(false, muteVideo, Math.min(resultWidth, resultHeight));
++                            compressItem.setState(false, muteVideo && !tele.helpers.SilentVideo.asVideo(), Math.min(resultWidth, resultHeight));
+                         }
+                         compressionsCount = 0;
+                     }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index ac8497f00..bfd72bb92 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -291,6 +291,8 @@ object TeleConfig {
+     @JvmField
+     val DOCKED_MEDIA = BoolItem("docked_media", false)
+     @JvmField
++    val SILENT_VIDEO_AS = StringItem("silent_video_as", "")
++    @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+     @JvmField
+     val SILENT_BY_DEFAULT = BoolItem("silent_by_default", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SilentVideo.kt b/TMessagesProj/src/main/java/tele/helpers/SilentVideo.kt
+new file mode 100644
+index 000000000..6fbe43b1e
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/SilentVideo.kt
+@@ -0,0 +1,29 @@
++package tele.helpers
++
++import org.telegram.messenger.VideoEditedInfo
++import org.telegram.ui.Components.voip.AnimatedFileInfo
++import org.telegram.ui.Components.AnimatedFileNative
++import tele.TeleConfig
++
++/** Desktop 0242: the chosen type of a video without an audio track, GIF by default. */
++object SilentVideo {
++
++    @JvmStatic
++    fun asVideo(): Boolean = TeleConfig.SILENT_VIDEO_AS.value == "video"
++
++    /** Whether the muted video goes out as an animation rather than as a silent video. */
++    @JvmStatic
++    fun sendsAsGif(info: VideoEditedInfo?): Boolean = info != null && info.muted && !info.tele_asVideo && !asVideo()
++
++    @JvmStatic
++    fun apply(info: VideoEditedInfo?, path: String?, allowed: Boolean) {
++        if (info == null || path == null || !allowed || info.tele_asVideo) return
++        if (info.isSticker || info.isPhoto) return
++        // an explicit mute stays: removing the sound is the user's choice, not the GIF default
++        if (info.muted) return
++        val params = IntArray(AnimatedFileInfo.PARAM_NUM_COUNT)
++        AnimatedFileNative.getVideoInfo(path, params, info.videoOffset)
++        if (params[AnimatedFileInfo.PARAM_NUM_HAS_AUDIO] != 0) return
++        info.muted = !asVideo()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index a6dbf48aa..327b5651c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -175,6 +175,8 @@ object TeleSearch {
+             section(1198, "Saved GIFs limit", "chats", TeleSettingsActivity.MODE_CHATS, "Keep saved GIFs and favorite stickers past the limit"),
+             section(1199, "Favorite stickers limit", "chats", TeleSettingsActivity.MODE_CHATS, "Keep saved GIFs and favorite stickers past the limit"),
+             section(GUID_SENDING + 7, "Forward protected messages as copies", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1600, "Send silent videos as", "sending", TeleSettingsActivity.MODE_SENDING),
++            section(1601, "Silent video format", "sending", TeleSettingsActivity.MODE_SENDING, "Send silent videos as"),
+             section(GUID_SERVER, "tele server", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 1, "Server url", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVICE_SELECTION, "Select service messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 928dc68a9..3a144df49 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -177,6 +177,19 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         showDialog(builder.create())
+     }
+ 
++    private fun chooseSilentVideoAs() {
++        val activity = parentActivity ?: return
++        val values = arrayOf("", "video")
++        val labels = arrayOf(lc("GIF"), lc("Video"))
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle(lc("Send silent videos as"))
++        builder.setItems(labels) { _, which ->
++            TeleConfig.set(TeleConfig.SILENT_VIDEO_AS, values[which])
++            refresh()
++        }
++        showDialog(builder.create())
++    }
++
+     private fun chooseDeletedMarker() {
+         val activity = parentActivity ?: return
+         val values = arrayOf("fade", "text", "icon")
+@@ -609,6 +622,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 refresh()
+             }
+             row.type == TYPE_VALUE && row.item == TeleConfig.LINK_PREVIEW_MODE -> chooseLinkPreviewMode()
++            row.type == TYPE_VALUE && row.item == TeleConfig.SILENT_VIDEO_AS -> chooseSilentVideoAs()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_MARKER -> chooseDeletedMarker()
+             row.type == TYPE_VALUE && row.item == TeleConfig.DELETED_RETENTION -> chooseDeletedRetention()
+             row.type == TYPE_VALUE && row.item == TeleConfig.MAP_SERVICE -> chooseMapService()
+@@ -966,6 +980,8 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+         private val DESCRIPTIONS = mapOf(
+             "Send MKV files as videos" to "Only when the video track can be read; other files stay files.",
++            "Send silent videos as" to "GIF makes a video with no audio track an animation; Video keeps it a video.",
++            "Send videos without sound as GIFs" to "Videos without an audio track go out as GIFs.",
+             "Fake upgrade of gifts" to "Rolls the upgrade of a gift locally: nothing is bought and nothing is sent.",
+             "Roll animation" to "The attributes of the gift change while the roll runs.",
+             "Send audio files as voice messages" to "Adds it to the send menu of audio files and to audio messages.",
+@@ -1153,9 +1169,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+ 
+-        private fun choice(title: String, item: Item<*>) = Row(TYPE_VALUE, title = title, value = when (item.value) {
+-            "pasted" -> "Not for pasted links"
+-            "added" -> "Only the ones you add"
++        private fun choice(title: String, item: Item<*>) = Row(TYPE_VALUE, title = title, value = when {
++            item === TeleConfig.SILENT_VIDEO_AS -> if (item.value == "video") "Video" else "GIF"
++            item.value == "pasted" -> "Not for pasted links"
++            item.value == "added" -> "Only the ones you add"
+             else -> "For all links"
+         }, item = item)
+ 
+@@ -1483,6 +1500,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Uploads"),
+                 toggle("Send photos in HD by default", TeleConfig.HD_PHOTOS),
+                 toggle("Send MKV files as videos", TeleConfig.SEND_MKV_AS_VIDEO),
++                choice("Send silent videos as", TeleConfig.SILENT_VIDEO_AS),
+                 toggle("Send audio files as voice messages", TeleConfig.AUDIO_AS_VOICE),
+                 toggle("Attach media above the field (beta)", TeleConfig.DOCKED_MEDIA),
+                 Row(TYPE_SHADOW),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index be01e41eb..47859e4ec 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -342,4 +342,5 @@
+     <string name="TeleMoneyOff">Money is off in the tele settings</string>
+     <string name="TeleWalletCopyTxLink">Copy transaction link</string>
+     <string name="TeleWalletTxLinkCopied">Transaction link copied</string>
++    <string name="TeleEditorMuteHintVideo">Sound is now muted, but the video will still send as a video.</string>
+ </resources>

@@ -1,0 +1,639 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 4 Nov 2026 18:45:57 +0300
+Subject: [PATCH] feat: send gifs as videos
+
+---
+ .../messenger/SendMessagesHelper.java         |   7 +
+ .../java/org/telegram/ui/ChatActivity.java    |  18 +
+ .../org/telegram/ui/Components/EmojiView.java |  12 +
+ .../org/telegram/ui/ContentPreviewViewer.java |  15 +
+ .../src/main/java/tele/helpers/DockedMedia.kt |  38 +-
+ .../src/main/java/tele/helpers/GifVideo.kt    | 367 ++++++++++++++++++
+ .../src/main/java/tele/helpers/MessageMenu.kt |   1 +
+ .../src/main/res/values/strings_tele.xml      |   4 +
+ 8 files changed, 459 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GifVideo.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 3f3b5c24f..eabfd9d2a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -12095,6 +12095,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         return bitmap;
+     }
+ 
++    /** The video info of a local file, for sending it as a video regardless of the silent-video choice. */
++    public static VideoEditedInfo tele_createVideoInfo(String videoPath) {
++        VideoEditedInfo info = createCompressionSettings(videoPath, 0);
++        if (info != null) info.tele_asVideo = true;
++        return info;
++    }
++
+     private static VideoEditedInfo createCompressionSettings(String videoPath, long videoOffset) {
+         int[] params = new int[AnimatedFileInfo.PARAM_NUM_COUNT];
+         AnimatedFileNative.getVideoInfo(videoPath, params, videoOffset);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 2a9acc4c6..78114144b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1262,6 +1262,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int tele_option_view_as_tl = 120;
+     public final static int tele_option_edit_history = 121;
+     public final static int tele_option_shot = 130;
++    public final static int tele_option_gif_as_video = 131;
+     public final static int tele_option_restrict = 430;
+     public final static int tele_option_copy_service_text = 219;
+     public final static int tele_option_copy_file_path = 220;
+@@ -7591,6 +7592,16 @@ public class ChatActivity extends BaseFragment implements
+                 tele.helpers.DockedMedia.attachGif(ChatActivity.this, gif, parent);
+             }
+ 
++            @Override
++            public boolean canSendGifAsVideo() {
++                return true;
++            }
++
++            @Override
++            public void sendGifAsVideo(Object gif, Object parent) {
++                tele.helpers.GifVideo.send(ChatActivity.this, gif, parent);
++            }
++
+             @Override
+             public boolean needSend(int contentType) {
+                 return true;
+@@ -34845,6 +34856,12 @@ public class ChatActivity extends BaseFragment implements
+                 tele.helpers.TeleShot.open(this, java.util.Collections.singletonList(tele_object), tele_group);
+                 break;
+             }
++            case tele_option_gif_as_video: {
++                final MessageObject tele_object = selectedObject;
++                closeMenu();
++                tele.helpers.GifVideo.resend(this, tele_object);
++                break;
++            }
+             case tele_option_restrict: {
+                 final MessageObject tele_object = selectedObject;
+                 closeMenu();
+@@ -48245,6 +48262,7 @@ public class ChatActivity extends BaseFragment implements
+             icons.add(0, R.drawable.msg_info);
+         }
+         tele.helpers.TeleShot.fillMenu(this, message, groupedMessages, items, icons, options);
++        tele.helpers.GifVideo.fillMenu(this, message, items, icons, options);
+         tele.helpers.Bookmarks.fillMenu(this, message, items, icons, options);
+         tele.helpers.AudioVoice.fillMenu(this, message, items, icons, options);
+         tele.helpers.RestrictMembers.fillMenu(this, message, items, icons, options);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+index 1f63508d9..da88bcfe5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+@@ -580,6 +580,18 @@ public class EmojiView extends FrameLayout implements
+             }
+         }
+ 
++        @Override
++        public boolean canSendGifAsVideo() {
++            return fragment instanceof ChatActivity;
++        }
++
++        @Override
++        public void sendGifAsVideo(Object gif, Object parent) {
++            if (fragment instanceof ChatActivity) {
++                tele.helpers.GifVideo.send((ChatActivity) fragment, gif, parent);
++            }
++        }
++
+         @Override
+         public void resetTouch() {
+             if (emojiGridView != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
+index 7d71ad3a9..0afee63c0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
+@@ -117,6 +117,7 @@ import me.vkryl.core.reference.ReferenceList;
+ public class ContentPreviewViewer {
+     private static final int tele_action_send_caption = 390;
+     private static final int tele_action_attach_sticker = 391;
++    private static final int tele_action_gif_as_video = 392;
+ 
+     private class FrameLayoutDrawer extends FrameLayout {
+         public FrameLayoutDrawer(Context context) {
+@@ -188,6 +189,13 @@ public class ContentPreviewViewer {
+         default void attachGif(Object gif, Object parent) {
+         }
+ 
++        default boolean canSendGifAsVideo() {
++            return false;
++        }
++
++        default void sendGifAsVideo(Object gif, Object parent) {
++        }
++
+         default void sendEmoji(TLRPC.Document emoji) {
+         }
+ 
+@@ -1074,6 +1082,11 @@ public class ContentPreviewViewer {
+                     icons.add(R.drawable.input_notify_off);
+                     actions.add(4);
+                 }
++                if (delegate.canSendGifAsVideo()) {
++                    items.add(LocaleController.getString(R.string.TeleSendGifAsVideo));
++                    icons.add(R.drawable.input_video);
++                    actions.add(tele_action_gif_as_video);
++                }
+                 if (delegate.canSchedule()) {
+                     items.add(LocaleController.getString(R.string.Schedule));
+                     icons.add(R.drawable.msg_autodelete);
+@@ -1141,6 +1154,8 @@ public class ContentPreviewViewer {
+                         delegate.addCaptionToGif(currentDocument != null ? currentDocument : inlineResult, parentObject, true, 0, 0);
+                     } else if (actions.get(which) == tele_action_attach_sticker) {
+                         delegate.attachGif(inlineResult != null ? inlineResult : currentDocument, parentObject);
++                    } else if (actions.get(which) == tele_action_gif_as_video) {
++                        delegate.sendGifAsVideo(inlineResult != null ? inlineResult : currentDocument, parentObject);
+                     }
+                     dismissPopupWindow();
+                 };
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+index 4d54e1b7b..c0881e09f 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -59,6 +59,8 @@ object DockedMedia {
+         var document: TLRPC.Document? = null
+         // a GIF from an inline bot keeps the result: it may live on the bot's side, not as a document
+         var inlineResult: TLRPC.BotInlineResult? = null
++        // a gif or silent video the picker asked to send as a video
++        var asVideo = false
+         // the picker entry with its edit state, so the viewer edits it again instead of the baked result; not stored
+         var source: MediaController.PhotoEntry? = null
+ 
+@@ -298,6 +300,28 @@ object DockedMedia {
+         return true
+     }
+ 
++    /** A gif or silent video that should go out as a video; the viewer edits it before the send. */
++    @JvmStatic
++    fun addVideo(fragment: ChatActivity, path: String, info: VideoEditedInfo): Boolean {
++        if (!enabled() || fragment.chatActivityEnterView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return false
++        val file = File(path)
++        if (file.length() <= 1) return false
++        if (info.estimatedSize < file.length()) info.estimatedSize = file.length()
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        if (tray.items.isEmpty()) tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        val entry = MediaController.PhotoEntry(0, 0, 0, path, (info.estimatedDuration / 1000L).toInt(), true, info.resultWidth, info.resultHeight, file.length())
++        entry.editedInfo = info
++        val item = snapshot(entry, false)
++        item.asVideo = true
++        tray.items.add(item)
++        changed(key)
++        openViewer(fragment, key, tray.items.size - 1, true)
++        return true
++    }
++
+     /** Drops old kept shot files no tray of any account points to any more. */
+     @JvmStatic
+     fun pruneKept(dir: java.io.File) {
+@@ -406,7 +430,8 @@ object DockedMedia {
+ 
+     /** The stock viewer of the picker over the tray: editing, the checks, the spoiler; unchecked files leave. */
+     @JvmStatic
+-    fun openViewer(fragment: ChatActivity, key: Key, index: Int) {
++    @JvmOverloads
++    fun openViewer(fragment: ChatActivity, key: Key, index: Int, returnToTray: Boolean = false) {
+         val tray = tray(key) ?: return
+         if (index !in tray.items.indices || fragment.parentActivity == null) return
+         if (tray.items[index].isSticker) return
+@@ -429,7 +454,7 @@ object DockedMedia {
+             val result = ArrayList<Item>()
+             entries.forEachIndexed { i, entry ->
+                 if (!selected.containsKey(ids[i])) return@forEachIndexed
+-                result.add(snapshot(entry, items[i].asFile).also { it.stars = items[i].stars })
++                result.add(snapshot(entry, items[i].asFile).also { it.stars = items[i].stars; it.asVideo = items[i].asVideo })
+             }
+             val stickers = current.items.filter { it.isSticker }
+             current.items.clear()
+@@ -466,7 +491,13 @@ object DockedMedia {
+                     order.add(ids[index])
+                 }
+                 apply()
+-                AndroidUtilities.runOnUIThread { fragment.chatActivityEnterView?.sendMessage() }
++                AndroidUtilities.runOnUIThread {
++                    if (returnToTray) {
++                        org.telegram.ui.PhotoViewer.getInstance().closePhoto(false, false)
++                    } else {
++                        fragment.chatActivityEnterView?.sendMessage()
++                    }
++                }
+             }
+ 
+             override fun willHidePhotoViewer() = apply()
+@@ -492,6 +523,7 @@ object DockedMedia {
+         info.masks = item.masks
+         info.ttl = item.ttl
+         info.videoEditedInfo = item.videoInfo
++        if (item.asVideo && info.videoEditedInfo != null) info.videoEditedInfo.tele_asVideo = true
+         info.canDeleteAfter = item.canDeleteAfter
+         info.updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(item.caption)
+         info.hasMediaSpoilers = item.spoiler
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GifVideo.kt b/TMessagesProj/src/main/java/tele/helpers/GifVideo.kt
+new file mode 100644
+index 000000000..9ac802e6d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GifVideo.kt
+@@ -0,0 +1,367 @@
++package tele.helpers
++
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Movie
++import android.media.MediaCodec
++import android.media.MediaCodecInfo
++import android.media.MediaFormat
++import android.media.MediaMetadataRetriever
++import android.media.MediaMuxer
++import org.telegram.messenger.AccountInstance
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.FileLoader
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.messenger.Utilities
++import org.telegram.messenger.VideoEditedInfo
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import java.io.File
++
++/** Desktop 0093: send a GIF from the picker as a video instead of an animation. */
++object GifVideo {
++
++    private const val FPS = 30
++    private const val MAX_SIDE = 512
++    private const val MAX_DURATION_MS = 60_000
++
++    @JvmStatic
++    fun send(fragment: ChatActivity, gif: Any?, parent: Any?): Boolean {
++        val document = when (gif) {
++            is TLRPC.Document -> gif
++            is TLRPC.BotInlineResult -> gif.document
++            else -> null
++        }
++        if (document == null) {
++            fail(fragment, LocaleController.getString(R.string.TeleGifAsVideoDownload))
++            return false
++        }
++        val file = localFile(fragment.currentAccount, document)
++        if (file == null || file.length() <= 1024) {
++            fail(fragment, LocaleController.getString(R.string.TeleGifAsVideoDownload))
++            return false
++        }
++        if (isVideoFile(document, file)) {
++            dockOrSend(fragment, file.absolutePath, document)
++            return true
++        }
++        BulletinFactory.of(fragment).createSimpleBulletin(R.raw.info, LocaleController.getString(R.string.TeleGifAsVideoPreparing)).show()
++        Utilities.globalQueue.postRunnable {
++            val video = transcode(file)
++            AndroidUtilities.runOnUIThread {
++                if (video != null) {
++                    dockOrSend(fragment, video.absolutePath, null)
++                } else {
++                    fail(fragment, LocaleController.getString(R.string.TeleGifAsVideoFailed))
++                }
++            }
++        }
++        return true
++    }
++
++    private fun localFile(account: Int, document: TLRPC.Document): File? {
++        val loader = FileLoader.getInstance(account)
++        for (cache in booleanArrayOf(true, false)) {
++            val file = loader.getPathToAttach(document, cache)
++            if (file != null && file.exists() && file.length() > 1024) return file
++        }
++        return null
++    }
++
++    private fun isVideoFile(document: TLRPC.Document, file: File): Boolean {
++        val mime = document.mime_type ?: ""
++        val name = file.name.lowercase()
++        return mime == "video/mp4" || mime == "video/webm" || name.endsWith(".mp4") || name.endsWith(".webm") || name.endsWith(".mkv")
++    }
++
++    /** The menu item of a gif message: resend it as a video, into the docked strip when it is on. */
++    @JvmStatic
++    fun fillMenu(fragment: ChatActivity, message: MessageObject, items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
++        if (!isGifMessage(message)) return
++        val at = options.indexOf(ChatActivity.OPTION_DELETE).let { if (it >= 0) it else options.size }
++        items.add(at, LocaleController.getString(R.string.TeleSendGifAsVideo))
++        icons.add(at, R.drawable.input_video)
++        options.add(at, ChatActivity.tele_option_gif_as_video)
++    }
++
++    @JvmStatic
++    fun resend(fragment: ChatActivity, message: MessageObject) {
++        val document = message.document
++        if (!isGifMessage(message) || document == null) return
++        val file = localFile(fragment.currentAccount, document) ?: message.messageOwner?.attachPath?.let { File(it).takeIf { f -> f.exists() && f.length() > 1024 } }
++        if (file == null) {
++            fail(fragment, LocaleController.getString(R.string.TeleGifAsVideoDownload))
++            return
++        }
++        dockOrSend(fragment, file.absolutePath, document)
++    }
++
++    private fun isGifMessage(message: MessageObject): Boolean =
++        message.type == MessageObject.TYPE_GIF || MessageObject.isGifDocument(message.document)
++
++    private fun dockOrSend(fragment: ChatActivity, path: String, document: TLRPC.Document?) {
++        val info = SendMessagesHelper.tele_createVideoInfo(path)
++        if (info != null) fixInfo(info, path, document)
++        if (info != null && DockedMedia.enabled() && DockedMedia.addVideo(fragment, path, info)) return
++        sendAsVideo(fragment, path, document)
++    }
++
++    private fun fixInfo(info: VideoEditedInfo, path: String, document: TLRPC.Document?) {
++        val file = File(path)
++        var duration = info.estimatedDuration
++        var width = info.resultWidth
++        var height = info.resultHeight
++        if (duration <= 0 && document != null) {
++            duration = (MessageObject.getDocumentDuration(document) * 1000).toLong()
++        }
++        if (duration <= 0 || width <= 0 || height <= 0) {
++            val retriever = MediaMetadataRetriever()
++            try {
++                retriever.setDataSource(path)
++                if (duration <= 0) {
++                    duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
++                }
++                if (width <= 0) {
++                    width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
++                }
++                if (height <= 0) {
++                    height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
++                }
++            } catch (throwable: Throwable) {
++                FileLog.e(throwable)
++            } finally {
++                runCatching { retriever.release() }
++            }
++        }
++        if (duration > 0) {
++            info.estimatedDuration = duration
++            info.originalDuration = duration
++            info.endTime = duration
++            info.startTime = 0
++            info.end = 1f
++            info.start = 0f
++        }
++        if (width > 0 && height > 0) {
++            info.resultWidth = width
++            info.resultHeight = height
++            info.originalWidth = width
++            info.originalHeight = height
++        }
++        if (info.framerate <= 0) info.framerate = 30
++        if (info.estimatedSize < file.length()) info.estimatedSize = file.length()
++        if (info.bitrate <= 0 && duration > 0) {
++            info.bitrate = (file.length() * 8 * 1000 / duration).toInt().coerceAtLeast(1)
++        }
++    }
++
++    private fun sendAsVideo(fragment: ChatActivity, path: String, document: TLRPC.Document?) {
++        val info = SendMessagesHelper.tele_createVideoInfo(path)
++        if (info != null) fixInfo(info, path, document)
++        if (info == null) {
++            fail(fragment, LocaleController.getString(R.string.TeleGifAsVideoFailed))
++            return
++        }
++        SendMessagesHelper.prepareSendingVideo(
++            AccountInstance.getInstance(fragment.currentAccount), path, info, null, null,
++            fragment.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote,
++            null, 0, null, true, 0, 0, false, false, null, fragment.messageChatSendParams, 0, 0
++        )
++    }
++
++    private fun fail(fragment: ChatActivity, text: String) {
++        BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, text).show()
++    }
++
++    /** A gif image as an mp4 in the cache; null when the device cannot encode it. */
++    private fun transcode(source: File): File? {
++        val movie = try {
++            Movie.decodeFile(source.absolutePath)
++        } catch (throwable: Throwable) {
++            FileLog.e(throwable)
++            null
++        } ?: return null
++        val sourceWidth = movie.width()
++        val sourceHeight = movie.height()
++        if (sourceWidth <= 0 || sourceHeight <= 0) return null
++        val duration = movie.duration().coerceAtLeast(100).coerceAtMost(MAX_DURATION_MS)
++        val scale = minOf(1f, MAX_SIDE.toFloat() / maxOf(sourceWidth, sourceHeight))
++        val width = (sourceWidth * scale).toInt().coerceAtLeast(2) and 1.inv()
++        val height = (sourceHeight * scale).toInt().coerceAtLeast(2) and 1.inv()
++        val frames = (duration * FPS / 1000).coerceAtLeast(1)
++        val out = File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), "tele_gif_${System.currentTimeMillis()}.mp4")
++        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(bitmap)
++        canvas.scale(width.toFloat() / sourceWidth, height.toFloat() / sourceHeight)
++        val candidates = intArrayOf(
++            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
++            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
++            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
++        )
++        for (candidate in candidates) {
++            if (encode(out, bitmap, canvas, movie, frames, width, height, candidate)) {
++                bitmap.recycle()
++                return out
++            }
++            out.delete()
++        }
++        bitmap.recycle()
++        return null
++    }
++
++    private fun encode(
++        file: File,
++        bitmap: Bitmap,
++        canvas: Canvas,
++        movie: Movie,
++        frames: Int,
++        width: Int,
++        height: Int,
++        colorFormat: Int
++    ): Boolean {
++        var codec: MediaCodec? = null
++        var muxer: MediaMuxer? = null
++        var track = -1
++        var started = false
++        try {
++            val format = MediaFormat.createVideoFormat("video/avc", width, height)
++            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
++            format.setInteger(MediaFormat.KEY_BIT_RATE, width * height * 3)
++            format.setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
++            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
++            codec = MediaCodec.createEncoderByType("video/avc")
++            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
++            codec.start()
++            muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
++            val info = MediaCodec.BufferInfo()
++            var sent = 0
++            var done = false
++            while (!done) {
++                if (sent < frames) {
++                    val input = codec.dequeueInputBuffer(10000)
++                    if (input >= 0) {
++                        canvas.drawColor(Color.BLACK)
++                        movie.setTime((sent * 1000L / FPS).toInt())
++                        movie.draw(canvas, 0f, 0f)
++                        val image = codec.getInputImage(input)
++                        if (image != null) {
++                            fillImage(image, bitmap, width, height)
++                            codec.queueInputBuffer(input, 0, width * height * 3 / 2, sent * 1_000_000L / FPS, 0)
++                        } else {
++                            val buffer = codec.getInputBuffer(input)
++                            if (buffer != null) {
++                                buffer.clear()
++                                buffer.put(toYuv420(bitmap, width, height))
++                                codec.queueInputBuffer(input, 0, width * height * 3 / 2, sent * 1_000_000L / FPS, 0)
++                            }
++                        }
++                        sent++
++                    }
++                } else {
++                    val input = codec.dequeueInputBuffer(10000)
++                    if (input >= 0) {
++                        codec.queueInputBuffer(input, 0, 0, sent * 1_000_000L / FPS, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
++                    }
++                }
++                while (true) {
++                    val output = codec.dequeueOutputBuffer(info, 10000)
++                    if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
++                        track = muxer.addTrack(codec.outputFormat)
++                        muxer.start()
++                        started = true
++                        continue
++                    }
++                    if (output < 0) break
++                    val buffer = codec.getOutputBuffer(output)
++                    if (buffer != null && info.size > 0 && started) {
++                        buffer.position(info.offset)
++                        buffer.limit(info.offset + info.size)
++                        muxer.writeSampleData(track, buffer, info)
++                    }
++                    codec.releaseOutputBuffer(output, false)
++                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
++                        done = true
++                        break
++                    }
++                }
++            }
++        } catch (throwable: Throwable) {
++            FileLog.e("tele gif video: " + throwable.message)
++            return false
++        } finally {
++            try {
++                codec?.stop()
++            } catch (ignore: Throwable) {
++            }
++            codec?.release()
++            if (started) {
++                try {
++                    muxer?.stop()
++                } catch (ignore: Throwable) {
++                }
++            }
++            muxer?.release()
++        }
++        return file.length() > 0
++    }
++
++    private fun fillImage(image: android.media.Image, bitmap: Bitmap, width: Int, height: Int) {
++        val pixels = IntArray(width * height)
++        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
++        val yPlane = image.planes[0]
++        val uPlane = image.planes[1]
++        val vPlane = image.planes[2]
++        val yBuffer = yPlane.buffer
++        val uBuffer = uPlane.buffer
++        val vBuffer = vPlane.buffer
++        for (row in 0 until height) {
++            var yIndex = row * yPlane.rowStride
++            for (column in 0 until width) {
++                val color = pixels[row * width + column]
++                val red = (color shr 16) and 0xFF
++                val green = (color shr 8) and 0xFF
++                val blue = color and 0xFF
++                val y = (((66 * red + 129 * green + 25 * blue + 128) shr 8) + 16).coerceIn(0, 255)
++                yBuffer.put(yIndex, y.toByte())
++                yIndex++
++                if (row % 2 == 0 && column % 2 == 0) {
++                    val u = (((-38 * red - 74 * green + 112 * blue + 128) shr 8) + 128).coerceIn(0, 255)
++                    val v = (((112 * red - 94 * green - 18 * blue + 128) shr 8) + 128).coerceIn(0, 255)
++                    uBuffer.put((row / 2) * uPlane.rowStride + (column / 2) * uPlane.pixelStride, u.toByte())
++                    vBuffer.put((row / 2) * vPlane.rowStride + (column / 2) * vPlane.pixelStride, v.toByte())
++                }
++            }
++        }
++    }
++
++    private fun toYuv420(bitmap: Bitmap, width: Int, height: Int): ByteArray {
++        val pixels = IntArray(width * height)
++        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
++        val result = ByteArray(width * height * 3 / 2)
++        var yIndex = 0
++        var uIndex = width * height
++        var vIndex = uIndex + width * height / 4
++        for (row in 0 until height) {
++            for (column in 0 until width) {
++                val color = pixels[row * width + column]
++                val red = (color shr 16) and 0xFF
++                val green = (color shr 8) and 0xFF
++                val blue = color and 0xFF
++                val y = ((66 * red + 129 * green + 25 * blue + 128) shr 8) + 16
++                val u = ((-38 * red - 74 * green + 112 * blue + 128) shr 8) + 128
++                val v = ((112 * red - 94 * green - 18 * blue + 128) shr 8) + 128
++                result[yIndex++] = y.coerceIn(0, 255).toByte()
++                if (row % 2 == 0 && column % 2 == 0) {
++                    result[uIndex++] = u.coerceIn(0, 255).toByte()
++                    result[vIndex++] = v.coerceIn(0, 255).toByte()
++                }
++            }
++        }
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+index 0f4721848..9d1cd5af3 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MessageMenu.kt
+@@ -61,6 +61,7 @@ object MessageMenu {
+         Item(ChatActivity.tele_option_edit_history, "Edit history", "edit_history"),
+         Item(ChatActivity.tele_option_mark_viewed, "Mark as viewed", "mark_viewed", TeleConfig.KEEP_DISAPPEARING_MEDIA),
+         Item(ChatActivity.tele_option_shot, "Shot", "shot", TeleConfig.SHOT),
++        Item(ChatActivity.tele_option_gif_as_video, "Send as video", "gif_as_video"),
+         Item(ChatActivity.tele_option_restrict, "Restrict", "restrict", TeleConfig.RESTRICT_MENU),
+         Item(ChatActivity.tele_option_copy_service_text, "Copy service text", "copy_service_text", TeleConfig.COPY_SERVICE_TEXT),
+         Item(ChatActivity.tele_option_audio_voice, "Send as voice message", "audio_voice", TeleConfig.AUDIO_AS_VOICE),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 8a6044f23..266204f65 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -344,6 +344,10 @@
+     <string name="TeleWalletTxLinkCopied">Transaction link copied</string>
+     <string name="TeleEditorMuteHintVideo">Sound is now muted, but the video will still send as a video.</string>
+     <string name="TeleDockedAttach">Attach</string>
++    <string name="TeleSendGifAsVideo">Send as video</string>
++    <string name="TeleGifAsVideoPreparing">Converting the GIF into a video…</string>
++    <string name="TeleGifAsVideoFailed">Couldn\'t turn this GIF into a video.</string>
++    <string name="TeleGifAsVideoDownload">Download the GIF first.</string>
+     <string name="TeleShotSkipped_one">%1$d message skipped</string>
+     <string name="TeleShotSkipped_other">%1$d messages skipped</string>
+ </resources>

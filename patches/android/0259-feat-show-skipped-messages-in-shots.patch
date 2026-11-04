@@ -1,0 +1,212 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 4 Nov 2026 15:10:38 +0300
+Subject: [PATCH] feat: show skipped messages in shots
+
+---
+ .../org/telegram/ui/Cells/ChatActionCell.java | 14 ++++++--
+ .../main/java/tele/helpers/ShotMessages.kt    | 19 ++++++++++-
+ .../src/main/java/tele/helpers/TeleShot.kt    | 32 +++++++++++++++++--
+ .../src/main/java/tele/ui/ShotColumn.kt       |  2 +-
+ .../java/tele/ui/settings/TeleShotActivity.kt | 10 ++++--
+ .../src/main/res/values/strings_tele.xml      |  2 ++
+ 6 files changed, 71 insertions(+), 8 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
+index 7a9ec9f64..240f55e52 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
+@@ -4117,10 +4117,20 @@ public class ChatActionCell extends BaseCell implements DownloadController.FileD
+         }
+     }
+ 
++    /** The width of the background of the service bubble, computed before the first draw. */
++    public int tele_measureBackgroundWidth() {
++        if (getWidth() <= 0 || textLayout == null) return 0;
++        if (invalidatePath) {
++            Bitmap bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
++            drawBackground(new Canvas(bitmap), false);
++            bitmap.recycle();
++        }
++        return backgroundRight - backgroundLeft;
++    }
++
+     @Override
+     public int getBoundsLeft() {
+-        if (hasStarGiftLayout()) {
+-            final int giftLayoutLeft = (int) (getWidth() - (starGiftLayout.getWidth() + dp(8))) / 2;
++        if (hasStarGiftLayout()) {            final int giftLayoutLeft = (int) (getWidth() - (starGiftLayout.getWidth() + dp(8))) / 2;
+             if (starGiftLayout.repost) {
+                 return giftLayoutLeft;
+             }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt b/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt
+index 608666641..b7538e180 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt
+@@ -37,12 +37,17 @@ object ShotMessages {
+ 
+     // renders deep copies so hidden parts are removed without touching the real chat messages
+     @JvmStatic
+-    fun build(account: Int, source: List<MessageObject>, options: ShotOptions): List<ShotEntry> {
++    @JvmOverloads
++    fun build(account: Int, source: List<MessageObject>, options: ShotOptions, skipped: Map<Int, Int> = emptyMap()): List<ShotEntry> {
+         val groups = HashMap<Long, MessageObject.GroupedMessages>()
+         val result = ArrayList<ShotEntry>()
+         var lastDay = -1
+         var lastGroupId = 0L
+         for (original in source) {
++            if (options.skipped) {
++                val count = skipped[original.id] ?: 0
++                if (count > 0) result.add(ShotEntry(skippedObject(account, count), null))
++            }
+             val copy = copyOf(original, options)
+             val replyTo = if (options.shows(ShotPart.REPLIES)) original.replyMessageObject else null
+             val message = ShotMessageObject.create(account, copy, replyTo, options.incoming)
+@@ -126,6 +131,18 @@ object ShotMessages {
+         return calendar.get(Calendar.YEAR) * 1000 + calendar.get(Calendar.DAY_OF_YEAR)
+     }
+ 
++    private fun skippedObject(account: Int, count: Int): MessageObject {
++        val message = TLRPC.TL_message()
++        message.message = LocaleController.formatPluralString("TeleShotSkipped", count)
++        message.id = 0
++        message.date = 0
++        val result = MessageObject(account, message, false, false)
++        result.type = 10
++        result.contentType = 1
++        result.isDateObject = true
++        return result
++    }
++
+     // same shape as ChatActivity.putFilteredDate
+     private fun dateObject(account: Int, date: Int): MessageObject {
+         val message = TLRPC.TL_message()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt b/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt
+index 7e62d520c..ddb4df39d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt
+@@ -57,13 +57,38 @@ object TeleShot {
+         val messages = expand(chat, selected, group)
+         if (messages.isEmpty() || !allowed(chat, messages)) return
+         val context = chat.parentActivity ?: return
++        val skipped = countSkipped(chat, messages)
+         val screen = {
+-            chat.presentFragment(TeleShotActivity(chat, messages))
++            chat.presentFragment(TeleShotActivity(chat, messages, skipped))
+             Unit
+         }
+         preload(chat, messages, context, screen)
+     }
+ 
++    /** Desktop 0327: the messages of the selected range that the shot does not show. */
++    private fun countSkipped(chat: ChatActivity, source: List<MessageObject>): Map<Int, Int> {
++        if (source.size < 2) return emptyMap()
++        val loaded = chat.messages.filter { !it.isDateObject && !it.isSponsored && it.id > 0 }
++        if (loaded.isEmpty()) return emptyMap()
++        val result = HashMap<Int, Int>()
++        for (i in 1 until source.size) {
++            val previous = source[i - 1]
++            val next = source[i]
++            if (previous.dialogId != next.dialogId || previous.topicId != next.topicId || next.id <= previous.id) continue
++            val groups = HashSet<Long>()
++            var count = 0
++            for (message in loaded) {
++                if (message.id <= previous.id || message.id >= next.id) continue
++                if (message.topicId != next.topicId) continue
++                val group = message.groupId
++                if (group != 0L && !groups.add(group)) continue
++                count++
++            }
++            if (count > 0) result[next.id] = count
++        }
++        return result
++    }
++
+     // an album always travels whole, even when only one of its photos was selected
+     private fun expand(chat: ChatActivity, selected: List<MessageObject>, group: MessageObject.GroupedMessages?): List<MessageObject> {
+         val all = ArrayList<MessageObject>(selected)
+@@ -153,7 +178,8 @@ data class ShotOptions(
+     val transparent: Boolean = false,
+     val incoming: Boolean = false,
+     val hidden: Int = ShotPart.INFO.bit,
+-    val scale: Int = 1
++    val scale: Int = 1,
++    val skipped: Boolean = false
+ ) {
+     fun shows(part: ShotPart): Boolean = hidden and part.bit == 0
+ 
+@@ -164,6 +190,7 @@ data class ShotOptions(
+         val json = JSONObject()
+         json.put("background", background)
+         json.put("dates", dates)
++        json.put("skipped", skipped)
+         json.put("transparent", transparent)
+         ShotPart.values().forEach { json.put(it.key, shows(it)) }
+         json.put("scale", scale.coerceIn(1, MAX_SCALE))
+@@ -182,6 +209,7 @@ data class ShotOptions(
+             var result = defaults.copy(
+                 background = json.optBoolean("background", defaults.background),
+                 dates = json.optBoolean("dates", defaults.dates),
++                skipped = json.optBoolean("skipped", defaults.skipped),
+                 transparent = json.optBoolean("transparent", defaults.transparent),
+                 scale = json.optInt("scale", defaults.scale).coerceIn(1, MAX_SCALE)
+             )
+diff --git a/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt b/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt
+index ffff4a4b7..90e2a2e5e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt
++++ b/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt
+@@ -308,7 +308,7 @@ class ShotColumn(
+                     left = min(left, child.left + child.boundsLeft)
+                     right = max(right, child.left + child.boundsRight)
+                 }
+-                is ChatActionCell -> actionWidth = max(actionWidth, child.boundsRight - child.boundsLeft)
++                is ChatActionCell -> actionWidth = max(actionWidth, max(child.tele_measureBackgroundWidth(), child.boundsRight - child.boundsLeft))
+             }
+         }
+         if (right <= left) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt
+index 952766940..e9cb26024 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleShotActivity.kt
+@@ -52,7 +52,7 @@ import java.util.Date
+ import java.util.Locale
+ 
+ // tele shot (desktop 0089, 0107, 0114): the picture of chat messages with a preview and options
+-class TeleShotActivity(origin: ChatActivity, private val source: List<MessageObject>) : BaseFragment() {
++class TeleShotActivity(origin: ChatActivity, private val source: List<MessageObject>, private val skipped: Map<Int, Int> = emptyMap()) : BaseFragment() {
+ 
+     private val originRef = WeakReference(origin)
+     private val account = origin.currentAccount
+@@ -152,7 +152,7 @@ class TeleShotActivity(origin: ChatActivity, private val source: List<MessageObj
+ 
+     private fun reload() {
+         val shotFrame = frame ?: return
+-        shotFrame.column.bind(ShotMessages.build(account, source, options), options)
++        shotFrame.column.bind(ShotMessages.build(account, source, options, skipped), options)
+         shotFrame.options = options
+     }
+ 
+@@ -226,6 +226,12 @@ class TeleShotActivity(origin: ChatActivity, private val source: List<MessageObj
+                 options = options.copy(dates = it)
+                 changed(true)
+             }
++            if (skipped.isNotEmpty()) {
++                toggle("Skipped messages", options.skipped, false) {
++                    options = options.copy(skipped = it)
++                    changed(true)
++                }
++            }
+             header("Show")
+             for ((part, label) in PART_LABELS) {
+                 toggle(label, options.shows(part), false) {
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 81b0d472c..8a6044f23 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -344,4 +344,6 @@
+     <string name="TeleWalletTxLinkCopied">Transaction link copied</string>
+     <string name="TeleEditorMuteHintVideo">Sound is now muted, but the video will still send as a video.</string>
+     <string name="TeleDockedAttach">Attach</string>
++    <string name="TeleShotSkipped_one">%1$d message skipped</string>
++    <string name="TeleShotSkipped_other">%1$d messages skipped</string>
+ </resources>

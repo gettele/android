@@ -1,0 +1,566 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 4 Nov 2026 15:10:01 +0300
+Subject: [PATCH] feat: dock captioned stickers
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  15 ++
+ .../org/telegram/ui/Components/EmojiView.java |  19 +++
+ .../telegram/ui/Components/StickersAlert.java |  12 ++
+ .../org/telegram/ui/ContentPreviewViewer.java |  27 ++++
+ .../src/main/java/tele/helpers/DockedMedia.kt | 148 +++++++++++++++---
+ .../src/main/java/tele/helpers/DockedStore.kt |  20 ++-
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  |  44 ++++--
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   1 +
+ .../src/main/res/values/strings_tele.xml      |   1 +
+ 9 files changed, 257 insertions(+), 30 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index edadcee43..2a9acc4c6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -7576,6 +7576,21 @@ public class ChatActivity extends BaseFragment implements
+                 chatActivityEnterView.onStickerSelected(sticker, query, parent, null, true, notify, scheduleDate, scheduleRepeatPeriod);
+             }
+ 
++            @Override
++            public boolean canAttachSticker() {
++                return tele.helpers.DockedMedia.canAttachSticker(ChatActivity.this);
++            }
++
++            @Override
++            public void attachSticker(TLRPC.Document document) {
++                tele.helpers.DockedMedia.attachSticker(ChatActivity.this, document);
++            }
++
++            @Override
++            public void attachGif(Object gif, Object parent) {
++                tele.helpers.DockedMedia.attachGif(ChatActivity.this, gif, parent);
++            }
++
+             @Override
+             public boolean needSend(int contentType) {
+                 return true;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+index 9077014b8..1f63508d9 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EmojiView.java
+@@ -561,6 +561,25 @@ public class EmojiView extends FrameLayout implements
+             delegate.onStickerSelected(null, sticker, query, parent, null, notify, scheduleDate, 0);
+         }
+ 
++        @Override
++        public boolean canAttachSticker() {
++            return fragment instanceof ChatActivity && tele.helpers.DockedMedia.canAttachSticker((ChatActivity) fragment);
++        }
++
++        @Override
++        public void attachSticker(TLRPC.Document document) {
++            if (fragment instanceof ChatActivity) {
++                tele.helpers.DockedMedia.attachSticker((ChatActivity) fragment, document);
++            }
++        }
++
++        @Override
++        public void attachGif(Object gif, Object parent) {
++            if (fragment instanceof ChatActivity) {
++                tele.helpers.DockedMedia.attachGif((ChatActivity) fragment, gif, parent);
++            }
++        }
++
+         @Override
+         public void resetTouch() {
+             if (emojiGridView != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/StickersAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/StickersAlert.java
+index f6128ede2..aadfe5d3c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/StickersAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/StickersAlert.java
+@@ -204,6 +204,18 @@ public class StickersAlert extends BottomSheet implements NotificationCenter.Not
+             dismiss();
+         }
+ 
++        @Override
++        public boolean canAttachSticker() {
++            return parentFragment instanceof ChatActivity && tele.helpers.DockedMedia.canAttachSticker((ChatActivity) parentFragment);
++        }
++
++        @Override
++        public void attachSticker(TLRPC.Document document) {
++            if (parentFragment instanceof ChatActivity && tele.helpers.DockedMedia.attachSticker((ChatActivity) parentFragment, document)) {
++                dismiss();
++            }
++        }
++
+         @Override
+         public boolean canSchedule() {
+             return delegate != null && delegate.canSchedule();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
+index 07a8a5057..7d71ad3a9 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ContentPreviewViewer.java
+@@ -116,6 +116,7 @@ import me.vkryl.core.reference.ReferenceList;
+ 
+ public class ContentPreviewViewer {
+     private static final int tele_action_send_caption = 390;
++    private static final int tele_action_attach_sticker = 391;
+ 
+     private class FrameLayoutDrawer extends FrameLayout {
+         public FrameLayoutDrawer(Context context) {
+@@ -177,6 +178,16 @@ public class ContentPreviewViewer {
+         default void sendGif(Object gif, Object parent, boolean notify, int scheduleDate, int scheduleRepeatPeriod) {
+         }
+ 
++        default boolean canAttachSticker() {
++            return false;
++        }
++
++        default void attachSticker(TLRPC.Document document) {
++        }
++
++        default void attachGif(Object gif, Object parent) {
++        }
++
+         default void sendEmoji(TLRPC.Document emoji) {
+         }
+ 
+@@ -741,6 +752,11 @@ public class ContentPreviewViewer {
+                         icons.add(R.drawable.msg_edit);
+                         actions.add(tele_action_send_caption);
+                     }
++                    if (delegate.canAttachSticker() && delegate.needSend(currentContentType) && !delegate.isInScheduleMode()) {
++                        items.add(LocaleController.getString(R.string.TeleDockedAttach));
++                        icons.add(R.drawable.msg_add);
++                        actions.add(tele_action_attach_sticker);
++                    }
+                     if (delegate.canSchedule()) {
+                         items.add(LocaleController.getString(R.string.Schedule));
+                         icons.add(R.drawable.msg_autodelete);
+@@ -814,6 +830,10 @@ public class ContentPreviewViewer {
+                             if (tele_delegate != null) {
+                                 tele.helpers.StickerCaptions.ask(parentActivity, resourcesProvider, tele_sticker, () -> tele_delegate.sendSticker(tele_sticker, tele_query, tele_parent, true, 0, 0));
+                             }
++                        } else if (actions.get(which) == tele_action_attach_sticker) {
++                            if (delegate != null) {
++                                delegate.attachSticker(currentDocument);
++                            }
+                         } else if (actions.get(which) == 1) {
+                             if (delegate != null) {
+                                 delegate.openSet(currentStickerSet, clearsInputField);
+@@ -1064,6 +1084,11 @@ public class ContentPreviewViewer {
+                     icons.add(R.drawable.outline_caption_24);
+                     actions.add(11);
+                 }
++                if (delegate.canAttachSticker() && delegate.needSend(currentContentType) && !delegate.isInScheduleMode()) {
++                    items.add(LocaleController.getString(R.string.TeleDockedAttach));
++                    icons.add(R.drawable.msg_add);
++                    actions.add(tele_action_attach_sticker);
++                }
+ 
+                 boolean canDelete;
+                 if (currentDocument != null) {
+@@ -1114,6 +1139,8 @@ public class ContentPreviewViewer {
+                         AlertsCreator.createScheduleDatePickerDialog(parentActivity, stickerPreviewViewerDelegate.getDialogId(), (notify, scheduleDate, scheduleRepeatPeriod) -> stickerPreviewViewerDelegate.sendGif(document != null ? document : result, parent, notify, scheduleDate, scheduleRepeatPeriod), resourcesProvider);
+                     } else if (actions.get(which) == 11) {
+                         delegate.addCaptionToGif(currentDocument != null ? currentDocument : inlineResult, parentObject, true, 0, 0);
++                    } else if (actions.get(which) == tele_action_attach_sticker) {
++                        delegate.attachGif(inlineResult != null ? inlineResult : currentDocument, parentObject);
+                     }
+                     dismissPopupWindow();
+                 };
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+index 4d4133c97..4d54e1b7b 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -5,6 +5,7 @@ import org.telegram.messenger.AccountInstance
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.MediaController
+ import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessageObject
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.NotificationCenter
+ import org.telegram.messenger.R
+@@ -54,9 +55,15 @@ object DockedMedia {
+         var masks: ArrayList<TLRPC.InputDocument>? = null
+         var original: MediaController.PhotoEntry? = null
+         var coverPhoto: TLRPC.Photo? = null
++        // a sticker or GIF docked from the picker: it has no file of its own to edit
++        var document: TLRPC.Document? = null
++        // a GIF from an inline bot keeps the result: it may live on the bot's side, not as a document
++        var inlineResult: TLRPC.BotInlineResult? = null
+         // the picker entry with its edit state, so the viewer edits it again instead of the baked result; not stored
+         var source: MediaController.PhotoEntry? = null
+ 
++        val isSticker: Boolean get() = document != null || inlineResult != null
++
+         fun sendPath(): String? = if (!isVideo && imagePath != null) imagePath else path
+     }
+ 
+@@ -211,8 +218,8 @@ object DockedMedia {
+ 
+         ensureLoaded(key.account)
+         val tray = trays.getOrPut(key) { Tray() }
+-        if (replace) tray.items.clear()
+-        if (tray.items.isEmpty()) {
++        if (replace) tray.items.removeAll { !it.isSticker }
++        if (tray.items.none { !it.isSticker }) {
+             tray.group = group
+             tray.invert = invert
+             tray.date = (System.currentTimeMillis() / 1000L).toInt()
+@@ -223,7 +230,7 @@ object DockedMedia {
+             tray.items.add(snapshot(entry, asFile))
+             entry.reset()
+         }
+-        if (caption != null || tray.items.size == entries.size && !keepField) {
++        if (caption != null || tray.items.count { !it.isSticker } == entries.size && !keepField) {
+             enter.setFieldText(caption ?: "")
+         }
+         changed(key)
+@@ -244,6 +251,53 @@ object DockedMedia {
+         return true
+     }
+ 
++    @JvmStatic
++    fun canAttachSticker(fragment: ChatActivity?): Boolean {
++        if (fragment == null || !enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        return fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) == 0L
++    }
++
++    /** Desktop 0236: a sticker or GIF from the picker goes above the field instead of out at once. */
++    @JvmStatic
++    fun attachSticker(fragment: ChatActivity?, document: TLRPC.Document?): Boolean {
++        if (document == null || !canAttachSticker(fragment)) return false
++        val enter = fragment!!.chatActivityEnterView
++        if (enter == null || enter.isEditingMessage) return false
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        if (tray.items.isEmpty()) tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        tray.items.removeAll { it.isSticker }
++        val item = Item()
++        item.document = document
++        item.imageId = -(tray.items.size + 1)
++        tray.items.add(0, item)
++        changed(key)
++        return true
++    }
++
++    /** Desktop 0236: a GIF of the picker goes to the tray as the bot sent it, not only its document. */
++    @JvmStatic
++    fun attachGif(fragment: ChatActivity?, gif: Any?, parent: Any?): Boolean {
++        if (gif is TLRPC.Document) return attachSticker(fragment, gif)
++        val result = gif as? TLRPC.BotInlineResult ?: return false
++        if (!canAttachSticker(fragment)) return false
++        val enter = fragment!!.chatActivityEnterView
++        if (enter == null || enter.isEditingMessage) return false
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        if (tray.items.isEmpty()) tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        tray.items.removeAll { it.isSticker }
++        val item = Item()
++        item.inlineResult = result
++        item.document = result.document
++        item.imageId = -(tray.items.size + 1)
++        tray.items.add(0, item)
++        changed(key)
++        return true
++    }
++
+     /** Drops old kept shot files no tray of any account points to any more. */
+     @JvmStatic
+     fun pruneKept(dir: java.io.File) {
+@@ -268,8 +322,13 @@ object DockedMedia {
+     fun dockOnClose(fragment: ChatActivity, selected: Map<Any, Any>, order: List<Any>, comment: CharSequence?): Boolean {
+         val enter = fragment.chatActivityEnterView ?: return false
+         if (selected.isEmpty()) {
+-            // every tray file was unchecked in the picker
+-            if (replacing.remove(keyOf(fragment))) clearTray(keyOf(fragment))
++            // every tray file was unchecked in the picker; a docked sticker stays
++            val key = keyOf(fragment)
++            if (replacing.remove(key)) {
++                val tray = tray(key) ?: return false
++                tray.items.removeAll { !it.isSticker }
++                changed(key)
++            }
+             return false
+         }
+         if (enter.isEditingMessage) return false
+@@ -287,10 +346,11 @@ object DockedMedia {
+         replacing.remove(key)
+         if (!enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT) return
+         val tray = tray(key) ?: return
+-        if (tray.items.isEmpty()) return
++        val files = tray.items.filter { !it.isSticker }
++        if (files.isEmpty()) return
+         val selected = HashMap<Any, Any>()
+         val order = ArrayList<Any>()
+-        tray.items.forEachIndexed { i, item ->
++        files.forEachIndexed { i, item ->
+             val entry = entryOf(item, i)
+             selected[entry.imageId] = entry
+             order.add(entry.imageId)
+@@ -349,7 +409,10 @@ object DockedMedia {
+     fun openViewer(fragment: ChatActivity, key: Key, index: Int) {
+         val tray = tray(key) ?: return
+         if (index !in tray.items.indices || fragment.parentActivity == null) return
+-        val items = ArrayList(tray.items)
++        if (tray.items[index].isSticker) return
++        val items = tray.items.filter { !it.isSticker }
++        val viewerIndex = items.indexOfFirst { it === tray.items[index] }
++        if (viewerIndex < 0) return
+         val entries = items.mapIndexed { i, item -> entryOf(item, i) }
+         val ids = entries.mapIndexed { i, entry -> if (entry.imageId != 0) entry.imageId else -(i + 1) }
+         val selected = HashMap<Any, Any>()
+@@ -368,7 +431,9 @@ object DockedMedia {
+                 if (!selected.containsKey(ids[i])) return@forEachIndexed
+                 result.add(snapshot(entry, items[i].asFile).also { it.stars = items[i].stars })
+             }
++            val stickers = current.items.filter { it.isSticker }
+             current.items.clear()
++            current.items.addAll(stickers)
+             current.items.addAll(result)
+             changed(key)
+         }
+@@ -459,6 +524,7 @@ object DockedMedia {
+         }
+         val before = tray.items.size
+         tray.items.removeAll { item ->
++            if (item.isSticker) return@removeAll false
+             val path = item.sendPath()
+             path == null || !File(path).exists()
+         }
+@@ -471,23 +537,63 @@ object DockedMedia {
+             }
+         }
+ 
+-        val infos = tray.items.map { toInfo(it) }
+-        val first = infos[0]
+-        first.caption = if (text.isEmpty()) null else text.toString()
+-        first.entities = if (text.isEmpty()) null else MediaDataController.getInstance(key.account).getEntities(arrayOf(text), true)
+-        first.updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(text)
++        val stickerItem = tray.items.firstOrNull { it.isSticker }
++        val fileItems = tray.items.filter { !it.isSticker }
++        val infos = fileItems.map { toInfo(it) }
++        if (stickerItem == null) {
++            val first = infos.firstOrNull() ?: return SEND_DONE
++            first.caption = if (text.isEmpty()) null else text.toString()
++            first.entities = if (text.isEmpty()) null else MediaDataController.getInstance(key.account).getEntities(arrayOf(text), true)
++            first.updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(text)
++        }
++
++        if (stickerItem != null) {
++            val caption = if (text.isEmpty()) null else text.toString()
++            val entities = if (text.isEmpty()) null else MediaDataController.getInstance(key.account).getEntities(arrayOf(text), true)
++            val inline = stickerItem.inlineResult
++            val result = if (inline != null) runCatching { org.telegram.tgnet.TLObject.deepCopy(inline, TLRPC.BotInlineResult::TLdeserialize) }.getOrNull() ?: inline else null
++            if (result != null && result.send_message is TLRPC.TL_botInlineMessageMediaAuto) {
++                if (caption != null) {
++                    result.send_message.message = caption
++                    result.send_message.entities = entities ?: ArrayList()
++                    result.send_message.flags = result.send_message.flags or 1
++                }
++                val params = HashMap<String, String>()
++                params["id"] = result.id ?: ""
++                params["query_id"] = result.query_id.toString()
++                params["force_gif"] = "1"
++                SendMessagesHelper.prepareSendingBotContextResult(fragment, AccountInstance.getInstance(key.account), result, params, key.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote, notify, scheduleDate, repeat, fragment.messageChatSendParams, payStars, enter.sendMonoForumPeerId)
++                if (result.document != null) MediaDataController.getInstance(key.account).addRecentGif(result.document, (System.currentTimeMillis() / 1000L).toInt(), false)
++            } else {
++                val document = stickerItem.document as? TLRPC.TL_document
++                if (document != null) {
++                    val params = SendMessagesHelper.SendMessageParams.of(document, null, null, key.dialogId, fragment.replyMessage, fragment.threadMessage, caption, entities, null, null, notify, scheduleDate, repeat, 0, null, null, false)
++                    params.replyQuote = fragment.replyQuote
++                    params.sendMessageChatArguments = fragment.messageChatSendParams
++                    params.payStars = payStars
++                    params.monoForumPeer = enter.sendMonoForumPeerId
++                    params.suggestionParams = enter.sendMessageSuggestionParams
++                    SendMessagesHelper.getInstance(key.account).sendMessage(params)
++                }
++            }
++            if (infos.isEmpty()) {
++                trays.remove(key)
++                changed(key)
++                return SEND_DONE
++            }
++        }
+ 
+         val account = AccountInstance.getInstance(key.account)
+         var start = 0
+         var firstChunk = true
+         while (start < infos.size) {
+-            val asFile = tray.items[start].asFile
++            val asFile = fileItems[start].asFile
+             var end = start
+-            while (end < infos.size && end - start < 10 && tray.items[end].asFile == asFile) end++
++            while (end < infos.size && end - start < 10 && fileItems[end].asFile == asFile) end++
+             val chunk = ArrayList(infos.subList(start, end))
+             SendMessagesHelper.prepareSendingMedia(
+                 account, chunk, key.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote,
+-                asFile, tray.group, null, notify, scheduleDate, repeat, fragment.chatMode, firstChunk && first.updateStickersOrder,
++                asFile, tray.group, null, notify, scheduleDate, repeat, fragment.chatMode, firstChunk && infos[0].updateStickersOrder,
+                 null, fragment.messageChatSendParams, enter.effectId, tray.invert, payStars, enter.sendMonoForumPeerId, enter.sendMessageSuggestionParams
+             )
+             firstChunk = false
+@@ -574,11 +680,15 @@ object DockedMedia {
+     }
+ 
+     internal fun title(tray: Tray): String {
+-        val videos = tray.items.count { it.isVideo }
+-        val photos = tray.items.size - videos
+-        val parts = ArrayList<String>(2)
++        val stickers = tray.items.count { it.isSticker && !MessageObject.isGifDocument(it.document) }
++        val gifs = tray.items.count { it.isSticker && MessageObject.isGifDocument(it.document) }
++        val videos = tray.items.count { !it.isSticker && it.isVideo }
++        val photos = tray.items.count { !it.isSticker && !it.isVideo }
++        val parts = ArrayList<String>(4)
+         if (photos > 0) parts.add(if (photos == 1) "1 photo" else "$photos photos")
+         if (videos > 0) parts.add(if (videos == 1) "1 video" else "$videos videos")
++        if (stickers > 0) parts.add(if (stickers == 1) "1 sticker" else "$stickers stickers")
++        if (gifs > 0) parts.add(if (gifs == 1) "1 GIF" else "$gifs GIFs")
+         return parts.joinToString(", ")
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+index 5dd182279..9b57bfc82 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+@@ -9,7 +9,9 @@ import tele.db.TeleDatabaseHelper
+ 
+ object DockedStore {
+     private const val MAGIC = 0x444d4544
+-    private const val VERSION = 1
++    private const val VERSION = 3
++    private const val VERSION_STICKERS = 2
++    private const val VERSION_INLINE = 3
+ 
+     fun load(account: Int): Map<DockedMedia.Key, DockedMedia.Tray> {
+         val result = HashMap<DockedMedia.Key, DockedMedia.Tray>()
+@@ -65,6 +67,10 @@ object DockedStore {
+                 val masks = item.masks
+                 stream.writeInt32(masks?.size ?: 0)
+                 masks?.forEach { it.serializeToStream(stream) }
++                stream.writeBool(item.document != null)
++                item.document?.serializeToStream(stream)
++                stream.writeBool(item.inlineResult != null)
++                item.inlineResult?.serializeToStream(stream)
+             }
+             return stream.toByteArray()
+         } finally {
+@@ -75,7 +81,9 @@ object DockedStore {
+     private fun decode(data: ByteArray): DockedMedia.Tray? {
+         val stream = SerializedData(data)
+         try {
+-            if (stream.readInt32(false) != MAGIC || stream.readInt32(false) != VERSION) return null
++            if (stream.readInt32(false) != MAGIC) return null
++            val version = stream.readInt32(false)
++            if (version != 1 && version != VERSION) return null
+             val tray = DockedMedia.Tray()
+             tray.group = stream.readBool(false)
+             tray.invert = stream.readBool(false)
+@@ -124,6 +132,14 @@ object DockedStore {
+                     }
+                     item.masks = masks
+                 }
++                if (version >= VERSION_STICKERS && stream.readBool(false)) {
++                    item.document = TLRPC.Document.TLdeserialize(stream, stream.readInt32(false), false)
++                    if (item.document == null) broken = true
++                }
++                if (version >= VERSION_INLINE && stream.readBool(false)) {
++                    item.inlineResult = TLRPC.BotInlineResult.TLdeserialize(stream, stream.readInt32(false), false)
++                    if (item.inlineResult == null) broken = true
++                }
+                 if (!broken) tray.items.add(item)
+             }
+             return tray
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index c34ad8b8e..b9bcf2f84 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -12,7 +12,10 @@ import android.widget.HorizontalScrollView
+ import android.widget.LinearLayout
+ import android.widget.TextView
+ import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.FileLoader
++import org.telegram.messenger.ImageLocation
+ import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessageObject
+ import org.telegram.messenger.R
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.ChatActivity
+@@ -229,7 +232,21 @@ class TeleDockedStrip(
+             val cover = item.coverPath
+             val thumb = item.thumbPath
+             val path = item.path
+-            if (cover != null) {
++            val document = item.document
++            if (document != null) {
++                image.setAspectFit(true)
++                val color = Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider)
++                val icon = context.getDrawable(if (MessageObject.isGifDocument(document)) R.drawable.msg_gif else R.drawable.msg_sticker)?.mutate()
++                icon?.setColorFilter(android.graphics.PorterDuffColorFilter(color, android.graphics.PorterDuff.Mode.MULTIPLY))
++                val size = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, 90)
++                if (size != null) {
++                    image.setImage(ImageLocation.getForDocument(size, document), filter, icon, document)
++                } else {
++                    image.setImageResource(if (MessageObject.isGifDocument(document)) R.drawable.msg_gif else R.drawable.msg_sticker, color)
++                }
++            } else if (item.inlineResult != null) {
++                image.setImageResource(R.drawable.msg_gif, Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider))
++            } else if (cover != null) {
+                 image.setImage(cover, filter, placeholder)
+             } else if (thumb != null) {
+                 image.setImage(thumb, filter, placeholder)
+@@ -253,14 +270,23 @@ class TeleDockedStrip(
+             val badge = Badge(context)
+             badge.setOnClickListener { DockedMedia.remove(key, item) }
+             addView(badge, LayoutHelper.createFrame(24, 24f, Gravity.LEFT or Gravity.TOP, TILE - 22f, 4f, 0f, 0f))
+-            // like a tile of the picker: a tap opens the viewer with the editor and the checks
+-            setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
+-            setOnLongClickListener {
+-                ItemOptions.makeOptions(fragment, this)
+-                    .add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
+-                    .add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
+-                    .show()
+-                true
++            if (document == null) {
++                // like a tile of the picker: a tap opens the viewer with the editor and the checks
++                setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
++                setOnLongClickListener {
++                    ItemOptions.makeOptions(fragment, this)
++                        .add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
++                        .add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
++                        .show()
++                    true
++                }
++            } else {
++                setOnLongClickListener {
++                    ItemOptions.makeOptions(fragment, this)
++                        .add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
++                        .show()
++                    true
++                }
+             }
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 327b5651c..d3650d713 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -177,6 +177,7 @@ object TeleSearch {
+             section(GUID_SENDING + 7, "Forward protected messages as copies", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1600, "Send silent videos as", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1601, "Silent video format", "sending", TeleSettingsActivity.MODE_SENDING, "Send silent videos as"),
++            section(1602, "Captioned stickers in docked media", "sending", TeleSettingsActivity.MODE_SENDING, "Attach media above the field (beta)"),
+             section(GUID_SERVER, "tele server", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 1, "Server url", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVICE_SELECTION, "Select service messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 47859e4ec..81b0d472c 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -343,4 +343,5 @@
+     <string name="TeleWalletCopyTxLink">Copy transaction link</string>
+     <string name="TeleWalletTxLinkCopied">Transaction link copied</string>
+     <string name="TeleEditorMuteHintVideo">Sound is now muted, but the video will still send as a video.</string>
++    <string name="TeleDockedAttach">Attach</string>
+ </resources>

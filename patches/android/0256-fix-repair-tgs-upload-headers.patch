@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Wed, 4 Nov 2026 15:09:01 +0300
+Subject: [PATCH] fix: repair tgs upload headers
+
+---
+ .../messenger/SendMessagesHelper.java         |  4 +
+ .../src/main/java/tele/helpers/TgsUpload.kt   | 88 +++++++++++++++++++
+ 2 files changed, 92 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TgsUpload.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 5abbef714..e22cb1f1d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -9580,6 +9580,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                 extension = null;
+             }
+         }
++        final String teleTgsPath = tele.helpers.TgsUpload.repairedPath(path, tele.helpers.TgsUpload.displayName(uri, path));
++        if (teleTgsPath != null) {
++            path = teleTgsPath;
++        }
+         final File f = new File(path);
+         if (!f.exists() || f.length() == 0) {
+             return ERROR_TYPE_UNSUPPORTED;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TgsUpload.kt b/TMessagesProj/src/main/java/tele/helpers/TgsUpload.kt
+new file mode 100644
+index 000000000..7d797d078
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TgsUpload.kt
+@@ -0,0 +1,88 @@
++package tele.helpers
++
++import android.net.Uri
++import android.provider.OpenableColumns
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.FileLoader
++import org.telegram.messenger.FileLog
++import java.io.File
++
++/** Desktop 0230: a `.tgs` whose gzip header names TOPS-20 is repaired before the upload. */
++object TgsUpload {
++
++    private const val MAX_BYTES = 1024 * 1024
++    private const val GZIP_MAGIC_FIRST = 0x1f
++    private const val GZIP_MAGIC_SECOND = 0x8b
++    private const val GZIP_FLAG_HEADER_CRC = 0x02
++    private const val OS_TOPS20 = 10
++    private const val OS_UNIX = 3
++
++    @JvmStatic
++    fun isTgs(name: String?): Boolean = name != null && name.endsWith(".tgs", ignoreCase = true)
++
++    /** The name a picked document shows with; the cache copy of a `content://` uri has no usable one. */
++    @JvmStatic
++    fun displayName(uri: Uri?, path: String?): String? {
++        if (uri != null) {
++            try {
++                ApplicationLoader.applicationContext.contentResolver
++                    .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
++                    ?.use { cursor ->
++                        if (cursor.moveToFirst()) {
++                            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
++                            if (index >= 0) {
++                                val name = cursor.getString(index)
++                                if (!name.isNullOrEmpty()) return name
++                            }
++                        }
++                    }
++            } catch (e: Throwable) {
++                FileLog.e(e)
++            }
++        }
++        return path?.let { File(it).name }
++    }
++
++    /** Whether this is the gzip header Telegram rejects: TOPS-20 as the OS, no header crc. */
++    @JvmStatic
++    fun needsRepair(bytes: ByteArray): Boolean {
++        if (bytes.size <= 9) return false
++        if (bytes[0].toInt() and 0xff != GZIP_MAGIC_FIRST) return false
++        if (bytes[1].toInt() and 0xff != GZIP_MAGIC_SECOND) return false
++        if (bytes[3].toInt() and GZIP_FLAG_HEADER_CRC != 0) return false
++        return bytes[9].toInt() and 0xff == OS_TOPS20
++    }
++
++    /** Swaps only the OS byte of the header; the original file is left alone. */
++    @JvmStatic
++    fun repair(bytes: ByteArray): Boolean {
++        if (!needsRepair(bytes)) return false
++        bytes[9] = OS_UNIX.toByte()
++        return true
++    }
++
++    /** A repaired cache copy for the upload, or null when the file needs nothing. */
++    @JvmStatic
++    fun repairedPath(path: String?, name: String?): String? {
++        if (path == null || !isTgs(name ?: path)) return null
++        val file = File(path)
++        if (!file.isFile || file.length() <= 9 || file.length() > MAX_BYTES) return null
++        val bytes = try {
++            file.readBytes()
++        } catch (e: Throwable) {
++            FileLog.e(e)
++            return null
++        }
++        if (!repair(bytes)) return null
++        return try {
++            val dir = File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), "tele_tgs")
++            if (!dir.exists() && !dir.mkdirs()) return null
++            val copy = File(dir, name?.let { File(it).name } ?: file.name)
++            copy.writeBytes(bytes)
++            copy.absolutePath
++        } catch (e: Throwable) {
++            FileLog.e(e)
++            null
++        }
++    }
++}

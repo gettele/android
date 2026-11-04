@@ -1,5 +1,7 @@
 # Пачка 30 — низкий приоритет
 
+> **итог:** сделаны и экспортированы 0230 (`0256`), 0242 (`0257`), 0236 (`0258`), 0327 (`0259`) и 0093 (`0260`); проверены на устройстве, строки в PATCHLIST — `built` до человеческих ворот. 0242 — селектор GIF/Video (GIF по умолчанию), а не тумблер; мут в редакторе при Video оставляет видео видео. 0324 закрыт как `skip`: десктопного патча с этим фиксом в текущей очереди нет, аналогичная гонка в android не найдена. 0093 — native: MP4-гифки уходят как видео без транскода, image/gif кодируется MediaCodec; действие есть и в меню GIF-сообщения, при docked-медиа открывается редактор и item ждёт в tray; новых ffmpeg-бинарников не нужно. Studio-половина 0230 не применима: android gift studio экспортирует только PNG/MP4.
+
 ## Назначение и границы
 
 1. Этот документ описывает только текущие строки пачки 30 в `docs/PATCHLIST.md`: 0236, 0242, 0230, 0327, 0324 и 0093 (остаток). Номера — текущая нумерация очереди desktop; Android-файлы после реализации получат номера очереди, а не номера desktop.
@@ -47,7 +49,7 @@
 26. Для sticker/GIF picker найти фактические callback-ы в текущем `EmojiView`/`StickersAlert`/`ChatActivityEnterView` по symbol search, не по старым line numbers. В существующем callback добавить отдельное long-press/context-menu действие `Attach`, gated `TeleConfig.DOCKED_MEDIA`; обычный tap и OFF остаются stock. `TeleDockedStrip` должен bind/rebind sticker state на каждом recycle и не держать Activity/static View.
 27. Для отправки после 0175 переиспользовать его caption/entity helper и существующий `SendMessagesHelper.sendSticker(... CharSequence caption ...)` overload либо подтверждённый общий `sendMedia` path. Не вызывать private stock API дублированием; если нужен доступ — сделать минимальный `public`/`tele_` seam. Caption limit проверять до удаления tray, ошибку показывать на UI thread.
 28. Sticker state ключуется `currentAccount + dialogId + threadId`; persistence использует существующий `TeleDatabaseHelper`/`DockedStore` формат 0086, без stock DB migration. После process death, account switch, topic switch и config OFF не допускается показать item другого key. Если текущий 0086 формат не умеет документ reference/thumbnail, сначала определить безопасный локальный snapshot и download lifecycle. [INFERENCE]
-29. Для 0242 новый helper может быть `tele/helpers/SilentVideo.kt`, но не дублировать VideoEditedInfo. Hook должен быть в самом общем текущем preparation path до worker/send, с явной проверкой `TeleConfig.SILENT_VIDEO_AS_GIF`; обычный `SendMessagesHelper` stock path при OFF не должен создавать helper work. `videoEditedInfo.muted` и animated attribute должны оставаться согласованными с уже существующим conversion code.
+29. Для 0242 новый helper может быть `tele/helpers/SilentVideo.kt`, но не дублировать VideoEditedInfo. Hook должен быть в самом общем текущем preparation path до worker/send, с проверкой `TeleConfig.SILENT_VIDEO_AS`; helper читает `AnimatedFileInfo` и ставит `muted` для беззвучного видео: GIF — animated, Video — обычное видео. `videoEditedInfo.muted` и animated attribute должны оставаться согласованными с уже существующим conversion code. Итог: сделан селектор GIF/Video, GIF по умолчанию.
 30. Для 0230 helper в `tele/helpers/TgsUpload.kt` должен быть чистым bounded byte/file transform. Hook — на confirmed document upload path после расширения/URI resolution и до `FileUploadOperation`; если фактический upload API не допускает bytes, зафиксировать это как blocker, а не менять `TLRPC.java` или подменять MIME. Проверить также path, где `.tgs` приходит из content URI.
 31. Все фоновые callbacks для thumbnail/download/upload имеют account и generation; View/strip/field меняются только через main dispatcher. `LiteMode` учитывать для любой новой frame/animation работы; для низкоприоритетной sticker tile допустим статический thumbnail/frame, если exact animated behavior не подтверждён. [INFERENCE]
 
@@ -55,7 +57,7 @@
 
 32. 0230 — bug-fix без пользовательского выбора, поэтому отдельный TeleConfig item не добавлять: корректные файлы не меняются, повреждённые TOPS-20 `.tgs` исправляются всегда. Это решение нужно явно подтвердить, если мейнтейнер требует выключаемый fix.
 33. 0236 — отдельный switch не добавлять: он следует существующему `TeleConfig.DOCKED_MEDIA = BoolItem("docked_media", false)` и существующей строке «attach media above the field (beta)» в `TeleSettingsActivity.MODE_SENDING`. Включение/выключение должно включать/выключать и Attach для sticker/GIF; 0175 caption switches не должны автоматически включать docked.
-34. 0242 добавить `TeleConfig.SILENT_VIDEO_AS_GIF = BoolItem("silent_video_as_gif", false)`. Row — в `TeleSettingsActivity` в `MODE_SENDING`; export/import spec и `strings_tele.xml` обязательны. Android default **off**, хотя desktop default GIF: правило AGENTS о stock-compatible off имеет приоритет.
+34. 0242: `TeleConfig.SILENT_VIDEO_AS = StringItem("silent_video_as", "")`, значения `""` (GIF, по умолчанию) и `"video"`. Row — `TYPE_VALUE` в `TeleSettingsActivity` в `MODE_SENDING` с диалогом GIF/Video; export/import идёт автоматически как у `StringItem`.
 35. Текущий `TeleSearch.kt` имеет старые tele IDs 950–1109; записей 1480–1499 в этом registry нет. Перед кодом проверить collision также со stock `ProfileActivity.SearchAdapter`, затем зарезервировать только нужные IDs:
    - `1480` — canonical «send silent videos as GIF», mode `sending`, item `silent_video_as_gif`; keywords `silent`, `silent video`, `gif`, `беззвучное видео`, `гиф`.
    - `1481` — alias «silent video format», ведёт на 1480, не новый config item.
@@ -112,5 +114,5 @@
 ## 0093 — остаток: gif как видео
 
 59. Desktop 0093: отправка gif как видео и видео как gif. «Видео как gif» уже в стоке (`videoEditedInfo.muted` → `TL_documentAttributeAnimated`), закрыто PATCHLIST (строка 0093 в пачке 6); остаётся «gif как видео».
-60. Статус: отложено, требует проработки. «gif как видео» требует транскода gif→mp4; на Android готового пути нет, длительность gif неоткуда взять. Перед кодом выбрать способ транскода и проверить его на разных gif; пока выбора нет, код не писать.
+60. **Сделано в 0260.** «gif как видео»: MP4-гифки отправляются как видео без транскода, image/gif декодируется `android.graphics.Movie` и кодируется MediaCodec H.264/MP4. Новых ffmpeg-бинарников не добавляли: в проекте уже есть ffmpeg с gif decoder/demuxer и `gifvideo.cpp`; энкодер — MediaCodec, как в gift studio.
 61. Новый тумблер по умолчанию выключен; OFF — стоковая отправка gif.
