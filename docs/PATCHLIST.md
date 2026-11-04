@@ -525,16 +525,18 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 | 0302 | скриптинг (QuickJS, grants, TL, веб-платформа, ссылки и папка) (частично) | built | `0254-feat-add-android-scripting-runtime`; импорт по ссылке (`tg://tele/script?url=`) и SAF-папка со сменой/сбросом, `ConnectionsManager`, `MessagesController`, NDK quickjs-ng, `tele_script_*` JNI/Kotlin, `OkHttp`; L; зависит от 0088, скриптинг; реш.: скриптинг порт всё; по умолч.: папка + SAF; без виджет-слоя и Monaco; в 0302 уже влиты grant «display» (consent, прежняя строка 0303) и веб-платформа/fetch-API (прежняя строка 0320); десктопный фикс 0320 (падение при listing accounts из скрипта) — учесть в `tg`-мосте |
 | 0329 | иконки у пунктов меню скриптов | built | `0255-feat-give-script-menus-icons`; `tele/scripting`, меню; S; зависит от 0302, скриптинг; скрипт задаёт иконку пункта меню |
 
-## пачка 29 — html-пузыри .tgw
+## пачка 29 — html-пузыри .tgw (отложена)
 
-litehtml через NDK (сборка), карточки в `ChatMessageCell` через Canvas JNI, playground-чат (в одном патче 0313). зависит от скриптинга (0302) и litehtml (0312). effort: M×1, L×1.
+litehtml через NDK (сборка), карточки в `ChatMessageCell` через Canvas JNI, playground-чат. зависит от скриптинга (0302). effort: M×1, L×1.
 
-ворота: debug-apk, на устройстве: litehtml собирается на всех ABI; .tgw-карточка рисуется в пузыре со скриптом; playground-чат открывается.
+**отложено решением мейнтейнера:** Telegram готовит нативную реализацию HTML-карточек в клиенте (в бете они называются Widgets; у нас остаются «пузырями»), поэтому порт с десктопа откатан: вендоринг litehtml, JNI-бэкенд, карточный QuickJS-хост, тумблер и playground удалены из очереди. вернуться к порту, если нативная реализация не покроет `.tgw` (формат, скрипты, playground).
+
+ворота (если вернёмся): debug-apk, на устройстве: litehtml собирается на всех ABI; .tgw-карточка рисуется в пузыре; playground-чат открывается.
 
 | № | патч | статус | примечание |
 |---|---|---|---|
-| 0312 | сборка litehtml | todo | CMake/NDK `jni`; M; зависит от litehtml; реш.: litehtml через NDK; только сборка |
-| 0313 | HTML-карточки litehtml + QuickJS, playground-чат и .tgw (частично) | todo | `ChatMessageCell`, Canvas JNI, локальный чат; L; зависит от 0302, 0312, android 0077, litehtml; реш.: .tgw порт; перенос ~2.2k строк `tele_html.cpp`; носитель playground — по образцу android 0077 (в 0313 влиты прежние строки 0315 и 0316); десктопный фикс 0321 (html-карточки не падают, когда сообщение исчезает) — учесть |
+| 0312 | сборка litehtml | skip | отложено: нативные HTML-виджеты Telegram; порт откатан, в очереди патча нет |
+| 0313 | HTML-карточки litehtml + QuickJS, playground-чат и .tgw (частично) | skip | отложено: нативные HTML-виджеты Telegram; реализация (JNI-бэкенд, `.tgw`-парсер, карточный QuickJS с начальным `render()`, тумблер, playground) откатана, в очереди патча нет. вернуться, если нативная не покроет формат |
 
 ## пачка 30 — низкий приоритет
 
@@ -625,6 +627,8 @@ litehtml через NDK (сборка), карточки в `ChatMessageCell` ч
 | 0304 | zoom колесом в viewer | ❌ колесо мыши (`PhotoViewer`) |
 | 0305 | дизайн карточки money подарком | 🟢 в стоке 13.1.1: `wallet_card_bg_gifts` + wallet card/color delegates в `StarGiftSheet` (`WalletGiftStickers.toggleColor`), 2D и 3D |
 | 0306 | плавные глайды колеса | ❌ колесо мыши |
+| 0312 | сборка litehtml для html-пузырей | ⏸ отложено: Telegram готовит нативные HTML-виджеты (bubbles); порт откатан, вернуться при необходимости |
+| 0313 | html-карточки `.tgw` (litehtml + QuickJS, playground) | ⏸ отложено по той же причине; нативная реализация может закрыть формат целиком |
 | 0314 | подарки стикерами на карте money | 🟢 в стоке 13.1.1: `WalletGiftStickers` (drag-and-drop, add/remove из меню, persisted placements) |
 | 0322 | подарки в money как gift-cards | 🟢 в стоке 13.1.1: `WalletGiftCell extends GiftSheet.GiftCell` — настоящие gift-карточки, не размытая аватарка |
 | 0318 | глайды в боксах не затирают чаты под ними | ❌ Qt-глайды в боксах |
