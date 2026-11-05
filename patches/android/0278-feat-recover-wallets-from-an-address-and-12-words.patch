@@ -1,0 +1,388 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 6 Nov 2026 02:38:57 +0300
+Subject: [PATCH] feat: recover wallets from an address and 12 words
+
+---
+ .../jni/wallet/WalletEngineBridge.cpp         |  41 ++++
+ .../org/telegram/ui/Wallet/WalletEngine2.java |  57 +++++
+ .../ui/Wallet/WalletImportFragment.java       |   6 +
+ .../ui/Wallet/WalletRecoverFragment.java      | 232 ++++++++++++++++++
+ 4 files changed, 336 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletRecoverFragment.java
+
+diff --git a/TMessagesProj/jni/wallet/WalletEngineBridge.cpp b/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
+index 8cb75d3b8..1cd507046 100644
+--- a/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
++++ b/TMessagesProj/jni/wallet/WalletEngineBridge.cpp
+@@ -658,6 +658,47 @@ Java_org_telegram_ui_Wallet_WalletEngine2_nativePrivateKeyAddress(
+     return nullptr;
+ }
+ 
++extern "C" JNIEXPORT jbyteArray JNICALL
++Java_org_telegram_ui_Wallet_WalletEngine2_nativeRecoverWalletSecret(
++        JNIEnv *env, jclass, jlong handle, jbyteArray words_bytes) {
++    if (!words_bytes) {
++        throw_java(env, "java/lang/IllegalArgumentException", "RECOVER_INVALID_WORDS");
++        return nullptr;
++    }
++    try {
++        auto client = get_client(handle);
++        const jsize length = env->GetArrayLength(words_bytes);
++        SensitiveString phrase(static_cast<size_t>(length));
++        env->GetByteArrayRegion(words_bytes, 0, length, reinterpret_cast<jbyte *>(phrase.value.data()));
++        if (env->ExceptionCheck()) return nullptr;
++        const auto words = split_secret(phrase.value);
++        if (words.size() != 12) {
++            throw_java(env, "java/lang/IllegalArgumentException", "RECOVER_INVALID_WORDS");
++            return nullptr;
++        }
++        const auto recovered = client.wallet->recover_wallet_secret(words);
++        jbyteArray result = env->NewByteArray(static_cast<jsize>(recovered.phrase.size()));
++        if (result) {
++            env->SetByteArrayRegion(result, 0, static_cast<jsize>(recovered.phrase.size()),
++                reinterpret_cast<const jbyte *>(recovered.phrase.data()));
++        }
++        return result;
++    } catch (const we::wallet_client_error::InvalidProtectedSecret &) {
++        throw_java(env, "java/lang/IllegalArgumentException", "RECOVER_INVALID_WORDS");
++    } catch (const we::wallet_client_error::EncryptedCommentLookupFailed &) {
++        throw_java(env, "java/lang/IllegalStateException", "RECOVER_NOT_FOUND");
++    } catch (const we::wallet_client_error::WalletIdentityMismatch &) {
++        throw_java(env, "java/lang/IllegalStateException", "RECOVER_MISMATCH");
++    } catch (const we::wallet_client_error::SendAlreadyInProgress &) {
++        throw_java(env, "java/lang/IllegalStateException", "RECOVER_BUSY");
++    } catch (const std::bad_alloc &) {
++        throw_java(env, "java/lang/OutOfMemoryError", "Could not recover the wallet");
++    } catch (...) {
++        throw_java(env, "java/lang/IllegalStateException", "RECOVER_FAILED");
++    }
++    return nullptr;
++}
++
+ extern "C" JNIEXPORT jboolean JNICALL
+ Java_org_telegram_ui_Wallet_WalletEngine2_isValidCellBoc(JNIEnv *env, jclass, jstring boc) {
+     try {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java
+index b8ad2d7f4..7f653ccc2 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletEngine2.java
+@@ -136,6 +136,63 @@ public class WalletEngine2 implements AutoCloseable {
+         }
+     }
+ 
++    private static native byte[] nativeRecoverWalletSecret(long handle, byte[] words);
++
++    /**
++     * Rebuilds a rotated wallet's secret from its address and the 12 words the latest key
++     * rotation installed. Configures a temporary engine with the words' public key, lets the
++     * engine walk the wallet's key-change history back to the anchor key, and returns a
++     * private-key secret ({anchor key, 12 words}) ready for {@link GramWallet#importWallet}.
++     * Call from the UI thread; the callback is delivered on the UI thread. Never logs the words.
++     */
++    public static void recoverWalletSecret(
++        int currentAccount,
++        @Nullable String address,
++        SecretPhrase words,
++        Utilities.Callback2<SecretPhrase /* recovered secret */, String /* error */> onResult
++    ) {
++        if (!isValidRecipientAddress(address)) {
++            onResult.run(null, "RECOVER_INVALID_ADDRESS");
++            return;
++        }
++        if (words == null || words.wordCount() != 12) {
++            onResult.run(null, "RECOVER_INVALID_WORDS");
++            return;
++        }
++        final byte[] publicKey;
++        final byte[] wordsBytes;
++        try {
++            publicKey = secretPhraseToPublicKey(words);
++            wordsBytes = words.copyBytes();
++        } catch (RuntimeException e) {
++            onResult.run(null, "RECOVER_INVALID_WORDS");
++            return;
++        }
++        Utilities.globalQueue.postRunnable(() -> {
++            WalletEngine2 engine = null;
++            SecretPhrase result = null;
++            String error = null;
++            try {
++                engine = new WalletEngine2(currentAccount, address, publicKey);
++                final byte[] secret = nativeRecoverWalletSecret(engine.ptr, wordsBytes);
++                if (secret != null && secret.length > 0) {
++                    result = new SecretPhrase(secret);
++                    Arrays.fill(secret, (byte) 0);
++                } else {
++                    error = "RECOVER_FAILED";
++                }
++            } catch (RuntimeException e) {
++                error = errorMessage(e);
++            } finally {
++                Arrays.fill(wordsBytes, (byte) 0);
++                if (engine != null) engine.close();
++            }
++            final SecretPhrase recovered = result;
++            final String failure = error;
++            AndroidUtilities.runOnUIThread(() -> onResult.run(recovered, failure));
++        });
++    }
++
+     /**
+      * Returns the 32-byte address anchor public key derived from the first 12 words.
+      * Accepts 12- or 24-word Rotation phrases; only the anchor half is validated.
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
+index 41d5f66f2..13a8fd619 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletImportFragment.java
+@@ -176,6 +176,12 @@ public class WalletImportFragment extends BaseFragment {
+             privateKeyButton.setText("Import a private key");
+             privateKeyButton.setOnClickListener(v -> presentFragment(new WalletPrivateKeyFragment()));
+             root.addView(privateKeyButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER_HORIZONTAL, 0, 12, 0, 0));
++
++            final ButtonWithCounterView recoverButton = new ButtonWithCounterView(context, resourceProvider);
++            recoverButton.setRound();
++            recoverButton.setText("Recover with address and 12 words");
++            recoverButton.setOnClickListener(v -> presentFragment(new WalletRecoverFragment()));
++            root.addView(recoverButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER_HORIZONTAL, 0, 12, 0, 0));
+         }
+ 
+         buildCells(context);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletRecoverFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletRecoverFragment.java
+new file mode 100644
+index 000000000..518e7ed6b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletRecoverFragment.java
+@@ -0,0 +1,232 @@
++package org.telegram.ui.Wallet;
++
++import static org.telegram.messenger.AndroidUtilities.dp;
++
++import android.content.Context;
++import android.graphics.PorterDuff;
++import android.graphics.PorterDuffColorFilter;
++import android.text.InputType;
++import android.util.TypedValue;
++import android.view.Gravity;
++import android.view.View;
++import android.widget.EditText;
++import android.widget.FrameLayout;
++import android.widget.ImageView;
++import android.widget.LinearLayout;
++import android.widget.ScrollView;
++import android.widget.TextView;
++
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.MediaDataController;
++import org.telegram.messenger.R;
++import org.telegram.ui.ActionBar.AlertDialog;
++import org.telegram.ui.ActionBar.BaseFragment;
++import org.telegram.ui.ActionBar.Theme;
++import org.telegram.ui.Components.BackupImageView;
++import org.telegram.ui.Components.BulletinFactory;
++import org.telegram.ui.Components.LayoutHelper;
++import org.telegram.ui.Stories.recorder.ButtonWithCounterView;
++import org.telegram.ui.Wallet.GramWallet.SecretPhrase;
++
++import java.util.ArrayList;
++
++/**
++ * Recovers a rotated wallet from its address and the 12 words its latest key rotation
++ * installed (tele 0309). The engine walks the key-change history back to the anchor key;
++ * the resulting private-key secret is then imported like any other private key.
++ */
++public class WalletRecoverFragment extends BaseFragment {
++
++    private EditText addressInput;
++    private EditText wordsInput;
++    private TextView status;
++    private ButtonWithCounterView recoverButton;
++
++    @Override
++    public View createView(Context context) {
++        actionBar.setAddToContainer(false);
++        actionBar.setOccupyStatusBar(false);
++
++        final FrameLayout container = new FrameLayout(context);
++        container.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider));
++        fragmentView = container;
++
++        final ScrollView scroll = new ScrollView(context);
++        scroll.setFillViewport(true);
++        scroll.setVerticalScrollBarEnabled(false);
++        scroll.setClipToPadding(false);
++        scroll.setPadding(0, dp(96), 0, dp(24));
++        container.addView(scroll, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
++
++        final LinearLayout root = new LinearLayout(context);
++        root.setOrientation(LinearLayout.VERTICAL);
++        root.setPadding(dp(36), 0, dp(36), dp(24));
++        scroll.addView(root, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
++
++        final ImageView closeButton = new ImageView(context);
++        closeButton.setScaleType(ImageView.ScaleType.CENTER);
++        closeButton.setColorFilter(new PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider), PorterDuff.Mode.SRC_IN));
++        closeButton.setImageResource(R.drawable.ic_ab_close);
++        closeButton.setBackground(Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector, resourceProvider), 3));
++        closeButton.setOnClickListener(v -> finishFragment());
++        container.addView(closeButton, LayoutHelper.createFrame(48, 48, Gravity.TOP | Gravity.LEFT, 4, 12, 0, 0));
++
++        final BackupImageView stickerView = new BackupImageView(context);
++        stickerView.setAspectFit(true);
++        stickerView.getImageReceiver().setCurrentAccount(org.telegram.messenger.AndroidUtilities.getAccountInProduction());
++        MediaDataController.getInstance(org.telegram.messenger.AndroidUtilities.getAccountInProduction()).setPlaceholderImage(stickerView, "RestrictedEmoji", "\uD83D\uDD01", "100_100");
++        root.addView(stickerView, LayoutHelper.createLinear(100, 100, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 12));
++
++        final TextView title = new TextView(context);
++        title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20);
++        title.setTypeface(AndroidUtilities.bold());
++        title.setGravity(Gravity.CENTER_HORIZONTAL);
++        title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider));
++        title.setText("Recover a wallet");
++        root.addView(title, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 32, 0, 32, 10));
++
++        final TextView subtitle = new TextView(context);
++        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
++        subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
++        subtitle.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider));
++        subtitle.setText("Enter the wallet address and the 12 words its latest key rotation installed. tele searches the wallet's key history to rebuild the key.");
++        root.addView(subtitle, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 32, 0, 32, 16));
++
++        addressInput = new EditText(context);
++        addressInput.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
++        addressInput.setTypeface(AndroidUtilities.getTypeface("fonts/rmono.ttf"));
++        addressInput.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider));
++        addressInput.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, resourceProvider));
++        addressInput.setHint("Wallet address");
++        addressInput.setSingleLine(true);
++        addressInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
++        addressInput.setBackground(Theme.createRoundRectDrawable(dp(10), Theme.getColor(Theme.key_windowBackgroundGray, resourceProvider)));
++        addressInput.setPadding(dp(12), dp(12), dp(12), dp(12));
++        root.addView(addressInput, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, dp(48), 0, 0, 0, 0, 10));
++
++        wordsInput = new EditText(context);
++        wordsInput.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
++        wordsInput.setTypeface(AndroidUtilities.getTypeface("fonts/rmono.ttf"));
++        wordsInput.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider));
++        wordsInput.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, resourceProvider));
++        wordsInput.setHint("12 words");
++        wordsInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
++        wordsInput.setBackground(Theme.createRoundRectDrawable(dp(10), Theme.getColor(Theme.key_windowBackgroundGray, resourceProvider)));
++        wordsInput.setPadding(dp(12), dp(12), dp(12), dp(12));
++        root.addView(wordsInput, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, dp(110), 0, 0, 0, 0, 8));
++
++        status = new TextView(context);
++        status.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
++        status.setTypeface(AndroidUtilities.getTypeface("fonts/rmono.ttf"));
++        status.setVisibility(View.GONE);
++        root.addView(status, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 0, 0, 0, 8));
++
++        recoverButton = new ButtonWithCounterView(context, resourceProvider);
++        recoverButton.setRound();
++        recoverButton.setText("Recover");
++        recoverButton.setOnClickListener(v -> onRecoverPressed());
++        root.addView(recoverButton, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, Gravity.CENTER_HORIZONTAL, 0, 12, 0, 0));
++
++        return fragmentView;
++    }
++
++    private void onRecoverPressed() {
++        if (recoverButton.isLoading()) return;
++        final String address = addressInput.getText().toString().trim();
++        final String[] parts = wordsInput.getText().toString().trim().split("\\s+");
++        final ArrayList<String> words = new ArrayList<>();
++        for (String part : parts) {
++            if (!part.isEmpty()) words.add(part);
++        }
++        if (!WalletEngine2.isValidRecipientAddress(address)) {
++            showError("Enter a valid mainnet wallet address.");
++            return;
++        }
++        if (words.size() != 12) {
++            showError("Enter the 12 words.");
++            return;
++        }
++        final SecretPhrase phrase;
++        try {
++            phrase = SecretPhrase.fromWords(words);
++        } catch (RuntimeException e) {
++            showError("Enter the 12 words.");
++            return;
++        }
++        recoverButton.setLoading(true);
++        showStatus("Searching the wallet's history…", false);
++        WalletEngine2.recoverWalletSecret(currentAccount, address, phrase, (recovered, error) -> {
++            phrase.close();
++            if (getParentActivity() == null) {
++                if (recovered != null) recovered.close();
++                return;
++            }
++            recoverButton.setLoading(false);
++            if (error != null) {
++                showError(recoverErrorText(error));
++                return;
++            }
++            if (recovered == null) {
++                showError("Couldn't recover the wallet.");
++                return;
++            }
++            status.setVisibility(View.GONE);
++            importRecovered(recovered);
++        });
++    }
++
++    private void importRecovered(SecretPhrase recovered) {
++        final GramWallet wallet = GramWallet.getInstance(currentAccount);
++        final SecretPhrase owned = recovered.copy();
++        recovered.close();
++        recoverButton.setLoading(true);
++        try {
++            wallet.importWallet(owned, error -> {
++                owned.close();
++                if (getParentActivity() == null) return;
++                recoverButton.setLoading(false);
++                if ("WRONG_CONTRACT".equalsIgnoreCase(error) || "INVALID_PHRASE".equalsIgnoreCase(error)) {
++                    new AlertDialog.Builder(getContext(), resourceProvider)
++                        .setTitle(org.telegram.messenger.LocaleController.getString(R.string.WalletInvalidRecoveryPhrase))
++                        .setMessage(org.telegram.messenger.LocaleController.getString(R.string.WalletInvalidRecoveryPhraseInfo))
++                        .setPositiveButton(org.telegram.messenger.LocaleController.getString(R.string.WalletOK), null)
++                        .show();
++                    return;
++                }
++                if (error != null) {
++                    BulletinFactory.of(this).showForError(error);
++                    return;
++                }
++                finishFragment();
++                wallet.notifyUpdate();
++            });
++        } catch (RuntimeException e) {
++            owned.close();
++            recoverButton.setLoading(false);
++            showError("Couldn't import the recovered wallet.");
++        }
++    }
++
++    private void showStatus(String text, boolean error) {
++        status.setTextColor(Theme.getColor(error ? Theme.key_text_RedRegular : Theme.key_windowBackgroundWhiteGrayText2, resourceProvider));
++        status.setText(text);
++        status.setVisibility(View.VISIBLE);
++    }
++
++    private void showError(String text) {
++        showStatus(text, true);
++    }
++
++    private String recoverErrorText(String error) {
++        if ("RECOVER_INVALID_WORDS".equals(error)) return "These aren't 12 valid words.";
++        if ("RECOVER_BUSY".equals(error)) return "The wallet's history is still being searched.";
++        if ("RECOVER_NOT_FOUND".equals(error)) return "Couldn't find a key change to these words in this wallet's history. Try again later.";
++        if ("RECOVER_MISMATCH".equals(error)) return "These aren't the newest 12 words of this wallet.";
++        return "Couldn't search the wallet's history.";
++    }
++
++    @Override
++    public boolean isSupportEdgeToEdge() {
++        return true;
++    }
++}
