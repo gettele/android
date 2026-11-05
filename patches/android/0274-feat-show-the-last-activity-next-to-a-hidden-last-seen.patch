@@ -1,0 +1,343 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Thu, 5 Nov 2026 17:48:19 +0300
+Subject: [PATCH] feat: show the last activity next to a hidden last seen
+
+---
+ .../telegram/messenger/LocaleController.java  |  12 ++
+ .../messenger/MessagesController.java         |  20 +++
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   6 +-
+ .../java/tele/helpers/ObservedActivity.kt     | 155 ++++++++++++++++++
+ .../java/tele/helpers/TeleSettingsLinks.kt    |   1 +
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ 8 files changed, 200 insertions(+), 1 deletion(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java b/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
+index 8a49d3138..0df372c19 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
+@@ -2924,6 +2924,18 @@ public class LocaleController {
+     }
+ 
+     public static String formatUserStatus(int currentAccount, TLRPC.User user, boolean[] isOnline, boolean[] madeShorter) {
++        final String status = formatUserStatusInternal(currentAccount, user, isOnline, madeShorter);
++        if (tele.TeleConfig.OBSERVED_ACTIVITY.getValue()
++                && user != null
++                && user.status != null
++                && user.status.expires < 0
++                && !MessagesController.getInstance(currentAccount).onlinePrivacy.containsKey(user.id)) {
++            return tele.helpers.ObservedActivity.withStatus(currentAccount, user.id, status);
++        }
++        return status;
++    }
++
++    private static String formatUserStatusInternal(int currentAccount, TLRPC.User user, boolean[] isOnline, boolean[] madeShorter) {
+         if (user != null && user.status != null && user.status.expires == 0) {
+             if (user.status instanceof TLRPC.TL_userStatusRecently) {
+                 user.status.expires = user.status.by_me ? -1000 : -100;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index cba25cbaf..a76b81012 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -18072,6 +18072,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                     }
+                 }
+             }
++            if (!updates.out && user != null) {
++                tele.helpers.ObservedActivity.note(currentAccount, user.id, updates.date);
++            }
+             if (!updates.out && user != null && user.status != null && user.status.expires <= 0 && Math.abs(getConnectionsManager().getCurrentTime() - updates.date) < 30) {
+                 onlinePrivacy.put(user.id, updates.date);
+                 updateStatus = true;
+@@ -18691,6 +18694,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                                 }
+                                 return false;
+                             }
++                            if (!message.out && user != null) {
++                                tele.helpers.ObservedActivity.note(currentAccount, userId, message.date);
++                            }
+                             if (!message.out && a == 1 && user.status != null && user.status.expires <= 0 && Math.abs(getConnectionsManager().getCurrentTime() - message.date) < 30) {
+                                 onlinePrivacy.put(userId, message.date);
+                                 interfaceUpdateMask |= UPDATE_MASK_STATUS;
+@@ -18929,6 +18935,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                     markAsReadMessagesOutbox.put(update.peer.user_id, update.max_id);
+                     dialogId = update.peer.user_id;
+                     TLRPC.User user = getUser(update.peer.user_id);
++                    if (user != null) {
++                        tele.helpers.ObservedActivity.note(currentAccount, update.peer.user_id, date);
++                    }
+                     if (user != null && user.status != null && user.status.expires <= 0 && Math.abs(getConnectionsManager().getCurrentTime() - date) < 30) {
+                         onlinePrivacy.put(update.peer.user_id, date);
+                         interfaceUpdateMask |= UPDATE_MASK_STATUS;
+@@ -19117,6 +19126,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                             }
+                         }
+                     }
++                    if (userId > 0) {
++                        tele.helpers.ObservedActivity.note(currentAccount, userId, date);
++                    }
+                     if (Math.abs(getConnectionsManager().getCurrentTime() - date) < 30) {
+                         onlinePrivacy.put(userId, date);
+                     }
+@@ -19700,6 +19712,14 @@ public class MessagesController extends BaseController implements NotificationCe
+                 TL_update.TL_updateMessageReactions update = (TL_update.TL_updateMessageReactions) baseUpdate;
+                 long dialogId = MessageObject.getPeerId(update.peer);
+ 
++                if (update.reactions != null) {
++                    for (int a = 0; a < update.reactions.recent_reactions.size(); a++) {
++                        TLRPC.MessagePeerReaction reaction = update.reactions.recent_reactions.get(a);
++                        if (reaction.peer_id != null && reaction.peer_id.user_id != 0) {
++                            tele.helpers.ObservedActivity.note(currentAccount, reaction.peer_id.user_id, reaction.date);
++                        }
++                    }
++                }
+                 getMessagesStorage().updateMessageReactions(dialogId, update.msg_id, update.reactions);
+ 
+                 if (update.updateUnreadState) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 932cdab0b..851e6d024 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -100,6 +100,8 @@ object TeleConfig {
+     @JvmField
+     val TYPING_HIDDEN_LAST_SEEN = BoolItem("typing_hidden_last_seen", false)
+     @JvmField
++    val OBSERVED_ACTIVITY = BoolItem("observed_activity", false)
++    @JvmField
+     val STREAMER_MODE = BoolItem("streamer_mode", false)
+     @JvmField
+     val HIDDEN_WORDS = BoolItem("hidden_words", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index a4ec395f4..c7ff752cf 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -43,6 +43,7 @@ object TeleHooks {
+         tele.helpers.TeleUpdater.start()
+         tele.helpers.PrivacyRules.init()
+         tele.helpers.LastSeenPeek.restorePending()
++        tele.helpers.ObservedActivity.preload()
+         tele.helpers.TeleReduceMotion.apply()
+         tele.helpers.DeletedRetention.start()
+         tele.helpers.TeleMentions.install()
+@@ -179,7 +180,10 @@ object TeleHooks {
+         if (item === TeleConfig.ONLINE_NOTIFY) {
+             tele.helpers.OnlineNotify.onToggled()
+         }
+-        if (item === TeleConfig.TYPING_HIDDEN_LAST_SEEN) {
++        if (item === TeleConfig.TYPING_HIDDEN_LAST_SEEN || item === TeleConfig.OBSERVED_ACTIVITY) {
++            if (item === TeleConfig.OBSERVED_ACTIVITY) {
++                tele.helpers.ObservedActivity.preload()
++            }
+             for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
+                 AccountInstance.getInstance(account).getNotificationCenter()
+                     .postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_STATUS)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt b/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
+new file mode 100644
+index 000000000..4caaa5182
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
+@@ -0,0 +1,155 @@
++package tele.helpers
++
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.messenger.Utilities
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.Calendar
++import java.util.concurrent.ConcurrentHashMap
++
++/**
++ * The last activity this device has already seen for people whose last seen is hidden
++ * (tele 0325). Incoming messages, typing, read receipts and reactions are remembered
++ * locally; nothing is requested from the server, and only the time of the action is kept.
++ */
++object ObservedActivity {
++    private const val PREFIX = "observed_activity"
++    private const val MAX_ENTRIES = 5000
++    private const val SAVE_DELAY = 10_000L
++    private const val NOTIFY_INTERVAL = 1000L
++
++    private val times = ConcurrentHashMap<Int, ConcurrentHashMap<Long, Int>>()
++    private val loaded = ConcurrentHashMap.newKeySet<Int>()
++    private val scheduled = ConcurrentHashMap.newKeySet<Int>()
++    private val lastNotify = ConcurrentHashMap<Int, Long>()
++
++    private fun key(account: Int) = "$PREFIX:$account"
++
++    /** Load every activated account off the UI thread; the status labels read the memory map. */
++    @JvmStatic
++    fun preload() {
++        Utilities.globalQueue.postRunnable {
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                if (UserConfig.getInstance(account).isClientActivated) {
++                    load(account)
++                }
++            }
++        }
++    }
++
++    private fun load(account: Int) {
++        if (!loaded.add(account)) return
++        val raw = TeleDatabaseHelper.get(key(account)) ?: return
++        val map = times.getOrPut(account) { ConcurrentHashMap() }
++        for (part in raw.split(';')) {
++            val pair = part.split(':')
++            if (pair.size != 2) continue
++            val id = pair[0].toLongOrNull() ?: continue
++            val whenTime = pair[1].toIntOrNull() ?: continue
++            if (id > 0 && whenTime > 0 && whenTime > (map[id] ?: 0)) {
++                map[id] = whenTime
++            }
++        }
++    }
++
++    /** Remember an action of [userId] seen at [whenTime]; hidden statuses only. */
++    @JvmStatic
++    fun note(account: Int, userId: Long, whenTime: Int) {
++        if (!TeleConfig.OBSERVED_ACTIVITY.value || userId <= 0 || whenTime <= 0) return
++        if (UserObject.isService(userId)) return
++        val user = MessagesController.getInstance(account).getUser(userId) ?: return
++        if (user.bot || user.self || user.support) return
++        if (user.status == null || user.status.expires > 0) return
++        val now = (System.currentTimeMillis() / 1000L).toInt()
++        val stamp = minOf(whenTime, now)
++        val map = times.getOrPut(account) { ConcurrentHashMap() }
++        if (stamp <= (map[userId] ?: 0)) return
++        map[userId] = stamp
++        trim(map)
++        scheduleSave(account)
++        notifyUi(account)
++    }
++
++    @JvmStatic
++    fun lastSeen(account: Int, userId: Long): Int = times[account]?.get(userId) ?: 0
++
++    /** "last seen recently" becomes "last seen recently (14:32)" while the option is on. */
++    @JvmStatic
++    fun withStatus(account: Int, userId: Long, status: String?): String? {
++        if (!TeleConfig.OBSERVED_ACTIVITY.value || status.isNullOrEmpty()) return status
++        val whenTime = lastSeen(account, userId)
++        if (whenTime <= 0) return status
++        return "$status (${formatWhen(whenTime)})"
++    }
++
++    private fun formatWhen(whenTime: Int): String {
++        val date = java.util.Date(whenTime * 1000L)
++        val then = Calendar.getInstance().apply { timeInMillis = date.time }
++        val now = Calendar.getInstance()
++        val timeText = LocaleController.getInstance().formatterDay.format(date)
++        val yesterday = Calendar.getInstance().apply {
++            timeInMillis = date.time
++            add(Calendar.DAY_OF_YEAR, 1)
++        }
++        return when {
++            then.get(Calendar.YEAR) == now.get(Calendar.YEAR) &&
++                then.get(Calendar.DAY_OF_YEAR) == now.get(Calendar.DAY_OF_YEAR) -> timeText
++            yesterday.get(Calendar.YEAR) == now.get(Calendar.YEAR) &&
++                yesterday.get(Calendar.DAY_OF_YEAR) == now.get(Calendar.DAY_OF_YEAR) ->
++                LocaleController.formatString(R.string.YesterdayAtFormatted, timeText)
++            then.get(Calendar.YEAR) == now.get(Calendar.YEAR) ->
++                LocaleController.formatString(
++                    R.string.formatDateAtTime,
++                    LocaleController.getInstance().formatterDayMonth.format(date),
++                    timeText
++                )
++            else -> LocaleController.formatString(
++                R.string.formatDateAtTime,
++                LocaleController.getInstance().formatterYear.format(date),
++                timeText
++            )
++        }
++    }
++
++    private fun trim(map: ConcurrentHashMap<Long, Int>) {
++        if (map.size <= MAX_ENTRIES) return
++        val oldest = map.entries.minByOrNull { it.value } ?: return
++        map.remove(oldest.key)
++    }
++
++    private fun scheduleSave(account: Int) {
++        if (!scheduled.add(account)) return
++        Utilities.globalQueue.postRunnable({
++            scheduled.remove(account)
++            save(account)
++        }, SAVE_DELAY)
++    }
++
++    private fun save(account: Int) {
++        val map = times[account] ?: return
++        val builder = StringBuilder()
++        for ((id, whenTime) in map) {
++            if (builder.isNotEmpty()) builder.append(';')
++            builder.append(id).append(':').append(whenTime)
++        }
++        TeleDatabaseHelper.put(key(account), builder.toString())
++    }
++
++    private fun notifyUi(account: Int) {
++        val now = System.currentTimeMillis()
++        if (now - (lastNotify[account] ?: 0L) < NOTIFY_INTERVAL) return
++        lastNotify[account] = now
++        AndroidUtilities.runOnUIThread {
++            NotificationCenter.getInstance(account).postNotificationName(
++                NotificationCenter.updateInterfaces,
++                MessagesController.UPDATE_MASK_STATUS
++            )
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+index ab4155582..e5038d5af 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -88,6 +88,7 @@ object TeleSettingsLinks {
+         "tele-ignore-in-menu" to optionId(TeleConfig.IGNORE_BUTTON.key),
+         "tele-peek-last-seen" to optionId(TeleConfig.LAST_SEEN_RESTORE.key),
+         "tele-typing-hidden-last-seen" to optionId(TeleConfig.TYPING_HIDDEN_LAST_SEEN.key),
++        "tele-observed-activity" to optionId(TeleConfig.OBSERVED_ACTIVITY.key),
+         "tele-hide-phone-in-profile" to optionId(TeleConfig.HIDE_PHONE_IN_PROFILES.key),
+         "tele-server-url" to optionId(TeleConfig.TELE_SERVER_URL.key),
+         "tele-stars-tools" to optionId(TeleConfig.STAR_TRANSACTIONS.key),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 0ec630d6f..c378eeb14 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -127,6 +127,9 @@ object TeleSearch {
+             section(1626, "Typing in the chat list with a hidden last seen", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
+             section(1627, "Typing with a hidden last seen", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Typing in the chat list with a hidden last seen"),
+             section(1628, "Last seen typing", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Typing in the chat list with a hidden last seen"),
++            section(1629, "Last activity next to a hidden last seen", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS),
++            section(1630, "Last seen activity", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Last activity next to a hidden last seen"),
++            section(1631, "Observed activity", "profiles and ids", TeleSettingsActivity.MODE_PROFILES_IDS, "Last activity next to a hidden last seen"),
+             section(1618, "Streamer mode", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(1619, "Ghost mode", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+             section(1620, "Hide the messages completely", "privacy", TeleSettingsActivity.MODE_PRIVACY),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 899594b50..956d8044e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1139,6 +1139,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Mute ignored messages" to "No notifications from ignored people.",
+             "Peek at hidden last seen" to "Briefly reveal a hidden last seen; they can tell.",
+             "Typing in the chat list with a hidden last seen" to "Shows typing, recording and sticker picking in the chat list even when their last seen is hidden.",
++            "Last activity next to a hidden last seen" to "Remembers the messages, typing, reads and reactions this device sees, and shows when they last did something.",
+             "Streamer mode" to "Block screen capture and hide notification previews.",
+             "Hide phone numbers in profiles" to "No phone number row in profiles.",
+             "Message bookmarks" to "Bookmark messages and step through them. Stored locally.",
+@@ -1611,6 +1612,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Last seen"),
+                 toggle("Typing in the chat list with a hidden last seen", TeleConfig.TYPING_HIDDEN_LAST_SEEN),
++                toggle("Last activity next to a hidden last seen", TeleConfig.OBSERVED_ACTIVITY),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Media viewer"),
+                 toggle("Show when media was uploaded", TeleConfig.MEDIA_UPLOAD_DATE),
