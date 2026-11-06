@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 6 Nov 2026 18:29:48 +0300
+Subject: [PATCH] feat: animate docked media drag and removal
+
+---
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 44 ++++++++++++++-----
+ 1 file changed, 33 insertions(+), 11 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index ec932c2b4..e12a6ff23 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -46,6 +46,7 @@ class TeleDockedStrip(
+     private var hintOwned = false
+     private var shown: List<DockedMedia.Item> = emptyList()
+     private var shownSpoilers: List<Boolean> = emptyList()
++    private var dragSource: Tile? = null
+ 
+     private val row = LinearLayout(context)
+     private val scroll = HorizontalScrollView(context)
+@@ -79,7 +80,17 @@ class TeleDockedStrip(
+         row.setPadding(0, 0, AndroidUtilities.dp(4f), 0)
+         setOnDragListener { _, event ->
+             when (event.action) {
+-                android.view.DragEvent.ACTION_DRAG_STARTED -> event.localState is DockedMedia.Item
++                android.view.DragEvent.ACTION_DRAG_STARTED -> {
++                    val item = event.localState as? DockedMedia.Item
++                    val index = if (item != null) DockedMedia.tray(key)?.items?.indexOf(item) ?: -1 else -1
++                    dragSource = if (index >= 0) row.getChildAt(index) as? Tile else null
++                    item != null
++                }
++                android.view.DragEvent.ACTION_DRAG_ENDED -> {
++                    dragSource?.animate()?.scaleX(1f)?.scaleY(1f)?.setDuration(100)?.start()
++                    dragSource = null
++                    true
++                }
+                 android.view.DragEvent.ACTION_DROP -> {
+                     val item = event.localState as? DockedMedia.Item
+                     if (item != null) {
+@@ -101,7 +112,6 @@ class TeleDockedStrip(
+                     }
+                     true
+                 }
+-                android.view.DragEvent.ACTION_DRAG_ENDED -> true
+                 else -> true
+             }
+         }
+@@ -270,6 +280,7 @@ class TeleDockedStrip(
+         private val spoilerEffect = if (item.spoiler) SpoilerEffect() else null
+         private var spoilerEffect2: SpoilerEffect2? = null
+         private val spoilerClip = Path()
++        private var removing = false
+         private var downX = 0f
+         private var downY = 0f
+         private var dragReady = false
+@@ -310,12 +321,14 @@ class TeleDockedStrip(
+                         dragStarted = true
+                         removeCallbacks(menuRunnable)
+                         parent?.requestDisallowInterceptTouchEvent(true)
+-                        startDragAndDrop(
++                        if (startDragAndDrop(
+                             android.content.ClipData.newPlainText("", ""),
+                             DragShadowBuilder(this),
+                             item,
+                             0
+-                        )
++                        )) {
++                            animate().scaleX(1.08f).scaleY(1.08f).setDuration(120).start()
++                        }
+                     }
+                     return true
+                 }
+@@ -456,8 +469,8 @@ class TeleDockedStrip(
+                 addView(duration, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 5f, 0f, 0f, 4f))
+             }
+             val badge = Badge(context)
+-            badge.setOnClickListener { DockedMedia.remove(key, item) }
+-            addView(badge, LayoutHelper.createFrame(24, 24f, Gravity.LEFT or Gravity.TOP, TILE - 22f, 4f, 0f, 0f))
++            badge.setOnClickListener { removeWithAnimation() }
++            addView(badge, LayoutHelper.createFrame(BADGE_SIZE, BADGE_SIZE.toFloat(), Gravity.LEFT or Gravity.TOP, TILE - BADGE_SIZE + 2f, 2f, 0f, 0f))
+             if (!item.isFile && document == null) {
+                 // like a tile of the picker: a tap opens the viewer with the editor and the checks
+                 setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
+@@ -465,6 +478,14 @@ class TeleDockedStrip(
+ 
+         }
+ 
++        private fun removeWithAnimation() {
++            if (removing) return
++            removing = true
++            animate().alpha(0f).scaleX(0.8f).scaleY(0.8f).setDuration(150).withEndAction {
++                DockedMedia.remove(key, item)
++            }.start()
++        }
++
+         private fun showMenu() {
+             val document = item.document
+             val options = ItemOptions.makeOptions(fragment, this)
+@@ -477,7 +498,7 @@ class TeleDockedStrip(
+             if (!item.isFile && document == null) {
+                 options.add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
+             }
+-            options.add(R.drawable.msg_delete, "Remove", true) { DockedMedia.remove(key, item) }
++            options.add(R.drawable.msg_delete, "Remove", true) { removeWithAnimation() }
+                 .show()
+         }
+     }
+@@ -486,14 +507,14 @@ class TeleDockedStrip(
+         private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC000000.toInt() }
+         private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+             color = Color.WHITE
+-            strokeWidth = AndroidUtilities.dp(1.5f).toFloat()
++            strokeWidth = AndroidUtilities.dp(1.8f).toFloat()
+             strokeCap = Paint.Cap.ROUND
+         }
+ 
+         override fun onDraw(canvas: Canvas) {
+-            val cx = width - AndroidUtilities.dp(7f).toFloat()
+-            val cy = AndroidUtilities.dp(7f).toFloat()
+-            val r = AndroidUtilities.dp(7f).toFloat()
++            val cx = width - AndroidUtilities.dp(8f).toFloat()
++            val cy = AndroidUtilities.dp(8f).toFloat()
++            val r = AndroidUtilities.dp(8f).toFloat()
+             canvas.drawCircle(cx, cy, r, fill)
+             val d = r * 0.4f
+             canvas.drawLine(cx - d, cy - d, cx + d, cy + d, line)
+@@ -505,6 +526,7 @@ class TeleDockedStrip(
+         const val TAG = "tele_docked"
+         private val IMAGE_DOCUMENT_TYPES = setOf("jpg", "jpeg", "png", "webp", "bmp", "heic", "heif")
+         private const val TILE = 64f
++        private const val BADGE_SIZE = 28
+         private const val DRAG_DELAY = 300L
+         private const val MENU_DELAY = 350L
+         private const val TRAY_HEIGHT = 80f
