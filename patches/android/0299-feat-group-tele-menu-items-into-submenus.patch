@@ -1,0 +1,842 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Sat, 7 Nov 2026 01:07:14 +0300
+Subject: [PATCH] feat: group tele menu items into submenus
+
+---
+ .../ui/ActionBar/ActionBarMenuItem.java       |  23 ++
+ .../ui/ActionBar/ActionBarPopupWindow.java    |  19 +
+ .../java/org/telegram/ui/ChatActivity.java    |  78 +++-
+ .../java/org/telegram/ui/PollItemMenu.java    |   8 +-
+ .../java/org/telegram/ui/TodoItemMenu.java    |   8 +-
+ .../main/java/tele/helpers/TeleMenuLayout.kt  | 358 ++++++++++++++++--
+ .../java/tele/ui/settings/TeleMenuActivity.kt |  19 +-
+ .../src/main/res/drawable/tele_flask.xml      |  13 +
+ .../src/main/res/drawable/tele_for_me.xml     |  34 ++
+ 9 files changed, 499 insertions(+), 61 deletions(-)
+ create mode 100644 TMessagesProj/src/main/res/drawable/tele_flask.xml
+ create mode 100644 TMessagesProj/src/main/res/drawable/tele_for_me.xml
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java
+index 55c3634ea..33c72191e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarMenuItem.java
+@@ -2403,6 +2403,7 @@ public class ActionBarMenuItem extends FrameLayout {
+     public static final int VIEW_TYPE_COLORED_GAP = 1;
+     public static final int VIEW_TYPE_SWIPEBACKITEM = 2;
+     public static final int VIEW_TYPE_TEXT = 3;
++    public static final int VIEW_TYPE_THIN_GAP = 4;
+ 
+     private ArrayList<Item> lazyList;
+     private HashMap<Integer, Item> lazyMap;
+@@ -2422,6 +2423,7 @@ public class ActionBarMenuItem extends FrameLayout {
+         private View view;
+         private View.OnClickListener overrideClickListener;
+         private int visibility = VISIBLE, rightIconVisibility = VISIBLE;
++        private int teleRightIcon;
+ 
+         private Integer textColor, iconColor;
+ 
+@@ -2442,6 +2444,9 @@ public class ActionBarMenuItem extends FrameLayout {
+         private static Item asColoredGap() {
+             return new Item(VIEW_TYPE_COLORED_GAP);
+         }
++        private static Item asThinGap() {
++            return new Item(VIEW_TYPE_THIN_GAP);
++        }
+         private static Item asSwipeBackItem(int icon, Drawable iconDrawable, String text, View viewToSwipeBack) {
+             Item item = new Item(VIEW_TYPE_SWIPEBACKITEM);
+             item.icon = icon;
+@@ -2464,6 +2469,9 @@ public class ActionBarMenuItem extends FrameLayout {
+             } else if (viewType == VIEW_TYPE_SUBITEM) {
+                 ActionBarMenuSubItem cell = new ActionBarMenuSubItem(parent.getContext(), needCheck, false, false, parent.resourcesProvider);
+                 cell.setTextAndIcon(text, icon, iconDrawable);
++                if (teleRightIcon != 0) {
++                    cell.setRightIcon(teleRightIcon);
++                }
+                 cell.setMinimumWidth(AndroidUtilities.dp(196));
+                 cell.setTag(id);
+                 parent.popupLayout.addView(cell);
+@@ -2499,6 +2507,11 @@ public class ActionBarMenuItem extends FrameLayout {
+                 gap.setTag(R.id.fit_width_tag, 1);
+                 parent.popupLayout.addView(gap, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
+                 view = gap;
++            } else if (viewType == VIEW_TYPE_THIN_GAP) {
++                ActionBarPopupWindow.ThinGapView gap = new ActionBarPopupWindow.ThinGapView(parent.getContext(), parent.resourcesProvider);
++                gap.setTag(R.id.fit_width_tag, 1);
++                parent.popupLayout.addView(gap, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
++                view = gap;
+             } else if (viewType == VIEW_TYPE_SWIPEBACKITEM) {
+                 ActionBarMenuSubItem cell = new ActionBarMenuSubItem(parent.getContext(), false, false, false, parent.resourcesProvider);
+                 cell.setTextAndIcon(text, icon, iconDrawable);
+@@ -2600,6 +2613,13 @@ public class ActionBarMenuItem extends FrameLayout {
+             }
+         }
+ 
++        public void tele_setRightIcon(int icon) {
++            teleRightIcon = icon;
++            if (view instanceof ActionBarMenuSubItem) {
++                ((ActionBarMenuSubItem) view).setRightIcon(icon);
++            }
++        }
++
+         public void setColors(int textColor, int iconColor) {
+             if (this.textColor == null || this.iconColor == null || this.textColor != textColor || this.iconColor != iconColor) {
+                 this.textColor = textColor;
+@@ -2630,6 +2650,9 @@ public class ActionBarMenuItem extends FrameLayout {
+     public Item lazilyAddColoredGap() {
+         return putLazyItem(Item.asColoredGap());
+     }
++    public Item lazilyAddThinGap() {
++        return putLazyItem(Item.asThinGap());
++    }
+     public Item lazilyAddText(CharSequence text, int textSizeDp) {
+         return putLazyItem(Item.asText(text, textSizeDp));
+     }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
+index 6a9dc814b..e61b8fc40 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ActionBar/ActionBarPopupWindow.java
+@@ -1107,6 +1107,25 @@ public class ActionBarPopupWindow extends PopupWindow {
+         void onSizeChanged();
+     }
+ 
++    /** A thin line between menu items, unlike the tall gap of {@link GapView}. */
++    public static class ThinGapView extends View {
++
++        private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
++
++        public ThinGapView(Context context, Theme.ResourcesProvider resourcesProvider) {
++            super(context);
++            linePaint.setColor(Theme.getColor(Theme.key_divider, resourcesProvider));
++        }
++
++        @Override
++        protected void onDraw(Canvas canvas) {
++            super.onDraw(canvas);
++            final int lineHeight = Math.max(1, dp(1));
++            final int top = (getHeight() - lineHeight) / 2;
++            canvas.drawRect(0, top, getWidth(), top + lineHeight, linePaint);
++        }
++    }
++
+     public static class GapView extends FrameLayout {
+ 
+         Drawable shadowDrawable;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 761740e2b..8a251eb74 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1749,6 +1749,7 @@ public class ChatActivity extends BaseFragment implements
+     private final static int tele_action_bookmarks = 134;
+     private final static int tele_action_jump_first = 320;
+     private final static int tele_action_chat_background = 355;
++    private final static int tele_action_for_me = 356;
+     private final static int tele_action_silent = 360;
+     private final static int tele_action_pinned_bar = 420;
+ 
+@@ -3977,6 +3978,8 @@ public class ChatActivity extends BaseFragment implements
+                     final ArrayList<MessageObject> tele_list = tele_selectedMessages();
+                     clearSelectionMode();
+                     tele.helpers.TeleShot.open(ChatActivity.this, tele_list, null);
++                } else if (id == tele_action_for_me) {
++                    showTeleForMeMenu();
+                 } else if (id == tele_action_hidden_words) {
+                     presentFragment(new tele.ui.settings.TeleWordsActivity(getCurrentAccount(), getDialogId()));
+                 } else if (id == tele_action_peek_last_seen) {
+@@ -4737,17 +4740,11 @@ public class ChatActivity extends BaseFragment implements
+             if (currentUser != null && currentUser.self && getDialogId() != UserObject.VERIFY) {
+                 headerItem.lazilyAddSubItem(add_shortcut, R.drawable.msg_home, LocaleController.getString(R.string.AddShortcut));
+             }
+-            if (tele.TeleConfig.USERNAME_ALIASES.getValue() && currentChat != null && !isTopic) {
+-                headerItem.lazilyAddSubItem(tele_chat_alias, R.drawable.msg_addcontact, tele.helpers.TeleLowercase.lc("Set an alias for me"));
+-            }
+-            if (currentUser != null && !currentUser.self && currentEncryptedChat == null && !isTopic) {
+-                headerItem.lazilyAddSubItem(tele_user_local_name, R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Set a name for me"));
+-                if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
+-                    headerItem.lazilyAddSubItem(tele_user_alias, R.drawable.msg_addcontact, tele.helpers.TeleLowercase.lc("Set an alias for me"));
+-                }
+-            }
+-            if (tele.TeleConfig.HIDDEN_WORDS.getValue() && currentEncryptedChat == null && !isTopic) {
+-                headerItem.lazilyAddSubItem(tele_action_hidden_words, R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Hidden words"));
++            if (teleForMeAvailable()) {
++                headerItem.lazilyAddThinGap();
++                headerItem.lazilyAddSubItem(tele_action_for_me, R.drawable.tele_for_me, tele.helpers.TeleLowercase.lc("For me"))
++                        .tele_setRightIcon(R.drawable.msg_arrowright);
++                headerItem.lazilyAddThinGap();
+             }
+             if (tele.TeleConfig.LAST_SEEN_RESTORE.getValue() && currentUser != null && !currentUser.self && !currentUser.bot && currentEncryptedChat == null && !isTopic) {
+                 headerItem.lazilyAddSubItem(tele_action_peek_last_seen, R.drawable.msg_contacts, tele.helpers.TeleLowercase.lc("Peek last seen"));
+@@ -4755,9 +4752,6 @@ public class ChatActivity extends BaseFragment implements
+             if (tele.TeleConfig.JUMP_TO_FIRST.getValue() && chatMode == 0 && currentEncryptedChat == null && (isTopic || threadMessageId == 0)) {
+                 headerItem.lazilyAddSubItem(tele_action_jump_first, R.drawable.msg_go_up, getString(R.string.TeleJumpToFirst));
+             }
+-            if (tele.TeleConfig.LOCAL_CHAT_BACKGROUNDS.getValue() && chatMode == 0 && themeDelegate.isThemeChangeAvailable(false) && (isTopic || threadMessageId == 0)) {
+-                headerItem.lazilyAddSubItem(tele_action_chat_background, R.drawable.msg_background, getString(R.string.TeleBackgroundForMe));
+-            }
+             if (tele.TeleConfig.PINNED_BAR_MENU.getValue() && chatMode == 0 && currentEncryptedChat == null && (isTopic || threadMessageId == 0)) {
+                 tele_pinnedBarItem = headerItem.lazilyAddSubItem(tele_action_pinned_bar, R.drawable.msg_unpin, "");
+                 tele_pinnedBarItem.setVisibility(View.GONE);
+@@ -33133,8 +33127,11 @@ public class ChatActivity extends BaseFragment implements
+                         continue;
+                     }
+ 
+-                    if (option == tele.helpers.TeleMenuLayout.RUNTIME_SEPARATOR) {
+-                        popupLayout.addView(new ActionBarPopupWindow.GapView(contentView.getContext(), themeDelegate), LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
++                    if (tele.helpers.TeleMenuLayout.isRuntimeSeparator(option)) {
++                        View separator = tele.helpers.TeleMenuLayout.isRuntimeSeparatorThick(option)
++                                ? new ActionBarPopupWindow.GapView(contentView.getContext(), themeDelegate)
++                                : new ActionBarPopupWindow.ThinGapView(contentView.getContext(), themeDelegate);
++                        popupLayout.addView(separator, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
+                         scrimPopupWindowItems[a] = null;
+                         continue;
+                     }
+@@ -33151,8 +33148,11 @@ public class ChatActivity extends BaseFragment implements
+                         teleSubmenuLayout.addView(new ActionBarPopupWindow.GapView(contentView.getContext(), themeDelegate), LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
+                         for (int c = a + 1; c < teleChildEnd; c++) {
+                             final int childOption = options.get(c);
+-                            if (childOption == tele.helpers.TeleMenuLayout.RUNTIME_SEPARATOR) {
+-                                teleSubmenuLayout.addView(new ActionBarPopupWindow.GapView(contentView.getContext(), themeDelegate), LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
++                            if (tele.helpers.TeleMenuLayout.isRuntimeSeparator(childOption)) {
++                                View separator = tele.helpers.TeleMenuLayout.isRuntimeSeparatorThick(childOption)
++                                        ? new ActionBarPopupWindow.GapView(contentView.getContext(), themeDelegate)
++                                        : new ActionBarPopupWindow.ThinGapView(contentView.getContext(), themeDelegate);
++                                teleSubmenuLayout.addView(separator, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
+                                 continue;
+                             }
+                             ActionBarMenuSubItem childCell = new ActionBarMenuSubItem(getParentActivity(), false, c == teleChildEnd - 1, themeDelegate);
+@@ -33174,7 +33174,7 @@ public class ChatActivity extends BaseFragment implements
+                         final int teleForeground = popupLayout.addViewToSwipeBack(teleSubmenuLayout);
+                         ActionBarMenuSubItem submenuCell = new ActionBarMenuSubItem(getParentActivity(), a == 0, teleChildEnd >= N, themeDelegate);
+                         submenuCell.setMinimumWidth(AndroidUtilities.dp(200));
+-                        submenuCell.setTextAndIcon(items.get(a), 0);
++                        submenuCell.setTextAndIcon(items.get(a), icons.get(a));
+                         submenuCell.setRightIcon(R.drawable.msg_arrowright);
+                         submenuCell.openSwipeBackLayout = () -> popupLayout.getSwipeBack().openForeground(teleForeground);
+                         submenuCell.setOnClickListener(v1 -> submenuCell.openSwipeBack());
+@@ -46559,6 +46559,46 @@ public class ChatActivity extends BaseFragment implements
+         progress.init();
+     }
+ 
++    private boolean teleForMeAvailable() {
++        if (tele.TeleConfig.USERNAME_ALIASES.getValue() && currentChat != null && !isTopic) {
++            return true;
++        }
++        if (currentUser != null && !currentUser.self && currentEncryptedChat == null && !isTopic) {
++            return true;
++        }
++        if (tele.TeleConfig.HIDDEN_WORDS.getValue() && currentEncryptedChat == null && !isTopic) {
++            return true;
++        }
++        return tele.TeleConfig.LOCAL_CHAT_BACKGROUNDS.getValue() && chatMode == 0 && themeDelegate.isThemeChangeAvailable(false) && (isTopic || threadMessageId == 0);
++    }
++
++    private void showTeleForMeMenu() {
++        if (getParentActivity() == null || headerItem == null) {
++            return;
++        }
++        final ItemOptions options = ItemOptions.makeOptions(this, headerItem);
++        if (tele.TeleConfig.USERNAME_ALIASES.getValue() && currentChat != null && !isTopic) {
++            options.add(R.drawable.msg_addcontact, tele.helpers.TeleLowercase.lc("Set an alias for me"), () -> showTeleChatAliasDialog());
++        }
++        if (currentUser != null && !currentUser.self && currentEncryptedChat == null && !isTopic) {
++            final TLRPC.User user = currentUser;
++            options.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Set a name for me"), () -> tele.TeleHooks.showLocalNameDialog(ChatActivity.this, user.id));
++            if (tele.TeleConfig.USERNAME_ALIASES.getValue()) {
++                options.add(R.drawable.msg_addcontact, tele.helpers.TeleLowercase.lc("Set an alias for me"), () -> tele.TeleHooks.showUsernameAliasDialog(ChatActivity.this, user.id));
++            }
++        }
++        if (tele.TeleConfig.HIDDEN_WORDS.getValue() && currentEncryptedChat == null && !isTopic) {
++            options.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Hidden words"), () -> presentFragment(new tele.ui.settings.TeleWordsActivity(getCurrentAccount(), getDialogId())));
++        }
++        if (tele.TeleConfig.LOCAL_CHAT_BACKGROUNDS.getValue() && chatMode == 0 && themeDelegate.isThemeChangeAvailable(false) && (isTopic || threadMessageId == 0)) {
++            options.add(R.drawable.msg_background, getString(R.string.TeleBackgroundForMe), () -> tele.helpers.LocalBackgrounds.showMenu(ChatActivity.this, dialog_id));
++        }
++        if (options.getItemsCount() == 0) {
++            return;
++        }
++        options.show();
++    }
++
+     private void showTeleChatAliasDialog() {
+         if (getParentActivity() == null || currentChat == null) {
+             return;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PollItemMenu.java b/TMessagesProj/src/main/java/org/telegram/ui/PollItemMenu.java
+index 7dc73ec95..fdfd85a13 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PollItemMenu.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PollItemMenu.java
+@@ -714,8 +714,12 @@ public class PollItemMenu extends Dialog {
+ 
+         for (int i = 0, N = icons.size(); i < N; ++i) {
+             int option = options.get(i);
+-            if (option == tele.helpers.TeleMenuLayout.RUNTIME_SEPARATOR) {
+-                messageOptions.addGap();
++            if (tele.helpers.TeleMenuLayout.isRuntimeSeparator(option)) {
++                if (tele.helpers.TeleMenuLayout.isRuntimeSeparatorThick(option)) {
++                    messageOptions.addGap();
++                } else {
++                    messageOptions.addView(new ActionBarPopupWindow.ThinGapView(getContext(), resourcesProvider), LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
++                }
+             } else if (option == tele.helpers.TeleMenuLayout.RUNTIME_SUBMENU) {
+                 messageOptions.addText(items.get(i), 13);
+             } else {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/TodoItemMenu.java b/TMessagesProj/src/main/java/org/telegram/ui/TodoItemMenu.java
+index 21cabdaa7..0264dc63b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/TodoItemMenu.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/TodoItemMenu.java
+@@ -673,8 +673,12 @@ public class TodoItemMenu extends Dialog {
+ 
+         for (int i = 0, N = icons.size(); i < N; ++i) {
+             int option = options.get(i);
+-            if (option == tele.helpers.TeleMenuLayout.RUNTIME_SEPARATOR) {
+-                messageOptions.addGap();
++            if (tele.helpers.TeleMenuLayout.isRuntimeSeparator(option)) {
++                if (tele.helpers.TeleMenuLayout.isRuntimeSeparatorThick(option)) {
++                    messageOptions.addGap();
++                } else {
++                    messageOptions.addView(new ActionBarPopupWindow.ThinGapView(getContext(), resourcesProvider), LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 8));
++                }
+             } else if (option == tele.helpers.TeleMenuLayout.RUNTIME_SUBMENU) {
+                 messageOptions.addText(items.get(i), 13);
+             } else {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleMenuLayout.kt b/TMessagesProj/src/main/java/tele/helpers/TeleMenuLayout.kt
+index 316440cd2..53e8fb889 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleMenuLayout.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleMenuLayout.kt
+@@ -1,5 +1,6 @@
+ package tele.helpers
+ 
++import org.telegram.messenger.R
+ import tele.Item
+ import tele.db.TeleDatabaseHelper
+ 
+@@ -42,12 +43,32 @@ sealed class TeleMenuEntry {
+  * `[Title#icon:item1,item2]`.
+  */
+ object TeleMenuLayout {
++    /** The runtime marker of a thin separator. */
+     const val RUNTIME_SEPARATOR = Int.MIN_VALUE
++    /** The runtime marker of a submenu title row. */
+     const val RUNTIME_SUBMENU = Int.MIN_VALUE + 1
++    /** The runtime marker of a thick separator. */
++    const val RUNTIME_SEPARATOR_THICK = Int.MIN_VALUE + 2
++
++    @JvmStatic
++    fun isRuntimeSeparator(option: Int): Boolean =
++        option == RUNTIME_SEPARATOR || option == RUNTIME_SEPARATOR_THICK
++
++    @JvmStatic
++    fun isRuntimeSeparatorThick(option: Int): Boolean =
++        option == RUNTIME_SEPARATOR_THICK
+ 
+     /** The submenus of the last applied layout: the number of rows after each top-level title row. */
+     private val submenuChildCounts = ArrayList<Int>()
+ 
++    /** The tele tools that are grouped into submenus when no custom layout is stored. */
++    private val DEFAULT_GROUPS: Map<TeleMenuKind, List<Pair<String, List<String>>>> = mapOf(
++        TeleMenuKind.MESSAGE to listOf(
++            "Tools" to listOf("view_as_tl"),
++            "tele" to listOf("bookmark", "rename_bookmark", "edit_history", "shot", "mark_viewed")
++        )
++    )
++
+     @JvmStatic
+     fun hasRuntimeSubmenu(options: List<Int>): Boolean = options.contains(RUNTIME_SUBMENU)
+ 
+@@ -176,7 +197,7 @@ object TeleMenuLayout {
+         } else {
+             parse(stored, kind)
+         } ?: return emptyList()
+-        return normalize(parsed.entries, kind, parsed.hidden)
++        return ensureDefaultGroups(normalize(parsed.entries, kind, parsed.hidden), kind)
+     }
+ 
+     /** Adds missing registry items at the root while preserving hidden items in their submenu. */
+@@ -203,19 +224,234 @@ object TeleMenuLayout {
+         }
+         return result
+     }
++
++    /** The default submenus of a menu: Tools and tele for the message menu. */
++    fun isDefaultGroup(kind: TeleMenuKind, title: String): Boolean =
++        DEFAULT_GROUPS[kind]?.any { it.first == title } == true
++
++    /**
++     * Keeps the default submenus in the layout. Without this, a layout saved before the
++     * submenus existed would silently flatten them and the editor would never show them.
++     */
++    fun ensureDefaultGroups(entries: List<TeleMenuEntry>, kind: TeleMenuKind): List<TeleMenuEntry> {
++        val groups = DEFAULT_GROUPS[kind] ?: return entries
++        val result = ArrayList(entries)
++        for ((title, keys) in groups) {
++            if (title == "Tools") continue
++            fillGroup(result, kind, title, keys)
++        }
++        val tools = groups.firstOrNull { it.first == "Tools" }
++        if (tools != null) {
++            ensureToolsLast(result, kind, tools.second)
++        }
++        return result
++    }
++
++    private fun fillGroup(entries: MutableList<TeleMenuEntry>, kind: TeleMenuKind, title: String, keys: List<String>) {
++        val existing = entries.indexOfFirst { it is TeleMenuEntry.Submenu && it.title == title }
++        if (existing >= 0) {
++            val submenu = entries[existing] as TeleMenuEntry.Submenu
++            val present = HashSet<String>()
++            collectKeys(submenu.entries, present)
++            for (key in keys) {
++                if (key in present) continue
++                val item = item(kind, key) ?: continue
++                if (removeTopLevelItem(entries, key)) submenu.entries.add(item)
++            }
++            return
++        }
++        val children = ArrayList<TeleMenuEntry>()
++        for (key in keys) {
++            val item = item(kind, key) ?: continue
++            if (removeTopLevelItem(entries, key)) children.add(item)
++        }
++        if (children.isEmpty()) return
++        val at = afterCopyLink(entries)
++        entries.add(at, TeleMenuEntry.Submenu(title, children))
++        if (at > 0 && entries[at - 1] !is TeleMenuEntry.Separator) {
++            entries.add(at, TeleMenuEntry.Separator(TeleMenuEntry.Separator.Style.THIN))
++        }
++        val index = entries.indexOfFirst { it is TeleMenuEntry.Submenu && it.title == title }
++        if (index >= 0 && index + 1 < entries.size && entries[index + 1] !is TeleMenuEntry.Separator) {
++            entries.add(index + 1, TeleMenuEntry.Separator(TeleMenuEntry.Separator.Style.THIN))
++        }
++    }
++
++    private fun ensureToolsLast(entries: MutableList<TeleMenuEntry>, kind: TeleMenuKind, keys: List<String>) {
++        var index = entries.indexOfFirst { it is TeleMenuEntry.Submenu && it.title == "Tools" }
++        if (index >= 0) {
++            val submenu = entries[index] as TeleMenuEntry.Submenu
++            val present = HashSet<String>()
++            collectKeys(submenu.entries, present)
++            for (key in keys) {
++                if (key in present) continue
++                val item = item(kind, key) ?: continue
++                if (removeTopLevelItem(entries, key)) submenu.entries.add(item)
++            }
++            index = entries.indexOfFirst { it is TeleMenuEntry.Submenu && it.title == "Tools" }
++            val separators = ArrayList<TeleMenuEntry>()
++            var scan = index - 1
++            while (scan >= 0 && entries[scan] is TeleMenuEntry.Separator) {
++                separators.add(0, entries.removeAt(scan))
++                scan--
++            }
++            val moved = entries.removeAt(entries.indexOfFirst { it is TeleMenuEntry.Submenu && it.title == "Tools" })
++            if (entries.isNotEmpty()) entries.addAll(separators)
++            entries.add(moved)
++            return
++        }
++        val children = ArrayList<TeleMenuEntry>()
++        for (key in keys) {
++            val item = item(kind, key) ?: continue
++            if (removeTopLevelItem(entries, key)) children.add(item)
++        }
++        if (children.isEmpty()) return
++        if (entries.isNotEmpty() && entries.last() !is TeleMenuEntry.Separator) {
++            entries.add(TeleMenuEntry.Separator(TeleMenuEntry.Separator.Style.THIN))
++        }
++        entries.add(TeleMenuEntry.Submenu("Tools", children))
++    }
++
++    private fun collectKeys(entries: List<TeleMenuEntry>, out: MutableSet<String>) {
++        for (entry in entries) {
++            when (entry) {
++                is TeleMenuEntry.Item -> out.add(entry.key)
++                is TeleMenuEntry.Separator -> Unit
++                is TeleMenuEntry.Submenu -> collectKeys(entry.entries, out)
++            }
++        }
++    }
++
++    private fun removeTopLevelItem(entries: MutableList<TeleMenuEntry>, key: String): Boolean {
++        val index = entries.indexOfFirst { it is TeleMenuEntry.Item && it.key == key }
++        if (index < 0) return false
++        entries.removeAt(index)
++        return true
++    }
++
++    private fun afterCopyLink(entries: List<TeleMenuEntry>): Int {
++        val index = entries.indexOfFirst { it is TeleMenuEntry.Item && it.key == "copy_link" }
++        return if (index < 0) entries.size else index + 1
++    }
++
+     /** The items that are hidden in the layout. */
+     fun hiddenKeys(kind: TeleMenuKind, account: Int): Set<String> {
+         val stored = load(kind, account) ?: return emptySet()
+-        val hidden = HashSet<String>()
+-        for (part in stored.split(',')) {
+-            val token = part.trim()
+-            if (token.startsWith("-")) hidden.add(token.substring(1).trim())
+-        }
+-        return hidden
++        return parse(stored, kind)?.hidden ?: emptySet()
+     }
+ 
+     // the runtime
+ 
++    /**
++     * Groups the default tele tools into submenus while keeping every other item in its place.
++     * This is only used until the user saves a layout in the menu editor.
++     */
++    private fun applyDefaultGroups(kind: TeleMenuKind, items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
++        val groups = DEFAULT_GROUPS[kind] ?: return
++        val present = HashMap<String, Int>()
++        for (i in options.indices) {
++            val key = keyOf(kind, options[i]) ?: continue
++            present[key] = i
++        }
++        val groupOf = HashMap<String, Pair<String, List<String>>>()
++        for (group in groups) {
++            for (key in group.second) groupOf[key] = group
++        }
++        if (groups.none { group -> group.second.any { present.containsKey(it) } }) return
++
++        val resultItems = ArrayList<CharSequence>(items.size)
++        val resultIcons = ArrayList<Int>(items.size)
++        val resultOptions = ArrayList<Int>(items.size)
++        val counts = ArrayList<Int>()
++
++        fun add(index: Int) {
++            resultItems.add(items[index])
++            resultIcons.add(icons[index])
++            resultOptions.add(options[index])
++        }
++
++        fun addSeparator(at: Int): Boolean {
++            if (at <= 0 || at > resultOptions.size) return false
++            if (isRuntimeSeparator(resultOptions[at - 1])) return false
++            resultItems.add(at, "")
++            resultIcons.add(at, 0)
++            resultOptions.add(at, RUNTIME_SEPARATOR)
++            return true
++        }
++
++        fun addGroup(group: Pair<String, List<String>>, at: Int): Int {
++            val children = group.second.filter { present.containsKey(it) }
++            if (children.isEmpty()) return 0
++            resultItems.add(at, group.first)
++            resultIcons.add(at, submenuIcon(group.first))
++            resultOptions.add(at, RUNTIME_SUBMENU)
++            var position = at + 1
++            for (child in children) {
++                val index = present[child] ?: continue
++                resultItems.add(position, items[index])
++                resultIcons.add(position, icons[index])
++                resultOptions.add(position, options[index])
++                position++
++            }
++            counts.add(children.size)
++            return children.size
++        }
++
++        val tele = groups.firstOrNull { it.first == "tele" }
++        val tools = groups.firstOrNull { it.first == "Tools" }
++        for (i in options.indices) {
++            val key = keyOf(kind, options[i])
++            if (key != null && groupOf.containsKey(key)) continue
++            add(i)
++        }
++        // tele goes after Copy Link, before the stock Select item; Tools stays at the very end
++        var teleAt = resultOptions.size
++        val copyLink = present["copy_link"]
++        if (copyLink != null && tele != null) {
++            var ungrouped = 0
++            for (i in options.indices) {
++                if (i == copyLink) break
++                val itemKey = keyOf(kind, options[i])
++                if (itemKey == null || !groupOf.containsKey(itemKey)) ungrouped++
++            }
++            teleAt = minOf(ungrouped + 1, resultOptions.size)
++        }
++        if (tele != null && tele.second.any { present.containsKey(it) }) {
++            val withBefore = addSeparator(teleAt)
++            val at = teleAt + if (withBefore) 1 else 0
++            val count = addGroup(tele, at)
++            if (count > 0) addSeparator(at + count + 1)
++        }
++        if (tools != null && tools.second.any { present.containsKey(it) }) {
++            val at = resultOptions.size
++            val withBefore = addSeparator(at)
++            addGroup(tools, at + if (withBefore) 1 else 0)
++        }
++
++        items.clear(); items.addAll(resultItems)
++        icons.clear(); icons.addAll(resultIcons)
++        options.clear(); options.addAll(resultOptions)
++        submenuChildCounts.clear(); submenuChildCounts.addAll(counts)
++    }
++
++    private fun submenuIcon(title: String): Int = when (title) {
++        "Tools" -> R.drawable.msg_settings
++        "tele" -> R.drawable.tele_flask
++        else -> 0
++    }
++
++    private fun separatorRank(style: TeleMenuEntry.Separator.Style): Int = when (style) {
++        TeleMenuEntry.Separator.Style.AUTO -> 0
++        TeleMenuEntry.Separator.Style.THIN -> 1
++        TeleMenuEntry.Separator.Style.THICK -> 2
++    }
++
++    private fun thicker(current: TeleMenuEntry.Separator.Style?, next: TeleMenuEntry.Separator.Style): TeleMenuEntry.Separator.Style =
++        if (current == null || separatorRank(next) > separatorRank(current)) next else current
++
++    private fun separatorOption(style: TeleMenuEntry.Separator.Style): Int =
++        if (style == TeleMenuEntry.Separator.Style.THICK) RUNTIME_SEPARATOR_THICK else RUNTIME_SEPARATOR
++
+     /**
+      * Applies the layout to the items of a menu: the order of the layout wins,
+      * the items that are not in the layout keep their place at the end.
+@@ -223,7 +459,10 @@ object TeleMenuLayout {
+     fun apply(kind: TeleMenuKind, account: Int, items: ArrayList<CharSequence>, icons: ArrayList<Int>, options: ArrayList<Int>) {
+         submenuChildCounts.clear()
+         val stored = load(kind, account)
+-        if (stored.isNullOrEmpty()) return
++        if (stored.isNullOrEmpty()) {
++            applyDefaultGroups(kind, items, icons, options)
++            return
++        }
+         val layout = resolve(kind, account)
+         val hidden = hiddenKeys(kind, account)
+         val disabledSubmenuKeys = HashSet<String>()
+@@ -241,46 +480,113 @@ object TeleMenuLayout {
+         val sortedIcons = ArrayList<Int>(items.size)
+         val sortedOptions = ArrayList<Int>(items.size)
+         val used = HashSet<Int>()
+-        fun addIndex(index: Int) {
+-            if (index !in options.indices || !used.add(index)) return
+-            val key = keyOf(kind, options[index]) ?: return
+-            if (hidden.contains(key) || key in disabledSubmenuKeys) return
++        fun addIndex(index: Int, requireKey: Boolean): Boolean {
++            if (index !in options.indices) return false
++            val key = keyOf(kind, options[index])
++            if (requireKey && key == null) return false
++            if (!used.add(index)) return false
++            if (key != null && (hidden.contains(key) || key in disabledSubmenuKeys)) return false
+             sortedItems.add(items[index])
+             sortedIcons.add(icons[index])
+             sortedOptions.add(options[index])
++            return true
+         }
+-        fun addKey(key: String) {
++        fun addKey(key: String): Boolean {
+             for (index in options.indices) {
+                 if (keyOf(kind, options[index]) == key) {
+-                    addIndex(index)
+-                    return
++                    return addIndex(index, true)
+                 }
+             }
++            return false
+         }
+         fun addEntries(entries: List<TeleMenuEntry>, depth: Int) {
++            var pendingSeparator: TeleMenuEntry.Separator.Style? = null
+             for (entry in entries) {
+                 when (entry) {
+-                    is TeleMenuEntry.Item -> addKey(entry.key)
+-                    is TeleMenuEntry.Separator -> if (entry.enabled && sortedItems.isNotEmpty() && sortedOptions.lastOrNull() != RUNTIME_SEPARATOR) {
+-                        sortedItems.add("")
+-                        sortedIcons.add(0)
+-                        sortedOptions.add(RUNTIME_SEPARATOR)
++                    is TeleMenuEntry.Item -> {
++                        val before = sortedItems.size
++                        if (addKey(entry.key)) {
++                            val style = pendingSeparator
++                            if (style != null && before > 0 && !isRuntimeSeparator(sortedOptions[before - 1])) {
++                                sortedItems.add(before, "")
++                                sortedIcons.add(before, 0)
++                                sortedOptions.add(before, separatorOption(style))
++                            }
++                            pendingSeparator = null
++                        }
++                    }
++                    is TeleMenuEntry.Separator -> if (entry.enabled) {
++                        pendingSeparator = thicker(pendingSeparator, entry.style)
+                     }
+                     is TeleMenuEntry.Submenu -> if (entry.enabled) {
+                         val before = sortedItems.size
+                         addEntries(entry.entries, depth + 1)
+                         if (sortedItems.size > before) {
+-                            sortedItems.add(before, entry.title)
+-                            sortedIcons.add(before, 0)
+-                            sortedOptions.add(before, RUNTIME_SUBMENU)
+-                            if (depth == 0) submenuChildCounts.add(sortedItems.size - before)
++                            var at = before
++                            val style = pendingSeparator
++                            if (style != null && before > 0 && !isRuntimeSeparator(sortedOptions[before - 1])) {
++                                sortedItems.add(at, "")
++                                sortedIcons.add(at, 0)
++                                sortedOptions.add(at, separatorOption(style))
++                                at++
++                            }
++                            sortedItems.add(at, entry.title)
++                            sortedIcons.add(at, submenuIcon(entry.title))
++                            sortedOptions.add(at, RUNTIME_SUBMENU)
++                            if (depth == 0) submenuChildCounts.add(sortedItems.size - at - 1)
++                            pendingSeparator = null
+                         }
+                     }
+                 }
+             }
+         }
+-        addEntries(layout, 0)
+-        for (index in options.indices) addIndex(index)
++
++        // Keep the default Tools submenu after the items that are not in the layout.
++        var layoutEntries: List<TeleMenuEntry> = layout
++        var tailTools: TeleMenuEntry.Submenu? = null
++        var tailToolsSeparators: List<TeleMenuEntry.Separator> = emptyList()
++        if (kind == TeleMenuKind.MESSAGE) {
++            var last = layout.lastIndex
++            while (last >= 0 && layout[last] is TeleMenuEntry.Separator) last--
++            val lastEntry = layout.getOrNull(last)
++            if (lastEntry is TeleMenuEntry.Submenu && lastEntry.title == "Tools" && lastEntry.enabled) {
++                tailTools = lastEntry
++                val separators = ArrayList<TeleMenuEntry.Separator>()
++                var scan = last - 1
++                while (scan >= 0 && layout[scan] is TeleMenuEntry.Separator) {
++                    separators.add(0, layout[scan] as TeleMenuEntry.Separator)
++                    scan--
++                }
++                tailToolsSeparators = separators
++                layoutEntries = layout.subList(0, scan + 1)
++            }
++        }
++        val tailKeys = HashSet<String>()
++        if (tailTools != null) {
++            collectKeys(tailTools.entries, tailKeys)
++        }
++
++        addEntries(layoutEntries, 0)
++        for (index in options.indices) {
++            val key = keyOf(kind, options[index])
++            if (key != null && tailKeys.contains(key)) continue
++            addIndex(index, false)
++        }
++        if (tailTools != null) {
++            if (sortedItems.isNotEmpty()) {
++                var style: TeleMenuEntry.Separator.Style? = null
++                for (separator in tailToolsSeparators) {
++                    if (separator.enabled) style = thicker(style, separator.style)
++                }
++                val finalStyle = style
++                if (finalStyle != null && !isRuntimeSeparator(sortedOptions.last())) {
++                    sortedItems.add("")
++                    sortedIcons.add(0)
++                    sortedOptions.add(separatorOption(finalStyle))
++                }
++            }
++            addEntries(listOf(tailTools), 0)
++        }
+         items.clear(); items.addAll(sortedItems)
+         icons.clear(); icons.addAll(sortedIcons)
+         options.clear(); options.addAll(sortedOptions)
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
+index 62b4a6612..9d5cde962 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleMenuActivity.kt
+@@ -254,15 +254,8 @@ class TeleMenuActivity(private val kind: TeleMenuKind = TeleMenuKind.MESSAGE) :
+         entries = mutableListOf()
+         hidden.clear()
+         path.clear()
+-        val stored = TeleMenuLayout.load(kind, account)
+-        val parsed = if (stored.isNullOrEmpty()) {
+-            TeleMenuLayout.parse(TeleMenuLayout.preset(kind, "default"), kind)
+-        } else {
+-            TeleMenuLayout.parse(stored, kind)
+-        }
+-        if (parsed == null) return
+-        entries.addAll(parsed.entries)
+-        hidden.addAll(parsed.hidden)
++        entries.addAll(TeleMenuLayout.resolve(kind, account))
++        hidden.addAll(TeleMenuLayout.hiddenKeys(kind, account))
+         savedLayout = TeleMenuLayout.serialize(entries, hidden)
+     }
+ 
+@@ -351,7 +344,7 @@ class TeleMenuActivity(private val kind: TeleMenuKind = TeleMenuKind.MESSAGE) :
+             showError(lc("This preset does not fit the menu."))
+             return
+         }
+-        entries = parsed.entries.toMutableList()
++        entries = TeleMenuLayout.ensureDefaultGroups(parsed.entries, kind).toMutableList()
+         hidden.clear()
+         hidden.addAll(parsed.hidden)
+         path.clear()
+@@ -368,8 +361,10 @@ class TeleMenuActivity(private val kind: TeleMenuKind = TeleMenuKind.MESSAGE) :
+                 2 -> TeleMenuEntry.Separator.Style.THICK
+                 else -> TeleMenuEntry.Separator.Style.AUTO
+             }
+-            currentLevel().add(0, TeleMenuEntry.Separator(style))
+-            listView?.layoutManager?.scrollToPosition(1)
++            val level = currentLevel()
++            val at = if (level.isEmpty()) 0 else 1
++            level.add(at, TeleMenuEntry.Separator(style))
++            listView?.layoutManager?.scrollToPosition(at + 1)
+             adapter?.notifyDataSetChanged()
+         }
+         showDialog(builder.create())
+diff --git a/TMessagesProj/src/main/res/drawable/tele_flask.xml b/TMessagesProj/src/main/res/drawable/tele_flask.xml
+new file mode 100644
+index 000000000..c80b9ff95
+--- /dev/null
++++ b/TMessagesProj/src/main/res/drawable/tele_flask.xml
+@@ -0,0 +1,13 @@
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:fillColor="@android:color/transparent"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:strokeWidth="1.6"
++        android:pathData="M9,3 L15,3 M10,3 L10,9 L5.4,18 C4.7,19.3 5.7,21 7.2,21 L16.8,21 C18.3,21 19.3,19.3 18.6,18 L14,9 L14,3" />
++</vector>
+diff --git a/TMessagesProj/src/main/res/drawable/tele_for_me.xml b/TMessagesProj/src/main/res/drawable/tele_for_me.xml
+new file mode 100644
+index 000000000..5a7793e29
+--- /dev/null
++++ b/TMessagesProj/src/main/res/drawable/tele_for_me.xml
+@@ -0,0 +1,34 @@
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:fillColor="@android:color/transparent"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:strokeWidth="1.6"
++        android:pathData="M5,5 L19,5 C20.1,5 21,5.9 21,7 L21,17 C21,18.1 20.1,19 19,19 L5,19 C3.9,19 3,18.1 3,17 L3,7 C3,5.9 3.9,5 5,5 Z" />
++    <path
++        android:fillColor="@android:color/transparent"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:strokeWidth="1.6"
++        android:pathData="M9,10 m-2.1,0 a2.1,2.1 0 1,0 4.2,0 a2.1,2.1 0 1,0 -4.2,0" />
++    <path
++        android:fillColor="@android:color/transparent"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:strokeWidth="1.6"
++        android:pathData="M6,16 C6,14.2 7.2,13 9,13 C10.8,13 12,14.2 12,16" />
++    <path
++        android:fillColor="@android:color/transparent"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:strokeWidth="1.6"
++        android:pathData="M14,8.8 L19,8.8 M14,11.4 L19,11.4 M14,14 L18.5,14" />
++</vector>
