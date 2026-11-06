@@ -36,6 +36,7 @@ tele_android/
       architecture.md    this file
       conventions.md     how fork code, commits and patches should look
       link-cleaner.md    the tracking parameters the link cleaner removes
+      title-template.md  the chat list title variables and modifiers
       server.md          the tele server protocol and how to run one
       scripting.md       the android scripting api and example scripts
       releases.md        every published release and what it brought

@@ -39,6 +39,7 @@ everything tele adds lives in settings → tele, grouped into pages.
 
 - [all features](features.md), grouped by settings page.
 - [docs/link-cleaner.md](docs/link-cleaner.md): the tracking parameters the link cleaner removes.
+- [docs/title-template.md](docs/title-template.md): the chat list title variables and modifiers.
 - [docs/scripting.md](docs/scripting.md): the android scripting api and [example scripts](docs/scripts/index.json).
 - [docs/server.md](docs/server.md): the tele server protocol and how to run one.
 - [docs/releases.md](docs/releases.md): every published release and what it brought.
