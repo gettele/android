@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 6 Nov 2026 10:36:21 +0300
+Subject: [PATCH] fix: polish docked media tiles
+
+---
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 155 +++++++++++++-----
+ 1 file changed, 111 insertions(+), 44 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index 4fe70bbc5..5e0984e6f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -5,6 +5,7 @@ import android.graphics.Canvas
+ import android.graphics.Color
+ import android.graphics.Paint
+ import android.view.Gravity
++import android.view.MotionEvent
+ import android.view.View
+ import android.view.ViewGroup
+ import android.widget.FrameLayout
+@@ -23,9 +24,11 @@ import org.telegram.ui.Components.BackupImageView
+ import org.telegram.ui.Components.ChatActivityEnterTopView
+ import org.telegram.ui.Components.ChatActivityEnterView
+ import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Components.spoilers.SpoilerEffect
+ import org.telegram.ui.Components.LayoutHelper
+ import tele.helpers.DockedMedia
+ import tele.helpers.TeleLowercase
++import kotlin.math.abs
+ 
+ class TeleDockedStrip(
+     context: Context,
+@@ -203,7 +206,8 @@ class TeleDockedStrip(
+         shownSpoilers = spoilers
+         row.removeAllViews()
+         items.forEachIndexed { index, item ->
+-            row.addView(Tile(context, item, index), LinearLayout.LayoutParams(AndroidUtilities.dp(TILE + 8f), ViewGroup.LayoutParams.MATCH_PARENT))
++            val width = if (item.isFile) FILE_TILE else TILE
++            row.addView(Tile(context, item, index), LinearLayout.LayoutParams(AndroidUtilities.dp(width + 8f), ViewGroup.LayoutParams.MATCH_PARENT))
+         }
+         row.addView(AddTile(context), LinearLayout.LayoutParams(AndroidUtilities.dp(TILE + 8f), ViewGroup.LayoutParams.MATCH_PARENT))
+     }
+@@ -224,29 +228,65 @@ class TeleDockedStrip(
+     }
+ 
+     private inner class Tile(context: Context, private val item: DockedMedia.Item, private val index: Int) : FrameLayout(context) {
++        private val spoilerEffect = if (item.spoiler) SpoilerEffect() else null
++        private var downX = 0f
++        private var downY = 0f
++        private var longPressed = false
++        private var dragging = false
++
++        override fun dispatchDraw(canvas: Canvas) {
++            super.dispatchDraw(canvas)
++            val effect = spoilerEffect ?: return
++            effect.setColor(0x66FFFFFF)
++            effect.setBounds(0, 0, width, height)
++            effect.draw(canvas)
++        }
++
++        override fun onTouchEvent(event: MotionEvent): Boolean {
++            when (event.actionMasked) {
++                MotionEvent.ACTION_DOWN -> {
++                    downX = event.rawX
++                    downY = event.rawY
++                    longPressed = false
++                    dragging = false
++                }
++                MotionEvent.ACTION_MOVE -> {
++                    val dx = event.rawX - downX
++                    val dy = event.rawY - downY
++                    if (longPressed && !dragging && abs(dx) > AndroidUtilities.dp(8f) && abs(dx) > abs(dy)) {
++                        dragging = true
++                        cancelLongPress()
++                    }
++                    if (dragging && abs(dx) > AndroidUtilities.dp(TILE * 0.55f)) {
++                        DockedMedia.move(key, item, if (dx > 0) 1 else -1)
++                        downX = event.rawX
++                    }
++                }
++                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
++                    if (longPressed) {
++                        val wasDragging = dragging
++                        longPressed = false
++                        dragging = false
++                        if (!wasDragging && event.actionMasked == MotionEvent.ACTION_UP) showMenu()
++                        return true
++                    }
++                }
++            }
++            return super.onTouchEvent(event)
++        }
++
+         init {
++            spoilerEffect?.callback = this
+             val image = BackupImageView(context)
+             image.setRoundRadius(AndroidUtilities.dp(8f))
+-            val filter = if (item.spoiler) "5_5_b" else "${TILE.toInt()}_${TILE.toInt()}"
++            val filter = if (item.spoiler) "32_32_b" else "${TILE.toInt()}_${TILE.toInt()}"
+             val placeholder = Theme.chat_attachEmptyDrawable
+             val cover = item.coverPath
+             val thumb = item.thumbPath
+             val path = item.path
+             val document = item.document
+             if (item.isFile) {
+-                image.setAspectFit(true)
+-                val color = Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider)
+-                image.setImageResource(R.drawable.msg_filehq, color)
+-                val name = TextView(context)
+-                name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 10f)
+-                name.setTextColor(Color.WHITE)
+-                name.ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+-                name.maxLines = 2
+-                name.setBackgroundColor(0x99000000.toInt())
+-                name.setPadding(AndroidUtilities.dp(2f), 0, AndroidUtilities.dp(2f), 0)
+-                name.setShadowLayer(AndroidUtilities.dp(1f).toFloat(), 0f, 0f, Color.BLACK)
+-                name.text = item.fileName ?: "file"
+-                addView(name, LayoutHelper.createFrame((TILE - 8f).toInt(), LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 5f, 0f, 0f, 8f))
++                addFilePreview(context)
+             } else if (document != null) {
+                 image.setAspectFit(true)
+                 val color = Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider)
+@@ -272,7 +312,9 @@ class TeleDockedStrip(
+                 image.setOrientation(item.orientation, item.invert, true)
+                 image.setImage("thumb://" + item.imageId + ":" + path, filter, placeholder)
+             }
+-            addView(image, LayoutHelper.createFrame(TILE.toInt(), TILE, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
++            if (!item.isFile) {
++                addView(image, LayoutHelper.createFrame(TILE.toInt(), TILE, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
++            }
+             if (item.isVideo) {
+                 val duration = TextView(context)
+                 duration.setTextColor(Color.WHITE)
+@@ -283,37 +325,61 @@ class TeleDockedStrip(
+             }
+             val badge = Badge(context)
+             badge.setOnClickListener { DockedMedia.remove(key, item) }
+-            addView(badge, LayoutHelper.createFrame(24, 24f, Gravity.LEFT or Gravity.TOP, TILE - 22f, 4f, 0f, 0f))
+-            if (document == null) {
++            addView(badge, LayoutHelper.createFrame(24, 24f, Gravity.LEFT or Gravity.TOP, (if (item.isFile) FILE_TILE else TILE) - 22f, 4f, 0f, 0f))
++            if (!item.isFile && document == null) {
+                 // like a tile of the picker: a tap opens the viewer with the editor and the checks
+                 setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
+-                setOnLongClickListener {
+-                    val options = ItemOptions.makeOptions(fragment, this)
+-                    if (index > 0) {
+-                        options.add(R.drawable.msg_arrow_back, TeleLowercase.lc("Move left")) { DockedMedia.move(key, item, -1) }
+-                    }
+-                    if (index < (DockedMedia.tray(key)?.items?.size ?: 0) - 1) {
+-                        options.add(R.drawable.msg_arrow_forward, TeleLowercase.lc("Move right")) { DockedMedia.move(key, item, 1) }
+-                    }
+-                    options.add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
+-                        .add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
+-                        .show()
+-                    true
+-                }
+-            } else {
+-                setOnLongClickListener {
+-                    val options = ItemOptions.makeOptions(fragment, this)
+-                    if (index > 0) {
+-                        options.add(R.drawable.msg_arrow_back, TeleLowercase.lc("Move left")) { DockedMedia.move(key, item, -1) }
+-                    }
+-                    if (index < (DockedMedia.tray(key)?.items?.size ?: 0) - 1) {
+-                        options.add(R.drawable.msg_arrow_forward, TeleLowercase.lc("Move right")) { DockedMedia.move(key, item, 1) }
+-                    }
+-                    options.add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
+-                        .show()
+-                    true
+-                }
+             }
++            setOnLongClickListener {
++                longPressed = true
++                true
++            }
++        }
++
++        private fun addFilePreview(context: Context) {
++            val name = item.fileName ?: "file"
++            val type = name.substringAfterLast('.', "").lowercase()
++            val row = LinearLayout(context)
++            row.orientation = LinearLayout.HORIZONTAL
++            row.gravity = Gravity.CENTER_VERTICAL
++            row.setPadding(AndroidUtilities.dp(4f), 0, AndroidUtilities.dp(6f), 0)
++            val icon = android.widget.ImageView(context)
++            icon.setImageResource(AndroidUtilities.getThumbForNameOrMime(name, type, false))
++            row.addView(icon, LinearLayout.LayoutParams(AndroidUtilities.dp(44f), AndroidUtilities.dp(44f)))
++            val text = LinearLayout(context)
++            text.orientation = LinearLayout.VERTICAL
++            text.setPadding(AndroidUtilities.dp(6f), 0, 0, 0)
++            val title = TextView(context)
++            title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 12f)
++            title.setTypeface(AndroidUtilities.bold())
++            title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, fragment.resourceProvider))
++            title.ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
++            title.maxLines = 2
++            title.text = name
++            text.addView(title, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
++            val subtitle = TextView(context)
++            subtitle.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 11f)
++            subtitle.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText3, fragment.resourceProvider))
++            subtitle.text = AndroidUtilities.formatFileSize(item.size)
++            text.addView(subtitle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
++            row.addView(text, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
++            addView(row, LayoutHelper.createFrameMatchParent())
++        }
++
++        private fun showMenu() {
++            val document = item.document
++            val options = ItemOptions.makeOptions(fragment, this)
++            if (index > 0) {
++                options.add(R.drawable.msg_arrow_back, TeleLowercase.lc("Move left")) { DockedMedia.move(key, item, -1) }
++            }
++            if (index < (DockedMedia.tray(key)?.items?.size ?: 0) - 1) {
++                options.add(R.drawable.msg_arrow_forward, TeleLowercase.lc("Move right")) { DockedMedia.move(key, item, 1) }
++            }
++            if (!item.isFile && document == null) {
++                options.add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
++            }
++            options.add(R.drawable.msg_delete, "Remove", true) { DockedMedia.remove(key, item) }
++                .show()
+         }
+     }
+ 
+@@ -339,6 +405,7 @@ class TeleDockedStrip(
+     companion object {
+         const val TAG = "tele_docked"
+         private const val TILE = 64f
++        private const val FILE_TILE = 196f
+         private const val TRAY_HEIGHT = 80f
+         private const val PANEL_HEIGHT = 48f
+         private const val BAR_SPACE = 10f
