@@ -1,6 +1,6 @@
 # development
 
-how to set up the tree, build a debug apk, make a change and turn it into a patch. read [architecture.md](architecture.md) first for how the queue works, and [../AGENTS.md](../AGENTS.md) for the rules.
+how to set up the tree, build a debug apk, make a change and turn it into a patch. read [architecture.md](architecture.md) first for how the queue works, [conventions.md](conventions.md) for the code and patch style, and [../AGENTS.md](../AGENTS.md) for the rules.
 
 ## prerequisites (windows)
 

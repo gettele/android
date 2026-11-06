@@ -1,6 +1,6 @@
 # architecture
 
-how tele (android) is put together: the patch queue, where fork code lives, the config and settings systems, and how batches and builds gate the work. for day-to-day recipes see [development.md](development.md); the rules are in [AGENTS.md](../AGENTS.md).
+how tele (android) is put together: the patch queue, where fork code lives, the config and settings systems, and how batches and builds gate the work. for day-to-day recipes see [development.md](development.md); the hard rules are in [AGENTS.md](../AGENTS.md), the short code and patch reference in [conventions.md](conventions.md).
 
 ## the patch queue
 
@@ -34,6 +34,7 @@ tele_android/
     docs/
       PATCHLIST.md       the plan: batches, patches, statuses (planning file for agents)
       architecture.md    this file
+      conventions.md     how fork code, commits and patches should look
       development.md     setup, building, the edit→test→export loop
       releasing.md       versions, building and publishing releases, secrets, signing
       portability.md     snapshot of the 127-patch portability analysis

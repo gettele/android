@@ -1,6 +1,6 @@
 # AGENTS.md
 
-instructions for ai coding agents working on tele (android). humans: start with [docs/architecture.md](docs/architecture.md) and [docs/PATCHLIST.md](docs/PATCHLIST.md).
+instructions for ai coding agents working on tele (android). humans: start with [docs/architecture.md](docs/architecture.md), [docs/conventions.md](docs/conventions.md) and [docs/PATCHLIST.md](docs/PATCHLIST.md).
 
 tele is telegram android kept as a patch queue: this repository holds `UPSTREAM` (the base version of [DrKLO/Telegram](https://github.com/DrKLO/Telegram)), `patches/android/*.patch` and the docs. the code you edit lives in a separate telegram checkout (`../Telegram` by default) on a branch called `tele`, where the queue is applied as one commit per patch on top of the `UPSTREAM` commit. you change that tree with commits, then export them back into patches here.
 
@@ -8,11 +8,11 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 
 ## hard rules
 
-1. **fork code goes into new files.** package `tele` under `TMessagesProj/src/main/java/tele/` (kotlin): `TeleConfig.kt` (toggles), `TeleHooks.kt` (lifecycle bus), `helpers/`, `ui/settings/`, `db/`. fork strings go into `TMessagesProj/src/main/res/values/strings_tele.xml`, keys prefixed `Tele` (like `TeleHideStories`).
+1. **fork code goes into new files.** package `tele` under `TMessagesProj/src/main/java/tele/` (kotlin): `TeleConfig.kt` (toggles), `TeleHooks.kt` (lifecycle bus), `helpers/`, `ui/settings/`, `db/`. fork strings that stock code resolves through `LocaleController` go into `TMessagesProj/src/main/res/values/strings_tele.xml`, keys prefixed `Tele` (like `TeleHideStories`); literal fork texts are hardcoded english and passed through `TeleLowercase.lc`.
 2. **minimal stock hunks.** in stock files only add a gated call into `Tele`: an early return before the stock block or a fork call after it. no re-indentation of stock code, no renames, no removing stock imports (except to replace with a `tele` import). prefer early returns and add-after-stock so rebases stay trivial.
 3. **never edit `TLRPC.java`.** it is generated; read it as much as you like, edit never. new tl fields that a feature needs are read from the parsed objects; if something is genuinely missing, surface it to the maintainer instead of patching the generator output.
 4. **never touch the stock db schema or `LAST_DB_VERSION`.** fork state lives in `tele_*` tables / `tele_kv` via `TeleDatabaseHelper`. populate fork fields by hooking the stock load/save calls, not by editing stock sql.
-5. **every setting is a `TeleConfig` item.** a new setting touches: `TeleConfig.kt` (an item, default off), a settings page row in `tele/ui/settings/` (inside a group, with search keywords where the name doesn't cover what people search for), and the export/import spec table. toggles default to **off**, and off must behave exactly like stock — verify every call site is gated.
+5. **every setting is a `TeleConfig` item.** a new setting touches: `TeleConfig.kt` (an item, default off), a settings page row in `tele/ui/settings/` (inside a group, with search keywords where the name doesn't cover what people search for), and `TeleBackup.SKIPPED` when it is an internal key. public items are exported and imported automatically. toggles default to **off**, and off must behave exactly like stock — verify every call site is gated.
 6. **check if stock already does it** before implementing a toggle (per-chat wallpapers, lite mode, notification settings often have it). tell the maintainer instead of re-implementing.
 7. **expose, don't duplicate.** a `private` field/method needed from fork code becomes `public` — that is the whole hunk. new members/methods/overloads added to stock classes are prefixed `tele_` (java fields too). look for an existing extension point before adding anything to a base class.
 8. **prefer data-layer hooks over ui-layer.** one hook in `MessagesController` / `SendMessagesHelper` beats fifteen hooks in views and cells.

@@ -67,6 +67,7 @@ tele isn't a git fork of telegram. `patches/android/` holds the queue, one patch
 changes to tele go through the patch queue. read these first:
 
 - [docs/architecture.md](docs/architecture.md): the patch queue, where the fork code lives and how batches and builds gate the work.
+- [docs/conventions.md](docs/conventions.md): how fork code, commits and patches should look.
 - [docs/development.md](docs/development.md): building, running a dev build and making a change.
 - [AGENTS.md](AGENTS.md): the rules for coding agents, which are the rules for patches too: fork code in new files, minimal stock hunks, off means stock.
 
