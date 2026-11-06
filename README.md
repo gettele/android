@@ -39,6 +39,7 @@ everything tele adds lives in settings → tele, grouped into pages.
 
 - [all features](features.md), grouped by settings page.
 - [docs/link-cleaner.md](docs/link-cleaner.md): the tracking parameters the link cleaner removes.
+- [docs/scripting.md](docs/scripting.md): the android scripting api and [example scripts](docs/scripts/index.json).
 - [docs/releases.md](docs/releases.md): every published release and what it brought.
 - [docs/PATCHLIST.md](docs/PATCHLIST.md): the plan, patch by patch, what's done and what isn't.
 - [docs/portability.md](docs/portability.md): which desktop features make sense on android and which don't.

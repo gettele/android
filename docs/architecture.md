@@ -36,6 +36,7 @@ tele_android/
       architecture.md    this file
       conventions.md     how fork code, commits and patches should look
       link-cleaner.md    the tracking parameters the link cleaner removes
+      scripting.md       the android scripting api and example scripts
       releases.md        every published release and what it brought
       development.md     setup, building, the edit→test→export loop
       releasing.md       versions, building and publishing releases, secrets, signing
