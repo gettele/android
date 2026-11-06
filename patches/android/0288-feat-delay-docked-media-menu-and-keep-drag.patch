@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 6 Nov 2026 18:09:46 +0300
+Subject: [PATCH] feat: delay docked media menu and keep drag priority
+
+---
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 85 +++++++++++++++----
+ 1 file changed, 68 insertions(+), 17 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index 17b37d6f0..ec932c2b4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -96,10 +96,6 @@ class TeleDockedStrip(
+                                 DockedMedia.moveTo(key, item, from - 1)
+                             } else if (localX > right + AndroidUtilities.dp(4f)) {
+                                 DockedMedia.moveTo(key, item, from + 1)
+-                            } else {
+-                                AndroidUtilities.runOnUIThread {
+-                                    (row.getChildAt(from) as? Tile)?.showMenuFromDrag()
+-                                }
+                             }
+                         }
+                     }
+@@ -274,7 +270,69 @@ class TeleDockedStrip(
+         private val spoilerEffect = if (item.spoiler) SpoilerEffect() else null
+         private var spoilerEffect2: SpoilerEffect2? = null
+         private val spoilerClip = Path()
+-        private var dragMenu: (() -> Unit)? = null
++        private var downX = 0f
++        private var downY = 0f
++        private var dragReady = false
++        private var dragStarted = false
++        private var menuShown = false
++        private val dragReadyRunnable = Runnable {
++            dragReady = true
++            parent?.requestDisallowInterceptTouchEvent(true)
++            postDelayed(menuRunnable, MENU_DELAY)
++        }
++        private val menuRunnable = Runnable {
++            if (dragReady && !dragStarted && !menuShown) {
++                menuShown = true
++                showMenu()
++            }
++        }
++
++        override fun onTouchEvent(event: MotionEvent): Boolean {
++            when (event.actionMasked) {
++                MotionEvent.ACTION_DOWN -> {
++                    downX = event.rawX
++                    downY = event.rawY
++                    dragReady = false
++                    dragStarted = false
++                    menuShown = false
++                    parent?.requestDisallowInterceptTouchEvent(false)
++                    postDelayed(dragReadyRunnable, DRAG_DELAY)
++                    return true
++                }
++                MotionEvent.ACTION_MOVE -> {
++                    val dx = event.rawX - downX
++                    val dy = event.rawY - downY
++                    if (!dragReady) {
++                        if (abs(dx) > AndroidUtilities.dp(10f) && abs(dx) > abs(dy)) {
++                            removeCallbacks(dragReadyRunnable)
++                        }
++                    } else if (!dragStarted && abs(dx) > AndroidUtilities.dp(8f) && abs(dx) > abs(dy)) {
++                        dragStarted = true
++                        removeCallbacks(menuRunnable)
++                        parent?.requestDisallowInterceptTouchEvent(true)
++                        startDragAndDrop(
++                            android.content.ClipData.newPlainText("", ""),
++                            DragShadowBuilder(this),
++                            item,
++                            0
++                        )
++                    }
++                    return true
++                }
++                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
++                    removeCallbacks(dragReadyRunnable)
++                    removeCallbacks(menuRunnable)
++                    parent?.requestDisallowInterceptTouchEvent(false)
++                    if (!dragStarted && !menuShown && event.actionMasked == MotionEvent.ACTION_UP) {
++                        performClick()
++                    }
++                    dragReady = false
++                    dragStarted = false
++                    return true
++                }
++            }
++            return super.onTouchEvent(event)
++        }
+ 
+         override fun onAttachedToWindow() {
+             super.onAttachedToWindow()
+@@ -282,6 +340,8 @@ class TeleDockedStrip(
+         }
+ 
+         override fun onDetachedFromWindow() {
++            removeCallbacks(dragReadyRunnable)
++            removeCallbacks(menuRunnable)
+             spoilerEffect2?.detach(this)
+             spoilerEffect2 = null
+             super.onDetachedFromWindow()
+@@ -402,19 +462,8 @@ class TeleDockedStrip(
+                 // like a tile of the picker: a tap opens the viewer with the editor and the checks
+                 setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
+             }
+-            setOnLongClickListener {
+-                dragMenu = { showMenu() }
+-                startDragAndDrop(
+-                    android.content.ClipData.newPlainText("", ""),
+-                    DragShadowBuilder(this),
+-                    item,
+-                    0
+-                )
+-                true
+-            }
+-        }
+ 
+-        fun showMenuFromDrag() = showMenu()
++        }
+ 
+         private fun showMenu() {
+             val document = item.document
+@@ -456,6 +505,8 @@ class TeleDockedStrip(
+         const val TAG = "tele_docked"
+         private val IMAGE_DOCUMENT_TYPES = setOf("jpg", "jpeg", "png", "webp", "bmp", "heic", "heif")
+         private const val TILE = 64f
++        private const val DRAG_DELAY = 300L
++        private const val MENU_DELAY = 350L
+         private const val TRAY_HEIGHT = 80f
+         private const val PANEL_HEIGHT = 48f
+         private const val BAR_SPACE = 10f
