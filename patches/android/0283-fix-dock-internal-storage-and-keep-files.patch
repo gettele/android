@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 6 Nov 2026 15:27:25 +0300
+Subject: [PATCH] fix: dock internal storage files and keep files in the tray
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 22 +++++++++++++---
+ .../src/main/java/tele/helpers/DockedMedia.kt | 25 +++++++++++++------
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 11 +++++---
+ 3 files changed, 45 insertions(+), 13 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 4227d92e1..761740e2b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -21431,16 +21431,32 @@ public class ChatActivity extends BaseFragment implements
+     private void sendUrisAsDocuments(ArrayList<Uri> uris, boolean notify, int schedule_date) {
+         if (editingMessageObject == null && notify && schedule_date == 0) {
+             ArrayList<String> dockPaths = new ArrayList<>();
++            ArrayList<String> dockNames = new ArrayList<>();
+             for (int a = 0; a < uris.size(); a++) {
+-                String path = AndroidUtilities.getPath(uris.get(a));
++                Uri uri = uris.get(a);
++                String displayName = null;
++                try {
++                    android.database.Cursor cursor = org.telegram.messenger.ApplicationLoader.applicationContext.getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null);
++                    if (cursor != null) {
++                        if (cursor.moveToFirst()) displayName = cursor.getString(0);
++                        cursor.close();
++                    }
++                } catch (Exception ignore) {}
++                String path = AndroidUtilities.getPath(uri);
++                if (path == null || !new java.io.File(path).isFile()) {
++                    path = MediaController.copyFileToCache(uri, "file");
++                }
+                 if (path == null) {
+                     dockPaths.clear();
+                     break;
+                 }
+                 dockPaths.add(path);
++                dockNames.add(displayName);
+             }
+-            if (!dockPaths.isEmpty() && tele.helpers.DockedMedia.dockFiles(this, dockPaths, null, notify, schedule_date, 0)) {
+-                return;
++            if (!dockPaths.isEmpty()) {
++                if (tele.helpers.DockedMedia.dockFiles(this, dockPaths, dockNames, null, notify, schedule_date, 0)) {
++                    return;
++                }
+             }
+         }
+         ArrayList<String> paths = null;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+index 6da3f8bef..fcca37f50 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -247,7 +247,7 @@ object DockedMedia {
+ 
+         ensureLoaded(key.account)
+         val tray = trays.getOrPut(key) { Tray() }
+-        if (replace) tray.items.removeAll { !it.isSticker }
++        if (replace) tray.items.removeAll { !it.isSticker && !it.isFile }
+         if (tray.items.none { !it.isSticker }) {
+             tray.group = group
+             tray.invert = invert
+@@ -275,6 +275,17 @@ object DockedMedia {
+         notify: Boolean,
+         scheduleDate: Int,
+         payStars: Long
++    ): Boolean = dockFiles(fragment, files, null, caption, notify, scheduleDate, payStars)
++
++    @JvmStatic
++    fun dockFiles(
++        fragment: ChatActivity,
++        files: List<String>,
++        names: List<String>?,
++        caption: CharSequence?,
++        notify: Boolean,
++        scheduleDate: Int,
++        payStars: Long
+     ): Boolean {
+         if (!enabled() || fragment.chatActivityEnterView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
+         if (fragment.chatActivityEnterView.isEditingMessage) return false
+@@ -285,12 +296,12 @@ object DockedMedia {
+         ensureLoaded(key.account)
+         val tray = trays.getOrPut(key) { Tray() }
+         if (tray.items.none { !it.isSticker }) tray.date = (System.currentTimeMillis() / 1000L).toInt()
+-        for (path in files) {
++        files.forEachIndexed { i, path ->
+             val file = File(path)
+-            if (!file.isFile) continue
++            if (!file.isFile) return@forEachIndexed
+             val item = Item()
+             item.path = file.absolutePath
+-            item.fileName = file.name
++            item.fileName = names?.getOrNull(i)?.takeIf { !it.isEmpty() } ?: file.name
+             item.size = file.length()
+             item.isFile = true
+             item.imageId = -(tray.items.size + 1)
+@@ -416,7 +427,7 @@ object DockedMedia {
+             val key = keyOf(fragment)
+             if (replacing.remove(key)) {
+                 val tray = tray(key) ?: return false
+-                tray.items.removeAll { !it.isSticker }
++                tray.items.removeAll { !it.isSticker && !it.isFile }
+                 changed(key)
+             }
+             return false
+@@ -522,9 +533,9 @@ object DockedMedia {
+                 if (!selected.containsKey(ids[i])) return@forEachIndexed
+                 result.add(snapshot(entry, items[i].asFile).also { it.stars = items[i].stars; it.asVideo = items[i].asVideo })
+             }
+-            val stickers = current.items.filter { it.isSticker }
++            val kept = current.items.filter { it.isSticker || it.isFile }
+             current.items.clear()
+-            current.items.addAll(stickers)
++            current.items.addAll(kept)
+             current.items.addAll(result)
+             changed(key)
+         }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index eab7f55ca..4467fa502 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -291,10 +291,15 @@ class TeleDockedStrip(
+             super.dispatchDraw(canvas)
+             if (!item.spoiler) return
+             val size = AndroidUtilities.dp(TILE)
++            val top = (height - size) / 2f
+             spoilerClip.rewind()
+-            spoilerClip.addRoundRect(0f, 0f, size.toFloat(), size.toFloat(), AndroidUtilities.dp(8f).toFloat(), AndroidUtilities.dp(8f).toFloat(), Path.Direction.CW)
++            spoilerClip.addRoundRect(0f, top, size.toFloat(), top + size, AndroidUtilities.dp(8f).toFloat(), AndroidUtilities.dp(8f).toFloat(), Path.Direction.CW)
+             val save = canvas.save()
+             canvas.clipPath(spoilerClip)
++            canvas.translate(0f, top)
++            if (spoilerEffect2 == null || spoilerEffect2!!.destroyed) {
++                spoilerEffect2 = SpoilerEffect2.getInstance(this)
++            }
+             val effect2 = spoilerEffect2
+             if (effect2 != null) {
+                 effect2.draw(canvas, this, size, size, 1f)
+@@ -313,7 +318,7 @@ class TeleDockedStrip(
+             spoilerEffect?.callback = this
+             val image = BackupImageView(context)
+             image.setRoundRadius(AndroidUtilities.dp(8f))
+-            val filter = if (item.spoiler) "32_32_b" else "${TILE.toInt()}_${TILE.toInt()}"
++            val filter = if (item.spoiler) "${TILE.toInt()}_${TILE.toInt()}_b" else "${TILE.toInt()}_${TILE.toInt()}"
+             val placeholder = Theme.chat_attachEmptyDrawable
+             val cover = item.coverPath
+             val thumb = item.thumbPath
+@@ -370,7 +375,7 @@ class TeleDockedStrip(
+                 duration.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 11f)
+                 duration.text = AndroidUtilities.formatShortDuration(item.duration)
+                 duration.setShadowLayer(AndroidUtilities.dp(1f).toFloat(), 0f, 0f, Color.BLACK)
+-                addView(duration, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 5f, 0f, 0f, 10f))
++                addView(duration, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 5f, 0f, 0f, 4f))
+             }
+             val badge = Badge(context)
+             badge.setOnClickListener { DockedMedia.remove(key, item) }
