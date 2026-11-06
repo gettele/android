@@ -8,6 +8,7 @@ for maintainers. releases are built and published by github actions and need the
 - `N` is one above the highest existing `v*-tele.*` release or tag, whatever upstream it was built on: numbers go on across upstream bumps, because the app compares build numbers. build.yml picks it, or takes the `number` input when it's above every existing one.
 - `N` is compiled in as `TELE_BUILD` (`local.properties` of the build, read by `TMessagesProj/build.gradle`). the app shows it as the build number and builds without it (`TELE_BUILD` unset, so local and dev builds) never update themselves.
 - the self-updater orders builds by `APP_VERSION_CODE` first and `N` second, so a release on a newer upstream always wins.
+- every published release is listed in [releases](releases.md), with its base and patch count; the page keeps the same history that `ci/changelog.json` and the published `tele-changelog.json` assets hold.
 
 ## before a release
 
@@ -45,6 +46,7 @@ the run:
 5. writes the update feed and the changelog, attests the apk, uploads everything as the `release` artifact.
 6. the `publish` job (only for a manual run with `publish=true`) is the only one with write access. it re-checks the feed against the apk, creates the release as a draft with every asset, then publishes it and marks it the latest release, so a client never sees a release without its files.
 7. the `announce` job posts the release to the telegram channel with `ci/announce.py`, made from the release's `tele-changelog.json`. the channel also gets tele desktop's releases, so the post is titled `tele for android N · <APP_VERSION_NAME>` and ends with a `#android` footer. without the `TELE_BOT_TOKEN` and `TELE_CHANNEL` secrets it posts nothing. a failed post doesn't touch the release: re-run the job, or post any published release with `gh workflow run announce.yml -f tag=<tag>`.
+8. add the release to [releases](releases.md) from its published `tele-changelog.json`, with the base version, the date and the patch count at its tag.
 
 runs on one branch queue one after another, so two releases never pick the same number.
 
