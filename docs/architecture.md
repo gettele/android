@@ -36,6 +36,7 @@ tele_android/
       architecture.md    this file
       conventions.md     how fork code, commits and patches should look
       link-cleaner.md    the tracking parameters the link cleaner removes
+      server.md          the tele server protocol and how to run one
       scripting.md       the android scripting api and example scripts
       releases.md        every published release and what it brought
       development.md     setup, building, the edit→test→export loop
@@ -96,7 +97,7 @@ fork state export/import (json) mirrors tele's settings backup: the spec table i
 - the in-app updater (tele 0006) reads the github releases of [gettele/android](https://github.com/gettele/android); off for local/dev builds (`TELE_BUILD` unset), toggleable. every release tag is `v<APP_VERSION_NAME>-tele.<TELE_BUILD>` and carries:
   - `tele-update-android.json` — `{"tag", "base", "counter", "url", "apk_sha256"}`: `base` is `APP_VERSION_CODE` (the installed version code without the abi digit), `counter` is `TELE_BUILD`, `url` points into `releases/download/<tag>/` and ends with `.apk`. the client fetches it from `releases/latest/download/`, updates when `(base, counter)` is newer than the running build, checks the sha256 and hands the apk to the system installer; android itself rejects an apk signed with another key.
   - `tele-changelog.json` — `{"tag", "title", "url", "categories": [...], "items": [{"text", "where", "category"}]}`, the same format as tele desktop. after an update every account gets it once in the local tele chat (0075); a missing file is explained instead (0111).
-- the tele server client (patches 0009/0093/…) downloads a public, hashed list over https and matches locally; it never uploads account data. the protocol is defined by tele desktop's readme and is platform-neutral.
+- the tele server client (patches 0009/0093/…) downloads a public, hashed list over https and matches locally; it never uploads account data. the protocol and the setup of a server are in [server.md](server.md).
 - how a release is built, signed and published (and what the secrets are) is in [releasing.md](releasing.md).
 - crash reports (0037) leave the device only after the user taps send, and the text is shown first.
 - a memory snapshot (`0241`) is written only for an out-of-memory crash and only when the option is on (off by default); it never leaves the device by itself — the next start offers it once, and sharing goes through the system chooser. the report only gains a `memory:` line (java/native/pss at the crash) and the snapshot size.

@@ -40,6 +40,7 @@ everything tele adds lives in settings → tele, grouped into pages.
 - [all features](features.md), grouped by settings page.
 - [docs/link-cleaner.md](docs/link-cleaner.md): the tracking parameters the link cleaner removes.
 - [docs/scripting.md](docs/scripting.md): the android scripting api and [example scripts](docs/scripts/index.json).
+- [docs/server.md](docs/server.md): the tele server protocol and how to run one.
 - [docs/releases.md](docs/releases.md): every published release and what it brought.
 - [docs/PATCHLIST.md](docs/PATCHLIST.md): the plan, patch by patch, what's done and what isn't.
 - [docs/portability.md](docs/portability.md): which desktop features make sense on android and which don't.
@@ -49,7 +50,7 @@ everything tele adds lives in settings → tele, grouped into pages.
 
 tele only talks to a few places besides telegram itself, and only with the switches that cover them:
 
-- the **tele server** (settings → tele → server, `https://tele.starkow.dev` by default): tele downloads one public, hashed list with checkmarks, custom verification and extra usernames, and matches it on your device. it never sends the server your account, ids, usernames, contacts or messages. clear the url to turn it off. the same server takes crash reports, but only after a crash and your tap on send. how it works and how to run your own: the [desktop docs](https://github.com/nitreojs/tele/blob/main/docs/server.md).
+- the **tele server** (settings → tele → server, `https://tele.starkow.dev` by default): tele downloads one public, hashed list with checkmarks, custom verification and extra usernames, and matches it on your device. it never sends the server your account, ids, usernames, contacts or messages. clear the url to turn it off. the same server takes crash reports, but only after a crash and your tap on send. how it works and how to run your own: [docs/server.md](docs/server.md).
 - **github releases** of [gettele/android](https://github.com/gettele/android/releases): the update check, on by default, turned off with update automatically.
 - **calcmula.app**: only when you turn on a calcmula switch in sending.
 - **gram.rin.ms**: only when you turn on collectible prices at the purchase date.
