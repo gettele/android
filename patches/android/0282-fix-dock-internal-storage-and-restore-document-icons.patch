@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 6 Nov 2026 12:52:17 +0300
+Subject: [PATCH] fix: dock internal storage files and restore document icons
+ and spoiler
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    | 14 ++++++
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 43 +++++++++++++++++--
+ 2 files changed, 53 insertions(+), 4 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index bae259e3f..4227d92e1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -21429,6 +21429,20 @@ public class ChatActivity extends BaseFragment implements
+     }
+ 
+     private void sendUrisAsDocuments(ArrayList<Uri> uris, boolean notify, int schedule_date) {
++        if (editingMessageObject == null && notify && schedule_date == 0) {
++            ArrayList<String> dockPaths = new ArrayList<>();
++            for (int a = 0; a < uris.size(); a++) {
++                String path = AndroidUtilities.getPath(uris.get(a));
++                if (path == null) {
++                    dockPaths.clear();
++                    break;
++                }
++                dockPaths.add(path);
++            }
++            if (!dockPaths.isEmpty() && tele.helpers.DockedMedia.dockFiles(this, dockPaths, null, notify, schedule_date, 0)) {
++                return;
++            }
++        }
+         ArrayList<String> paths = null;
+         ArrayList<String> originalPaths = null;
+         ArrayList<Uri> sendUris = null;
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index b5b51a987..eab7f55ca 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -27,6 +27,7 @@ import org.telegram.ui.Components.ChatActivityEnterTopView
+ import org.telegram.ui.Components.ChatActivityEnterView
+ import org.telegram.ui.Components.ItemOptions
+ import org.telegram.ui.Components.spoilers.SpoilerEffect
++import org.telegram.ui.Components.spoilers.SpoilerEffect2
+ import org.telegram.ui.Components.LayoutHelper
+ import tele.helpers.DockedMedia
+ import tele.helpers.TeleLowercase
+@@ -271,8 +272,43 @@ class TeleDockedStrip(
+ 
+     private inner class Tile(context: Context, private val item: DockedMedia.Item, private val index: Int) : FrameLayout(context) {
+         private val spoilerEffect = if (item.spoiler) SpoilerEffect() else null
++        private var spoilerEffect2: SpoilerEffect2? = null
++        private val spoilerClip = Path()
+         private var dragMenu: (() -> Unit)? = null
+ 
++        override fun onAttachedToWindow() {
++            super.onAttachedToWindow()
++            if (item.spoiler) spoilerEffect2 = SpoilerEffect2.getInstance(this)
++        }
++
++        override fun onDetachedFromWindow() {
++            spoilerEffect2?.detach(this)
++            spoilerEffect2 = null
++            super.onDetachedFromWindow()
++        }
++
++        override fun dispatchDraw(canvas: Canvas) {
++            super.dispatchDraw(canvas)
++            if (!item.spoiler) return
++            val size = AndroidUtilities.dp(TILE)
++            spoilerClip.rewind()
++            spoilerClip.addRoundRect(0f, 0f, size.toFloat(), size.toFloat(), AndroidUtilities.dp(8f).toFloat(), AndroidUtilities.dp(8f).toFloat(), Path.Direction.CW)
++            val save = canvas.save()
++            canvas.clipPath(spoilerClip)
++            val effect2 = spoilerEffect2
++            if (effect2 != null) {
++                effect2.draw(canvas, this, size, size, 1f)
++            } else {
++                val effect = spoilerEffect
++                if (effect != null) {
++                    effect.setColor(0x66FFFFFF)
++                    effect.setBounds(0, 0, size, size)
++                    effect.draw(canvas)
++                }
++            }
++            canvas.restoreToCount(save)
++        }
++
+         init {
+             spoilerEffect?.callback = this
+             val image = BackupImageView(context)
+@@ -283,6 +319,7 @@ class TeleDockedStrip(
+             val thumb = item.thumbPath
+             val path = item.path
+             val document = item.document
++            addView(image, LayoutHelper.createFrame(TILE.toInt(), TILE, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
+             if (item.isFile) {
+                 val name = item.fileName ?: "file"
+                 val type = name.substringAfterLast('.', "").lowercase()
+@@ -298,7 +335,8 @@ class TeleDockedStrip(
+                 label.setTextColor(Color.WHITE)
+                 label.gravity = Gravity.CENTER
+                 label.maxLines = 2
+-                label.setBackgroundColor(0xAA000000.toInt())
++                label.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(8f), 0xAA000000.toInt())
++                label.setPadding(AndroidUtilities.dp(2f), 0, AndroidUtilities.dp(2f), 0)
+                 label.text = (if (type.isEmpty()) "FILE" else type.uppercase()) + "\n" + AndroidUtilities.formatFileSize(item.size)
+                 addView(label, LayoutHelper.createFrame(TILE.toInt(), LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 0f, 0f, 0f, 0f))
+             } else if (document != null) {
+@@ -326,9 +364,6 @@ class TeleDockedStrip(
+                 image.setOrientation(item.orientation, item.invert, true)
+                 image.setImage("thumb://" + item.imageId + ":" + path, filter, placeholder)
+             }
+-            if (!item.isFile) {
+-                addView(image, LayoutHelper.createFrame(TILE.toInt(), TILE, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
+-            }
+             if (item.isVideo) {
+                 val duration = TextView(context)
+                 duration.setTextColor(Color.WHITE)
