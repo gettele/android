@@ -1,0 +1,363 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tangenx <me@tangenx.dev>
+Date: Fri, 6 Nov 2026 03:28:09 +0300
+Subject: [PATCH] feat: reorder docked media, dock documents and keep hq edits
+ across restarts
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  3 +
+ .../src/main/java/tele/helpers/DockedMedia.kt | 84 +++++++++++++++++-
+ .../src/main/java/tele/helpers/DockedStore.kt | 88 ++++++++++++++++++-
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 36 ++++++--
+ 4 files changed, 200 insertions(+), 11 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 2ae071f03..bae259e3f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -14486,6 +14486,9 @@ public class ChatActivity extends BaseFragment implements
+ 
+     @Override
+     public void didSelectFiles(ArrayList<String> files, String caption, ArrayList<TLRPC.MessageEntity> captionEntities, ArrayList<MessageObject> fmessages, boolean notify, int scheduleDate, int scheduleRepeatPeriod, long effectId, boolean invertMedia, long payStars) {
++        if (fmessages.isEmpty() && tele.helpers.DockedMedia.dockFiles(this, files, caption, notify, scheduleDate, payStars)) {
++            return;
++        }
+         fillEditingMediaWithCaption(caption, null);
+         if (checkSlowModeAlert()) {
+             if (!fmessages.isEmpty() && !TextUtils.isEmpty(caption)) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+index ca857a3ca..32aa039c9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -61,6 +61,9 @@ object DockedMedia {
+         var inlineResult: TLRPC.BotInlineResult? = null
+         // a gif or silent video the picker asked to send as a video
+         var asVideo = false
++        // an arbitrary document selected from the file picker, sent as a file and not via the media pipeline
++        var isFile = false
++        var fileName: String? = null
+         // the picker entry with its edit state, so the viewer edits it again instead of the baked result; not stored
+         var source: MediaController.PhotoEntry? = null
+ 
+@@ -129,6 +132,18 @@ object DockedMedia {
+         changed(key)
+     }
+ 
++    /** Moves one tile one place left or right; the first and last tiles stay put. */
++    internal fun move(key: Key, item: Item, delta: Int) {
++        val tray = trays[key] ?: return
++        val from = tray.items.indexOf(item)
++        if (from < 0) return
++        val to = (from + delta).coerceIn(0, tray.items.size - 1)
++        if (from == to) return
++        tray.items.removeAt(from)
++        tray.items.add(to, item)
++        changed(key)
++    }
++
+     internal fun clearTray(key: Key) {
+         if (trays.remove(key) != null) changed(key)
+     }
+@@ -239,6 +254,45 @@ object DockedMedia {
+         return true
+     }
+ 
++    /** Documents from the file picker dock like photos: the caption goes to the field and the send button sends them. */
++    @JvmStatic
++    fun dockFiles(
++        fragment: ChatActivity,
++        files: List<String>,
++        caption: CharSequence?,
++        notify: Boolean,
++        scheduleDate: Int,
++        payStars: Long
++    ): Boolean {
++        if (!enabled() || fragment.chatActivityEnterView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        if (fragment.chatActivityEnterView.isEditingMessage) return false
++        if (!notify || scheduleDate != 0 || payStars != 0L || files.isEmpty()) return false
++        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return false
++        if (!fragment.checkSlowModeAlert()) return false
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        if (tray.items.none { !it.isSticker }) tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        for (path in files) {
++            val file = File(path)
++            if (!file.isFile) continue
++            val item = Item()
++            item.path = file.absolutePath
++            item.fileName = file.name
++            item.size = file.length()
++            item.isFile = true
++            item.imageId = -(tray.items.size + 1)
++            tray.items.add(item)
++        }
++        if (tray.items.isEmpty()) {
++            trays.remove(key)
++            return false
++        }
++        if (!TextUtils.isEmpty(caption)) fragment.chatActivityEnterView.setFieldText(caption)
++        changed(key)
++        return true
++    }
++
+     /** A finished file (a shot) joins the tray instead of being sent, like the desktop client's shot box. */
+     @JvmStatic
+     fun add(fragment: ChatActivity, entry: MediaController.PhotoEntry, asFile: Boolean): Boolean {
+@@ -370,7 +424,7 @@ object DockedMedia {
+         replacing.remove(key)
+         if (!enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT) return
+         val tray = tray(key) ?: return
+-        val files = tray.items.filter { !it.isSticker }
++        val files = tray.items.filter { !it.isSticker && !it.isFile }
+         if (files.isEmpty()) return
+         val selected = HashMap<Any, Any>()
+         val order = ArrayList<Any>()
+@@ -435,7 +489,7 @@ object DockedMedia {
+         val tray = tray(key) ?: return
+         if (index !in tray.items.indices || fragment.parentActivity == null) return
+         if (tray.items[index].isSticker) return
+-        val items = tray.items.filter { !it.isSticker }
++        val items = tray.items.filter { !it.isSticker && !it.isFile }
+         val viewerIndex = items.indexOfFirst { it === tray.items[index] }
+         if (viewerIndex < 0) return
+         val entries = items.mapIndexed { i, item -> entryOf(item, i) }
+@@ -570,8 +624,27 @@ object DockedMedia {
+         }
+ 
+         val stickerItem = tray.items.firstOrNull { it.isSticker }
+-        val fileItems = tray.items.filter { !it.isSticker }
++        val documentItems = tray.items.filter { it.isFile }
++        val fileItems = tray.items.filter { !it.isSticker && !it.isFile }
+         val infos = fileItems.map { toInfo(it) }
++        if (documentItems.isNotEmpty()) {
++            val paths = ArrayList(documentItems.mapNotNull { it.path })
++            if (paths.isNotEmpty()) {
++                val caption = if (text.isEmpty()) null else text.toString()
++                SendMessagesHelper.prepareSendingDocuments(
++                    AccountInstance.getInstance(key.account), paths, ArrayList(paths), null,
++                    caption, null, null, key.dialogId, fragment.replyMessage, fragment.threadMessage,
++                    null, fragment.replyQuote, null, notify, scheduleDate, 0, null,
++                    fragment.messageChatSendParams, 0, tray.invert, payStars,
++                    enter.sendMonoForumPeerId, enter.sendMessageSuggestionParams)
++            }
++            tray.items.removeAll { it.isFile }
++            if (tray.items.isEmpty()) {
++                trays.remove(key)
++                changed(key)
++                return SEND_DONE
++            }
++        }
+         if (stickerItem == null) {
+             val first = infos.firstOrNull() ?: return SEND_DONE
+             first.caption = if (text.isEmpty()) null else text.toString()
+@@ -647,6 +720,7 @@ object DockedMedia {
+         val tray = tray(keyOf(fragment)) ?: return emptyList()
+         val result = ArrayList<MediaController.PhotoEntry>()
+         for (item in tray.items) {
++            if (item.isFile) continue
+             val path = item.sendPath() ?: continue
+             val entry = MediaController.PhotoEntry(0, item.imageId, 0, path, if (item.isVideo) item.duration else item.orientation, item.isVideo, item.width, item.height, item.size)
+             entry.imagePath = path
+@@ -715,9 +789,11 @@ object DockedMedia {
+         val stickers = tray.items.count { it.isSticker && !MessageObject.isGifDocument(it.document) }
+         val gifs = tray.items.count { it.isSticker && MessageObject.isGifDocument(it.document) }
+         val videos = tray.items.count { !it.isSticker && it.isVideo }
+-        val photos = tray.items.count { !it.isSticker && !it.isVideo }
++        val photos = tray.items.count { !it.isSticker && !it.isFile && !it.isVideo }
++        val documents = tray.items.count { it.isFile }
+         val parts = ArrayList<String>(4)
+         if (photos > 0) parts.add(if (photos == 1) "1 photo" else "$photos photos")
++        if (documents > 0) parts.add(if (documents == 1) "1 file" else "$documents files")
+         if (videos > 0) parts.add(if (videos == 1) "1 video" else "$videos videos")
+         if (stickers > 0) parts.add(if (stickers == 1) "1 sticker" else "$stickers stickers")
+         if (gifs > 0) parts.add(if (gifs == 1) "1 GIF" else "$gifs GIFs")
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+index 9b57bfc82..fbd881601 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+@@ -1,6 +1,7 @@
+ package tele.helpers
+ 
+ import org.telegram.messenger.FileLog
++import org.telegram.messenger.MediaController
+ import org.telegram.messenger.Utilities
+ import org.telegram.messenger.VideoEditedInfo
+ import org.telegram.tgnet.SerializedData
+@@ -9,9 +10,11 @@ import tele.db.TeleDatabaseHelper
+ 
+ object DockedStore {
+     private const val MAGIC = 0x444d4544
+-    private const val VERSION = 3
++    private const val VERSION = 5
+     private const val VERSION_STICKERS = 2
+     private const val VERSION_INLINE = 3
++    private const val VERSION_ORIGINAL = 4
++    private const val VERSION_FILES = 5
+ 
+     fun load(account: Int): Map<DockedMedia.Key, DockedMedia.Tray> {
+         val result = HashMap<DockedMedia.Key, DockedMedia.Tray>()
+@@ -71,6 +74,44 @@ object DockedStore {
+                 item.document?.serializeToStream(stream)
+                 stream.writeBool(item.inlineResult != null)
+                 item.inlineResult?.serializeToStream(stream)
++                stream.writeBool(item.isFile)
++                if (item.isFile) {
++                    stream.writeString(item.fileName ?: "")
++                }
++                stream.writeBool(item.original != null)
++                item.original?.let { original ->
++                    stream.writeString(original.path ?: "")
++                    stream.writeString(original.imagePath ?: "")
++                    stream.writeString(original.filterPath ?: "")
++                    stream.writeString(original.paintPath ?: "")
++                    stream.writeString(original.fullPaintPath ?: "")
++                    stream.writeString(original.croppedPaintPath ?: "")
++                    stream.writeBool(original.isFiltered)
++                    stream.writeBool(original.isPainted)
++                    stream.writeBool(original.isCropped)
++                    stream.writeBool(original.savedFilterState != null)
++                    original.savedFilterState?.serializeToStream(stream)
++                    stream.writeBool(original.cropState != null)
++                    original.cropState?.let { crop ->
++                        stream.writeFloat(crop.cropPx)
++                        stream.writeFloat(crop.cropPy)
++                        stream.writeFloat(crop.cropScale)
++                        stream.writeFloat(crop.cropRotate)
++                        stream.writeFloat(crop.cropPw)
++                        stream.writeFloat(crop.cropPh)
++                        stream.writeInt32(crop.transformWidth)
++                        stream.writeInt32(crop.transformHeight)
++                        stream.writeInt32(crop.transformRotation)
++                        stream.writeBool(crop.mirrored)
++                        stream.writeFloat(crop.stateScale)
++                        stream.writeFloat(crop.scale)
++                        stream.writeInt32(crop.width)
++                        stream.writeInt32(crop.height)
++                        stream.writeBool(crop.freeform)
++                        stream.writeFloat(crop.lockedAspectRatio)
++                        stream.writeInt32(crop.orientation)
++                    }
++                }
+             }
+             return stream.toByteArray()
+         } finally {
+@@ -83,7 +124,7 @@ object DockedStore {
+         try {
+             if (stream.readInt32(false) != MAGIC) return null
+             val version = stream.readInt32(false)
+-            if (version != 1 && version != VERSION) return null
++            if (version !in 1..VERSION) return null
+             val tray = DockedMedia.Tray()
+             tray.group = stream.readBool(false)
+             tray.invert = stream.readBool(false)
+@@ -140,6 +181,49 @@ object DockedStore {
+                     item.inlineResult = TLRPC.BotInlineResult.TLdeserialize(stream, stream.readInt32(false), false)
+                     if (item.inlineResult == null) broken = true
+                 }
++                if (version >= VERSION_FILES) {
++                    item.isFile = stream.readBool(false)
++                    if (item.isFile) item.fileName = stream.readString(false).ifEmpty { null }
++                }
++                if (version >= VERSION_ORIGINAL && stream.readBool(false)) {
++                    val path = stream.readString(false).ifEmpty { null }
++                    val imagePath = stream.readString(false).ifEmpty { null }
++                    val original = MediaController.PhotoEntry(0, item.imageId, 0, path, item.orientation, item.isVideo, item.width, item.height, item.size)
++                    original.imagePath = imagePath
++                    original.filterPath = stream.readString(false).ifEmpty { null }
++                    original.paintPath = stream.readString(false).ifEmpty { null }
++                    original.fullPaintPath = stream.readString(false).ifEmpty { null }
++                    original.croppedPaintPath = stream.readString(false).ifEmpty { null }
++                    original.isFiltered = stream.readBool(false)
++                    original.isPainted = stream.readBool(false)
++                    original.isCropped = stream.readBool(false)
++                    original.highQuality = true
++                    if (stream.readBool(false)) {
++                        original.savedFilterState = MediaController.SavedFilterState().also { it.readParams(stream, false) }
++                    }
++                    if (stream.readBool(false)) {
++                        original.cropState = MediaController.CropState().also { crop ->
++                            crop.cropPx = stream.readFloat(false)
++                            crop.cropPy = stream.readFloat(false)
++                            crop.cropScale = stream.readFloat(false)
++                            crop.cropRotate = stream.readFloat(false)
++                            crop.cropPw = stream.readFloat(false)
++                            crop.cropPh = stream.readFloat(false)
++                            crop.transformWidth = stream.readInt32(false)
++                            crop.transformHeight = stream.readInt32(false)
++                            crop.transformRotation = stream.readInt32(false)
++                            crop.mirrored = stream.readBool(false)
++                            crop.stateScale = stream.readFloat(false)
++                            crop.scale = stream.readFloat(false)
++                            crop.width = stream.readInt32(false)
++                            crop.height = stream.readInt32(false)
++                            crop.freeform = stream.readBool(false)
++                            crop.lockedAspectRatio = stream.readFloat(false)
++                            crop.orientation = stream.readInt32(false)
++                        }
++                    }
++                    if (path != null) item.original = original
++                }
+                 if (!broken) tray.items.add(item)
+             }
+             return tray
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index b9bcf2f84..4fe70bbc5 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -233,7 +233,21 @@ class TeleDockedStrip(
+             val thumb = item.thumbPath
+             val path = item.path
+             val document = item.document
+-            if (document != null) {
++            if (item.isFile) {
++                image.setAspectFit(true)
++                val color = Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider)
++                image.setImageResource(R.drawable.msg_filehq, color)
++                val name = TextView(context)
++                name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 10f)
++                name.setTextColor(Color.WHITE)
++                name.ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
++                name.maxLines = 2
++                name.setBackgroundColor(0x99000000.toInt())
++                name.setPadding(AndroidUtilities.dp(2f), 0, AndroidUtilities.dp(2f), 0)
++                name.setShadowLayer(AndroidUtilities.dp(1f).toFloat(), 0f, 0f, Color.BLACK)
++                name.text = item.fileName ?: "file"
++                addView(name, LayoutHelper.createFrame((TILE - 8f).toInt(), LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 5f, 0f, 0f, 8f))
++            } else if (document != null) {
+                 image.setAspectFit(true)
+                 val color = Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider)
+                 val icon = context.getDrawable(if (MessageObject.isGifDocument(document)) R.drawable.msg_gif else R.drawable.msg_sticker)?.mutate()
+@@ -274,16 +288,28 @@ class TeleDockedStrip(
+                 // like a tile of the picker: a tap opens the viewer with the editor and the checks
+                 setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
+                 setOnLongClickListener {
+-                    ItemOptions.makeOptions(fragment, this)
+-                        .add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
++                    val options = ItemOptions.makeOptions(fragment, this)
++                    if (index > 0) {
++                        options.add(R.drawable.msg_arrow_back, TeleLowercase.lc("Move left")) { DockedMedia.move(key, item, -1) }
++                    }
++                    if (index < (DockedMedia.tray(key)?.items?.size ?: 0) - 1) {
++                        options.add(R.drawable.msg_arrow_forward, TeleLowercase.lc("Move right")) { DockedMedia.move(key, item, 1) }
++                    }
++                    options.add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
+                         .add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
+                         .show()
+                     true
+                 }
+             } else {
+                 setOnLongClickListener {
+-                    ItemOptions.makeOptions(fragment, this)
+-                        .add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
++                    val options = ItemOptions.makeOptions(fragment, this)
++                    if (index > 0) {
++                        options.add(R.drawable.msg_arrow_back, TeleLowercase.lc("Move left")) { DockedMedia.move(key, item, -1) }
++                    }
++                    if (index < (DockedMedia.tray(key)?.items?.size ?: 0) - 1) {
++                        options.add(R.drawable.msg_arrow_forward, TeleLowercase.lc("Move right")) { DockedMedia.move(key, item, 1) }
++                    }
++                    options.add(R.drawable.msg_delete, "remove", true) { DockedMedia.remove(key, item) }
+                         .show()
+                     true
+                 }
