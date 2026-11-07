@@ -339,6 +339,7 @@ always on, or without a switch of their own.
 | links to tele settings | `tg://settings/tele?highlight=tele-read-log` opens a tele setting and highlights it, like the desktop links; `tg://settings/tele/<page>/<id>` works too. long-press a setting to copy its link | tele settings | always on | [0184](patches/android/0184-feat-links-to-tele-settings) | [15](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0015-feat-copy-links-to-tele-settings.patch) |
 | retry failed upload parts | a failed upload part is sent again up to 3 times, after any error, instead of failing the whole file, and a toast names the file and the error when it gives up; not in secret chats | — | always on | [0167](patches/android/0167-fix-retry-failed-upload-parts) | [215](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0215-fix-retry-failed-upload-parts.patch) |
 | failed deletions come back | when the server refuses to delete messages, they come back in the chat and lose the deleted mark, with a toast saying why | — | always on | [0135](patches/android/0135-fix-restore-failed-deletions) | [219](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0219-fix-deletions-that-fail-on-the-server-come-back.patch) |
+| stop live location releases the gps | stopping a live location stops the location requests too: no location icon and no battery drain is left behind | the live location bar and the location screen | always on | [0304](patches/android/0304-fix-stop-location-updates-when-live-sharing-ends) | — |
 
 ## build
 
