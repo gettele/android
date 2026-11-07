@@ -46,7 +46,7 @@ tele_android/
   Telegram/              DrKLO/Telegram checkout, branch `tele` — the code tree
 ```
 
-`UPSTREAM` holds the exact base commit (for 13.1.1 (7237): `3de37c8cfb039452be7398909461da6288babf15`). every patch is a commit on top of it; `git log <UPSTREAM>..tele` in the checkout is the applied queue.
+`UPSTREAM` holds the exact base commit (for 13.2.1 (7291): `7be672ead283d022812d75c729d3a04dd4c2a2c6`). every patch is a commit on top of it; `git log <UPSTREAM>..tele` in the checkout is the applied queue.
 
 never bump `UPSTREAM` in a feature change: syncing to a new release is its own change, after which every patch is rebased and re-exported.
 
@@ -122,6 +122,8 @@ work is delivered in batches — see [PATCHLIST.md](PATCHLIST.md) (`docs/PATCHLI
 - `.gitattributes` pins `*.patch` as binary (`-text`) so git never rewrites line endings inside patches.
 
 ## syncing with a new upstream release
+
+the step-by-step guide for agents is [skills/upstream](skills/upstream/SKILL.md); the summary:
 
 1. fetch the new release commit in the telegram checkout.
 2. rebase the `tele` branch onto it; a conflict points at exactly one patch — fix it in that patch's commit.

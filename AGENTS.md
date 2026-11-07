@@ -39,6 +39,7 @@ the architecture is modelled on [nitreojs/tele](https://github.com/nitreojs/tele
 5. **export** into this repository: `git format-patch <UPSTREAM commit> -o patches/android/ --zero-commit --no-signature` (from `../Telegram`, see [docs/development.md](docs/development.md)), then update `docs/PATCHLIST.md` statuses and, for a user-facing patch, add its row to `features.md`.
 6. **batch gate.** patches are delivered in batches (see `docs/PATCHLIST.md`). when every patch of a batch is committed and exported, assemble a debug apk and hand it over for manual testing. a batch is done only after that build is verified by a human.
 7. **commit here.** `git add patches docs/PATCHLIST.md features.md && git commit -m "feat: <what it does>"` (one commit per patch; docs and infra changes use their prefixes).
+8. **new upstream release.** its own change, never mixed with a feature: [docs/skills/upstream/SKILL.md](docs/skills/upstream/SKILL.md) has the diff against the old base, the check for fixes stock now does itself, the conflict policy, the build, the export and the docs to update, committed as `chore: rebase patches onto <version>`.
 
 ## known pitfalls
 

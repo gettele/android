@@ -128,10 +128,12 @@ if a patch fails to apply outside your tree, a commit wasn't exported or a patch
 
 ## syncing with a new upstream release
 
+the whole procedure — the diff against the old base, the fixes that became obsolete in stock, the conflict policy, the build, the export and the docs — is [skills/upstream](skills/upstream/SKILL.md). the short version:
+
 ```bash
 cd ../Telegram
 git fetch origin
-git rebase --onto <new release commit> <UPSTREAM> tele
+git rebase --onto <new release commit> <UPSTREAM> tele --autostash
 ```
 
 - a conflict points at exactly one patch; fix it in that patch's commit (`git rebase --continue`).
