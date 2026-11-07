@@ -19,10 +19,10 @@ Not-tested: Wall-clock delivery on device
 ---
  .../telegram/messenger/ApplicationLoader.java |   1 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
- .../java/tele/helpers/PunctualScheduled.kt    | 191 ++++++++++++++++++
+ .../java/tele/helpers/PunctualScheduled.kt    | 218 ++++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |   1 +
- 5 files changed, 197 insertions(+), 1 deletion(-)
+ 5 files changed, 224 insertions(+), 1 deletion(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
@@ -52,10 +52,10 @@ index 12a7592bc..4a346510e 100644
  
 diff --git a/TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt b/TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt
 new file mode 100644
-index 000000000..0e24ea088
+index 000000000..bdda50f23
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/PunctualScheduled.kt
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,218 @@
 +package tele.helpers
 +
 +import android.app.NotificationChannel
@@ -125,12 +125,16 @@ index 000000000..0e24ea088
 +            runCatching {
 +                val database = MessagesStorage.getInstance(account).database
 +                val cursor = database.queryFinalized(
-+                    "SELECT uid, mid FROM scheduled_messages_v2 WHERE mid > 0 AND date <= $now ORDER BY date ASC"
++                    "SELECT uid, mid, data FROM scheduled_messages_v2 WHERE mid > 0 AND date <= $now ORDER BY date ASC"
 +                )
 +                val byDialog = LinkedHashMap<Long, ArrayList<Int>>()
 +                while (cursor.next()) {
 +                    val uid = cursor.longValue(0)
 +                    if (DialogObject.isEncryptedDialog(uid)) continue
++                    if (isSuggestion(cursor.byteBufferValue(2))) {
++                        android.util.Log.d("TelePunctualScheduled", "account=$account dialog=$uid status=suggestion")
++                        continue
++                    }
 +                    val list = byDialog.getOrPut(uid) { ArrayList() }
 +                    list.add(cursor.intValue(1))
 +                }
@@ -172,6 +176,19 @@ index 000000000..0e24ea088
 +        }
 +    }
 +
++    // a suggested post carries the date the channel publishes it, it is not a scheduled message of this account
++    private fun isSuggestion(data: org.telegram.tgnet.NativeByteBuffer?): Boolean {
++        if (data == null) return false
++        return try {
++            val message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false)
++            message?.suggested_post != null
++        } catch (e: Throwable) {
++            false
++        } finally {
++            data.reuse()
++        }
++    }
++
 +    private fun sendNow(account: Int, dialogId: Long, ids: ArrayList<Int>) {
 +        val controller = MessagesController.getInstance(account)
 +        val peer = controller.getInputPeer(dialogId) ?: return
@@ -190,6 +207,16 @@ index 000000000..0e24ea088
 +        }
 +        val type = error.text ?: ""
 +        val reason = if (type.isEmpty()) "error ${error.code}" else type
++        if (type == "MESSAGE_ID_INVALID") {
++            for (id in ids) {
++                attempts.getOrPut(key(account, dialogId, id)) { Attempt() }.apply {
++                    terminal = true
++                    retryAt = 0L
++                }
++                android.util.Log.d("TelePunctualScheduled", "account=$account dialog=$dialogId mid=$id status=not-scheduled")
++            }
++            return
++        }
 +        val now = System.currentTimeMillis()
 +        for (id in ids) {
 +            val attempt = attempts.getOrPut(key(account, dialogId, id)) { Attempt() }
