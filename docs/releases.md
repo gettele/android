@@ -2,10 +2,11 @@
 
 every tele android release, newest first. release notes and the in-app what's new are made from `ci/changelog.json` and the published `tele-changelog.json`; this page keeps the same history readable in the repository. [features](features.md) groups the same features by settings page.
 
-8 releases, 244 patches at [tele 8](https://github.com/gettele/android/releases/tag/v13.1.1-tele.8). the queue now has 303 patches; the 59 after tele 8 appear here with the next release.
+9 releases, 300 patches at [tele 9](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9). the queue now has 303 patches; the 3 after tele 9 appear here with the next release.
 
 | release | base | published | patches |
 |---|---|---|---|
+| [tele 9 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9) | 13.1.1 | 2026-11-07 | 300 |
 | [tele 8 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.8) | 13.1.1 | 2026-11-03 | 244 |
 | [tele 7 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.7) | 13.1.1 | 2026-10-26 | 228 |
 | [tele 6 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.6) | 13.0.3 | 2026-10-25 | 202 |
@@ -14,6 +15,54 @@ every tele android release, newest first. release notes and the in-app what's ne
 | [tele 3 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.3) | 13.0.3 | 2026-10-22 | 141 |
 | [tele 2 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.2) | 13.0.3 | 2026-10-21 | 127 |
 | [tele 1 · 13.0.2](https://github.com/gettele/android/releases/tag/v13.0.2-tele.1) | 13.0.2 | 2026-10-19 | 96 |
+
+### [tele 9 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9)
+
+#### money
+
+- import a wallet from a private key or recover it from its address and 12 words, and rotate or copy its phrase (settings → tele → money)
+- turn money off entirely, or dim other address groups and hide their balances (settings → tele → money)
+- copy a transaction link or open it in an explorer from a transaction or a transfer message (transaction menu, transfer message menu)
+- force the wallet to show even when the server turns money off (settings → tele → money)
+
+#### scripts
+
+- scripts run on the phone with telegram methods, updates, storage, timers and web access, and ask for their permissions before they start (settings → tele → scripts)
+- import a script by link or from a folder, and keep it off until you enable it (settings → tele → scripts)
+- scripts add their own actions to the message menu, with icons (settings → tele → scripts)
+
+#### sending
+
+- docked media can be reordered, holds documents and keeps HQ photos and captions after a restart (settings → tele → sending → attach media above the field)
+- docked tiles get file previews, a real spoiler, drag, rounded corners and an animated removal (settings → tele → sending → attach media above the field)
+- silent videos can go as GIFs, and GIFs can go as videos (settings → tele → sending)
+- stickers and GIFs from the picker can be attached above the field and sent with a caption (settings → tele → sending → attach media above the field)
+- the shot screen shows how many messages the picture leaves out (message menu → shot)
+
+#### profiles
+
+- typing in the chat list and the last activity of a hidden last seen (settings → tele → profiles and ids)
+
+#### interface
+
+- view as TL now covers stories, topics, stickers, gifts and folders (settings → tele → interface)
+- the message menu groups the tele tools into Tools, tele and For me submenus with icons and thin or thick separators (message menu, chat menu)
+- the menu editor keeps the Tools and tele submenus and shows their items after a layout is saved (settings → tele → interface → message menu → editor)
+
+#### links
+
+- the link cleaner strips the a parameter and query fragments from x and twitter links, opened or sent (settings → tele → privacy → links)
+
+#### fixes
+
+- opening many chats with server badges no longer fills memory and crashes the app (settings → tele → interface)
+- settings search finds every row again, ignores case and keeps results unique (settings search)
+- the menu editor no longer drops stock items when a layout is saved (settings → tele → interface → message menu → editor)
+- the submenu editor follows the theme, and new items appear on top (settings → tele → interface → message menu → editor)
+- badges keep the name color, and forwarded and reply headers keep their room (settings → tele → interface)
+- opening the docked viewer with files no longer crashes, and spoilers survive the editor (settings → tele → sending)
+- rejected .tgs sticker uploads are repaired before sending (sending)
+- update buttons open tele's update page, and unsupported messages call the app tele (everywhere)
 
 ### [tele 8 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.8)
 
