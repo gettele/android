@@ -18,8 +18,6 @@ how to set up the tree, build a debug apk, make a change and turn it into a patc
   main/        this repository — queue, docs, patches
 ```
 
-the checkout already exists at `G:\CodeProjects\tele_android\Telegram` at the `UPSTREAM` commit.
-
 ## preparing the code tree
 
 ```bash

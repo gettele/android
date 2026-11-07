@@ -42,11 +42,11 @@ tele_android/
       releases.md        every published release and what it brought
       development.md     setup, building, the edit→test→export loop
       releasing.md       versions, building and publishing releases, secrets, signing
-      portability.md     snapshot of the 127-patch portability analysis
+      portability.md     snapshot of the portability analysis (343 records)
   Telegram/              DrKLO/Telegram checkout, branch `tele` — the code tree
 ```
 
-`UPSTREAM` holds the exact base commit (for 13.1.1 (7237): `commit`). every patch is a commit on top of it; `git log <UPSTREAM>..tele` in the checkout is the applied queue.
+`UPSTREAM` holds the exact base commit (for 13.1.1 (7237): `3de37c8cfb039452be7398909461da6288babf15`). every patch is a commit on top of it; `git log <UPSTREAM>..tele` in the checkout is the applied queue.
 
 never bump `UPSTREAM` in a feature change: syncing to a new release is its own change, after which every patch is rebased and re-exported.
 
