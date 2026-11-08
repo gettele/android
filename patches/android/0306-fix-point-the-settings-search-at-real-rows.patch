@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sun, 8 Nov 2026 18:55:04 +0300
+Subject: [PATCH] fix: point the settings search at real rows
+
+---
+ .../java/org/telegram/ui/ProfileActivity.java |  8 ++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  | 66 +++++++++++++------
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  8 +++
+ 3 files changed, 60 insertions(+), 22 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 5b6e0dcce..e68b750b0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -14752,6 +14752,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             public String searchTitle;
+             public Runnable openRunnable;
+             public String rowName;
++            /** The row name shown instead of the search text: an alias searches by a word the title lacks. */
++            public String displayTitle;
+             public String[] path;
+             public int iconResId;
+             public int guid;
+@@ -15469,9 +15471,11 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                             }
+                             if (index >= 0) {
+                                 if (stringBuilder == null) {
+-                                    stringBuilder = new SpannableStringBuilder(result.searchTitle);
++                                    stringBuilder = new SpannableStringBuilder(result.displayTitle != null ? result.displayTitle : result.searchTitle);
++                                }
++                                if (result.displayTitle == null) {
++                                    stringBuilder.setSpan(new ForegroundColorSpan(fragment.getThemedColor(Theme.key_windowBackgroundWhiteBlueText4)), index, index + searchString.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                                 }
+-                                stringBuilder.setSpan(new ForegroundColorSpan(fragment.getThemedColor(Theme.key_windowBackgroundWhiteBlueText4)), index, index + searchString.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                             } else {
+                                 break;
+                             }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index c378eeb14..358cbf5c3 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -31,13 +31,25 @@ object TeleSearch {
+     private fun entries(fragment: BaseFragment): Array<ProfileActivity.SearchAdapter.SearchResult> {
+         val icon = R.drawable.tele_settings_icon
+ 
+-        fun section(guid: Int, title: String, path: String, mode: String, jumpTo: String = title) =
+-            ProfileActivity.SearchAdapter.SearchResult(guid, lc(title), "teleSearchRow", "tele", lc(path), icon) {
+-                fragment.presentFragment(TeleSettingsActivity(mode, jumpTo))
+-            }
++        val rowsByMode = HashMap<String, List<Pair<String, String>>>()
++        fun rowsOf(mode: String): List<Pair<String, String>> =
++            rowsByMode.getOrPut(mode) { TeleSettingsActivity(mode).searchRows() }
++        fun words(text: String): List<String> =
++            text.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length > 2 }
++
++        // an alias is worth a row only when its target row exists and the alias brings a word the title does not have;
++        // a dead one would open the page and do nothing, and a redundant one would duplicate the row's own entry
++        fun section(guid: Int, title: String, path: String, mode: String, jumpTo: String? = null): ProfileActivity.SearchAdapter.SearchResult? {
++            val target = jumpTo ?: return null
++            if (rowsOf(mode).none { it.second == target }) return null
++            if (words(title).all { target.lowercase().contains(it) }) return null
++            return ProfileActivity.SearchAdapter.SearchResult(guid, lc(title), "teleSearchRow", "tele", lc(path), icon) {
++                fragment.presentFragment(TeleSettingsActivity(mode, target))
++            }.also { it.displayTitle = lc(target) }
++        }
+ 
+         fun screen(guid: Int, title: String, factory: () -> BaseFragment) =
+-            ProfileActivity.SearchAdapter.SearchResult(guid, lc(title), icon) { fragment.presentFragment(factory()) }
++            ProfileActivity.SearchAdapter.SearchResult(guid, lc(title), "tele", icon) { fragment.presentFragment(factory()) }
+ 
+         val results = ArrayList<ProfileActivity.SearchAdapter.SearchResult>()
+         results.add(screen(GUID_ROOT, "tele") { TeleSettingsActivity() })
+@@ -64,22 +76,24 @@ object TeleSearch {
+             Triple("tele money", "money", TeleSettingsActivity.MODE_MONEY)
+         )
+         pages.forEachIndexed { index, page ->
+-            results.add(section(GUID_PAGES + index, page.first, page.second, page.third))
++            results.add(ProfileActivity.SearchAdapter.SearchResult(GUID_PAGES + index, lc(page.first), "teleSearchRow", "tele", lc(page.second), icon) {
++                fragment.presentFragment(TeleSettingsActivity(page.third))
++            })
+         }
+-        val keywords = listOf(
+-            "title" to 0, "lowercase" to 0, "scale" to 0, "chat list" to 0,
+-            "badges" to 1, "userpics" to 1, "sponsored" to 1, "gestures" to 1,
+-            "deleted" to 2, "edited" to 2, "bookmarks" to 2, "links" to 2,
+-            "uploads" to 3, "drafts" to 3, "scheduled" to 3, "confirm" to 3,
+-            "unread" to 4, "counters" to 4, "online" to 4, "mute" to 4,
+-            "context" to 5, "right click" to 5, "message menu" to 5
+-        )
+-        keywords.forEachIndexed { index, keyword ->
+-            val page = pages[keyword.second]
+-            results.add(section(GUID_KEYWORDS + index, keyword.first, page.second, page.third))
++
++        // every row of every page is searchable and opens on itself
++        var generatedGuid = 3000
++        pages.forEach { page ->
++            val seenTitles = HashSet<String>()
++            for ((id, title) in rowsOf(page.third)) {
++                if (!seenTitles.add(title)) continue
++                results.add(ProfileActivity.SearchAdapter.SearchResult(generatedGuid++, lc(title), "teleSearchRow", "tele", lc(page.second), icon) {
++                    fragment.presentFragment(TeleSettingsActivity(page.third, null, id))
++                })
++            }
+         }
+ 
+-        results.addAll(arrayOf(
++        results.addAll(listOfNotNull(
+             section(GUID_INTERFACE + 1, "Show seconds in message times", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(GUID_INTERFACE + 2, "Hide the all chats folder", "chats", TeleSettingsActivity.MODE_CHATS),
+             section(GUID_INTERFACE + 3, "Hide call buttons", "chats", TeleSettingsActivity.MODE_CHATS),
+@@ -184,7 +198,6 @@ object TeleSearch {
+             section(GUID_SENDING + 7, "Forward protected messages as copies", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1600, "Send silent videos as", "sending", TeleSettingsActivity.MODE_SENDING),
+             section(1601, "Silent video format", "sending", TeleSettingsActivity.MODE_SENDING, "Send silent videos as"),
+-            section(1602, "Captioned stickers in docked media", "sending", TeleSettingsActivity.MODE_SENDING, "Attach media above the field (beta)"),
+             section(GUID_SERVER, "tele server", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVER + 1, "Server url", "server", TeleSettingsActivity.MODE_SERVER),
+             section(GUID_SERVICE_SELECTION, "Select service messages", "messages", TeleSettingsActivity.MODE_MESSAGES),
+@@ -461,8 +474,21 @@ object TeleSearch {
+             section(1556, "Transaction links", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
+             section(1557, "Copy transaction link", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
+             section(1558, "Open in explorer", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
+-            section(1559, "tonscan", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links")
++            section(1559, "tonscan", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
++            section(1564, "docked", "sending", TeleSettingsActivity.MODE_SENDING, "Attach media above the field (beta)"),
++            section(1565, "beta", "sending", TeleSettingsActivity.MODE_SENDING, "Attach media above the field (beta)")
+         ))
++        // a page button and the screen it opens are the same result: the one with the page path wins
++        val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
++        val unique = LinkedHashMap<String, ProfileActivity.SearchAdapter.SearchResult>()
++        for (result in results) {
++            if (result.path != null && result.path.size == 1 && result.path[0] == "tele" && result.searchTitle.lowercase() in pageTitles) {
++                continue
++            }
++            unique.putIfAbsent(result.searchTitle.lowercase() + "|" + (result.path?.joinToString(" > ") ?: ""), result)
++        }
++        results.clear()
++        results.addAll(unique.values)
+         if (org.telegram.messenger.BuildVars.DEBUG_VERSION) {
+             val guids = HashSet<Int>()
+             for (result in results) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 956d8044e..2d3a1dd77 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -701,6 +701,14 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+     private fun pageRows(): List<Row> =
+         if (canonicalMode(mode) == MODE_NEW) newRows(newState) else withGroups(buildRows(mode))
+ 
++    /** The rows a search can point at: the id the page jumps to and the title it shows. */
++    fun searchRows(): List<Pair<String, String>> =
++        withGroups(buildRows(mode)).mapNotNull { row ->
++            val title = row.title ?: return@mapNotNull null
++            if (row.type == TYPE_HEADER || row.type == TYPE_SHADOW || row.type == TYPE_CUSTOM) return@mapNotNull null
++            idOf(row)?.let { it to title }
++        }
++
+     private fun setupNewPage() {
+         actionBar.createMenu().addItem(SEARCH_ITEM, R.drawable.outline_header_search)
+             .setIsSearchField(true, false)
