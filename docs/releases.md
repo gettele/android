@@ -2,7 +2,7 @@
 
 every tele android release, newest first. release notes and the in-app what's new are made from `ci/changelog.json` and the published `tele-changelog.json`; this page keeps the same history readable in the repository. [features](features.md) groups the same features by settings page.
 
-9 releases, 300 patches at [tele 9](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9). the queue now has 303 patches; the 3 after tele 9 appear here with the next release.
+9 releases, 300 patches at [tele 9](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9). the queue now has 309 patches on telegram 13.2.1; the 9 after tele 9 appear here with the next release.
 
 | release | base | published | patches |
 |---|---|---|---|
