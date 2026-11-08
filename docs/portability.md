@@ -398,8 +398,8 @@
 | 0309 | импорт кошельков по приватному ключу | ✅ | решение мейнтейнера: порт целиком; `WalletImportFragment`, `GramWalletStorage`, `WalletEngine2`, зависит от 0308 |
 | 0310 | копировать секретные слова без ожидания | ✅ | кнопка «Copy words» в `showRecoveryPhraseAlert` и `WalletSecretPhraseFragment`, очистка буфера через 60 с |
 | 0311 | скрыть «you also have …» над картой | ✅ | `WalletActivity.updateWalletTopPanel` под тумблер `TeleConfig` |
-| 0312 | сборка litehtml для HTML-пузырей | ✅ | решение мейнтейнера: litehtml через NDK (CMake) |
-| 0313 | HTML-карточки: litehtml + QuickJS, playground-чат и `.tgw` | ⚠️ | решение мейнтейнера: порт, рендер litehtml в `Canvas` через JNI, скрипты — QuickJS из 0302; `ChatMessageCell`; playground — локальный чат по образцу android 0077, в 0313 влит |
+| 0312 | сборка litehtml для HTML-пузырей | ❌ | закрыт в 13.2.0: litehtml и QuickJS собираются для стоковых rich-виджетов (jni `twidget`) |
+| 0313 | HTML-карточки: litehtml + QuickJS, playground-чат и `.tgw` | ❌ | закрыт: нативные rich-виджеты 13.2.0 (`RichWidgetBlock`, `WidgetInlinePreview`, `WidgetSandboxPlayer`) покрывают формат; пачка 29 закрыта |
 | 0314 | подарки стикерами на карте money | ⚠️ | решение мейнтейнера: 2D и 3D-карта; слой стикеров в `WalletActivity` (`TAB_COLLECTIBLES`), зависит от 0305 |
 | 0315 | подтверждение отправки стикеров из бокса набора | ✅ | второй клик в `StickersAlert.onStickerSelected`, объём как у 0130 (решение по умолчанию) |
 | 0316 | восстановить удалённый пост канала из форварда | ✅ | основа — android 0060 (`DeletedMessages.kt`), перехват перехода по шапке форварда в `ChatMessageCell` |
@@ -407,7 +407,7 @@
 | 0318 | глайды в боксах не затирают чаты под ними | ❌ | Qt-специфика (глайды боксов) |
 | 0319 | dock-иконка macOS при обновлении | ❌ | macOS |
 | 0320 | фикс: listing accounts из скрипта не падает | ⚠️ | фикс скриптинга 0302; учесть в `tg`-мосте |
-| 0321 | фикс: html-карточки не падают, когда их сообщение исчезает | ⚠️ | фикс 0313; учесть при реализации |
+| 0321 | фикс: html-карточки не падают, когда их сообщение исчезает | ❌ | фикс 0313, а 0313 закрыт стоковыми rich-виджетами |
 | 0322 | подарки в money как gift-cards | ✅ | `WalletActivity`, `WalletCardView`, тайл подарка (`tele_gift_tile`); вместе с 0314 |
 | 0323 | passkey-запросы не считаются фризами | ❌ | Windows (webauthn + watchdog) |
 | 0324 | фикс: подгрузка старых сообщений не падает, когда одно удалено во время загрузки | ✅ | desktop keep-deleted; на android проверить гонку в `DeletedMessages` |

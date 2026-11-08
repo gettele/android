@@ -1,5 +1,8 @@
 # Пачка 29 — HTML-пузыри `.tgw`
 
+> **Закрыта в 13.2.0 (7280).** Сток принёс нативные rich-виджеты (`RichWidgetBlock`, `WidgetInlinePreview`, `WidgetSandboxPlayer`) и jni `twidget` с litehtml и QuickJS, поэтому 0312/0313 не портируются. Гайд оставлен как справка на случай своих `.tgw`-карточек поверх стоковых виджетов.
+
+
 ## Назначение и границы
 
 1. Этот документ — implementation guide для строк пачки 29 в `docs/PATCHLIST.md`.
