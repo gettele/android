@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sun, 8 Nov 2026 12:41:55 +0300
+Subject: [PATCH] fix: ask about the diagnostic report once
+
+---
+ .../src/main/java/tele/helpers/TeleCrash.kt   | 20 ++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+index 7bacc5c6f..041c07151 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+@@ -230,7 +230,11 @@ object TeleCrash {
+         val diag = hasDiagnostics(activity)
+         if (!crash && !diag && !dump) return
+         offered = true
+-        if (!collecting()) {
++        // which switch wrote the report: a freeze report follows report freezes, the rest follow the no-dump one
++        val freeze = diag && runCatching { diagFile(activity).readText() }.getOrNull()?.contains("Tele-Note: freeze") == true
++        val wanted = if (crash) true else if (freeze) TeleConfig.DIAG_FREEZE.value else TeleConfig.DIAG_NO_DUMP.value
++        // a report nobody asked for is dropped: the switch may have been turned off after it was written
++        if (!collecting() || (diag && !wanted)) {
+             clearPending(activity)
+             if (dump) offerDump(activity)
+             return
+@@ -240,16 +244,22 @@ object TeleCrash {
+             return
+         }
+         val dialog = AlertDialog.Builder(activity)
+-            .setTitle(TeleLowercase.lc(if (crash) "tele crashed" else "diagnostic report"))
++            .setTitle(TeleLowercase.lc(if (crash) "tele crashed" else "Diagnostic report"))
+             .setMessage(
+                 TeleLowercase.lc(
+-                    if (crash) "The last time tele was launched it crashed. Send the crash report to the tele server?"
+-                    else "The last run ended without a crash dump. Send the diagnostic report to the tele server?"
++                    when {
++                        crash -> "The last time tele was launched it crashed. Send the crash report to the tele server?"
++                        freeze -> "The last run stopped responding. Send the diagnostic report to the tele server?"
++                        else -> "The last run ended without a crash dump. Send the diagnostic report to the tele server?"
++                    }
+                 )
+             )
+             .setPositiveButton(TeleLowercase.lc("Send")) { _, _ -> sendPendingAsync(activity) }
+             .setNegativeButton(TeleLowercase.lc("Don't send")) { _, _ -> clearPending(activity) }
+             .create()
++        // backing out of the dialog is a "don't send" too, or the same report comes back on every start
++        dialog.setOnCancelListener { clearPending(activity) }
++        dialog.setCanceledOnTouchOutside(false)
+         if (dump) dialog.setOnDismissListener { offerDump(activity) }
+         dialog.show()
+     }
+@@ -260,7 +270,7 @@ object TeleCrash {
+         if (!file.exists() || file.length() == 0L) return
+         offeredMarker(activity).writeText("")
+         AlertDialog.Builder(activity)
+-            .setTitle(TeleLowercase.lc("memory snapshot"))
++            .setTitle(TeleLowercase.lc("Memory snapshot"))
+             .setMessage(TeleLowercase.lc("The last crash saved a memory snapshot of " + dumpSize(activity) + ". Share it with the tele developer?"))
+             .setPositiveButton(TeleLowercase.lc("Share")) { _, _ -> shareDump(activity) }
+             .setNegativeButton(TeleLowercase.lc("Delete")) { _, _ -> file.delete() }
