@@ -1,6 +1,6 @@
 # Номера патчей десктопа: старые → текущие
 
-[docs/PATCHLIST.md](PATCHLIST.md) и [docs/portability.md](portability.md) ведут патчи по **текущей** нумерации очереди [nitreojs/tele](https://github.com/nitreojs/tele) (`patches/tdesktop/NNNN-*.patch`, ветка `main`, патчи 0001–0332; отдельная очередь `lib_ui` — 0001–0008). Очередь десктопа была перенумерована дважды: исходный разбор (v7.2.9, патчи 0001–0127) шёл по старым номерам, а номера 0303+ в наших документах (разбор 0303–0322) устарели после слияний — см. вторую таблицу. Ниже — полная карта старый → новый.
+[docs/PATCHLIST.md](PATCHLIST.md) и [docs/portability.md](portability.md) ведут патчи по **текущей** нумерации очереди [nitreojs/tele](https://github.com/nitreojs/tele) (`patches/tdesktop/NNNN-*.patch`, ветка `main`, tele 24 / tdesktop 7.4.0: патчи 0001–0333; отдельные очереди `lib_ui` — 0001–0008 и `lib_rpl` — 1008). Очередь десктопа была перенумерована дважды: исходный разбор (v7.2.9, патчи 0001–0127) шёл по старым номерам, а номера 0303+ в наших документах (разбор 0303–0322) устарели после слияний — см. вторую таблицу. Ниже — полная карта старый → новый.
 
 обозначения: `=` без изменений, `~` косметика (портировать нечего), `Δ` поведение изменилось, `⇢` влит в другой патч (отдельного номера в новой очереди нет). Влитые: старый 0043 → 0017, старый 0079 → 0077, старый 0118 → 0107.
 
@@ -160,3 +160,43 @@
 | 0320 | 0302 (влит) | feat: web platform and more APIs for scripts (текущий 0320 — фикс краша listing accounts) | ⇢ |
 | 0321 | 0316 | feat: recover deleted channel posts from forwards | = |
 | 0322 | 0317 | feat: filter stickers and emoji by format (текущий 0322 — gifts in money как gift-cards) | = |
+
+## tele 24 (7.4.0): сдвиг номеров
+
+очередь перенумерована вместе с апстримом 7.4.0: удалено 7 патчей, добавлено 4 и один фикс библиотеки `lib_rpl`. номера ниже `0312` не изменились; всё, что было `0312` и выше, сдвинулось вниз.
+
+удалены: `0310`/`0311` (html-карточки litehtml — заменены нативными виджетами, у нас пачка 29 закрыта), `0315` (dock-иконка macOS), `0322` (отступ первой строки code block — починен апстримом), `0328` (enter отправляет докнутое медиа с пустым полем — починен апстримом), `0333` (пустые области при smooth scrolling), `0335` (логотип Telegram в сервисном чате).
+
+добавлены: `0330` переводы ru/uk, `0331` фикс шота гиф, `0332` выключенные деньги скрывают балансы в профилях, `0333` выключение bot-виджетов; в `lib_rpl` — `1008` (топики не падают после перемещения).
+
+| было (tele 23) | стало (tele 24) | тема (по tele 23) |
+|---|---|---|
+| 0310 | — | build fetch litehtml for html bubbles |
+| 0311 | — | feat render html cards with litehtml and run their s |
+| 0312 | 0310 | fix confirm stickers sent from sticker set boxes |
+| 0313 | 0311 | feat recover deleted channel posts from forwards |
+| 0314 | 0312 | feat filter stickers and emoji by format |
+| 0315 | — | fix updates on macos keep the dock icon |
+| 0316 | 0313 | fix listing accounts from a script no longer crashes |
+| 0317 | 0314 | fix gifts in money look like gift cards instead of a |
+| 0318 | 0315 | feat close the media viewer with mouse back |
+| 0319 | 0316 | feat show skipped messages in shots |
+| 0320 | 0317 | feat restrict members from message menus and find th |
+| 0321 | 0318 | feat let scripts give their menu items icons |
+| 0322 | — | fix code blocks keep the indent of their first line |
+| 0323 | 0319 | feat open json code text and csv files in tele |
+| 0324 | 0320 | fix deleted chats with people and bots stay writable |
+| 0325 | 0321 | feat show the last activity next to a hidden last se |
+| 0326 | 0322 | feat update buttons open tele s updates |
+| 0327 | 0323 | fix quote rich messages chooses tele s or telegram s |
+| 0328 | — | fix enter sends attached media with an empty field i |
+| 0329 | 0324 | feat show typing in the chat list with a hidden last |
+| 0330 | 0325 | fix deleted messages only lists messages deleted one |
+| 0331 | 0326 | feat bigger video messages while playing |
+| 0332 | 0327 | feat seek anywhere on video messages |
+| 0333 | — | fix smooth scrolling no longer leaves blank areas |
+| 0334 | 0328 | fix file pickers on macos no longer crash when their |
+| 0335 | — | fix the telegram chat shows telegram s logo |
+| 0336 | 0329 | fix picking files on macos no longer freezes tele |
+
+таблицы выше — снимок tele 22/23; к их колонке «новый/текущий» применяй эту дельту.
