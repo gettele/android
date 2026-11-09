@@ -256,10 +256,10 @@ Adds an item to the long press menu of a message; the context carries `chatId`, 
 ### showing text
 
 ```ts
-tg.ui.text({ title: 'translate', text: longText })
+tg.ui.show({ title: 'translate', text: longText })
 ```
 
-A dialog with the whole text: scrollable, selectable, with copy. Use it when a toast is too small.
+A screen of its own with the whole text: scrollable, selectable, and a copy button in the bar. Use it when a toast is too small; `tg.ui.text` is a settings row builder, not this.
 
 ### asking the user
 

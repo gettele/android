@@ -1,0 +1,186 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 23:25:20 +0300
+Subject: [PATCH] feat: show a script text on its own screen
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   | 17 ++++++-
+ .../src/main/assets/tele/scripting/runtime.js |  1 +
+ .../tele/scripting/ScriptMessageActions.kt    |  1 +
+ .../main/java/tele/scripting/ScriptPlayer.kt  |  2 +-
+ .../src/main/java/tele/scripting/ScriptUi.kt  | 28 ++++-------
+ .../java/tele/ui/TeleScriptTextActivity.kt    | 48 +++++++++++++++++++
+ 6 files changed, 76 insertions(+), 21 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleScriptTextActivity.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index 2d0dd9aa9..d5a03827d 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -410,6 +410,21 @@
+ 			host('messageAction.register', { ...rest, id });
+ 			return disposer(() => host('messageAction.unregister', id));
+ 		},
++		textDialog: (options) => host('ui.text', {
++			title: String(options?.title ?? ''),
++			text: String(options?.text ?? ''),
++		}),
++		prompt: (options) => new Promise((resolve) => {
++			const id = remember((value) => resolve(value === null || value === undefined ? null : String(value)));
++			host('ui.prompt', {
++				id,
++				title: String(options?.title ?? ''),
++				placeholder: String(options?.placeholder ?? ''),
++				value: options?.value == null ? '' : String(options.value),
++				maxLength: Number(options?.maxLength ?? 0),
++				multiline: options?.multiline ? 1 : 0,
++			});
++		}),
+ 		chatAction: () => {
+ 			throw new TeleError('unsupported', 'chat menu actions are not available on android yet');
+ 		},
+@@ -643,7 +658,7 @@
+ 			step: Number(options?.step ?? 1),
+ 			onChange: typeof options?.onChange === 'function' ? remember(options.onChange) : 0,
+ 		}),
+-		text: (options) => host('ui.text', {
++		textDialog: (options) => host('ui.text', {
+ 			title: String(options?.title ?? ''),
+ 			text: String(options?.text ?? ''),
+ 		}),
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/runtime.js b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+index 5e7b1514c..c5b7fe52d 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/runtime.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+@@ -1828,6 +1828,7 @@
+ 			input: element('input'),
+ 			separator: element('separator'),
+ 			item: element('item'),
++			show: (options) => given.textDialog({ title: options?.title, text: options?.text }),
+ 			notice: (options) => {
+ 				if (typeof options === 'string') {
+ 					return element('notice')(options);
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+index 1c595bd70..fa8f5490f 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+@@ -59,6 +59,7 @@ object ScriptMessageActions {
+     @JvmStatic
+     fun invoke(account: Int, message: MessageObject, index: Int) {
+         val action = list(account, message).getOrNull(index) ?: return
++        ScriptStore.addLog(action.runtime.account, action.runtime.id, "action tapped: " + action.text)
+         val context = JSONObject()
+             .put("chatId", JSONObject().put("\$b", message.getDialogId().toString()))
+             .put("messageId", message.getId())
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+index 11b52e841..ea71d44b4 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+@@ -26,9 +26,9 @@ object ScriptPlayer {
+             val snapshot = current()?.toString() ?: ""
+             if (snapshot != lastSnapshot) {
+                 lastSnapshot = snapshot
+-                android.util.Log.d("TeleScriptPlayer", "track: " + snapshot)
+                 val track = if (snapshot.isEmpty()) JSONObject.NULL else JSONObject(snapshot)
+                 for ((runtime, id) in listeners) {
++                    ScriptStore.addLog(runtime.account, runtime.id, "player: " + snapshot)
+                     runtime.dispatchPlayer(id, track)
+                 }
+             }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+index 128b0d7a8..6bc07955a 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+@@ -52,29 +52,19 @@ object ScriptUi {
+         }
+     }
+ 
+-    /** A dialog with a longer text: scrollable, selectable, with copy. */
++    /** A whole text of a script: its own screen, scrollable and selectable. */
+     @JvmStatic
+     fun text(runtime: ScriptRuntime, options: JSONObject) {
+         val activity = LaunchActivity.instance ?: return
+         val title = options.optString("title")
+         val text = options.optString("text")
+-        AndroidUtilities.runOnUIThread {
+-            val builder = org.telegram.ui.ActionBar.AlertDialog.Builder(activity, null)
+-            builder.setTitle(title)
+-            val view = android.widget.TextView(activity)
+-            view.text = text
+-            view.setTextIsSelectable(true)
+-            view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 16f)
+-            view.setTextColor(org.telegram.ui.ActionBar.Theme.getColor(org.telegram.ui.ActionBar.Theme.key_dialogTextBlack))
+-            view.setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(8f), AndroidUtilities.dp(24f), AndroidUtilities.dp(8f))
+-            val scroll = android.widget.ScrollView(activity)
+-            scroll.addView(view)
+-            builder.setView(scroll)
+-            builder.setPositiveButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Copy), { _, _ ->
+-                AndroidUtilities.addToClipboard(text)
+-            })
+-            builder.setNegativeButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Close), null)
+-            builder.show()
+-        }
++        // the message menu is still up at this point: let it close, or the new screen goes behind it
++        AndroidUtilities.runOnUIThread({
++            try {
++                activity.actionBarLayout?.presentFragment(tele.ui.TeleScriptTextActivity(title, text))
++            } catch (e: Throwable) {
++                ScriptStore.addLog(runtime.account, runtime.id, "text screen failed: " + e)
++            }
++        }, 350)
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleScriptTextActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleScriptTextActivity.kt
+new file mode 100644
+index 000000000..56e33e18d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleScriptTextActivity.kt
+@@ -0,0 +1,48 @@
++package tele.ui
++
++import android.content.Context
++import android.view.View
++import android.view.ViewGroup
++import android.widget.ScrollView
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++
++/** A text a script wants to show in full: its own screen, scrollable and selectable. */
++class TeleScriptTextActivity(
++    private val shownTitle: String,
++    private val text: String
++) : BaseFragment() {
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(shownTitle)
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) {
++                    finishFragment()
++                } else if (id == 1) {
++                    AndroidUtilities.addToClipboard(text)
++                }
++            }
++        })
++        actionBar.createMenu().addItem(1, R.drawable.msg_copy)
++
++        val view = TextView(context)
++        view.text = text
++        view.setTextIsSelectable(true)
++        view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 16f)
++        view.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        view.setPadding(AndroidUtilities.dp(16f), AndroidUtilities.dp(12f), AndroidUtilities.dp(16f), AndroidUtilities.dp(16f))
++        view.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        val scroll = ScrollView(context)
++        scroll.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        return scroll
++    }
++}

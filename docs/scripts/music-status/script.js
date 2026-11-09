@@ -11,7 +11,9 @@ export default defineScript({
       if (about === shown) return
       shown = about
       lastUpdate = Date.now()
+      tg.log('writing bio:', about)
       await tg.call({ _: 'account.updateProfile', about })
+      tg.log('bio written')
     }
 
     const statusOf = (track) =>
@@ -49,6 +51,7 @@ export default defineScript({
 
     let lastKey = ''
     tg.app.player.onChange((track) => {
+      tg.log('track:', track ? `${track.type} ${track.performer} - ${track.title}` : 'none')
       const key = (track?.type === 'song') ? String(track.documentId) : ''
       if (key === lastKey) return
       lastKey = key

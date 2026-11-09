@@ -19,9 +19,11 @@ export default defineScript({
       text: 'translate',
       icon: 'message',
       onClick: async (context) => {
+        tg.log('translate tapped:', context.messageId)
         try {
           const result = await translate(context.text)
-          tg.ui.text({
+          tg.log('translated:', result.text.length, 'chars')
+          tg.ui.show({
             title: `${result.from} → ${target}`,
             text: result.text,
           })
