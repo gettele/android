@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 16:10:22 +0300
+Subject: [PATCH] feat: let scripts keep shared files away
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   |  46 +++++++-
+ .../src/main/assets/tele/scripting/runtime.js |  10 +-
+ .../java/org/telegram/ui/LaunchActivity.java  |   5 +
+ .../main/java/tele/scripting/ScriptDrops.kt   | 111 ++++++++++++++++++
+ .../main/java/tele/scripting/ScriptGrants.kt  |   3 +-
+ .../main/java/tele/scripting/ScriptRuntime.kt |  30 +++++
+ 6 files changed, 200 insertions(+), 5 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index 68f04f95a..e85b25408 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -72,6 +72,8 @@
+ 	let nextLink = 1;
+ 	const notificationInterceptors = [];
+ 	let nextNotification = 1;
++	const dropInterceptors = [];
++	let nextDrop = 1;
+ 	const settingsPages = new Map();
+ 	let nextPage = 1;
+ 	let activeSettingsPage = 0;
+@@ -184,6 +186,34 @@
+ 		}
+ 	};
+ 
++	globalThis.__teleDrop = (payload) => {
++		try {
++			const message = JSON.parse(payload);
++			const token = message.token;
++			const context = { files: message.files ?? [] };
++			for (const entry of dropInterceptors) {
++				const callback = callbacks.get(entry.callback);
++				if (callback === undefined) {
++					continue;
++				}
++				let verdict = callback(context);
++				if (verdict === undefined || verdict === null) {
++					verdict = 'accept';
++				}
++				if (typeof verdict !== 'string') {
++					continue;
++				}
++				if (verdict === 'drop') {
++					host('drop.verdict', { token, accept: false });
++					return;
++				}
++			}
++			host('drop.verdict', { token, accept: true });
++		} catch (error) {
++			report(error);
++		}
++	};
++
+ 	globalThis.__teleNotification = (payload) => {
+ 		try {
+ 			const message = JSON.parse(payload);
+@@ -398,9 +428,19 @@
+ 			return disposer(() => host('quick.unregister', id));
+ 		},
+ 		interceptDrop: (callback) => {
+-			const id = remember(callback);
+-			host('intercept.register', { id, kind: 'drop' });
+-			return disposer(() => host('intercept.unregister', id));
++			if (typeof callback !== 'function') {
++				throw new TypeError('tg.interceptDrop(function)');
++			}
++			const id = nextDrop++;
++			dropInterceptors.push({ id, callback: remember(callback) });
++			host('drop.register', { id });
++			return disposer(() => {
++				const at = dropInterceptors.findIndex((entry) => entry.id === id);
++				if (at >= 0) {
++					dropInterceptors.splice(at, 1);
++				}
++				host('drop.unregister', { id });
++			});
+ 		},
+ 		interceptLink: (callback) => {
+ 			if (typeof callback !== 'function') {
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/runtime.js b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+index 9bf6551e9..538db6844 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/runtime.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+@@ -1826,7 +1826,15 @@
+ 			input: element('input'),
+ 			separator: element('separator'),
+ 			item: element('item'),
+-			notice: element('notice'),
++			notice: (options) => {
++				if (typeof options === 'string') {
++					return element('notice')(options);
++				}
++				const title = options?.title == null ? '' : String(options.title);
++				const text = options?.text == null ? '' : String(options.text);
++				given.toast(title ? `${title}: ${text}` : text);
++				return null;
++			},
+ 			color: element('color'),
+ 			keybind: element('keybind'),
+ 			text: element('text'),
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index 655952db4..feed96368 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -1637,6 +1637,11 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+ 
+         if ((flags & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
+             if (intent != null && intent.getAction() != null && !restore) {
++                if ((Intent.ACTION_SEND.equals(intent.getAction()) || Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction()))
++                        && !tele.scripting.ScriptDrops.accept(this, intent)) {
++                    // a script kept the shared files away from the chats
++                    return false;
++                }
+                 if (Intent.ACTION_SEND.equals(intent.getAction())) {
+                     if (SharedConfig.directShare && intent != null && intent.getExtras() != null && !intent.hasCategory(Intent.CATEGORY_BROWSABLE)) {
+                         dialogId = intent.getExtras().getLong("dialogId", 0);
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt
+new file mode 100644
+index 000000000..9c63e391d
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt
+@@ -0,0 +1,111 @@
++package tele.scripting
++
++import android.content.Context
++import android.content.Intent
++import android.net.Uri
++import android.os.Parcelable
++import android.provider.OpenableColumns
++import org.json.JSONArray
++import org.json.JSONObject
++import java.io.File
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.CopyOnWriteArrayList
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.TimeUnit
++import java.util.concurrent.atomic.AtomicInteger
++
++/**
++ * The drop interceptors of the running scripts: files shared into the app are offered to them
++ * before they reach a chat, and a script may keep them away.
++ */
++object ScriptDrops {
++
++    private const val TIMEOUT_MS = 500L
++
++    private val runtimes = CopyOnWriteArrayList<ScriptRuntime>()
++    private val waiters = ConcurrentHashMap<Int, CountDownLatch>()
++    private val verdicts = ConcurrentHashMap<Int, Boolean>()
++    private val tokens = AtomicInteger(1)
++
++    @JvmStatic
++    fun register(runtime: ScriptRuntime) {
++        if (!runtimes.contains(runtime)) runtimes.add(runtime)
++    }
++
++    @JvmStatic
++    fun unregister(runtime: ScriptRuntime) {
++        runtimes.remove(runtime)
++    }
++
++    @JvmStatic
++    fun verdict(token: Int, accept: Boolean) {
++        verdicts[token] = accept
++        waiters[token]?.countDown()
++    }
++
++    /** True to accept the files, false when a script drops them. */
++    @JvmStatic
++    fun accept(context: Context, intent: Intent?): Boolean {
++        if (runtimes.isEmpty() || intent == null) return true
++        val action = intent.action
++        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return true
++        val uris = ArrayList<Uri>()
++        if (action == Intent.ACTION_SEND) {
++            val uri = intent.getParcelableExtra<Parcelable>(Intent.EXTRA_STREAM)
++            if (uri is Uri) uris.add(uri)
++        } else {
++            val list = intent.getParcelableArrayListExtra<Parcelable>(Intent.EXTRA_STREAM)
++            list?.forEach { if (it is Uri) uris.add(it) }
++        }
++        if (uris.isEmpty()) return true
++        val files = JSONArray()
++        for (uri in uris) {
++            val (name, size) = fileInfo(context, uri)
++            files.put(JSONObject().put("name", name).put("size", size))
++        }
++        for (runtime in runtimes) {
++            if (!runtime.hasDropInterceptors()) continue
++            val token = tokens.getAndIncrement()
++            val latch = CountDownLatch(1)
++            waiters[token] = latch
++            val payload = JSONObject().put("token", token).put("files", files)
++            if (!runtime.requestDrop(token, payload)) {
++                waiters.remove(token)
++                continue
++            }
++            val answered = latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
++            val accept = verdicts.remove(token)
++            waiters.remove(token)
++            if (!answered || accept == null) return true
++            if (!accept) return false
++        }
++        return true
++    }
++
++    private fun fileInfo(context: Context, uri: Uri): Pair<String, Long> {
++        var name = uri.lastPathSegment ?: "file"
++        var size = -1L
++        try {
++            if ("file".equals(uri.scheme, true)) {
++                val file = File(uri.path ?: "")
++                name = file.name
++                size = file.length()
++            } else {
++                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
++                    if (cursor.moveToFirst()) {
++                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
++                        if (nameIndex >= 0) {
++                            cursor.getString(nameIndex)?.let { name = it }
++                        }
++                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
++                        if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
++                            size = cursor.getLong(sizeIndex)
++                        }
++                    }
++                }
++            }
++        } catch (e: Throwable) {
++        }
++        return name to size
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt
+index 665d12239..9a60a99b6 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt
+@@ -7,7 +7,7 @@ package tele.scripting
+ object ScriptGrants {
+     private val known = setOf(
+         "call", "onUpdate", "interceptRpc", "interceptUpdate", "interceptSendMessage",
+-        "interceptLink", "interceptNotification", "account.read", "account.write", "display",
++        "interceptLink", "interceptNotification", "interceptDrop", "account.read", "account.write", "display",
+         "fetch", "clipboard.read", "clipboard.write", "openUrl", "notify", "options", "scripts",
+         "files.write", "fs.read", "fs.write", "app", "unsafe"
+     )
+@@ -50,6 +50,7 @@ object ScriptGrants {
+         "interceptSendMessage" -> "Change messages before they are sent"
+         "interceptLink" -> "Change the links the app opens"
+         "interceptNotification" -> "Change notifications"
++        "interceptDrop" -> "See the files you share into the app and stop them"
+         "account.read" -> "Read your account: ${grant.scopes.ifEmpty { listOf("everything") }.joinToString(", ")}"
+         "account.write" -> "Change your account: ${grant.scopes.ifEmpty { listOf("everything") }.joinToString(", ")}"
+         "display" -> "Change what you see on this device: ${grant.scopes.ifEmpty { listOf("everything") }.joinToString(", ")}"
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index c75dfb282..ec0b7cd11 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -47,6 +47,7 @@ class ScriptRuntime(
+     private val schedules = HashMap<Int, java.util.concurrent.ScheduledFuture<*>>()
+     private val linkInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     private val notificationInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
++    private val dropInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     @Volatile
+     private var settingsTitle: String? = null
+     @Volatile
+@@ -83,6 +84,18 @@ class ScriptRuntime(
+ 
+     fun hasNotificationInterceptors(): Boolean = notificationInterceptors.isNotEmpty()
+ 
++    fun hasDropInterceptors(): Boolean = dropInterceptors.isNotEmpty()
++
++    /** Asks the script's drop interceptors about shared files; the answer comes back through drop.verdict. */
++    fun requestDrop(token: Int, payload: JSONObject): Boolean {
++        if (!running || handle == 0L || dropInterceptors.isEmpty()) return false
++        queue.offer(Runnable {
++            val error = QuickJs.call(handle, "__teleDrop", payload.toString())
++            if (error != null) fault(error)
++        })
++        return true
++    }
++
+     /** Asks the script's notification interceptors; the answer comes back through notification.verdict. */
+     fun requestNotification(token: Int, payload: JSONObject): Boolean {
+         if (!running || handle == 0L || notificationInterceptors.isEmpty()) return false
+@@ -259,6 +272,21 @@ class ScriptRuntime(
+                     settingsBuilder = argsValue.optInt("builder")
+                     true
+                 }
++                "drop.register" -> {
++                    dropInterceptors.add(scalar?.toIntOrNull() ?: 0)
++                    ScriptDrops.register(this)
++                    true
++                }
++                "drop.unregister" -> {
++                    dropInterceptors.remove(scalar?.toIntOrNull() ?: 0)
++                    if (dropInterceptors.isEmpty()) ScriptDrops.unregister(this)
++                    true
++                }
++                "drop.verdict" -> {
++                    val argsValue = value ?: JSONObject()
++                    ScriptDrops.verdict(argsValue.optInt("token"), argsValue.optBoolean("accept"))
++                    true
++                }
+                 "notification.register" -> {
+                     notificationInterceptors.add(scalar?.toIntOrNull() ?: 0)
+                     ScriptNotifications.register(this)
+@@ -634,6 +662,8 @@ class ScriptRuntime(
+         ScriptLinks.unregister(this)
+         notificationInterceptors.clear()
+         ScriptNotifications.unregister(this)
++        dropInterceptors.clear()
++        ScriptDrops.unregister(this)
+         ScriptMenu.clear(this)
+         ScriptDisplay.clearScript(account, id)
+         listeners.clear()

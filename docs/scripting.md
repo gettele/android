@@ -209,6 +209,14 @@ const dispose = tg.interceptNotification(({ kind, message }) => 'show')       //
 
 Called before a new message notification is shown: `kind` is `"message"`, `message.mentioned` says whether it mentions you, and returning `'drop'` keeps the notification away while the message stays unread. The message itself is not passed in full yet, and an answer has to be synchronous.
 
+### intercepting shared files
+
+```ts
+const dispose = tg.interceptDrop(({ files }) => 'accept')   // needs interceptDrop
+```
+
+Called when files are shared into tele from another app, before they reach a chat: `files` are `{ name, size }` (size in bytes, `-1` when unknown). Return `'drop'` to keep them away. Not every way files enter the app goes through it yet; the attach panel is not covered, and an answer has to be synchronous.
+
 ### timers
 
 `setTimeout`, `clearTimeout`, `setInterval` and `clearInterval` work, with a minimum interval of 1 ms and a maximum delay of one hour. timers run on the script thread.
@@ -258,12 +266,12 @@ The page is built when the app opens it, so the rows always show the current val
 - [theme-scheduler](scripts/theme-scheduler/script.js): night mode by the clock; `tg.schedule` switches the theme at two times of the day.
 - [link-cleaner](scripts/link-cleaner/script.js): strips `utm_` and the usual click ids from the links you open, plus the parameters you add.
 - [quiet-hours](scripts/quiet-hours/script.js): drops message notifications between two hours, mentions still come through.
+- [drop-guard](scripts/drop-guard/script.js): keeps programs, scripts and files over a limit out of the chats they are shared into.
 
 the other desktop scripts need APIs this build does not have yet:
 
 | desktop script | why it is not here |
 |---|---|
-| drop guard | `interceptDrop` is not implemented |
 | compose snippets | there is no compose or input hook |
 | call assistant | there is no calls API |
 | music status | there is no music player API |
@@ -271,7 +279,7 @@ the other desktop scripts need APIs this build does not have yet:
 ## what is not here yet
 
 - settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
-- the drop and outgoing-message interceptors, and the full message in the notification hook;
+- the outgoing-message interceptor, the full message in the notification hook, and the attach panel for shared files;
 - calls, the music player, file pickers and file access, and the theme beyond day and night;
 - local messages, the widget layer and module imports from `tele`.
 
