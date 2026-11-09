@@ -1,0 +1,919 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 03:24:34 +0300
+Subject: [PATCH] feat: add schedules, the theme and settings pages to scripts
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   | 157 +++++++++++++++++-
+ .../src/main/assets/tele/scripting/runtime.js |   3 +
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   1 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   1 +
+ .../main/java/tele/helpers/TeleThemeMode.kt   |  31 ++++
+ .../main/java/tele/scripting/ScriptRuntime.kt |  91 ++++++++++
+ .../main/java/tele/scripting/ScriptStore.kt   |   4 +-
+ .../java/tele/ui/TeleScriptLogActivity.kt     | 147 ++++++++++++++++
+ .../main/java/tele/ui/settings/TeleDialog.kt  |  62 +++++++
+ .../java/tele/ui/settings/TeleScriptPage.kt   | 151 +++++++++++++++++
+ .../tele/ui/settings/TeleScriptsActivity.kt   |  48 ++----
+ 11 files changed, 657 insertions(+), 39 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleThemeMode.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleScriptPage.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index d93dde1d0..3d1ee20f3 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -68,6 +68,9 @@
+ 
+ 	const callbacks = new Map();
+ 	const timers = new Map();
++	const settingsPages = new Map();
++	let nextPage = 1;
++	let activeSettingsPage = 0;
+ 	let nextCallback = 1;
+ 	let nextTimer = 1;
+ 	const remember = (callback) => {
+@@ -96,6 +99,7 @@
+ 			}
+ 			const args = revive(message.args ?? []);
+ 			const result = callback(...args);
++			pushSettingsRows();
+ 			if (result && typeof result.then === 'function') {
+ 				result.catch(report);
+ 			}
+@@ -104,6 +108,44 @@
+ 		}
+ 	};
+ 
++	const prepareRow = (row) => {
++		if (!row || typeof row !== 'object') {
++			return null;
++		}
++		const out = { ...row };
++		out.kind = out.kind ?? out.type;
++		delete out.type;
++		for (const field of ['onChange', 'onClick']) {
++			if (typeof out[field] === 'function') {
++				out[field] = remember(out[field]);
++			}
++		}
++		return out;
++	};
++
++	const settingsRowsOf = (page) => {
++		try {
++			const rows = page.build() ?? [];
++			const prepared = [];
++			for (const row of rows) {
++				const item = prepareRow(row);
++				if (item !== null) prepared.push(item);
++			}
++			return prepared;
++		} catch (error) {
++			report(error);
++			return [];
++		}
++	};
++
++	const pushSettingsRows = () => {
++		const page = settingsPages.get(activeSettingsPage);
++		if (page === undefined) {
++			return;
++		}
++		host('settings.rows', { rows: encode(settingsRowsOf(page)) });
++	};
++
+ 	globalThis.__teleTimer = (id) => {
+ 		const entry = timers.get(Number(id));
+ 		if (entry === undefined) {
+@@ -360,18 +402,40 @@
+ 			}
+ 			return disposer(() => {});
+ 		},
+-		page: () => {
+-			throw new TeleError('unsupported', 'script settings pages are not available on android yet');
++		page: (title, build) => {
++			const id = nextPage++;
++			settingsPages.set(id, {
++				title: String(title ?? ''),
++				build: typeof build === 'function' ? build : () => [],
++			});
++			return id;
+ 		},
+ 		invalidatePage: () => {},
+-		disposePage: () => {},
++		disposePage: (id) => {
++			settingsPages.delete(Number(id));
++		},
+ 		openPage: () => {
+-			throw new TeleError('unsupported', 'script settings pages are not available on android yet');
++			throw new TeleError('unsupported', 'the settings page screen is not drawn yet');
+ 		},
+-		registerSettings: () => {
+-			throw new TeleError('unsupported', 'script settings pages are not available on android yet');
++		registerSettings: (id) => {
++			const page = settingsPages.get(Number(id));
++			if (page === undefined) {
++				throw new TeleError('bad-argument', 'unknown settings page');
++			}
++			activeSettingsPage = Number(id);
++			host('settings.register', { title: page.title, builder: 0 });
++			pushSettingsRows();
++		},
++		unregisterSettings: () => {
++			host('settings.unregister');
++		},
++		themeGet: () => !!host('theme.get'),
++		themeSetDark: (dark) => {
++			host('theme.set', !!dark);
++		},
++		toast: (text) => {
++			host('toast', String(text ?? ''));
+ 		},
+-		unregisterSettings: () => {},
+ 		scriptsList: () => host('scripts.list'),
+ 		scriptsEmit: (event, data, to) => host('scripts.emit', { event, data, to }),
+ 		scriptsOn: (event, callback) => {
+@@ -381,6 +445,51 @@
+ 		},
+ 	};
+ 
++	const ui = {
++		settingsPage: (options) => ({
++			kind: 'page',
++			title: String(options?.title ?? ''),
++			build: (typeof options?.items === 'function') ? options.items : () => [],
++		}),
++		header: (text) => ({ kind: 'header', text: String(text ?? '') }),
++		separator: () => ({ kind: 'separator' }),
++		notice: (text, options) => ({ kind: 'notice', text: String(text ?? ''), focus: options?.focus ? 1 : 0 }),
++		item: (options) => ({
++			kind: 'item',
++			text: String(options?.text ?? ''),
++			detail: options?.detail == null ? null : String(options.detail),
++			onClick: typeof options?.onClick === 'function' ? remember(options.onClick) : 0,
++		}),
++		input: (options) => ({
++			kind: 'input',
++			text: String(options?.text ?? ''),
++			value: options?.value == null ? '' : String(options.value),
++			placeholder: options?.placeholder == null ? '' : String(options.placeholder),
++			maxLength: Number(options?.maxLength ?? 0),
++			onChange: typeof options?.onChange === 'function' ? remember(options.onChange) : 0,
++		}),
++		check: (options) => ({
++			kind: 'check',
++			text: String(options?.text ?? ''),
++			value: !!options?.value,
++			onChange: typeof options?.onChange === 'function' ? remember(options.onChange) : 0,
++		}),
++		slider: (options) => ({
++			kind: 'slider',
++			text: String(options?.text ?? ''),
++			value: Number(options?.value ?? 0),
++			min: Number(options?.min ?? 0),
++			max: Number(options?.max ?? 100),
++			step: Number(options?.step ?? 1),
++			onChange: typeof options?.onChange === 'function' ? remember(options.onChange) : 0,
++		}),
++		button: (options) => ({
++			kind: 'button',
++			text: String(options?.text ?? ''),
++			onClick: typeof options?.onClick === 'function' ? remember(options.onClick) : 0,
++		}),
++	};
++
+ 	const tg = {
+ 		selfId: host('selfId'),
+ 		scriptName: host('scriptName'),
+@@ -389,7 +498,39 @@
+ 		peers: {
+ 			resolve: async (name) => host('resolve', String(name)),
+ 		},
+-		ui: {},
++		ui,
++		toast: (text) => {
++			host('toast', String(text ?? ''));
++		},
++		app: {
++			theme: {
++				setDark: (dark) => {
++					host('theme.set', !!dark);
++				},
++				isDark: () => !!host('theme.get'),
++			},
++		},
++		schedule: (options, callback) => {
++			if (typeof callback !== 'function') {
++				throw new TypeError('tg.schedule(options, function)');
++			}
++			const daily = options?.daily == null ? null : String(options.daily);
++			const every = options?.every == null ? 0 : Number(options.every);
++			const id = remember(callback);
++			const handle = host('schedule.add', { id, daily, every });
++			return disposer(() => host('schedule.cancel', handle));
++		},
++		registerSettings: (page) => {
++			if (!page || page.kind !== 'page') {
++				throw new TypeError('tg.registerSettings(tg.ui.settingsPage({ ... }))');
++			}
++			const builder = remember(() => page.build());
++			host('settings.register', { title: page.title, builder });
++			return disposer(() => host('settings.unregister'));
++		},
++		unregisterSettings: () => {
++			host('settings.unregister');
++		},
+ 		options: {
+ 			list: () => given.optionsList(),
+ 			get: (id) => given.optionsGet(id),
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/runtime.js b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+index da23478b5..799a66121 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/runtime.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+@@ -1430,6 +1430,9 @@
+ 			onWake(callback) {
+ 				return given.onWake(callback);
+ 			},
++			toast(text) {
++				given.toast(String(text ?? ''));
++			},
+ 			schedule(when, callback) {
+ 				const DAILY = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+ 				const every = when?.every;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 7f51e9a84..2644aa190 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -967,6 +967,7 @@ object TeleTextRu {
+         "Off" to "Выкл",
+         "app folder" to "папка приложения",
+         "Settings, privacy, ids" to "Настройки, приватность, ID",
++        "log" to "журнал",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index fe185e900..0e32ecae9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -967,6 +967,7 @@ object TeleTextUk {
+         "Off" to "Вимк",
+         "app folder" to "папка застосунку",
+         "Settings, privacy, ids" to "Налаштування, приватність, ID",
++        "log" to "журнал",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleThemeMode.kt b/TMessagesProj/src/main/java/tele/helpers/TeleThemeMode.kt
+new file mode 100644
+index 000000000..11bdf84cc
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleThemeMode.kt
+@@ -0,0 +1,31 @@
++package tele.helpers
++
++import android.content.Context
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.NotificationCenter
++import org.telegram.ui.ActionBar.Theme
++
++/** The in-app day and night switch, the same one the chat list toggle uses. */
++object TeleThemeMode {
++
++    @JvmStatic
++    fun isDark(): Boolean = Theme.getActiveTheme().isDark
++
++    @JvmStatic
++    fun setDark(dark: Boolean) {
++        val preferences = ApplicationLoader.applicationContext
++            .getSharedPreferences("themeconfig", Context.MODE_PRIVATE)
++        var day = preferences.getString("lastDayTheme", "Blue") ?: "Blue"
++        val dayInfo = Theme.getTheme(day)
++        if (dayInfo == null || dayInfo.isDark) day = "Blue"
++        var night = preferences.getString("lastDarkTheme", "Dark Blue") ?: "Dark Blue"
++        val nightInfo = Theme.getTheme(night)
++        if (nightInfo == null || !nightInfo.isDark) night = "Dark Blue"
++        val target = Theme.getTheme(if (dark) night else day) ?: return
++        AndroidUtilities.runOnUIThread {
++            NotificationCenter.getGlobalInstance()
++                .postNotificationName(NotificationCenter.needSetDayNightTheme, target, false, null, -1)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index 5bf862b57..c189f3a6b 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -3,6 +3,7 @@ package tele.scripting
+ import android.util.Log
+ import org.json.JSONArray
+ import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.ApplicationLoader
+ import org.telegram.messenger.FileLog
+ import org.telegram.messenger.MessagesController
+@@ -43,6 +44,11 @@ class ScriptRuntime(
+     private var failed = false
+ 
+     private val assets = HashMap<String, String>()
++    private val schedules = HashMap<Int, java.util.concurrent.ScheduledFuture<*>>()
++    @Volatile
++    private var settingsTitle: String? = null
++    @Volatile
++    private var settingsBuilder = 0
+ 
+     fun start() {
+         if (running) return
+@@ -62,6 +68,7 @@ class ScriptRuntime(
+         if (current != 0L) QuickJs.interrupt(current)
+         scheduler.shutdownNow()
+         timers.clear()
++        schedules.clear()
+         queue.offer(Runnable { })
+         runCatching { thread?.join(2000) }
+         thread = null
+@@ -70,6 +77,15 @@ class ScriptRuntime(
+     fun allows(name: String, scope: String? = null): Boolean =
+         ScriptGrants.allows(approved.mapNotNull(ScriptGrants::parse), name, scope)
+ 
++    /** The title of the settings page the script registered, or null when it has none. */
++    fun settingsPageTitle(): String? = settingsTitle
++
++    @Volatile
++    private var settingsRowsJson: JSONArray? = null
++
++    /** The rows the script last built for its settings page. */
++    fun settingsRows(): JSONArray? = settingsRowsJson
++
+     fun dispatch(callback: Int, kind: String, args: JSONArray): Boolean {
+         if (!running || handle == 0L) return false
+         val payload = JSONObject().put("id", callback).put("args", args).toString()
+@@ -184,6 +200,47 @@ class ScriptRuntime(
+                     timers.remove(value?.optInt("id") ?: -1)?.cancel(false)
+                     true
+                 }
++                "toast" -> {
++                    val text = keyOf(args)
++                    tele.helpers.TeleToast.log("script", text)
++                    AndroidUtilities.runOnUIThread {
++                        android.widget.Toast.makeText(ApplicationLoader.applicationContext, text, android.widget.Toast.LENGTH_SHORT).show()
++                    }
++                    true
++                }
++                "theme.set" -> {
++                    tele.helpers.TeleThemeMode.setDark(args?.trim() == "true" || value?.optBoolean("dark") == true)
++                    true
++                }
++                "theme.get" -> tele.helpers.TeleThemeMode.isDark()
++                "schedule.add" -> {
++                    val argsValue = value ?: throw ScriptException("bad-argument", "tg.schedule needs options")
++                    val id = argsValue.optInt("id")
++                    val daily = argsValue.optString("daily").takeIf { it.isNotEmpty() }
++                    val every = argsValue.optLong("every", 0)
++                    if (daily == null && every <= 0) throw ScriptException("bad-argument", "tg.schedule needs daily or every")
++                    scheduleOn(id, daily, every)
++                    id
++                }
++                "schedule.cancel" -> {
++                    schedules.remove(scalar?.toIntOrNull() ?: 0)?.cancel(false)
++                    true
++                }
++                "settings.register" -> {
++                    val argsValue = value ?: throw ScriptException("bad-argument", "settings.register needs a page")
++                    settingsTitle = argsValue.optString("title")
++                    settingsBuilder = argsValue.optInt("builder")
++                    true
++                }
++                "settings.rows" -> {
++                    settingsRowsJson = value?.optJSONArray("rows")
++                    true
++                }
++                "settings.unregister" -> {
++                    settingsTitle = null
++                    settingsBuilder = 0
++                    true
++                }
+                 "fetch" -> {
+                     val argsValue = value ?: throw ScriptException("bad-argument", "fetch needs options")
+                     ScriptWeb.fetch(this, argsValue)
+@@ -286,6 +343,36 @@ class ScriptRuntime(
+         }.getOrNull()
+     }
+ 
++    private fun delayUntilDaily(time: String): Long {
++        val parts = time.split(":")
++        val hour = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return 0
++        val minute = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
++        if (hour !in 0..23 || minute !in 0..59) return 0
++        val now = java.util.Calendar.getInstance()
++        val next = java.util.Calendar.getInstance().apply {
++            set(java.util.Calendar.HOUR_OF_DAY, hour)
++            set(java.util.Calendar.MINUTE, minute)
++            set(java.util.Calendar.SECOND, 0)
++            set(java.util.Calendar.MILLISECOND, 0)
++            if (before(now)) add(java.util.Calendar.DAY_OF_YEAR, 1)
++        }
++        return next.timeInMillis - now.timeInMillis
++    }
++
++    private fun scheduleOn(id: Int, daily: String?, every: Long) {
++        schedules.remove(id)?.cancel(false)
++        val delay = if (daily != null) delayUntilDaily(daily) else every.coerceIn(1, 24 * 60 * 60 * 1000L)
++        val future = scheduler.schedule({
++            queue.offer(Runnable {
++                dispatch(id, "schedule", JSONArray())
++                if (running) {
++                    if (daily != null) scheduleOn(id, daily, 0) else scheduleOn(id, null, every)
++                }
++            })
++        }, delay, TimeUnit.MILLISECONDS)
++        schedules[id] = future
++    }
++
+     private fun setTimer(id: Int, ms: Long) {
+         val delay = ms.coerceIn(0, 60 * 60 * 1000)
+         val future = scheduler.schedule({
+@@ -482,6 +569,10 @@ class ScriptRuntime(
+         }
+         scheduler.shutdownNow()
+         timers.clear()
++        schedules.clear()
++        settingsTitle = null
++        settingsBuilder = 0
++        settingsRowsJson = null
+         ScriptMenu.clear(this)
+         ScriptDisplay.clearScript(account, id)
+         listeners.clear()
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
+index b234b9a25..0a1e53ad0 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
+@@ -78,10 +78,12 @@ object ScriptStore {
+         }
+     }
+ 
++    private val logTime = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
++
+     @Synchronized
+     fun addLog(account: Int, id: String, line: String) {
+         val lines = log(account, id).toMutableList()
+-        lines.add(line.take(2000))
++        lines.add(logTime.format(java.util.Date()) + "  " + line.take(2000))
+         while (lines.size > MAX_LOG) lines.removeAt(0)
+         prefs(account).edit().putString("log:$id", JSONArray(lines).toString()).apply()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt
+new file mode 100644
+index 000000000..04b56d928
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt
+@@ -0,0 +1,147 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.Typeface
++import android.os.Handler
++import android.os.Looper
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.style.ForegroundColorSpan
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RecyclerListView
++import tele.scripting.Scripts
++
++/** The log of one script: a screen of monospace lines with their times, selectable, like the mtproto log. */
++class TeleScriptLogActivity(
++    private val account: Int,
++    private val scriptId: String,
++    private val scriptName: String
++) : BaseFragment() {
++
++    private var listView: RecyclerListView? = null
++    private var adapter: Adapter? = null
++    private var empty: TextView? = null
++    private val handler = Handler(Looper.getMainLooper())
++    private val tick = object : Runnable {
++        override fun run() {
++            refresh()
++            handler.postDelayed(this, 1000)
++        }
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc(scriptName) + " · " + lc("log"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                if (id == -1) {
++                    finishFragment()
++                } else if (id == 1) {
++                    Scripts.clearLog(account, scriptId)
++                    refresh()
++                }
++            }
++        })
++        actionBar.createMenu().addItem(1, R.drawable.msg_delete)
++
++        val content = FrameLayout(context)
++        content.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        val list = RecyclerListView(context, resourceProvider)
++        list.layoutManager = LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false)
++        list.setVerticalScrollBarEnabled(true)
++        list.setPadding(0, AndroidUtilities.dp(4f), AndroidUtilities.dp(12f), AndroidUtilities.dp(8f))
++        list.clipToPadding = false
++        list.adapter = Adapter().also { adapter = it }
++        content.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        listView = list
++        val none = TextView(context)
++        none.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++        none.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider))
++        none.text = lc("The log is empty.")
++        none.gravity = Gravity.CENTER
++        none.visibility = View.GONE
++        content.addView(none, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER))
++        empty = none
++        refresh()
++        return content
++    }
++
++    override fun onResume() {
++        super.onResume()
++        handler.post(tick)
++    }
++
++    override fun onPause() {
++        super.onPause()
++        handler.removeCallbacks(tick)
++    }
++
++    override fun onFragmentDestroy() {
++        handler.removeCallbacks(tick)
++        super.onFragmentDestroy()
++    }
++
++    private fun refresh() {
++        val lines = Scripts.log(account, scriptId)
++        val atBottom = listView == null || listView!!.layoutManager == null ||
++            (listView!!.layoutManager as LinearLayoutManager).findLastVisibleItemPosition() >= (adapter?.itemCount ?: 0) - 2
++        adapter?.lines = lines
++        adapter?.notifyDataSetChanged()
++        empty?.visibility = if (lines.isEmpty()) View.VISIBLE else View.GONE
++        if (lines.isNotEmpty() && atBottom) {
++            listView?.scrollToPosition(lines.size - 1)
++        }
++    }
++
++    private inner class Adapter : RecyclerListView.SelectionAdapter() {
++
++        var lines: List<String> = emptyList()
++
++        override fun getItemCount(): Int = lines.size
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = false
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val text = TextView(parent.context)
++            text.typeface = Typeface.MONOSPACE
++            text.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++            text.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++            text.setTextIsSelectable(true)
++            text.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(2f), AndroidUtilities.dp(4f), AndroidUtilities.dp(2f))
++            text.setLineSpacing(AndroidUtilities.dp(2f).toFloat(), 1f)
++            text.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            return object : RecyclerView.ViewHolder(text) {}
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            val view = holder.itemView as TextView
++            val line = lines[position]
++            if (line.length > 10 && line[2] == ':' && line[5] == ':') {
++                val text = SpannableStringBuilder(line)
++                text.setSpan(
++                    ForegroundColorSpan(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider)),
++                    0, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
++                )
++                view.text = text
++            } else {
++                view.text = line
++            }
++        }
++    }
++
++    private fun lc(text: String): String = tele.helpers.TeleLowercase.lc(text)
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt
+new file mode 100644
+index 000000000..6d364c035
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt
+@@ -0,0 +1,62 @@
++package tele.ui.settings
++
++import android.text.InputFilter
++import android.text.InputType
++import android.util.TypedValue
++import android.widget.FrameLayout
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.EditTextBoldCursor
++import org.telegram.ui.Components.LayoutHelper
++
++/** The input dialogs of tele: a themed field with the stock line, never a bare EditText. */
++object TeleDialog {
++
++    @JvmStatic
++    @JvmOverloads
++    fun input(
++        fragment: BaseFragment,
++        title: CharSequence,
++        value: String = "",
++        hint: String = "",
++        message: CharSequence? = null,
++        inputType: Int = InputType.TYPE_CLASS_TEXT,
++        maxLength: Int = 0,
++        positive: CharSequence = LocaleController.getString(R.string.Save),
++        onDone: (String) -> Unit
++    ) {
++        val context = fragment.parentActivity ?: return
++        val input = EditTextBoldCursor(context)
++        input.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18f)
++        input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, fragment.resourceProvider))
++        input.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint, fragment.resourceProvider))
++        input.setBackgroundDrawable(Theme.createEditTextDrawable(context, true))
++        input.setPadding(0, AndroidUtilities.dp(6f), 0, AndroidUtilities.dp(6f))
++        input.setSingleLine(true)
++        input.inputType = inputType
++        if (maxLength > 0) {
++            input.filters = arrayOf(InputFilter.LengthFilter(maxLength))
++        }
++        if (hint.isNotEmpty()) {
++            input.hint = hint
++        }
++        input.setText(value)
++        input.setSelection(input.text.length)
++        val holder = FrameLayout(context)
++        holder.setPadding(AndroidUtilities.dp(24f), 0, AndroidUtilities.dp(24f), 0)
++        holder.addView(input, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
++        val builder = AlertDialog.Builder(context, fragment.resourceProvider)
++            .setTitle(title)
++            .setView(holder)
++            .setPositiveButton(positive) { _, _ -> onDone(input.text.toString()) }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        if (message != null) {
++            builder.setMessage(message)
++        }
++        builder.show()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptPage.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptPage.kt
+new file mode 100644
+index 000000000..850fbc57e
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptPage.kt
+@@ -0,0 +1,151 @@
++package tele.ui.settings
++
++import android.graphics.Typeface
++import android.text.InputType
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.EditText
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.R
++import tele.scripting.ScriptFile
++import tele.scripting.ScriptRuntime
++import tele.scripting.Scripts
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.Switch
++
++/**
++ * The settings page a script registered: the rows it builds are drawn as a plain dialog, and every
++ * change is sent back to the script, which decides what to keep.
++ */
++object TeleScriptPage {
++
++    @JvmStatic
++    fun show(fragment: BaseFragment, account: Int, script: ScriptFile) {
++        val runtime = Scripts.runtime(account, script.id) ?: return
++        val context = fragment.parentActivity ?: return
++        val rows = runtime.settingsRows() ?: return
++        val title = runtime.settingsPageTitle() ?: script.name
++        val theme = fragment.resourceProvider
++        val scroll = ScrollView(context)
++        val column = LinearLayout(context)
++        column.orientation = LinearLayout.VERTICAL
++        column.setPadding(dp(20), dp(4), dp(20), dp(4))
++        scroll.addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        for (index in 0 until rows.length()) {
++            val row = rows.optJSONObject(index) ?: continue
++            column.addView(view(fragment, runtime, account, script, row), ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        }
++        val dialog = AlertDialog.Builder(context, theme)
++            .setTitle(title)
++            .setView(scroll)
++            .setNegativeButton(LocaleController.getString(R.string.Close), null)
++            .create()
++        dialog.show()
++    }
++
++    private fun dp(value: Int): Int = AndroidUtilities.dp(value.toFloat())
++
++    private fun view(fragment: BaseFragment, runtime: ScriptRuntime, account: Int, script: ScriptFile, row: JSONObject): View {
++        val context = fragment.parentActivity ?: throw IllegalStateException()
++        val text = row.optString("text")
++        return when (row.optString("kind")) {
++            "header" -> label(context, text, 14, true, Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader, fragment.resourceProvider))
++            "notice" -> label(context, text, 14, false, Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, fragment.resourceProvider))
++            "separator" -> {
++                val line = View(context)
++                line.setBackgroundColor(Theme.getColor(Theme.key_divider, fragment.resourceProvider))
++                line.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)))
++                line
++            }
++            "check" -> {
++                val switch = Switch(context, fragment.resourceProvider)
++                switch.setChecked(row.optBoolean("value"), 2, false)
++                switch.setOnCheckedChangeListener { _, checked ->
++                    send(fragment, runtime, account, script, row.optInt("onChange"), JSONArray().put(checked))
++                }
++                rowView(context, text, switch, fragment)
++            }
++            "input" -> rowView(context, text, valueLabel(context, row.optString("value"), fragment), fragment).apply {
++                setOnClickListener {
++                    prompt(fragment, lc(text), row.optString("value"), InputType.TYPE_CLASS_TEXT, row.optInt("maxLength")) { value ->
++                        send(fragment, runtime, account, script, row.optInt("onChange"), JSONArray().put(value))
++                    }
++                }
++            }
++            "slider" -> rowView(context, text, valueLabel(context, formatNumber(row.optDouble("value")), fragment), fragment).apply {
++                setOnClickListener {
++                    val min = row.optDouble("min")
++                    val max = row.optDouble("max")
++                    prompt(fragment, lc(text), formatNumber(row.optDouble("value")), InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL, 0) { value ->
++                        val next = value.trim().toDoubleOrNull()?.coerceIn(min, max)
++                        if (next != null) {
++                            send(fragment, runtime, account, script, row.optInt("onChange"), JSONArray().put(next))
++                        }
++                    }
++                }
++            }
++            "item", "button" -> rowView(context, text, valueLabel(context, row.optString("detail"), fragment), fragment).apply {
++                setOnClickListener { send(fragment, runtime, account, script, row.optInt("onClick"), JSONArray()) }
++            }
++            else -> label(context, "", 14, false, Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, fragment.resourceProvider))
++        }
++    }
++
++    private fun send(fragment: BaseFragment, runtime: ScriptRuntime, account: Int, script: ScriptFile, callback: Int, args: JSONArray) {
++        if (callback != 0) {
++            runtime.dispatch(callback, "page", args)
++        }
++        // the script decides what the row shows now: close and open the page again on the next frame
++        fragment.parentActivity?.let { activity ->
++            AndroidUtilities.runOnUIThread({ show(fragment, account, script) }, 250)
++        }
++    }
++
++    private fun prompt(fragment: BaseFragment, title: String, current: String, inputType: Int, maxLength: Int, done: (String) -> Unit) {
++        TeleDialog.input(fragment, title, value = current, inputType = inputType, maxLength = maxLength, onDone = done)
++    }
++
++    private fun rowView(context: android.content.Context, text: String, trailing: View, fragment: BaseFragment): LinearLayout {
++        val row = LinearLayout(context)
++        row.orientation = LinearLayout.HORIZONTAL
++        row.gravity = Gravity.CENTER_VERTICAL
++        row.setPadding(0, dp(12), 0, dp(12))
++        row.addView(label(context, text, 16, false, Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, fragment.resourceProvider)), LayoutHelper.createLinear(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
++        row.addView(trailing, LayoutHelper.createLinear(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 0, 0))
++        row.isClickable = true
++        return row
++    }
++
++    private fun valueLabel(context: android.content.Context, text: String, fragment: BaseFragment): TextView {
++        val view = TextView(context)
++        view.text = text
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
++        view.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText6, fragment.resourceProvider))
++        return view
++    }
++
++    private fun label(context: android.content.Context, text: String, size: Int, bold: Boolean, color: Int): TextView {
++        val view = TextView(context)
++        view.text = text
++        view.setTextSize(TypedValue.COMPLEX_UNIT_DIP, size.toFloat())
++        view.setTextColor(color)
++        if (bold) view.setTypeface(AndroidUtilities.bold())
++        view.setPadding(0, dp(6), 0, dp(6))
++        return view
++    }
++
++    private fun formatNumber(value: Double): String = if (value == Math.floor(value)) value.toLong().toString() else value.toString()
++
++    private fun lc(text: String): String = tele.helpers.TeleLowercase.lc(text)
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
+index 74cae9231..e41b4c7bb 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
+@@ -142,7 +142,14 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+     private fun longClick(item: UItem, view: View, position: Int, x: Float, y: Float): Boolean {
+         if (item.id < ID_SCRIPT) return false
+         val script = Scripts.scripts(currentAccount).getOrNull(item.id - ID_SCRIPT) ?: return true
+-        ItemOptions.makeOptions(this, view)
++        val options = ItemOptions.makeOptions(this, view)
++        val page = Scripts.runtime(currentAccount, script.id)?.settingsPageTitle()
++        if (page != null) {
++            options.add(R.drawable.msg_settings, lc("Settings · ") + page, Runnable {
++                TeleScriptPage.show(this, currentAccount, script)
++            })
++        }
++        options
+             .add(R.drawable.msg_permissions, lc("Review permissions"), Runnable { showGrants(script) })
+             .add(R.drawable.msg_message, lc("Open log"), Runnable { showLog(script) })
+             .add(R.drawable.msg_retry, lc("Restart"), Runnable {
+@@ -226,15 +233,7 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+     }
+ 
+     private fun showLog(script: ScriptFile) {
+-        val lines = Scripts.log(currentAccount, script.id)
+-        AlertDialog.Builder(parentActivity ?: return, resourceProvider)
+-            .setTitle(script.name + lc(" log"))
+-            .setMessage(lines.joinToString("\n").ifEmpty { lc("The log is empty.") })
+-            .setPositiveButton(lc("Close"), null)
+-            .setNeutralButton(lc("Clear")) { _, _ ->
+-                Scripts.clearLog(currentAccount, script.id)
+-            }
+-            .show()
++        presentFragment(tele.ui.TeleScriptLogActivity(currentAccount, script.id, script.name))
+     }
+ 
+     private fun remove(script: ScriptFile) {
+@@ -304,26 +303,15 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+     }
+ 
+     private fun importLink(prefill: String? = null) {
+-        val activity = parentActivity ?: return
+-        val input = EditText(activity).apply {
+-            hint = "https://example.com/script.js"
+-            setSingleLine(true)
+-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+-            setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourceProvider))
+-            if (prefill != null) setText(prefill)
+-            setHintTextColor(Theme.getColor(Theme.key_dialogTextHint, resourceProvider))
+-            setPadding(0, AndroidUtilities.dp(8f), 0, AndroidUtilities.dp(8f))
+-        }
+-        val holder = FrameLayout(activity)
+-        holder.setPadding(AndroidUtilities.dp(24f), 0, AndroidUtilities.dp(24f), 0)
+-        holder.addView(input, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
+-        AlertDialog.Builder(activity, resourceProvider)
+-            .setTitle(lc("Import from a link"))
+-            .setMessage(lc("A direct link to a .js, .mjs, .ts or .mts file. It goes into the scripts folder and stays off until you enable it and allow its permissions."))
+-            .setView(holder)
+-            .setPositiveButton(lc("Install")) { _, _ -> installLink(input.text.toString(), replace = false) }
+-            .setNegativeButton(lc("Cancel"), null)
+-            .show()
++        TeleDialog.input(
++            this,
++            lc("Import from a link"),
++            value = prefill.orEmpty(),
++            hint = "https://example.com/script.js",
++            message = lc("A direct link to a .js, .mjs, .ts or .mts file. It goes into the scripts folder and stays off until you enable it and allow its permissions."),
++            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
++            positive = lc("Install")
++        ) { value -> installLink(value, replace = false) }
+     }
+ 
+     private fun installLink(url: String, replace: Boolean) {

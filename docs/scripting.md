@@ -190,9 +190,46 @@ tg.connection()
 
 `tg.openChat` opens a chat or a message. `accounts.list` returns the activated accounts. `tg.connection()` is `1` when the app is connected.
 
+`tg.app.theme.setDark(true)` is the same switch as the day and night toggle in the chat list, with the theme names the user picked; `tg.app.theme.isDark()` reads it (both need `app`).
+
 ### timers
 
 `setTimeout`, `clearTimeout`, `setInterval` and `clearInterval` work, with a minimum interval of 1 ms and a maximum delay of one hour. timers run on the script thread.
+
+### schedule
+
+```ts
+const stop = tg.schedule({ daily: '21:00' }, () => tg.app.theme.setDark(true))
+const tick = tg.schedule({ every: 60_000 }, () => tg.refresh())
+```
+
+`daily` is a local `HH:MM` that fires once a day; `every` is a delay in milliseconds. The disposer cancels it, and a stopped script cancels all of its schedules. Unlike timers, a schedule may wait longer than an hour.
+
+### toast
+
+```ts
+tg.toast('saved')
+```
+
+Shows for a moment and goes to the notification center with the other tele toasts.
+
+### settings page
+
+```ts
+tg.registerSettings(tg.ui.settingsPage({
+  title: 'theme scheduler',
+  items: () => [
+    tg.ui.input({ text: 'night mode from', value: night, placeholder: 'HH:MM', maxLength: 5, onChange: (value) => { night = value; tg.storage.set('night', value) } }),
+  ],
+}))
+
+tg.ui.check({ text: 'enabled', value, onChange })
+tg.ui.slider({ text: 'days', value, min: 0, max: 30, step: 1, onChange })
+tg.ui.button({ text: 'reset', onClick })
+tg.ui.header('rules'), tg.ui.separator(), tg.ui.item({ text, detail, onClick }), tg.ui.notice('...')
+```
+
+The page is built when the app opens it, so the rows always show the current values. A script's page opens from its row in `settings → tele → scripts` (long press): the rows are drawn as a simple list, and every change goes back to the script's `onChange` or `onClick`, which decides what to keep and re-registers the page.
 
 ## scripts in this repository
 
@@ -201,6 +238,7 @@ tg.connection()
 - [calculator](scripts/calculator.js): `calculate` in a message menu.
 - [away-auto-reply](scripts/away-auto-reply.js): answers a private chat once while away; the `away` message action toggles it.
 - [quick-translate](scripts/quick-translate.js): `translate` in a message menu, with the result in the message footer.
+- [theme-scheduler](scripts/theme-scheduler/script.js): night mode by the clock; `tg.schedule` switches the theme at two times of the day.
 
 the other desktop scripts need APIs this build does not have yet:
 
@@ -212,18 +250,18 @@ the other desktop scripts need APIs this build does not have yet:
 | compose snippets | there is no compose or input hook |
 | call assistant | there is no calls API |
 | music status | there is no music player API |
-| theme scheduler | there is no theme or schedule API |
 
 ## what is not here yet
 
-- script settings pages, settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
+- settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
 - link, notification, drop and outgoing-message interceptors;
-- calls, the music player, the theme, file pickers and file access;
+- calls, the music player, file pickers and file access, and the theme beyond day and night;
 - local messages, the widget layer and module imports from `tele`.
 
 ## errors and limits
 
 - a script source is at most 2 MB; the runtime has 64 MB of memory and a 1 MB stack.
+- the log opens as a screen of monospace lines with their times, like the mtproto log, from the script's menu.
 - one runtime per script and account, on its own thread. stopping a script stops its timers, menus, decorations and network requests.
 - storage is 16 MB per script and account; the log keeps the last 200 lines.
 - setup errors and runtime errors are shown in the script's page and its log; the script stays off after a crash.
