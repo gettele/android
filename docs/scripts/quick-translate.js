@@ -43,8 +43,9 @@ export default defineScript({
       onClick: async (context) => {
         const key = `${context.chatId}:${context.messageId}`
         const restore = shown.get(key)
-        if (restore) {
-          restore()
+        const source = `${context.editDate ?? 0}:${context.sourceText ?? context.text}`
+        if (restore && restore.source === source) {
+          restore.dispose()
           shown.delete(key)
           return
         }
@@ -52,7 +53,7 @@ export default defineScript({
         pending.add(key)
         tg.log('translate tapped:', context.messageId)
         try {
-          const result = await translate(context.text)
+          const result = await translate(context.sourceText ?? context.text)
           tg.log('translated:', result.text.length, 'chars')
           if (context.canReplaceText === false) {
             tg.ui.show({ title: `${result.from} → ${target}`, text: result.text })
@@ -60,7 +61,7 @@ export default defineScript({
           }
           try {
             const dispose = await tg.decorateMessage(context.chatId, context.messageId, { text: result.text })
-            shown.set(key, dispose)
+            shown.set(key, { source, dispose })
           } catch (error) {
             tg.log('message decoration failed:', String(error))
             tg.ui.show({ title: `${result.from} → ${target}`, text: result.text })

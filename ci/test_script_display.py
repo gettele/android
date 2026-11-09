@@ -109,6 +109,7 @@ fun main() {
  ScriptDisplay.set(0,"translate",100,1,text("translation"))
  checkEq("translation",message.messageText.toString(),"set refreshes loaded object")
  checkEq("original",message.messageOwner.message,"source TL text remains untouched")
+ checkEq("original",ScriptDisplay.editingText(message).toString(),"editor receives server text rather than decoration")
  checkEq(true,ScriptDisplay.hasReplacement(message),"replacement marker set")
  checkEq(emptyList<String>(),message.getEffectiveEntities(),"replacement suppresses old entity offsets")
  checkEq("other-account",otherAccount.messageText.toString(),"account filtering")
