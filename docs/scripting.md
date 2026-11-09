@@ -332,6 +332,10 @@ The page is built when the app opens it, so the rows always show the current val
 - [call-assistant](scripts/call-assistant/script.js): pauses the music when a call connects, mutes you on request and logs the length of the call.
 - [quick translate](scripts/quick-translate.js): replaces a text message locally with its translation; tap Translate again to restore it. Media captions and unavailable replacements use a native text dialog. Google redirects may use `www.google.com`, so both that host and `translate.googleapis.com` require explicit fetch grants.
 
+Quick translate caches up to 32 successful translations in memory for one hour (at most 32768 source/result characters per entry). HTTP 429 starts a cooldown of at least 60 seconds, or longer when `Retry-After` asks for it; no automatic retry is sent. Stopping the script clears this cache and cooldown. Google's public endpoint can still refuse requests.
+
+- [message display test](scripts/display-test/script.js): a network-free diagnostic script, off until you enable it with `display(messages)`. In a message menu, **Test local text replacement** adds a fixed local prefix; repeat to restore the original. **Test text dialog** opens the current text in a native dialog with Copy. Media captions use the dialog. Nothing is sent or edited on the server.
+
 ## what is not here yet
 
 - settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
