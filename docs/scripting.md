@@ -201,6 +201,14 @@ const onlyYouTube = tg.interceptLink(/^https:\/\/(www\.)?youtube\.com/, ({ url }
 
 The interceptor gets the url as it would open now and returns `'open'`, `'drop'` or a new url; anything else (or no answer within half a second) opens the original link. A rewritten url goes on to the next interceptor, and the final one opens. Android runs the interceptors on the script thread, so an answer must be synchronous.
 
+### intercepting notifications
+
+```ts
+const dispose = tg.interceptNotification(({ kind, message }) => 'show')       // needs interceptNotification
+```
+
+Called before a new message notification is shown: `kind` is `"message"`, `message.mentioned` says whether it mentions you, and returning `'drop'` keeps the notification away while the message stays unread. The message itself is not passed in full yet, and an answer has to be synchronous.
+
 ### timers
 
 `setTimeout`, `clearTimeout`, `setInterval` and `clearInterval` work, with a minimum interval of 1 ms and a maximum delay of one hour. timers run on the script thread.
@@ -249,12 +257,12 @@ The page is built when the app opens it, so the rows always show the current val
 - [quick-translate](scripts/quick-translate.js): `translate` in a message menu, with the result in the message footer.
 - [theme-scheduler](scripts/theme-scheduler/script.js): night mode by the clock; `tg.schedule` switches the theme at two times of the day.
 - [link-cleaner](scripts/link-cleaner/script.js): strips `utm_` and the usual click ids from the links you open, plus the parameters you add.
+- [quiet-hours](scripts/quiet-hours/script.js): drops message notifications between two hours, mentions still come through.
 
 the other desktop scripts need APIs this build does not have yet:
 
 | desktop script | why it is not here |
 |---|---|
-| quiet hours | `interceptNotification` is not implemented |
 | drop guard | `interceptDrop` is not implemented |
 | compose snippets | there is no compose or input hook |
 | call assistant | there is no calls API |
@@ -263,7 +271,7 @@ the other desktop scripts need APIs this build does not have yet:
 ## what is not here yet
 
 - settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
-- the notification, drop and outgoing-message interceptors;
+- the drop and outgoing-message interceptors, and the full message in the notification hook;
 - calls, the music player, file pickers and file access, and the theme beyond day and night;
 - local messages, the widget layer and module imports from `tele`.
 

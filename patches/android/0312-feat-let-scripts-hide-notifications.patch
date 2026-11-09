@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 07:59:47 +0300
+Subject: [PATCH] feat: let scripts hide notifications
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   | 51 +++++++++++++-
+ .../messenger/NotificationsController.java    | 20 +++++-
+ .../tele/scripting/ScriptNotifications.kt     | 67 +++++++++++++++++++
+ .../main/java/tele/scripting/ScriptRuntime.kt | 30 +++++++++
+ 4 files changed, 164 insertions(+), 4 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index 3a72595af..68f04f95a 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -70,6 +70,8 @@
+ 	const timers = new Map();
+ 	const linkInterceptors = [];
+ 	let nextLink = 1;
++	const notificationInterceptors = [];
++	let nextNotification = 1;
+ 	const settingsPages = new Map();
+ 	let nextPage = 1;
+ 	let activeSettingsPage = 0;
+@@ -182,6 +184,39 @@
+ 		}
+ 	};
+ 
++	globalThis.__teleNotification = (payload) => {
++		try {
++			const message = JSON.parse(payload);
++			const token = message.token;
++			const context = {
++				chatId: message.chatId,
++				fromId: message.fromId,
++				kind: message.kind,
++				message: { mentioned: !!message.mentioned, text: message.text ?? '' },
++			};
++			for (const entry of notificationInterceptors) {
++				const callback = callbacks.get(entry.callback);
++				if (callback === undefined) {
++					continue;
++				}
++				let verdict = callback(context);
++				if (verdict === undefined || verdict === null) {
++					verdict = 'show';
++				}
++				if (typeof verdict !== 'string') {
++					continue;
++				}
++				if (verdict === 'drop') {
++					host('notification.verdict', { token, drop: true });
++					return;
++				}
++			}
++			host('notification.verdict', { token, drop: false });
++		} catch (error) {
++			report(error);
++		}
++	};
++
+ 	globalThis.__teleTimer = (id) => {
+ 		const entry = timers.get(Number(id));
+ 		if (entry === undefined) {
+@@ -383,9 +418,19 @@
+ 			});
+ 		},
+ 		interceptNotification: (callback) => {
+-			const id = remember(callback);
+-			host('intercept.register', { id, kind: 'notification' });
+-			return disposer(() => host('intercept.unregister', id));
++			if (typeof callback !== 'function') {
++				throw new TypeError('tg.interceptNotification(function)');
++			}
++			const id = nextNotification++;
++			notificationInterceptors.push({ id, callback: remember(callback) });
++			host('notification.register', { id });
++			return disposer(() => {
++				const at = notificationInterceptors.findIndex((entry) => entry.id === id);
++				if (at >= 0) {
++					notificationInterceptors.splice(at, 1);
++				}
++				host('notification.unregister', { id });
++			});
+ 		},
+ 		listenSend: () => {
+ 			throw new TeleError('unsupported', 'send interceptors are not available on android yet');
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+index ab965df98..02d92ee37 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+@@ -1087,7 +1087,25 @@ public class NotificationsController extends BaseController implements Notificat
+             FileLog.d("NotificationsController: processNewMessages msgs.size()=" + (messageObjects == null ? "null" : messageObjects.size()) + " isLast=" + isLast + " isFcm=" + isFcm + ")");
+         }
+ 
+-        if (messageObjects != null) {
++        if (messageObjects != null && !messageObjects.isEmpty()) {
++            // scripts can drop a notification while a message stays unread (quiet hours and the like)
++            for (int i = 0; i < messageObjects.size(); ++i) {
++                final MessageObject messageObject = messageObjects.get(i);
++                if (messageObject == null || messageObject.messageOwner == null) {
++                    continue;
++                }
++                boolean show = tele.scripting.ScriptNotifications.intercept(
++                        messageObject.getDialogId(),
++                        messageObject.getFromChatId(),
++                        "message",
++                        messageObject.messageOwner.mentioned,
++                        messageObject.messageText == null ? null : messageObject.messageText.toString()
++                );
++                if (!show) {
++                    messageObjects.remove(i);
++                    i--;
++                }
++            }
+             for (int i = 0; i < messageObjects.size(); ++i) {
+                 final MessageObject messageObject = messageObjects.get(i);
+                 if (messageObject != null && messageObject.messageOwner != null&& !messageObject.isOutOwner() && messageObject.messageOwner.action instanceof TLRPC.TL_messageActionConferenceCall) {
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt
+new file mode 100644
+index 000000000..ec1133cfb
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt
+@@ -0,0 +1,67 @@
++package tele.scripting
++
++import org.json.JSONObject
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.CopyOnWriteArrayList
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.TimeUnit
++import java.util.concurrent.atomic.AtomicInteger
++
++/**
++ * The notification interceptors of the running scripts: a new message notification is offered to
++ * them before the app shows it, and a script that says drop keeps it away. No answer fails open.
++ */
++object ScriptNotifications {
++
++    private const val TIMEOUT_MS = 500L
++
++    private val runtimes = CopyOnWriteArrayList<ScriptRuntime>()
++    private val waiters = ConcurrentHashMap<Int, CountDownLatch>()
++    private val verdicts = ConcurrentHashMap<Int, Boolean>()
++    private val tokens = AtomicInteger(1)
++
++    @JvmStatic
++    fun register(runtime: ScriptRuntime) {
++        if (!runtimes.contains(runtime)) runtimes.add(runtime)
++    }
++
++    @JvmStatic
++    fun unregister(runtime: ScriptRuntime) {
++        runtimes.remove(runtime)
++    }
++
++    @JvmStatic
++    fun verdict(token: Int, drop: Boolean) {
++        verdicts[token] = drop
++        waiters[token]?.countDown()
++    }
++
++    /** True to show the notification, false to drop it. */
++    @JvmStatic
++    fun intercept(chatId: Long, fromId: Long, kind: String, mentioned: Boolean, text: String?): Boolean {
++        if (runtimes.isEmpty()) return true
++        for (runtime in runtimes) {
++            if (!runtime.hasNotificationInterceptors()) continue
++            val token = tokens.getAndIncrement()
++            val latch = CountDownLatch(1)
++            waiters[token] = latch
++            val payload = JSONObject()
++                .put("token", token)
++                .put("chatId", chatId)
++                .put("fromId", fromId)
++                .put("kind", kind)
++                .put("mentioned", mentioned)
++                .put("text", text ?: "")
++            if (!runtime.requestNotification(token, payload)) {
++                waiters.remove(token)
++                continue
++            }
++            val answered = latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
++            val drop = verdicts.remove(token)
++            waiters.remove(token)
++            if (!answered || drop == null) return true
++            if (drop) return false
++        }
++        return true
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index 981b75043..c75dfb282 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -46,6 +46,7 @@ class ScriptRuntime(
+     private val assets = HashMap<String, String>()
+     private val schedules = HashMap<Int, java.util.concurrent.ScheduledFuture<*>>()
+     private val linkInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
++    private val notificationInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     @Volatile
+     private var settingsTitle: String? = null
+     @Volatile
+@@ -80,6 +81,18 @@ class ScriptRuntime(
+ 
+     fun hasLinkInterceptors(): Boolean = linkInterceptors.isNotEmpty()
+ 
++    fun hasNotificationInterceptors(): Boolean = notificationInterceptors.isNotEmpty()
++
++    /** Asks the script's notification interceptors; the answer comes back through notification.verdict. */
++    fun requestNotification(token: Int, payload: JSONObject): Boolean {
++        if (!running || handle == 0L || notificationInterceptors.isEmpty()) return false
++        queue.offer(Runnable {
++            val error = QuickJs.call(handle, "__teleNotification", payload.toString())
++            if (error != null) fault(error)
++        })
++        return true
++    }
++
+     /** Asks the script's interceptors about a link; the answer comes back through link.verdict. */
+     fun requestLink(token: Int, url: String): Boolean {
+         if (!running || handle == 0L || linkInterceptors.isEmpty()) return false
+@@ -246,6 +259,21 @@ class ScriptRuntime(
+                     settingsBuilder = argsValue.optInt("builder")
+                     true
+                 }
++                "notification.register" -> {
++                    notificationInterceptors.add(scalar?.toIntOrNull() ?: 0)
++                    ScriptNotifications.register(this)
++                    true
++                }
++                "notification.unregister" -> {
++                    notificationInterceptors.remove(scalar?.toIntOrNull() ?: 0)
++                    if (notificationInterceptors.isEmpty()) ScriptNotifications.unregister(this)
++                    true
++                }
++                "notification.verdict" -> {
++                    val argsValue = value ?: JSONObject()
++                    ScriptNotifications.verdict(argsValue.optInt("token"), argsValue.optBoolean("drop"))
++                    true
++                }
+                 "link.register" -> {
+                     linkInterceptors.add(scalar?.toIntOrNull() ?: 0)
+                     ScriptLinks.register(this)
+@@ -604,6 +632,8 @@ class ScriptRuntime(
+         settingsRowsJson = null
+         linkInterceptors.clear()
+         ScriptLinks.unregister(this)
++        notificationInterceptors.clear()
++        ScriptNotifications.unregister(this)
+         ScriptMenu.clear(this)
+         ScriptDisplay.clearScript(account, id)
+         listeners.clear()
