@@ -1,0 +1,186 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 19:51:22 +0300
+Subject: [PATCH] feat: let scripts follow the player
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   | 13 ++-
+ .../main/java/tele/scripting/ScriptPlayer.kt  | 99 +++++++++++++++++++
+ .../main/java/tele/scripting/ScriptRuntime.kt | 20 ++++
+ 3 files changed, 129 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index bcd8fe912..aaeabaed5 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -509,9 +509,16 @@
+ 		windowSetTitle: () => {},
+ 		windowSetBadge: () => {},
+ 		windowFlash: () => {},
+-		playerCurrent: () => null,
+-		playerControl: () => false,
+-		playerOnChange: () => disposer(() => {}),
++		playerCurrent: () => host('player.current'),
++		playerControl: (action) => host('player.control', String(action ?? '')),
++		playerOnChange: (callback) => {
++			if (typeof callback !== 'function') {
++				throw new TypeError('tg.app.player.onChange(function)');
++			}
++			const id = remember(callback);
++			host('player.listen', { id });
++			return disposer(() => host('player.unlisten', { id }));
++		},
+ 		callCurrent: () => null,
+ 		callControl: () => false,
+ 		callStart: () => {
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+new file mode 100644
+index 000000000..b491f87c9
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+@@ -0,0 +1,99 @@
++package tele.scripting
++
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.MediaController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.NotificationCenter
++import java.util.concurrent.CopyOnWriteArrayList
++
++/** The app player as the scripts see it: a snapshot of what plays, the controls and the changes. */
++object ScriptPlayer {
++
++    private val listeners = CopyOnWriteArrayList<Pair<ScriptRuntime, Int>>()
++    private var observing = false
++
++    private val delegate = object : NotificationCenter.NotificationCenterDelegate {
++        override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++            notifyListeners()
++        }
++    }
++
++    @JvmStatic
++    fun current(): JSONObject? {
++        val controller = MediaController.getInstance()
++        val message = controller.getPlayingMessageObject() ?: return null
++        val document = message.getDocument()
++        val seconds = message.getDuration()
++        val playing = controller.isPlayingMessage(message)
++        val type = when {
++            message.isVoice() -> "voice"
++            message.isRoundVideo() -> "video"
++            else -> "song"
++        }
++        return JSONObject()
++            .put("type", type)
++            .put("title", message.getMusicTitle().orEmpty())
++            .put("performer", message.getMusicAuthor().orEmpty())
++            .put("duration", seconds * 1000L)
++            .put("position", (message.audioProgress * seconds * 1000L).toLong())
++            .put("playing", playing)
++            .put("chatId", JSONObject().put("\$b", message.getDialogId().toString()))
++            .put("messageId", message.getId())
++            .put("documentId", JSONObject().put("\$b", (document?.id ?: 0L).toString()))
++    }
++
++    @JvmStatic
++    fun control(action: String): Boolean {
++        AndroidUtilities.runOnUIThread {
++            val controller = MediaController.getInstance()
++            val message = controller.getPlayingMessageObject() ?: return@runOnUIThread
++            when (action) {
++                "play" -> if (!controller.isPlayingMessage(message)) controller.playMessage(message)
++                "pause" -> if (controller.isPlayingMessage(message)) controller.pauseMessage(message)
++                "toggle" -> if (controller.isPlayingMessage(message)) controller.pauseMessage(message) else controller.playMessage(message)
++                "stop" -> controller.cleanup()
++                "next" -> controller.playNextMessage()
++                "previous" -> controller.playPreviousMessage()
++            }
++        }
++        return true
++    }
++
++    @JvmStatic
++    fun listen(runtime: ScriptRuntime, id: Int) {
++        if (listeners.none { it.first === runtime && it.second == id }) {
++            listeners.add(runtime to id)
++        }
++        ensureObserver()
++    }
++
++    @JvmStatic
++    fun unlisten(runtime: ScriptRuntime, id: Int) {
++        listeners.removeAll { it.first === runtime && it.second == id }
++    }
++
++    @JvmStatic
++    fun unregister(runtime: ScriptRuntime) {
++        listeners.removeAll { it.first === runtime }
++    }
++
++    private fun ensureObserver() {
++        if (observing) return
++        observing = true
++        val center = NotificationCenter.getGlobalInstance()
++        center.addObserver(delegate, NotificationCenter.messagePlayingDidStart)
++        center.addObserver(delegate, NotificationCenter.messagePlayingPlayStateChanged)
++        center.addObserver(delegate, NotificationCenter.messagePlayingDidReset)
++    }
++
++    private fun notifyListeners() {
++        if (listeners.isEmpty()) return
++        listeners.removeAll { !it.first.isRunning() }
++        for ((runtime, id) in listeners) {
++            val track = current()
++            runtime.dispatchPlayer(id, track ?: JSONObject.NULL)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index 63f385db3..e01af5634 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -89,6 +89,12 @@ class ScriptRuntime(
+ 
+     fun hasComposeHandlers(): Boolean = composeHandlers.isNotEmpty()
+ 
++    fun isRunning(): Boolean = running
++
++    fun dispatchPlayer(id: Int, track: Any) {
++        dispatch(id, "player", JSONArray().put(track))
++    }
++
+     fun dispatchCompose(context: JSONObject) {
+         for (id in composeHandlers) {
+             dispatch(id, "compose", JSONArray().put(context))
+@@ -281,6 +287,19 @@ class ScriptRuntime(
+                     settingsBuilder = argsValue.optInt("builder")
+                     true
+                 }
++                "player.current" -> ScriptPlayer.current()
++                "player.control" -> {
++                    if (!allows("app")) throw ScriptException("not-granted", "tg.app.player needs the grant 'app'", JSONObject().put("grant", "app"))
++                    ScriptPlayer.control(scalar.orEmpty())
++                }
++                "player.listen" -> {
++                    ScriptPlayer.listen(this, idOf(value, scalar))
++                    true
++                }
++                "player.unlisten" -> {
++                    ScriptPlayer.unlisten(this, idOf(value, scalar))
++                    true
++                }
+                 "compose.register" -> {
+                     if (!allows("account.read", "draft")) {
+                         throw ScriptException("not-granted", "tg.compose.onInput needs the grant 'account.read(draft)'", JSONObject().put("grant", "account.read(draft)"))
+@@ -718,6 +737,7 @@ class ScriptRuntime(
+         ScriptDrops.unregister(this)
+         composeHandlers.clear()
+         ScriptCompose.unregister(this)
++        ScriptPlayer.unregister(this)
+         ScriptMenu.clear(this)
+         ScriptDisplay.clearScript(account, id)
+         listeners.clear()

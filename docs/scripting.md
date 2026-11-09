@@ -209,6 +209,16 @@ const dispose = tg.interceptNotification(({ kind, message }) => 'show')       //
 
 Called before a new message notification is shown: `kind` is `"message"`, `message.mentioned` says whether it mentions you, and returning `'drop'` keeps the notification away while the message stays unread. The message itself is not passed in full yet, and an answer has to be synchronous.
 
+### the player
+
+```ts
+const track = tg.app.player.current()                    // free
+const dispose = tg.app.player.onChange((track) => {})    // free
+tg.app.player.pause()                                    // needs app
+```
+
+The app's media player: music files, voice and round video messages, whatever account plays them. `current()` returns `{ type, title, performer, duration, position, playing, chatId, messageId, documentId }` or `null`; `play`, `pause`, `toggle`, `stop`, `next` and `previous` control it. `onChange` fires when the track or its play state changes, and its disposer removes the listener.
+
 ### the message field
 
 ```ts
@@ -286,6 +296,7 @@ The page is built when the app opens it, so the rows always show the current val
 - [quiet-hours](scripts/quiet-hours/script.js): drops message notifications between two hours, mentions still come through.
 - [drop-guard](scripts/drop-guard/script.js): keeps programs, scripts and files over a limit out of the chats they are shared into.
 - [compose-snippets](scripts/compose-snippets/script.js): expands short codes into text while you type in the message field.
+- [music-status](scripts/music-status/script.js): puts the song you listen to into your bio, and gives the normal bio back when the player stops.
 
 the other desktop scripts need APIs this build does not have yet:
 
