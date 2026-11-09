@@ -534,6 +534,14 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 | `0323-fix-send-optional-script-request-fields` | built | генератор TL-индекса распознаёт числовые маски `hasFlag` и преобразует `FLAG_N` в `1 << N`; `account.updateProfile.about` теперь уходит с битом 4, а не успешным пустым запросом. Кэш профиля обновляется на UI-потоке только после ответа сервера. Пример music status запоминает био только после успешного RPC. 4 регрессионных теста генератора; ручная проверка био ожидается |
 | `0324-fix-refresh-script-translations-and-show-text-dialog` | built | декорация перестраивает уже загруженное сообщение и восстанавливает оригинал при снятии/выключении скрипта; исходные entities не применяются к переводу. Исправлены channel peer ids и проверка display-grant. `tg.ui.show` показывает нативный диалог с Copy; quick translate подменяет текст локально, повторный тап восстанавливает, подписи медиа открываются диалогом. 45 JVM-регрессионных проверок ScriptDisplay прошли; debug APK собран и установлен на emulator-5554, примеры скриптов обновлены. Ручная проверка ожидается |
 
+### укрепление существующего runtime скриптинга
+
+| Android | статус | примечание |
+|---|---|---|
+| `0325-fix-isolate-scripts-and-enforce-runtime-permissions` | built | native grants для updates, calls, player, draft, interceptors и script bus; player/calls/compose/cache/bus изолированы по аккаунту и runtime. Декорации: owner+token, инвалидация по правке источника, сброс global-кэша и пустых результатов, защита UI при ошибке layout. Молчаливые API-заглушки → unsupported. HTTP отменяется по runtime до конца body, общий 30с deadline редиректов; TL token отменяется при stop/timeout. JNI interrupt защищён от гонки destroy. 68 JVM-проверок display, 31 web, проверки аккаунтов/остановки и 27 JS API прошли. Сетевые тесты используют transport stubs, не настоящие сокеты; полным security-аудитом это не считается. Ручная проверка ожидается |
+
+Оставшиеся ограничения: fetch блокирует поток скрипта; активный AbortSignal отклоняется явно (native deadline и stop работают). Нет caption replacement, модульных импортов, local messages и widget-слоя; синхронные global decorators могут задерживать UI (таймаут ожидания снижен до 50мс на runtime). Старт ждёт account-ready на globalQueue; массовая остановка всё ещё может ждать потоки по очереди. Нужны реальные multi-account/JNI/network stress-проверки. Эти пункты не считаются закрытыми прошедшими stub-тестами.
+
 ## пачка 29 — html-пузыри .tgw (закрыта)
 
 litehtml через NDK, карточки в пузыре, playground-чат (десктоп 0312/0313).

@@ -67,9 +67,15 @@ a grant is `name` or `name(scope)`. scopes are matched exactly or with a trailin
 | `call(<method>)` | any other `tg.call` request, for example `call(messages.getHistory)` |
 | `fetch(<host>)` | `fetch` to that exact host; redirects are checked again on every hop |
 | `display(messages)` | `tg.decorateMessages` and `tg.decorateMessage`; changes are local to this device |
-| `app` | `tg.openChat` |
+| `app` | `tg.openChat`, reading and controlling the player, changing day/night mode |
+| `calls` | reading and controlling calls belonging to this script's account |
+| `onUpdate` | all raw updates for this account; scoped `onUpdate(new_message)` does not permit raw update subscriptions |
+| `account.read(messages)` | reading an already cached message from this account |
+| `account.read(draft)` / `account.write(draft)` | reading / changing the open message field of this account |
+| `interceptLink`, `interceptNotification`, `interceptDrop` | the corresponding link, notification and shared-file interceptors |
+| `scripts` | discovering and messaging scripts within the same account |
 
-the other grants from the desktop runtime are recognized in the consent dialog but their APIs are not available on android yet. a script that needs one of them does not start.
+Permissions are enforced by the native host as well as the script API. A missing grant fails with `not-granted`. Unsupported APIs fail with `unsupported`, rather than returning an empty list or installing a listener that never fires. Not every permission recognized by the consent dialog has an Android implementation.
 
 ## api
 
@@ -347,6 +353,8 @@ Quick translate caches up to 32 successful translations in memory for one hour (
 
 - a script source is at most 2 MB; the runtime has 64 MB of memory and a 1 MB stack.
 - the log opens as a screen of monospace lines with their times, like the mtproto log, from the script's menu.
-- one runtime per script and account, on its own thread. stopping a script stops its timers, menus, decorations and network requests.
+- one runtime per script and account, on its own thread. Stopping cancels its HTTP calls, including response-body reads, and pending TL requests; this cannot undo an RPC the server already processed. Another script's requests are not cancelled.
+- `fetch` has a native 30-second total deadline including redirects, and checks host grants on each redirect. It currently blocks the script thread: active `AbortSignal`/`AbortSignal.timeout` fetch requests fail with `unsupported` instead of pretending to abort asynchronously. Stopping the script still cancels the native request.
+- explicit text decorations expire when the source message is edited; stale disposers cannot remove a newer decoration. Global decorator registration/removal invalidates cached results and refreshes loaded messages. Text replacement supports text/emoji messages, not media captions.
 - storage is 16 MB per script and account; the log keeps the last 200 lines.
 - setup errors and runtime errors are shown in the script's page and its log; the script stays off after a crash.

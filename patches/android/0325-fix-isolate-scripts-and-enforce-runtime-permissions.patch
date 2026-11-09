@@ -1,0 +1,1184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 10 Nov 2026 01:35:06 +0300
+Subject: [PATCH] fix: isolate scripts and enforce runtime permissions
+
+---
+ TMessagesProj/jni/tele_script_jni.cpp         |   7 +-
+ .../main/assets/tele/scripting/bootstrap.js   |  66 +++++------
+ .../src/main/assets/tele/scripting/runtime.js |   4 +-
+ .../org/telegram/messenger/MessageObject.java |   3 +
+ .../main/java/tele/scripting/ScriptCalls.kt   |  23 ++--
+ .../main/java/tele/scripting/ScriptCompose.kt |  16 ++-
+ .../main/java/tele/scripting/ScriptDisplay.kt | 105 ++++++++++++------
+ .../main/java/tele/scripting/ScriptGrants.kt  |   5 +-
+ .../main/java/tele/scripting/ScriptPlayer.kt  |  25 +++--
+ .../main/java/tele/scripting/ScriptRuntime.kt |  78 +++++++++----
+ .../src/main/java/tele/scripting/ScriptTl.kt  |  22 ++--
+ .../src/main/java/tele/scripting/ScriptUi.kt  |  17 +--
+ .../src/main/java/tele/scripting/ScriptWeb.kt |  52 +++++----
+ .../src/main/java/tele/scripting/Scripts.kt   |  49 ++++----
+ 14 files changed, 291 insertions(+), 181 deletions(-)
+
+diff --git a/TMessagesProj/jni/tele_script_jni.cpp b/TMessagesProj/jni/tele_script_jni.cpp
+index 6b5368bb2..9b3df63ed 100644
+--- a/TMessagesProj/jni/tele_script_jni.cpp
++++ b/TMessagesProj/jni/tele_script_jni.cpp
+@@ -337,8 +337,11 @@ Java_tele_scripting_QuickJs_runJobs(JNIEnv *env, jclass, jlong handle) {
+ 
+ JNIEXPORT void JNICALL
+ Java_tele_scripting_QuickJs_interrupt(JNIEnv *, jclass, jlong handle) {
+-    auto *runtime = GetRuntime(handle);
+-    if (runtime != nullptr) runtime->interrupted.store(true);
++    std::lock_guard<std::mutex> guard(g_lock);
++    auto *runtime = reinterpret_cast<Runtime *>(handle);
++    if (runtime != nullptr && g_runtimes.find(runtime) != g_runtimes.end()) {
++        runtime->interrupted.store(true);
++    }
+ }
+ 
+ } // extern "C"
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index d5a03827d..2cc4b3a6e 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -326,12 +326,16 @@
+ 		return config;
+ 	};
+ 
++	const unsupported = (feature) => () => {
++		throw new TeleError('unsupported', `${feature} is not available on android yet`);
++	};
++
+ 	const given = {
+-		current: () => host('current'),
++		current: unsupported('reading the current chat'),
+ 		peerInput: (id) => host('peerInput', String(id)),
+ 		accountsList: () => host('accounts.list'),
+ 		accountsSwitch: (id) => host('accounts.switch', String(id)),
+-		connection: () => host('connection'),
++		connection: unsupported('reading the connection state'),
+ 		themeGet: () => host('theme.get'),
+ 		openChat: (peer, message) => host('open.chat', { peer, message }),
+ 		openProfile: (peer) => host('open.profile', peer),
+@@ -387,7 +391,7 @@
+ 		localAdd: () => {
+ 			throw new TeleError('unsupported', 'local messages are not available on android yet');
+ 		},
+-		localList: () => [],
++		localList: unsupported('listing local messages'),
+ 		localRemove: () => {
+ 			throw new TeleError('unsupported', 'local messages are not available on android yet');
+ 		},
+@@ -397,10 +401,10 @@
+ 		localDialogs: () => {
+ 			throw new TeleError('unsupported', 'local dialogs are not available on android yet');
+ 		},
+-		localUnread: () => [],
+-		localFolders: () => [],
+-		localLoaded: () => [],
+-		localDraft: () => null,
++		localUnread: unsupported('listing local unread chats'),
++		localFolders: unsupported('listing local folders'),
++		localLoaded: unsupported('listing loaded chats'),
++		localDraft: unsupported('reading local drafts'),
+ 		command: () => {
+ 			throw new TeleError('unsupported', 'command palette is not available on android yet');
+ 		},
+@@ -510,8 +514,8 @@
+ 			host('decorate.register', id);
+ 			return disposer(() => host('decorate.unregister', id));
+ 		},
+-		decorateMessage: (peer, id, decoration) => {
+-			host('decorate.message', { peer, id: String(id), decoration: decoration ?? null });
++		decorateMessage: (peer, id, decoration, token) => {
++			return host('decorate.message', { peer, id: String(id), decoration: decoration ?? null, token: token ?? null });
+ 		},
+ 		themeSetDark: () => {
+ 			throw new TeleError('unsupported', 'changing the theme is not available on android yet');
+@@ -522,10 +526,10 @@
+ 		themeSetColors: () => {
+ 			throw new TeleError('unsupported', 'changing the theme is not available on android yet');
+ 		},
+-		themeOnChange: () => disposer(() => {}),
+-		windowSetTitle: () => {},
+-		windowSetBadge: () => {},
+-		windowFlash: () => {},
++		themeOnChange: unsupported('theme change events'),
++		windowSetTitle: unsupported('changing the desktop window title'),
++		windowSetBadge: unsupported('changing the desktop window badge'),
++		windowFlash: unsupported('flashing the desktop window'),
+ 		playerCurrent: () => host('player.current'),
+ 		playerControl: (action) => host('player.control', String(action ?? '')),
+ 		playerOnChange: (callback) => {
+@@ -549,30 +553,23 @@
+ 			host('call.listen', { id });
+ 			return disposer(() => host('call.unlisten', { id }));
+ 		},
+-		teleIgnored: () => [],
+-		teleSetIgnored: () => false,
+-		teleGhost: () => null,
+-		teleSetGhost: () => false,
+-		teleGhostChats: () => [],
+-		teleLocalNames: () => [],
+-		teleSetLocalName: () => false,
++		teleIgnored: unsupported('reading the ignore list'),
++		teleSetIgnored: unsupported('changing the ignore list'),
++		teleGhost: unsupported('reading per-chat ghost mode'),
++		teleSetGhost: unsupported('changing per-chat ghost mode'),
++		teleGhostChats: unsupported('listing ghost-mode chats'),
++		teleLocalNames: unsupported('listing local names'),
++		teleSetLocalName: unsupported('changing local names'),
+ 		overridePeer: (peer, override) => {
+ 			host('display.overridePeer', { peer, override: override ?? null });
+ 		},
+-		onWake: () => disposer(() => {}),
+-		onConnectionChange: () => disposer(() => {}),
+-		onChatOpened: () => disposer(() => {}),
++		onWake: unsupported('wake events'),
++		onConnectionChange: unsupported('connection change events'),
++		onChatOpened: unsupported('chat-opened events'),
+ 		optionsList: () => host('options.list'),
+-		optionsGet: (id) => host('options.get', id),
+-		optionsSet: (id, value) => host('options.set', { id, value }),
+-		optionsOnChange: (callback) => {
+-			if (typeof callback === 'function') {
+-				const id = remember(callback);
+-				host('options.listen', id);
+-				return disposer(() => host('options.unlisten', id));
+-			}
+-			return disposer(() => {});
+-		},
++		optionsGet: unsupported('reading script options'),
++		optionsSet: unsupported('changing script options'),
++		optionsOnChange: unsupported('script option change events'),
+ 		page: (title, build) => {
+ 			const id = nextPage++;
+ 			settingsPages.set(id, {
+@@ -930,6 +927,9 @@
+ 
+ 	globalThis.fetch = async (url, init = undefined) => {
+ 		const options = init ?? {};
++		if (options.__teleAbort || options.signal != null) {
++			throw new TeleError('unsupported', 'fetch signals are not available on android; requests have a native 30 second timeout and stop with the script');
++		}
+ 		const answer = host('fetch', {
+ 			url: String(url),
+ 			method: options.method ?? 'GET',
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/runtime.js b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+index c5b7fe52d..83f12a43c 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/runtime.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/runtime.js
+@@ -1641,8 +1641,8 @@
+ 
+ 			async decorateMessage(peer, id, decoration) {
+ 				const input = await resolvePeer(peer);
+-				given.decorateMessage(input, id, decoration ?? null);
+-				return __teleDisposer(() => given.decorateMessage(input, id, null));
++				const token = given.decorateMessage(input, id, decoration ?? null);
++				return __teleDisposer(() => given.decorateMessage(input, id, null, token));
+ 			},
+ 
+ 			async getCachedMessage(peer, id) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+index 6ce360523..dd401cf88 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+@@ -3968,6 +3968,9 @@ public class MessageObject {
+         if (isFromUser()) {
+             fromUser = MessagesController.getInstance(currentAccount).getUser(messageOwner.from_id.user_id);
+         }
++        if (tele.TeleConfig.SCRIPTING.getValue()) {
++            tele.scripting.ScriptDisplay.onTextChanged(this);
++        }
+         messageText = text;
+         final ArrayList<TLRPC.MessageEntity> entities = getEntities();
+         final TextPaint paint;
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt
+index ca9071b6b..b627cf8f4 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt
+@@ -14,7 +14,7 @@ object ScriptCalls {
+     private val listeners = CopyOnWriteArrayList<Pair<ScriptRuntime, Int>>()
+     private val handler = Handler(Looper.getMainLooper())
+     private var polling = false
+-    private var lastSnapshot = ""
++    private val snapshots = java.util.concurrent.ConcurrentHashMap<Int, String>()
+ 
+     private val poll = object : Runnable {
+         override fun run() {
+@@ -23,12 +23,13 @@ object ScriptCalls {
+                 return
+             }
+             listeners.removeAll { !it.first.isRunning() }
+-            val snapshot = current()?.toString() ?: ""
+-            if (snapshot != lastSnapshot) {
+-                lastSnapshot = snapshot
+-                val call = if (snapshot.isEmpty()) JSONObject.NULL else JSONObject(snapshot)
+-                for ((runtime, id) in listeners) {
+-                    runtime.dispatchCall(id, call)
++            for ((account, entries) in listeners.groupBy { it.first.account }) {
++                val snapshot = current(account)?.toString() ?: ""
++                if (snapshot != snapshots.put(account, snapshot)) {
++                    val call = if (snapshot.isEmpty()) JSONObject.NULL else JSONObject(snapshot)
++                    for ((runtime, id) in entries) {
++                        runtime.dispatchCall(id, call)
++                    }
+                 }
+             }
+             handler.postDelayed(this, 1000)
+@@ -36,8 +37,9 @@ object ScriptCalls {
+     }
+ 
+     @JvmStatic
+-    fun current(): JSONObject? {
++    fun current(account: Int): JSONObject? {
+         val service = VoIPService.getSharedInstance() ?: return null
++        if (service.account != account) return null
+         val state = when (service.getCallState()) {
+             VoIPService.STATE_WAITING_INCOMING -> "incoming"
+             VoIPService.STATE_RINGING -> "ringing"
+@@ -58,8 +60,9 @@ object ScriptCalls {
+     }
+ 
+     @JvmStatic
+-    fun control(action: String): Boolean {
++    fun control(runtime: ScriptRuntime, action: String): Boolean {
+         val service = VoIPService.getSharedInstance() ?: return false
++        if (!runtime.isRunning() || service.account != runtime.account) return false
+         return try {
+             when (action) {
+                 "answer" -> { service.acceptIncomingCall(); true }
+@@ -80,7 +83,7 @@ object ScriptCalls {
+         }
+         if (!polling) {
+             polling = true
+-            lastSnapshot = current()?.toString() ?: ""
++            snapshots.clear()
+             handler.post(poll)
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt
+index 819c22414..1eeb69272 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt
+@@ -29,14 +29,16 @@ object ScriptCompose {
+     fun isApplying(): Boolean = applying
+ 
+     @JvmStatic
+-    fun text(): String? {
++    fun text(account: Int): String? {
+         val view = field?.get() ?: return null
++        if (view.parentFragment?.currentAccount != account) return null
+         return view.messageEditText?.text?.toString() ?: ""
+     }
+ 
+     @JvmStatic
+-    fun chatId(): Long {
++    fun chatId(account: Int): Long {
+         val view = field?.get() ?: return 0
++        if (view.parentFragment?.currentAccount != account) return 0
+         return view.tele_getDialogId()
+     }
+ 
+@@ -48,7 +50,7 @@ object ScriptCompose {
+         if (applying || runtimes.isEmpty()) return
+         val context = JSONObject().put("chatId", id).put("text", text)
+         for (runtime in runtimes) {
+-            if (runtime.hasComposeHandlers()) {
++            if (runtime.account == view.parentFragment?.currentAccount && runtime.hasComposeHandlers()) {
+                 runtime.dispatchCompose(context)
+             }
+         }
+@@ -56,9 +58,11 @@ object ScriptCompose {
+ 
+     /** The script set the field: applied on the ui thread and not fed back to the scripts. */
+     @JvmStatic
+-    fun setText(peer: Long, text: String) {
++    fun setText(runtime: ScriptRuntime, peer: Long, text: String) {
+         org.telegram.messenger.AndroidUtilities.runOnUIThread {
++            if (!runtime.isRunning()) return@runOnUIThread
+             val view = field?.get() ?: return@runOnUIThread
++            if (view.parentFragment?.currentAccount != runtime.account) return@runOnUIThread
+             if (peer != 0L && peer != view.tele_getDialogId()) return@runOnUIThread
+             applying = true
+             view.tele_setComposeText(text)
+@@ -67,9 +71,11 @@ object ScriptCompose {
+     }
+ 
+     @JvmStatic
+-    fun insert(text: String): Boolean {
++    fun insert(runtime: ScriptRuntime, text: String): Boolean {
+         val view = field?.get() ?: return false
++        if (view.parentFragment?.currentAccount != runtime.account) return false
+         org.telegram.messenger.AndroidUtilities.runOnUIThread {
++            if (!runtime.isRunning() || view !== field?.get() || view.parentFragment?.currentAccount != runtime.account) return@runOnUIThread
+             val current = view.messageEditText?.text?.toString().orEmpty()
+             applying = true
+             view.tele_setComposeText(current + text)
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
+index a037bf107..e0831b987 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
+@@ -5,8 +5,10 @@ import org.json.JSONObject
+ import org.telegram.messenger.MessageObject
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.FileLog
+ import tele.TeleConfig
+ import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.atomic.AtomicLong
+ 
+ class Decoration(
+     @JvmField val text: String?,
+@@ -16,35 +18,39 @@ class Decoration(
+     @JvmField val hidden: Boolean
+ )
+ 
+-/** Local message decorations from scripts: explicit per message and the display(messages) gate. */
+ object ScriptDisplay {
+-    private val explicit = ConcurrentHashMap<String, Decoration>()
+-    private val owners = ConcurrentHashMap<String, String>()
+-    private val cache = ConcurrentHashMap<String, Decoration?>()
++    private data class Source(val text: String?, val editDate: Int)
++    private data class Entry(val script: String, val token: Long, val value: Decoration, val source: Source?)
++    private data class Cached(val source: Source, val value: Decoration?)
++    private data class Original(val text: CharSequence, val source: Source, val translated: Boolean, val summarized: Boolean)
++    private val explicit = ConcurrentHashMap<String, Entry>()
++    private val cache = ConcurrentHashMap<String, Cached>()
++    private val tokens = AtomicLong()
+     private val messages = java.util.Collections.synchronizedMap(java.util.WeakHashMap<MessageObject, Boolean>())
+-    private data class Original(val text: CharSequence, val source: String?, val editDate: Int, val translated: Boolean, val summarized: Boolean)
+     private val originals = java.util.WeakHashMap<MessageObject, Original>()
+ 
+     private fun key(account: Int, peerId: Long, messageId: Int) = "$account:$peerId:$messageId"
++    private fun source(message: MessageObject) = Source(message.messageOwner.message, message.messageOwner.edit_date)
+ 
+     @JvmStatic
+-    fun set(account: Int, script: String, peerId: Long, messageId: Int, json: JSONObject?) {
++    @JvmOverloads
++    fun set(account: Int, script: String, peerId: Long, messageId: Int, json: JSONObject?, token: Long = 0): Long {
+         val key = key(account, peerId, messageId)
+-        if (json == null) {
+-            explicit.remove(key)
+-            owners.remove(key)
+-        } else {
+-            val value = parse(json)
+-            if (value == null) {
+-                explicit.remove(key)
+-                owners.remove(key)
+-            } else {
+-                explicit[key] = value
+-                owners[key] = script
+-            }
++        val value = json?.let(::parse)
++        if (value == null) {
++            val entry = explicit[key] ?: return 0
++            if (entry.script != script || token != 0L && entry.token != token) return 0
++            if (!explicit.remove(key, entry)) return 0
++            cache.remove(key)
++            refresh(account, key)
++            return 0
+         }
++        val loaded = synchronized(messages) { messages.keys.firstOrNull { it.currentAccount == account && it.getDialogId() == peerId && it.getId() == messageId } }
++        val next = tokens.incrementAndGet()
++        explicit[key] = Entry(script, next, value, loaded?.let(::source))
+         cache.remove(key)
+         refresh(account, key)
++        return next
+     }
+ 
+     @JvmStatic
+@@ -70,12 +76,23 @@ object ScriptDisplay {
+ 
+     @JvmStatic
+     fun decoration(account: Int, message: MessageObject): Decoration? {
++        if (!TeleConfig.SCRIPTING.value) return null
+         val key = key(account, message.getDialogId(), message.getId())
+-        explicit[key]?.let { return it }
+-        if (cache.containsKey(key)) return cache[key]
+-        val fromScripts = Scripts.decorateSync(account, message)
+-        if (fromScripts != null) cache[key] = fromScripts
+-        return fromScripts
++        val source = source(message)
++        explicit[key]?.let { entry ->
++            if (entry.source == null) {
++                val bound = entry.copy(source = source)
++                if (explicit.replace(key, entry, bound)) return entry.value
++            } else if (entry.source == source) {
++                return entry.value
++            } else {
++                explicit.remove(key, entry)
++            }
++        }
++        cache[key]?.let { if (it.source == source) return it.value }
++        val result = Scripts.decorateSync(account, message)
++        cache[key] = Cached(source, result)
++        return result
+     }
+ 
+     @JvmStatic
+@@ -85,35 +102,45 @@ object ScriptDisplay {
+         if (!TeleConfig.SCRIPTING.value) return
+         val text = decoration(account, message)?.text ?: return
+         synchronized(originals) {
+-            originals[message] = Original(message.messageText, message.messageOwner.message, message.messageOwner.edit_date, message.translated, message.summarized)
++            originals[message] = Original(message.messageText, source(message), message.translated, message.summarized)
+         }
+         message.messageText = SpannableStringBuilder(text)
+     }
+ 
++    @JvmStatic
++    fun onTextChanged(message: MessageObject) {
++        synchronized(originals) { originals.remove(message) }
++    }
++
+     @JvmStatic
+     fun hasReplacement(message: MessageObject): Boolean = synchronized(originals) { originals.containsKey(message) }
+ 
++    @JvmStatic
++    fun invalidate(account: Int) {
++        cache.keys.removeAll { it.startsWith("$account:") }
++        refresh(account)
++    }
++
+     @JvmStatic
+     fun clearScript(account: Int, script: String) {
+-        val mine = owners.entries.filter { it.value == script && it.key.startsWith("$account:") }.map { it.key }
+-        for (key in mine) {
+-            owners.remove(key)
+-            explicit.remove(key)
++        for ((key, entry) in explicit) {
++            if (entry.script == script && key.startsWith("$account:")) explicit.remove(key, entry)
+         }
+-        cache.clear()
+-        refresh(account)
++        invalidate(account)
+     }
+ 
+     @JvmStatic
+     fun clear() {
+         explicit.clear()
+         cache.clear()
++        val accounts = synchronized(messages) { messages.keys.map { it.currentAccount }.distinct() }
++        for (account in accounts) refresh(account)
+     }
+ 
+     private fun restore(message: MessageObject) {
+         synchronized(originals) {
+             originals.remove(message)?.let {
+-                if (message.messageOwner.message == it.source && message.messageOwner.edit_date == it.editDate && message.translated == it.translated && message.summarized == it.summarized) {
++                if (source(message) == it.source && message.translated == it.translated && message.summarized == it.summarized) {
+                     message.messageText = it.text
+                 }
+             }
+@@ -126,13 +153,17 @@ object ScriptDisplay {
+             for (group in loaded.filter { it.currentAccount == account && (target == null || key(account, it.getDialogId(), it.getId()) == target) }.groupBy { it.getDialogId() }) {
+                 val updated = ArrayList<MessageObject>()
+                 for (message in group.value) {
+-                    restore(message)
+-                    message.generateLayout(null)
+-                    message.forceUpdate = true
+-                    message.resetLayout()
+-                    updated.add(message)
++                    try {
++                        restore(message)
++                        message.generateLayout(null)
++                        message.forceUpdate = true
++                        message.resetLayout()
++                        updated.add(message)
++                    } catch (e: Throwable) {
++                        FileLog.e(e)
++                    }
+                 }
+-                NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.replaceMessagesObjects, group.key, updated)
++                if (updated.isNotEmpty()) NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.replaceMessagesObjects, group.key, updated)
+             }
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt
+index 9a60a99b6..6da46b4c6 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptGrants.kt
+@@ -9,10 +9,10 @@ object ScriptGrants {
+         "call", "onUpdate", "interceptRpc", "interceptUpdate", "interceptSendMessage",
+         "interceptLink", "interceptNotification", "interceptDrop", "account.read", "account.write", "display",
+         "fetch", "clipboard.read", "clipboard.write", "openUrl", "notify", "options", "scripts",
+-        "files.write", "fs.read", "fs.write", "app", "unsafe"
++        "files.write", "fs.read", "fs.write", "app", "calls", "unsafe"
+     )
+     private val dangerous = setOf(
+-        "call", "account.write", "display", "files.write", "fs.write", "unsafe",
++        "call", "calls", "account.write", "display", "files.write", "fs.write", "unsafe",
+         "interceptRpc", "interceptUpdate", "interceptSendMessage", "interceptNotification"
+     )
+ 
+@@ -65,6 +65,7 @@ object ScriptGrants {
+         "fs.read" -> "Read the script's own files"
+         "fs.write" -> "Write the script's own files"
+         "app" -> "Read app state"
++        "calls" -> "Read and control calls for this account"
+         "unsafe" -> "Use unsafe APIs"
+         else -> "Unknown permission: ${grant.raw}"
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+index ea71d44b4..263a6b701 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+@@ -14,7 +14,7 @@ object ScriptPlayer {
+     private val listeners = CopyOnWriteArrayList<Pair<ScriptRuntime, Int>>()
+     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+     private var polling = false
+-    private var lastSnapshot = ""
++    private val snapshots = java.util.concurrent.ConcurrentHashMap<Int, String>()
+ 
+     private val poll = object : Runnable {
+         override fun run() {
+@@ -23,13 +23,13 @@ object ScriptPlayer {
+                 return
+             }
+             listeners.removeAll { !it.first.isRunning() }
+-            val snapshot = current()?.toString() ?: ""
+-            if (snapshot != lastSnapshot) {
+-                lastSnapshot = snapshot
+-                val track = if (snapshot.isEmpty()) JSONObject.NULL else JSONObject(snapshot)
+-                for ((runtime, id) in listeners) {
+-                    ScriptStore.addLog(runtime.account, runtime.id, "player: " + snapshot)
+-                    runtime.dispatchPlayer(id, track)
++            for ((account, entries) in listeners.groupBy { it.first.account }) {
++                val snapshot = current(account)?.toString() ?: ""
++                if (snapshot != snapshots.put(account, snapshot)) {
++                    val track = if (snapshot.isEmpty()) JSONObject.NULL else JSONObject(snapshot)
++                    for ((runtime, id) in entries) {
++                        runtime.dispatchPlayer(id, track)
++                    }
+                 }
+             }
+             handler.postDelayed(this, 1000)
+@@ -37,9 +37,10 @@ object ScriptPlayer {
+     }
+ 
+     @JvmStatic
+-    fun current(): JSONObject? {
++    fun current(account: Int): JSONObject? {
+         val controller = MediaController.getInstance()
+         val message = controller.getPlayingMessageObject() ?: return null
++        if (message.currentAccount != account) return null
+         val document = message.getDocument()
+         val seconds = message.getDuration()
+         val playing = controller.isPlayingMessage(message)
+@@ -61,10 +62,12 @@ object ScriptPlayer {
+     }
+ 
+     @JvmStatic
+-    fun control(action: String): Boolean {
++    fun control(runtime: ScriptRuntime, action: String): Boolean {
+         AndroidUtilities.runOnUIThread {
++            if (!runtime.isRunning()) return@runOnUIThread
+             val controller = MediaController.getInstance()
+             val message = controller.getPlayingMessageObject() ?: return@runOnUIThread
++            if (message.currentAccount != runtime.account) return@runOnUIThread
+             when (action) {
+                 "play" -> if (!controller.isPlayingMessage(message)) controller.playMessage(message)
+                 "pause" -> if (controller.isPlayingMessage(message)) controller.pauseMessage(message)
+@@ -84,7 +87,7 @@ object ScriptPlayer {
+         }
+         if (!polling) {
+             polling = true
+-            lastSnapshot = current()?.toString() ?: ""
++            snapshots.clear()
+             handler.post(poll)
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index dd9c3d60d..a1c7fc397 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -31,6 +31,7 @@ class ScriptRuntime(
+     var running = false
+         private set
+ 
++    @Volatile
+     private var handle = 0L
+     private var thread: Thread? = null
+     private val queue = LinkedBlockingQueue<Runnable>()
+@@ -43,6 +44,7 @@ class ScriptRuntime(
+     @Volatile
+     private var failed = false
+ 
++    private val displayOwner = java.util.UUID.randomUUID().toString()
+     private val assets = HashMap<String, String>()
+     private val schedules = HashMap<Int, java.util.concurrent.ScheduledFuture<*>>()
+     private val linkInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+@@ -72,11 +74,12 @@ class ScriptRuntime(
+         running = false
+         val current = handle
+         if (current != 0L) QuickJs.interrupt(current)
++        ScriptWeb.cancel(this)
+         scheduler.shutdownNow()
+         timers.clear()
+         schedules.clear()
+         queue.offer(Runnable { })
+-        runCatching { thread?.join(2000) }
++        if (Thread.currentThread() !== thread) runCatching { thread?.join(2000) }
+         thread = null
+     }
+ 
+@@ -162,6 +165,7 @@ class ScriptRuntime(
+         val raw = ScriptTl.messageJson(message.messageOwner) ?: return null
+         val key = "${message.getDialogId()}:${message.getId()}"
+         val task = FutureTask<Decoration?> {
++            if (!running || handle == 0L) return@FutureTask null
+             var result: Decoration? = null
+             for (callback in ArrayList(decorators)) {
+                 val payload = JSONObject()
+@@ -194,7 +198,13 @@ class ScriptRuntime(
+             result
+         }
+         queue.offer(task)
+-        return runCatching { task.get(250, TimeUnit.MILLISECONDS) }.getOrNull()
++        return try {
++            task.get(50, TimeUnit.MILLISECONDS)
++        } catch (e: Throwable) {
++            task.cancel(false)
++            queue.remove(task)
++            null
++        }
+     }
+ 
+     fun host(handle: Long, name: String, args: String?): String {
+@@ -205,7 +215,7 @@ class ScriptRuntime(
+             val result = when (name) {
+                 "selfId" -> JSONObject().put("\$b", UserConfig.getInstance(account).getClientUserId().toString())
+                 "scriptName" -> script.name
+-                "current" -> JSONObject.NULL
++                "current" -> throw ScriptException("unsupported", "current chat is not available on android")
+                 "randomId" -> Utilities.random.nextLong().let { if (it == 0L) 1L else it }.toString()
+                 "random.bytes" -> {
+                     val count = (scalar?.toIntOrNull() ?: 0).coerceIn(0, 65536)
+@@ -228,8 +238,9 @@ class ScriptRuntime(
+                 }
+                 "resolve" -> resolvePeer(scalar.orEmpty())
+                 "peerInput" -> peerInput(scalar.orEmpty())
+-                "message.cached" -> value?.let {
+-                    Scripts.cachedMessage(account, it.optString("peer"), it.optLong("id"))
++                "message.cached" -> {
++                    if (!allows("account.read", "messages")) throw ScriptException("not-granted", "cached messages need account.read(messages)")
++                    value?.let { Scripts.cachedMessage(account, peerIdOf(it.opt("peer")), it.optLong("id")) }
+                 }
+                 "storage.get" -> ScriptStore.storage(account, id).opt(scalar.orEmpty())
+                 "storage.set" -> {
+@@ -270,6 +281,7 @@ class ScriptRuntime(
+                     true
+                 }
+                 "theme.set" -> {
++                    if (!allows("app")) throw ScriptException("not-granted", "changing the theme needs app")
+                     tele.helpers.TeleThemeMode.setDark(args?.trim() == "true" || value?.optBoolean("dark") == true)
+                     true
+                 }
+@@ -293,12 +305,16 @@ class ScriptRuntime(
+                     settingsBuilder = argsValue.optInt("builder")
+                     true
+                 }
+-                "call.current" -> ScriptCalls.current()
++                "call.current" -> {
++                    if (!allows("calls")) throw ScriptException("not-granted", "tg.calls needs the grant 'calls'", JSONObject().put("grant", "calls"))
++                    ScriptCalls.current(account)
++                }
+                 "call.control" -> {
+                     if (!allows("calls")) throw ScriptException("not-granted", "tg.calls needs the grant 'calls'", JSONObject().put("grant", "calls"))
+-                    ScriptCalls.control(scalar.orEmpty())
++                    ScriptCalls.control(this, scalar.orEmpty())
+                 }
+                 "call.listen" -> {
++                    if (!allows("calls")) throw ScriptException("not-granted", "tg.calls needs the grant 'calls'", JSONObject().put("grant", "calls"))
+                     ScriptCalls.listen(this, idOf(value, scalar))
+                     true
+                 }
+@@ -306,12 +322,16 @@ class ScriptRuntime(
+                     ScriptCalls.unlisten(this, idOf(value, scalar))
+                     true
+                 }
+-                "player.current" -> ScriptPlayer.current()
++                "player.current" -> {
++                    if (!allows("app")) throw ScriptException("not-granted", "tg.app.player needs the grant 'app'", JSONObject().put("grant", "app"))
++                    ScriptPlayer.current(account)
++                }
+                 "player.control" -> {
+                     if (!allows("app")) throw ScriptException("not-granted", "tg.app.player needs the grant 'app'", JSONObject().put("grant", "app"))
+-                    ScriptPlayer.control(scalar.orEmpty())
++                    ScriptPlayer.control(this, scalar.orEmpty())
+                 }
+                 "player.listen" -> {
++                    if (!allows("app")) throw ScriptException("not-granted", "tg.app.player needs the grant 'app'", JSONObject().put("grant", "app"))
+                     ScriptPlayer.listen(this, idOf(value, scalar))
+                     true
+                 }
+@@ -344,21 +364,21 @@ class ScriptRuntime(
+                     if (!allows("account.read", "draft")) {
+                         throw ScriptException("not-granted", "tg.compose.get needs the grant 'account.read(draft)'", JSONObject().put("grant", "account.read(draft)"))
+                     }
+-                    ScriptCompose.text()
++                    ScriptCompose.text(account)
+                 }
+                 "compose.set" -> {
+                     if (!allows("account.write", "draft")) {
+                         throw ScriptException("not-granted", "tg.compose.set needs the grant 'account.write(draft)'", JSONObject().put("grant", "account.write(draft)"))
+                     }
+                     val argsValue = value ?: JSONObject()
+-                    ScriptCompose.setText(peerIdOf(argsValue.opt("peer")), argsValue.optString("text"))
++                    ScriptCompose.setText(this, peerIdOf(argsValue.opt("peer")), argsValue.optString("text"))
+                     true
+                 }
+                 "compose.insert" -> {
+                     if (!allows("account.write", "draft")) {
+                         throw ScriptException("not-granted", "tg.compose.insert needs the grant 'account.write(draft)'", JSONObject().put("grant", "account.write(draft)"))
+                     }
+-                    ScriptCompose.insert(scalar.orEmpty())
++                    ScriptCompose.insert(this, scalar.orEmpty())
+                 }
+                 "ui.text" -> {
+                     ScriptUi.text(this, value ?: JSONObject())
+@@ -370,6 +390,7 @@ class ScriptRuntime(
+                     true
+                 }
+                 "drop.register" -> {
++                    if (!allows("interceptDrop")) throw ScriptException("not-granted", "shared-file interception needs interceptDrop")
+                     dropInterceptors.add(idOf(value, scalar))
+                     ScriptDrops.register(this)
+                     true
+@@ -385,6 +406,7 @@ class ScriptRuntime(
+                     true
+                 }
+                 "notification.register" -> {
++                    if (!allows("interceptNotification")) throw ScriptException("not-granted", "notification interception needs interceptNotification")
+                     notificationInterceptors.add(idOf(value, scalar))
+                     ScriptNotifications.register(this)
+                     true
+@@ -400,6 +422,7 @@ class ScriptRuntime(
+                     true
+                 }
+                 "link.register" -> {
++                    if (!allows("interceptLink")) throw ScriptException("not-granted", "link interception needs interceptLink")
+                     linkInterceptors.add(idOf(value, scalar))
+                     ScriptLinks.register(this)
+                     true
+@@ -428,7 +451,7 @@ class ScriptRuntime(
+                     ScriptWeb.fetch(this, argsValue)
+                 }
+                 "fetchAbort" -> {
+-                    ScriptWeb.abort(scalar?.toIntOrNull() ?: 0)
++                    ScriptWeb.abort(this, scalar?.toIntOrNull() ?: 0)
+                     true
+                 }
+                 "menu.register" -> ScriptMenu.register(this, value ?: JSONObject())
+@@ -438,7 +461,10 @@ class ScriptRuntime(
+                 }
+                 "listen.register" -> {
+                     val argsValue = value ?: JSONObject()
+-                    listeners[argsValue.optString("kind")] = argsValue.optInt("id")
++                    val kind = argsValue.optString("kind")
++                    if (kind !in setOf("new", "edit", "delete")) throw ScriptException("unsupported", "this update listener is not supported")
++                    if (!allows("onUpdate", "new_message")) throw ScriptException("not-granted", "message listeners need onUpdate(new_message)")
++                    listeners[kind] = argsValue.optInt("id")
+                     true
+                 }
+                 "listen.unregister" -> {
+@@ -447,6 +473,7 @@ class ScriptRuntime(
+                     true
+                 }
+                 "update.register" -> {
++                    if (!allows("onUpdate")) throw ScriptException("not-granted", "raw updates need the unscoped onUpdate grant")
+                     updateListener = scalar?.toIntOrNull() ?: 0
+                     true
+                 }
+@@ -458,10 +485,12 @@ class ScriptRuntime(
+                     if (!allows("display", "messages")) throw ScriptException("not-granted", "message decorations need display(messages)")
+                     val argsValue = scalar?.toIntOrNull() ?: 0
+                     if (!decorators.contains(argsValue)) decorators.add(argsValue)
++                    ScriptDisplay.invalidate(account)
+                     true
+                 }
+                 "decorate.unregister" -> {
+                     decorators.remove(scalar?.toIntOrNull() ?: 0)
++                    ScriptDisplay.invalidate(account)
+                     true
+                 }
+                 "decorate.message" -> {
+@@ -470,8 +499,7 @@ class ScriptRuntime(
+                     val peerId = peerIdOf(argsValue.opt("peer"))
+                     if (peerId == 0L) throw ScriptException("bad-argument", "decorateMessage needs a resolved target peer")
+                     val decoration = argsValue.optJSONObject("decoration")
+-                    ScriptDisplay.set(account, id, peerId, argsValue.optLong("id").toInt(), decoration)
+-                    true
++                    ScriptDisplay.set(account, displayOwner, peerId, argsValue.optLong("id").toInt(), decoration, argsValue.optLong("token"))
+                 }
+                 "accounts.list" -> {
+                     val array = JSONArray()
+@@ -488,16 +516,18 @@ class ScriptRuntime(
+                     }
+                     array
+                 }
+-                "connection" -> 1
++                "connection" -> throw ScriptException("unsupported", "connection state is not available on android")
+                 "open.chat" -> {
+                     if (!allows("app")) throw ScriptException("not-granted", "tg.openChat needs the grant 'app'", JSONObject().put("grant", "app"))
+-                    ScriptUi.openChat(account, value?.optJSONObject("peer"), value?.optInt("message") ?: 0)
++                    ScriptUi.openChat(this, value?.optJSONObject("peer"), value?.optInt("message") ?: 0)
+                     true
+                 }
+-                "scripts.list", "scripts.emit", "scripts.on", "scripts.off" -> Scripts.host(this, name, value)
++                "scripts.list", "scripts.emit", "scripts.on", "scripts.off" -> {
++                    if (!allows("scripts")) throw ScriptException("not-granted", "talking to scripts needs the grant 'scripts'")
++                    Scripts.host(this, name, value ?: scalar?.toIntOrNull()?.let { JSONObject().put("value", it) })
++                }
+                 "options.list" -> Scripts.options(this)
+-                "options.get", "options.set", "options.listen", "options.unlisten" -> null
+-                "theme.get" -> null
++                "options.get", "options.set", "options.listen", "options.unlisten" -> throw ScriptException("unsupported", "script options are not available on android")
+                 else -> throw ScriptException("unsupported", "$name is not available to scripts on android yet")
+             }
+             ok(result)
+@@ -718,7 +748,7 @@ class ScriptRuntime(
+                     null
+                 }
+                 task?.run()
+-                if (handle == 0L) break
++                if (!running || handle == 0L) break
+                 val error = QuickJs.runJobs(handle)
+                 if (error != null) {
+                     fault(error)
+@@ -755,6 +785,8 @@ class ScriptRuntime(
+ 
+     private fun cleanup() {
+         running = false
++        ScriptWeb.cancel(this)
++        queue.clear()
+         val current = handle
+         handle = 0
+         if (current != 0L) {
+@@ -779,7 +811,7 @@ class ScriptRuntime(
+         ScriptCalls.unregister(this)
+         ScriptPlayer.unregister(this)
+         ScriptMenu.clear(this)
+-        ScriptDisplay.clearScript(account, id)
++        ScriptDisplay.clearScript(account, displayOwner)
+         listeners.clear()
+         updateListener = 0
+         decorators.clear()
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptTl.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptTl.kt
+index 3aa49f67e..edfeae9b8 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptTl.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptTl.kt
+@@ -77,18 +77,26 @@ object ScriptTl {
+         val latch = CountDownLatch(1)
+         var response: TLObject? = null
+         var error: TLRPC.TL_error? = null
+-        ConnectionsManager.getInstance(account).sendRequest(request) { result, failure ->
++        if (!alive()) throw ScriptException("stopped", "the script was stopped")
++        val manager = ConnectionsManager.getInstance(account)
++        val token = manager.sendRequest(request) { result, failure ->
+             response = result
+             error = failure
+             latch.countDown()
+         }
+-        val deadline = System.currentTimeMillis() + TIMEOUT_SECONDS * 1000
+-        while (true) {
+-            if (latch.await(100, TimeUnit.MILLISECONDS)) break
+-            if (!alive()) throw ScriptException("stopped", "the script was stopped")
+-            if (System.currentTimeMillis() > deadline) {
+-                throw ScriptException("timeout", "the answer did not arrive in $TIMEOUT_SECONDS seconds")
++        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS.toLong())
++        try {
++            while (true) {
++                if (!alive()) throw ScriptException("stopped", "the script was stopped")
++                if (latch.await(100, TimeUnit.MILLISECONDS)) break
++                if (System.nanoTime() > deadline) {
++                    throw ScriptException("timeout", "the answer did not arrive in $TIMEOUT_SECONDS seconds")
++                }
+             }
++            if (!alive()) throw ScriptException("stopped", "the script was stopped")
++        } catch (e: Throwable) {
++            runCatching { manager.cancelRequest(token, true) }
++            throw e
+         }
+         val failure = error
+         if (failure != null) {
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+index 1a7509fb7..997b42fca 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+@@ -10,7 +10,8 @@ import org.telegram.ui.LaunchActivity
+ /** Navigation requested by a script, always posted to the main thread and never from the script thread. */
+ object ScriptUi {
+     @JvmStatic
+-    fun openChat(account: Int, peer: JSONObject?) {
++    fun openChat(runtime: ScriptRuntime, peer: JSONObject?, messageId: Int) {
++        val account = runtime.account
+         val target = peer ?: return
+         val args = Bundle()
+         when (target.optString("_")) {
+@@ -20,16 +21,15 @@ object ScriptUi {
+             "inputPeerChannel" -> args.putLong("chat_id", target.optLong("channelId"))
+             else -> return
+         }
++        if (messageId != 0) args.putInt("message_id", messageId)
+         AndroidUtilities.runOnUIThread {
+-            LaunchActivity.instance?.actionBarLayout?.presentFragment(ChatActivity(args))
++            if (!runtime.isRunning() || UserConfig.selectedAccount != account) return@runOnUIThread
++            val chat = ChatActivity(args)
++            chat.setCurrentAccount(account)
++            LaunchActivity.instance?.actionBarLayout?.presentFragment(chat)
+         }
+     }
+ 
+-    @JvmStatic
+-    fun openChat(account: Int, peer: JSONObject?, messageId: Int) {
+-        openChat(account, peer)
+-    }
+-
+     /** The small text ask of a script: the answer comes back through the dispatch channel. */
+     @JvmStatic
+     fun prompt(runtime: ScriptRuntime, options: JSONObject) {
+@@ -38,6 +38,7 @@ object ScriptUi {
+             return
+         }
+         AndroidUtilities.runOnUIThread {
++            if (!runtime.isRunning() || UserConfig.selectedAccount != runtime.account) return@runOnUIThread
+             tele.ui.settings.TeleDialog.input(
+                 activity,
+                 null,
+@@ -57,7 +58,7 @@ object ScriptUi {
+         val title = options.optString("title")
+         val text = options.optString("text")
+         AndroidUtilities.runOnUIThread({
+-            if (!runtime.isRunning()) return@runOnUIThread
++            if (!runtime.isRunning() || UserConfig.selectedAccount != runtime.account) return@runOnUIThread
+             val fragment = LaunchActivity.getSafeLastFragment() ?: return@runOnUIThread
+             val activity = fragment.parentActivity ?: return@runOnUIThread
+             val dialog = org.telegram.ui.ActionBar.AlertDialog.Builder(activity, fragment.resourceProvider)
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
+index 42e1c546f..839553e8f 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
+@@ -23,10 +23,12 @@ object ScriptWeb {
+         .connectTimeout(20, TimeUnit.SECONDS)
+         .readTimeout(30, TimeUnit.SECONDS)
+         .writeTimeout(30, TimeUnit.SECONDS)
++        .callTimeout(30, TimeUnit.SECONDS)
+         .followRedirects(false)
+         .followSslRedirects(false)
+         .build()
+-    private val calls = ConcurrentHashMap<String, okhttp3.Call>()
++    private data class Active(val runtime: ScriptRuntime, val abort: Int)
++    private val calls = ConcurrentHashMap<okhttp3.Call, Active>()
+ 
+     @JvmStatic
+     fun fetch(runtime: ScriptRuntime, args: JSONObject): JSONObject {
+@@ -38,7 +40,9 @@ object ScriptWeb {
+         val body = args.optString("body", "").ifEmpty { null }
+         val abort = args.optInt("abort", 0)
+         var redirects = 0
++        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+         while (true) {
++            if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
+             checkGrant(runtime, uri)
+             val builder = Request.Builder().url(uri.toURL())
+             if (headers != null) {
+@@ -53,25 +57,33 @@ object ScriptWeb {
+                 else -> (body ?: "").toRequestBody(null)
+             }
+             val request = builder.method(method, requestBody).build()
++            val remaining = deadline - System.nanoTime()
++            if (remaining <= 0) throw ScriptException("timeout", "fetch exceeded 30 seconds")
+             val call = client.newCall(request)
+-            if (abort != 0) calls["$abort"] = call
+-            val response = try {
+-                call.execute()
++            call.timeout().timeout(remaining, TimeUnit.NANOSECONDS)
++            calls[call] = Active(runtime, abort)
++            try {
++                if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++                val answer = call.execute().use {
++                    if (it.isRedirect && redirects < MAX_REDIRECTS) {
++                        val location = it.header("Location")
++                        if (location != null) {
++                            redirects++
++                            uri = parse(uri.resolve(location).toString())
++                            null
++                        } else result(it)
++                    } else result(it)
++                }
++                if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++                if (answer != null) return answer
++            } catch (e: ScriptException) {
++                throw e
+             } catch (e: Throwable) {
+                 if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
+                 throw ScriptException("network", e.message ?: "the request failed")
+             } finally {
+-                if (abort != 0) calls.remove("$abort")
++                calls.remove(call)
+             }
+-            response.use {
+-                if (it.isRedirect && redirects < MAX_REDIRECTS) {
+-                    val location = it.header("Location") ?: return@use result(it)
+-                    redirects++
+-                    uri = parse(uri.resolve(location).toString())
+-                    return@use null
+-                }
+-                return result(it)
+-            } ?: continue
+         }
+     }
+ 
+@@ -127,15 +139,17 @@ object ScriptWeb {
+     }
+ 
+     @JvmStatic
+-    fun abort(id: Int) {
+-        calls.remove("$id")?.cancel()
++    fun abort(runtime: ScriptRuntime, id: Int) {
++        if (id == 0) return
++        for ((call, active) in calls) {
++            if (active.runtime === runtime && active.abort == id) call.cancel()
++        }
+     }
+ 
+     @JvmStatic
+     fun cancel(runtime: ScriptRuntime) {
+-        for (call in calls.values) {
+-            runCatching { call.cancel() }
++        for ((call, active) in calls) {
++            if (active.runtime === runtime) runCatching { call.cancel() }
+         }
+-        calls.clear()
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+index 9cc2375ed..f2a18028d 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+@@ -22,7 +22,7 @@ object Scripts {
+     private val scans = ConcurrentHashMap<Int, List<ScriptFile>>()
+     private val loaded = ConcurrentHashMap<String, String>()
+     private val messages = ConcurrentHashMap<String, TLRPC.Message>()
+-    private val bus = ConcurrentHashMap<String, MutableList<Pair<String, Int>>>()
++    private val bus = ConcurrentHashMap<String, java.util.concurrent.CopyOnWriteArrayList<Pair<ScriptRuntime, Int>>>()
+     private var started = false
+ 
+     private fun key(account: Int, id: String) = "$account:$id"
+@@ -140,6 +140,7 @@ object Scripts {
+     @JvmStatic
+     fun runtimeStopped(runtime: ScriptRuntime) {
+         runtimes.remove(key(runtime.account, runtime.id), runtime)
++        for (list in bus.values) list.removeAll { it.first === runtime }
+     }
+ 
+     @JvmStatic
+@@ -217,14 +218,25 @@ object Scripts {
+             val kind = updateJson.optString("_")
+             when (kind) {
+                 "updateNewMessage", "updateNewChannelMessage" -> {
+-                    cacheMessage(update)
++                    cacheMessage(account, update)
+                     notifyAll(account, "new", updateJson, peers)
+                 }
+                 "updateEditMessage", "updateEditChannelMessage" -> {
+-                    cacheMessage(update)
++                    cacheMessage(account, update)
+                     notifyAll(account, "edit", updateJson, peers)
+                 }
+                 "updateDeleteMessages", "updateDeleteChannelMessages" -> {
++                    when (update) {
++                        is TL_update.TL_updateDeleteChannelMessages -> {
++                            for (id in update.messages) messages.remove("$account:${-update.channel_id}:$id")
++                        }
++                        is TL_update.TL_updateDeleteMessages -> {
++                            val deleted = update.messages.toSet()
++                            messages.entries.removeAll { (key, message) ->
++                                key.startsWith("$account:") && message.peer_id?.channel_id == 0L && message.id in deleted
++                            }
++                        }
++                    }
+                     notifyAll(account, "delete", updateJson, peers)
+                 }
+             }
+@@ -234,7 +246,7 @@ object Scripts {
+         }
+     }
+ 
+-    private fun cacheMessage(update: TLRPC.Update) {
++    private fun cacheMessage(account: Int, update: TLRPC.Update) {
+         val message = when (update) {
+             is TL_update.TL_updateNewMessage -> update.message
+             is TL_update.TL_updateNewChannelMessage -> update.message
+@@ -242,15 +254,9 @@ object Scripts {
+             is TL_update.TL_updateEditChannelMessage -> update.message
+             else -> null
+         } ?: return
+-        val peer = message.peer_id ?: return
+-        val peerId = when (peer) {
+-            is TLRPC.TL_peerUser -> peer.user_id
+-            is TLRPC.TL_peerChat -> -peer.chat_id
+-            is TLRPC.TL_peerChannel -> -1000000000000L - peer.channel_id
+-            else -> 0L
+-        }
++        val peerId = MessageObject.getDialogId(message)
+         if (peerId == 0L || message.id == 0) return
+-        messages["$peerId:${message.id}"] = message
++        messages["$account:$peerId:${message.id}"] = message
+         if (messages.size > 5000) messages.clear()
+     }
+ 
+@@ -261,9 +267,8 @@ object Scripts {
+     }
+ 
+     @JvmStatic
+-    fun cachedMessage(account: Int, peerId: String, id: Long): JSONObject? {
+-        val marked = peerId.toLongOrNull() ?: return null
+-        val message = messages["$marked:$id"] ?: return null
++    fun cachedMessage(account: Int, peerId: Long, id: Long): JSONObject? {
++        val message = messages["$account:$peerId:$id"] ?: return null
+         return ScriptTl.messageJson(message)
+     }
+ 
+@@ -300,10 +305,10 @@ object Scripts {
+                 val target = args?.opt("to")
+                 val data = args?.opt("data")
+                 val message = JSONObject().put("from", runtime.id).put("data", data ?: JSONObject.NULL)
+-                bus[event]?.let { list ->
+-                    for ((script, callback) in list) {
+-                        if (target != null && target != JSONObject.NULL && target.toString() != script) continue
+-                        val other = runtimes[key(runtime.account, script)] ?: continue
++                bus[key(runtime.account, event)]?.let { list ->
++                    for ((other, callback) in list) {
++                        if (other.account != runtime.account || !other.isRunning()) continue
++                        if (target != null && target != JSONObject.NULL && target.toString() != other.id) continue
+                         other.dispatch(callback, "scripts", JSONArray().put(message))
+                     }
+                 }
+@@ -312,12 +317,12 @@ object Scripts {
+             "scripts.on" -> {
+                 val event = args?.optString("event").orEmpty()
+                 val callback = args?.optInt("id") ?: 0
+-                bus.getOrPut(event) { ArrayList() }.add(runtime.id to callback)
++                bus.getOrPut(key(runtime.account, event)) { java.util.concurrent.CopyOnWriteArrayList() }.add(runtime to callback)
+                 true
+             }
+             "scripts.off" -> {
+                 val callback = args?.optInt("value") ?: 0
+-                for (list in bus.values) list.removeAll { it.second == callback }
++                for (list in bus.values) list.removeAll { it.first === runtime && it.second == callback }
+                 true
+             }
+             else -> throw ScriptException("unsupported", "$name is not available to scripts on android yet")
+@@ -325,7 +330,7 @@ object Scripts {
+     }
+ 
+     @JvmStatic
+-    fun options(runtime: ScriptRuntime): JSONArray = JSONArray()
++    fun options(runtime: ScriptRuntime): JSONArray = throw ScriptException("unsupported", "script option discovery is not available on android yet")
+ 
+     @JvmStatic
+     fun log(account: Int, id: String): List<String> = ScriptStore.log(account, id)

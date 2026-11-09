@@ -1,6 +1,6 @@
 export default defineScript({
   name: 'music status',
-  grants: ['call(account.updateProfile)', 'call(users.getFullUser)'],
+  grants: ['app', 'call(account.updateProfile)', 'call(users.getFullUser)'],
   async setup(tg) {
     let normal = tg.storage.get('bio')
     if (normal == null) {
