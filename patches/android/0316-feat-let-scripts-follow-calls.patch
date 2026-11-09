@@ -1,0 +1,204 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 20:02:44 +0300
+Subject: [PATCH] feat: let scripts follow calls
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   | 19 +++-
+ .../main/java/tele/scripting/ScriptCalls.kt   | 97 +++++++++++++++++++
+ .../main/java/tele/scripting/ScriptRuntime.kt | 18 ++++
+ 3 files changed, 129 insertions(+), 5 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index aaeabaed5..63e2e2173 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -329,7 +329,6 @@
+ 	const given = {
+ 		current: () => host('current'),
+ 		peerInput: (id) => host('peerInput', String(id)),
+-		callCurrent: () => host('call.current'),
+ 		accountsList: () => host('accounts.list'),
+ 		accountsSwitch: (id) => host('accounts.switch', String(id)),
+ 		connection: () => host('connection'),
+@@ -342,6 +341,9 @@
+ 		registerShortcut: () => {
+ 			throw new TeleError('unsupported', 'keyboard shortcuts are not available on android');
+ 		},
++		registerMessageAction: () => {
++			throw new TeleError('unsupported', 'message actions are not available on android yet');
++		},
+ 		registerButton: () => {
+ 			throw new TeleError('unsupported', 'message field buttons are not available on android yet');
+ 		},
+@@ -519,12 +521,19 @@
+ 			host('player.listen', { id });
+ 			return disposer(() => host('player.unlisten', { id }));
+ 		},
+-		callCurrent: () => null,
+-		callControl: () => false,
++		callCurrent: () => host('call.current'),
++		callControl: (action) => host('call.control', String(action ?? '')),
+ 		callStart: () => {
+-			throw new TeleError('unsupported', 'calls are not available to scripts on android yet');
++			throw new TeleError('unsupported', 'starting calls is not available on android yet');
++		},
++		callOnChange: (callback) => {
++			if (typeof callback !== 'function') {
++				throw new TypeError('tg.calls.onChange(function)');
++			}
++			const id = remember(callback);
++			host('call.listen', { id });
++			return disposer(() => host('call.unlisten', { id }));
+ 		},
+-		callOnChange: () => disposer(() => {}),
+ 		teleIgnored: () => [],
+ 		teleSetIgnored: () => false,
+ 		teleGhost: () => null,
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt
+new file mode 100644
+index 000000000..ca9071b6b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptCalls.kt
+@@ -0,0 +1,97 @@
++package tele.scripting
++
++import android.os.Handler
++import android.os.Looper
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.UserObject
++import org.telegram.messenger.voip.VoIPService
++import java.util.concurrent.CopyOnWriteArrayList
++
++/** The call the app has now, as scripts read it, plus the handful of controls they may use. */
++object ScriptCalls {
++
++    private val listeners = CopyOnWriteArrayList<Pair<ScriptRuntime, Int>>()
++    private val handler = Handler(Looper.getMainLooper())
++    private var polling = false
++    private var lastSnapshot = ""
++
++    private val poll = object : Runnable {
++        override fun run() {
++            if (listeners.isEmpty()) {
++                polling = false
++                return
++            }
++            listeners.removeAll { !it.first.isRunning() }
++            val snapshot = current()?.toString() ?: ""
++            if (snapshot != lastSnapshot) {
++                lastSnapshot = snapshot
++                val call = if (snapshot.isEmpty()) JSONObject.NULL else JSONObject(snapshot)
++                for ((runtime, id) in listeners) {
++                    runtime.dispatchCall(id, call)
++                }
++            }
++            handler.postDelayed(this, 1000)
++        }
++    }
++
++    @JvmStatic
++    fun current(): JSONObject? {
++        val service = VoIPService.getSharedInstance() ?: return null
++        val state = when (service.getCallState()) {
++            VoIPService.STATE_WAITING_INCOMING -> "incoming"
++            VoIPService.STATE_RINGING -> "ringing"
++            VoIPService.STATE_ESTABLISHED -> "established"
++            VoIPService.STATE_ENDED -> return null
++            else -> "waiting"
++        }
++        val user = service.getUser()
++        val muted = runCatching { service.isMicMute() }.getOrDefault(false)
++        return JSONObject()
++            .put("state", state)
++            .put("muted", muted)
++            .put("video", runCatching { service.isCallingVideo() }.getOrDefault(false))
++            .put("outgoing", service.isOutgoing())
++            .put("user", JSONObject()
++                .put("id", user?.id ?: 0L)
++                .put("name", if (user == null) "" else UserObject.getUserName(user)))
++    }
++
++    @JvmStatic
++    fun control(action: String): Boolean {
++        val service = VoIPService.getSharedInstance() ?: return false
++        return try {
++            when (action) {
++                "answer" -> { service.acceptIncomingCall(); true }
++                "hangup" -> { service.hangUp(); true }
++                "mute" -> { service.setMicMute(true, false, true); true }
++                "unmute" -> { service.setMicMute(false, false, true); true }
++                else -> false
++            }
++        } catch (e: Throwable) {
++            false
++        }
++    }
++
++    @JvmStatic
++    fun listen(runtime: ScriptRuntime, id: Int) {
++        if (listeners.none { it.first === runtime && it.second == id }) {
++            listeners.add(runtime to id)
++        }
++        if (!polling) {
++            polling = true
++            lastSnapshot = current()?.toString() ?: ""
++            handler.post(poll)
++        }
++    }
++
++    @JvmStatic
++    fun unlisten(runtime: ScriptRuntime, id: Int) {
++        listeners.removeAll { it.first === runtime && it.second == id }
++    }
++
++    @JvmStatic
++    fun unregister(runtime: ScriptRuntime) {
++        listeners.removeAll { it.first === runtime }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index e01af5634..5fe6e90b0 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -91,6 +91,10 @@ class ScriptRuntime(
+ 
+     fun isRunning(): Boolean = running
+ 
++    fun dispatchCall(id: Int, call: Any) {
++        dispatch(id, "call", JSONArray().put(call))
++    }
++
+     fun dispatchPlayer(id: Int, track: Any) {
+         dispatch(id, "player", JSONArray().put(track))
+     }
+@@ -287,6 +291,19 @@ class ScriptRuntime(
+                     settingsBuilder = argsValue.optInt("builder")
+                     true
+                 }
++                "call.current" -> ScriptCalls.current()
++                "call.control" -> {
++                    if (!allows("calls")) throw ScriptException("not-granted", "tg.calls needs the grant 'calls'", JSONObject().put("grant", "calls"))
++                    ScriptCalls.control(scalar.orEmpty())
++                }
++                "call.listen" -> {
++                    ScriptCalls.listen(this, idOf(value, scalar))
++                    true
++                }
++                "call.unlisten" -> {
++                    ScriptCalls.unlisten(this, idOf(value, scalar))
++                    true
++                }
+                 "player.current" -> ScriptPlayer.current()
+                 "player.control" -> {
+                     if (!allows("app")) throw ScriptException("not-granted", "tg.app.player needs the grant 'app'", JSONObject().put("grant", "app"))
+@@ -737,6 +754,7 @@ class ScriptRuntime(
+         ScriptDrops.unregister(this)
+         composeHandlers.clear()
+         ScriptCompose.unregister(this)
++        ScriptCalls.unregister(this)
+         ScriptPlayer.unregister(this)
+         ScriptMenu.clear(this)
+         ScriptDisplay.clearScript(account, id)

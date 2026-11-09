@@ -209,6 +209,16 @@ const dispose = tg.interceptNotification(({ kind, message }) => 'show')       //
 
 Called before a new message notification is shown: `kind` is `"message"`, `message.mentioned` says whether it mentions you, and returning `'drop'` keeps the notification away while the message stays unread. The message itself is not passed in full yet, and an answer has to be synchronous.
 
+### calls
+
+```ts
+const call = tg.calls.current()                          // free
+const dispose = tg.calls.onChange((call) => {})          // free
+tg.calls.answer(); tg.calls.hangup(); tg.calls.setMuted(true)   // needs calls
+```
+
+The call that is going on now, or `null`: `{ state, muted, video, outgoing, user: { id, name } }`, where the state is `incoming`, `ringing`, `waiting` or `established`. `onChange` fires when the call appears, changes state or ends. Starting a call from a script is not available on android yet.
+
 ### the player
 
 ```ts
@@ -297,6 +307,7 @@ The page is built when the app opens it, so the rows always show the current val
 - [drop-guard](scripts/drop-guard/script.js): keeps programs, scripts and files over a limit out of the chats they are shared into.
 - [compose-snippets](scripts/compose-snippets/script.js): expands short codes into text while you type in the message field.
 - [music-status](scripts/music-status/script.js): puts the song you listen to into your bio, and gives the normal bio back when the player stops.
+- [call-assistant](scripts/call-assistant/script.js): pauses the music when a call connects, mutes you on request and logs the length of the call.
 
 the other desktop scripts need APIs this build does not have yet:
 
@@ -308,7 +319,7 @@ the other desktop scripts need APIs this build does not have yet:
 ## what is not here yet
 
 - settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
-- the outgoing-message interceptor, the full message in the notification hook, the attach panel for shared files, and the field of a chat that is not open;
+- the outgoing-message interceptor, the full message in the notification hook, the attach panel for shared files, and the field of a chat that is not open; keyboard shortcuts are desktop-only.
 - calls, the music player, file pickers and file access, and the theme beyond day and night;
 - local messages, the widget layer and module imports from `tele`.
 
