@@ -44,6 +44,9 @@ export default defineScript({
     })
     tg.registerSettings(page)
 
+    // a song may already be playing: show it without waiting for the first change
+    update()
+
     let lastKey = ''
     tg.app.player.onChange((track) => {
       const key = (track?.type === 'song') ? String(track.documentId) : ''

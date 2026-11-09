@@ -239,6 +239,20 @@ tg.compose.get()
 
 `onInput` runs on every change of the open chat's field, with the chat id and the text as it is now. `set` rewrites the field of the chat that is open (and is not fed back to `onInput`), `get` reads it. The field of another chat is never touched.
 
+### message actions
+
+```ts
+const dispose = tg.registerMessageAction({
+  id: 'translate',
+  text: 'translate',
+  icon: 'message',
+  chats: 'all',
+  onClick: ({ chatId, messageId, text }) => {},
+})
+```
+
+Adds an item to the long press menu of a message; the context carries `chatId`, `messageId`, `text`, `date` and `out`. `chats` narrows it to `user`, `group`, `channel` or `all`; the disposer takes the item away. No grant is needed: nothing runs until the item is picked.
+
 ### asking the user
 
 ```ts
@@ -308,6 +322,7 @@ The page is built when the app opens it, so the rows always show the current val
 - [compose-snippets](scripts/compose-snippets/script.js): expands short codes into text while you type in the message field.
 - [music-status](scripts/music-status/script.js): puts the song you listen to into your bio, and gives the normal bio back when the player stops.
 - [call-assistant](scripts/call-assistant/script.js): pauses the music when a call connects, mutes you on request and logs the length of the call.
+- [quick translate](scripts/quick-translate.js): adds a translate item to the message menu and shows the translation under the message.
 
 the other desktop scripts need APIs this build does not have yet:
 

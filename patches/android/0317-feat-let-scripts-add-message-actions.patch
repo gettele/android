@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 20:39:06 +0300
+Subject: [PATCH] feat: let scripts add message actions
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   |  4 +-
+ .../java/org/telegram/ui/ChatActivity.java    | 19 ++++-
+ .../tele/scripting/ScriptMessageActions.kt    | 79 +++++++++++++++++++
+ .../main/java/tele/scripting/ScriptRuntime.kt | 12 +++
+ 4 files changed, 111 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index 63e2e2173..f36e634f2 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -407,8 +407,8 @@
+ 		messageAction: (options) => {
+ 			const id = remember(options?.onClick);
+ 			const { onClick, ...rest } = options ?? {};
+-			host('menu.register', { ...rest, id });
+-			return disposer(() => host('menu.unregister', id));
++			host('messageAction.register', { ...rest, id });
++			return disposer(() => host('messageAction.unregister', id));
+ 		},
+ 		chatAction: () => {
+ 			throw new TeleError('unsupported', 'chat menu actions are not available on android yet');
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index fe16e41c6..12d7927b0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -35362,6 +35362,13 @@ public class ChatActivity extends BaseFragment implements
+     }
+ 
+     private void processSelectedOption(int option) {
++        if (option >= 9000 && option < 9100) {
++            final MessageObject target = selectedObject;
++            if (target != null) {
++                tele.scripting.ScriptMessageActions.invoke(currentAccount, target, option - 9000);
++            }
++            return;
++        }
+         if (selectedObject == null || getParentActivity() == null) {
+             return;
+         }
+@@ -48673,7 +48680,17 @@ public class ChatActivity extends BaseFragment implements
+             }
+         }
+         tele.helpers.MessageMenu.filter(items, icons, options);
+-    }
++    
++        // script actions go last: their options live in a range of their own
++        final java.util.List<tele.scripting.ScriptMessageActions.Action> teleActions =
++                tele.scripting.ScriptMessageActions.list(currentAccount, message);
++        for (int i = 0; i < teleActions.size(); i++) {
++            final tele.scripting.ScriptMessageActions.Action action = teleActions.get(i);
++            icons.add(tele.scripting.ScriptMenu.iconRes(action.getIcon()));
++            items.add(action.getText());
++            options.add(9000 + i);
++        }
++}
+     private boolean showWelcomeMessageRevertOption(MessageObject messageObject) {
+         return chatMode == MODE_DEFAULT && messageObject != null && messageObject.isWelcomeAnchored();
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+new file mode 100644
+index 000000000..26cd9484b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+@@ -0,0 +1,79 @@
++package tele.scripting
++
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.MessageObject
++import java.util.concurrent.CopyOnWriteArrayList
++import java.util.concurrent.atomic.AtomicInteger
++
++/** The actions a script puts into the long-press menu of a message. */
++object ScriptMessageActions {
++
++    class Action(
++        val runtime: ScriptRuntime,
++        val callback: Int,
++        val text: String,
++        val icon: String?,
++        val chats: List<String>
++    )
++
++    private val actions = CopyOnWriteArrayList<Action>()
++    private val ids = AtomicInteger(1)
++
++    @JvmStatic
++    fun register(runtime: ScriptRuntime, options: JSONObject): Int {
++        // the id the js side sends is the callback; the token only removes this item again
++        val id = ids.getAndIncrement()
++        val chats = options.opt("chats")?.let { raw ->
++            when (raw) {
++                is JSONArray -> buildList { for (i in 0 until raw.length()) add(raw.optString(i)) }
++                else -> listOf(raw.toString())
++            }
++        } ?: listOf("all")
++        actions.add(Action(runtime, options.optInt("id"), options.optString("text"), options.optString("icon"), chats))
++        return id
++    }
++
++    @JvmStatic
++    fun unregister(runtime: ScriptRuntime, token: Int) {
++        actions.removeAll { it.runtime === runtime && it.callback == token }
++    }
++
++    @JvmStatic
++    fun unregister(runtime: ScriptRuntime) {
++        actions.removeAll { it.runtime === runtime }
++    }
++
++    /** The actions that fit this message's chat, in registration order. */
++    @JvmStatic
++    fun list(account: Int, message: MessageObject): List<Action> {
++        if (actions.isEmpty()) return emptyList()
++        val kind = chatKind(message)
++        return actions.filter { action ->
++            action.runtime.isRunning() && action.runtime.account == account &&
++                (action.chats.contains("all") || action.chats.contains(kind))
++        }
++    }
++
++    @JvmStatic
++    fun invoke(account: Int, message: MessageObject, index: Int) {
++        val action = list(account, message).getOrNull(index) ?: return
++        val context = JSONObject()
++            .put("chatId", JSONObject().put("\$b", message.getDialogId().toString()))
++            .put("messageId", message.getId())
++            .put("text", message.messageText?.toString() ?: "")
++            .put("date", message.messageOwner?.date ?: 0)
++            .put("out", message.isOut())
++        action.runtime.dispatch(action.callback, "message", JSONArray().put(context))
++    }
++
++    private fun chatKind(message: MessageObject): String {
++        val peer = message.messageOwner?.peer_id
++        return when (peer) {
++            is org.telegram.tgnet.TLRPC.TL_peerUser -> "user"
++            is org.telegram.tgnet.TLRPC.TL_peerChat -> "group"
++            is org.telegram.tgnet.TLRPC.TL_peerChannel -> if (message.messageOwner != null && message.messageOwner.post) "channel" else "group"
++            else -> "user"
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index 5fe6e90b0..54819338e 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -49,6 +49,8 @@ class ScriptRuntime(
+     private val notificationInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     private val dropInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     private val composeHandlers = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
++    
++    val messageActions = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     @Volatile
+     private var settingsTitle: String? = null
+     @Volatile
+@@ -317,6 +319,14 @@ class ScriptRuntime(
+                     ScriptPlayer.unlisten(this, idOf(value, scalar))
+                     true
+                 }
++                "messageAction.register" -> {
++                    ScriptMessageActions.register(this, value ?: JSONObject())
++                    true
++                }
++                "messageAction.unregister" -> {
++                    ScriptMessageActions.unregister(this, idOf(value, scalar))
++                    true
++                }
+                 "compose.register" -> {
+                     if (!allows("account.read", "draft")) {
+                         throw ScriptException("not-granted", "tg.compose.onInput needs the grant 'account.read(draft)'", JSONObject().put("grant", "account.read(draft)"))
+@@ -624,6 +634,7 @@ class ScriptRuntime(
+ 
+     private fun peerIdOf(peer: Any?): Long {
+         if (peer !is JSONObject) return 0
++        peer.optString("\$b").toLongOrNull()?.let { return it }
+         return when (peer.optString("_")) {
+             "inputPeerSelf" -> UserConfig.getInstance(account).getClientUserId()
+             "inputPeerUser" -> peer.optLong("userId")
+@@ -754,6 +765,7 @@ class ScriptRuntime(
+         ScriptDrops.unregister(this)
+         composeHandlers.clear()
+         ScriptCompose.unregister(this)
++        ScriptMessageActions.unregister(this)
+         ScriptCalls.unregister(this)
+         ScriptPlayer.unregister(this)
+         ScriptMenu.clear(this)
