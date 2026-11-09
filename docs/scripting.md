@@ -209,6 +209,24 @@ const dispose = tg.interceptNotification(({ kind, message }) => 'show')       //
 
 Called before a new message notification is shown: `kind` is `"message"`, `message.mentioned` says whether it mentions you, and returning `'drop'` keeps the notification away while the message stays unread. The message itself is not passed in full yet, and an answer has to be synchronous.
 
+### the message field
+
+```ts
+tg.compose.onInput(({ chatId, text }) => {})          // needs account.read(draft, peers)
+tg.compose.set('replacement')                         // needs account.write(draft)
+tg.compose.get()
+```
+
+`onInput` runs on every change of the open chat's field, with the chat id and the text as it is now. `set` rewrites the field of the chat that is open (and is not fed back to `onInput`), `get` reads it. The field of another chat is never touched.
+
+### asking the user
+
+```ts
+const code = await tg.ui.prompt({ title: 'code', placeholder: ':code:', maxLength: 32 })
+```
+
+A line of text in a dialog; resolves to the value or `null` when the dialog is cancelled. `multiline: true` allows a longer box.
+
 ### intercepting shared files
 
 ```ts
@@ -267,19 +285,19 @@ The page is built when the app opens it, so the rows always show the current val
 - [link-cleaner](scripts/link-cleaner/script.js): strips `utm_` and the usual click ids from the links you open, plus the parameters you add.
 - [quiet-hours](scripts/quiet-hours/script.js): drops message notifications between two hours, mentions still come through.
 - [drop-guard](scripts/drop-guard/script.js): keeps programs, scripts and files over a limit out of the chats they are shared into.
+- [compose-snippets](scripts/compose-snippets/script.js): expands short codes into text while you type in the message field.
 
 the other desktop scripts need APIs this build does not have yet:
 
 | desktop script | why it is not here |
 |---|---|
-| compose snippets | there is no compose or input hook |
 | call assistant | there is no calls API |
 | music status | there is no music player API |
 
 ## what is not here yet
 
 - settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
-- the outgoing-message interceptor, the full message in the notification hook, and the attach panel for shared files;
+- the outgoing-message interceptor, the full message in the notification hook, the attach panel for shared files, and the field of a chat that is not open;
 - calls, the music player, file pickers and file access, and the theme beyond day and night;
 - local messages, the widget layer and module imports from `tele`.
 

@@ -1,0 +1,407 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 17:00:45 +0300
+Subject: [PATCH] feat: let scripts rewrite the message field
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   | 26 +++++-
+ .../ui/Components/ChatActivityEnterView.java  | 13 +++
+ .../main/java/tele/scripting/ScriptCompose.kt | 80 +++++++++++++++++++
+ .../main/java/tele/scripting/ScriptRuntime.kt | 66 +++++++++++++--
+ .../src/main/java/tele/scripting/ScriptUi.kt  | 22 +++++
+ .../main/java/tele/ui/settings/TeleDialog.kt  | 28 ++++++-
+ .../ui/settings/TeleScriptSettingsActivity.kt |  2 +-
+ 7 files changed, 222 insertions(+), 15 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index 9be84ab91..bcd8fe912 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -477,10 +477,17 @@
+ 		listenSend: () => {
+ 			throw new TeleError('unsupported', 'send interceptors are not available on android yet');
+ 		},
+-		composeGet: () => null,
+-		composeSet: () => false,
+-		composeInsert: () => false,
+-		composeOnInput: () => disposer(() => {}),
++		composeGet: () => host('compose.get'),
++		composeSet: (text, peer) => host('compose.set', { text: String(text ?? ''), peer: peer === undefined ? null : peer }),
++		composeInsert: (text) => host('compose.insert', String(text ?? '')),
++		composeOnInput: (callback) => {
++			if (typeof callback !== 'function') {
++				throw new TypeError('tg.compose.onInput(function)');
++			}
++			const id = remember(callback);
++			host('compose.register', { id });
++			return disposer(() => host('compose.unregister', { id }));
++		},
+ 		decorate: (decorator) => {
+ 			const id = remember(decorator);
+ 			host('decorate.register', id);
+@@ -620,6 +627,17 @@
+ 			step: Number(options?.step ?? 1),
+ 			onChange: typeof options?.onChange === 'function' ? remember(options.onChange) : 0,
+ 		}),
++		prompt: (options) => new Promise((resolve) => {
++			const id = remember((value) => resolve(value === null || value === undefined ? null : String(value)));
++			host('ui.prompt', {
++				id,
++				title: String(options?.title ?? ''),
++				placeholder: String(options?.placeholder ?? ''),
++				value: options?.value == null ? '' : String(options.value),
++				maxLength: Number(options?.maxLength ?? 0),
++				multiline: options?.multiline ? 1 : 0,
++			});
++		}),
+ 		button: (options) => ({
+ 			kind: 'button',
+ 			text: String(options?.text ?? ''),
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index de8ed126f..3fedc0107 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -6119,6 +6119,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 if (ignorePrevTextChange) {
+                     return;
+                 }
++                tele.scripting.ScriptCompose.inputChanged(ChatActivityEnterView.this, dialog_id, charSequence == null ? "" : charSequence.toString());
+ 
+                 boolean allowChangeToSmile = true;
+                 int currentPage;
+@@ -11207,6 +11208,18 @@ public class ChatActivityEnterView extends FrameLayout implements
+         return messageEditText;
+     }
+ 
++    public long tele_getDialogId() {
++        return dialog_id;
++    }
++
++    public void tele_setComposeText(String text) {
++        if (messageEditText == null) {
++            return;
++        }
++        messageEditText.setText(text);
++        messageEditText.setSelection(messageEditText.length());
++    }
++
+     public SenderSelectView getSenderSelectView() {
+         return senderSelectView;
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt
+new file mode 100644
+index 000000000..819c22414
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptCompose.kt
+@@ -0,0 +1,80 @@
++package tele.scripting
++
++import org.json.JSONArray
++import org.json.JSONObject
++import java.lang.ref.WeakReference
++import java.util.concurrent.CopyOnWriteArrayList
++
++/** The input hooks of the scripts: they see the field as it is typed and may rewrite it. */
++object ScriptCompose {
++
++    private val runtimes = CopyOnWriteArrayList<ScriptRuntime>()
++    private var field: WeakReference<org.telegram.ui.Components.ChatActivityEnterView>? = null
++    private var dialogId = 0L
++
++    @Volatile
++    private var applying = false
++
++    @JvmStatic
++    fun register(runtime: ScriptRuntime) {
++        if (!runtimes.contains(runtime)) runtimes.add(runtime)
++    }
++
++    @JvmStatic
++    fun unregister(runtime: ScriptRuntime) {
++        runtimes.remove(runtime)
++    }
++
++    @JvmStatic
++    fun isApplying(): Boolean = applying
++
++    @JvmStatic
++    fun text(): String? {
++        val view = field?.get() ?: return null
++        return view.messageEditText?.text?.toString() ?: ""
++    }
++
++    @JvmStatic
++    fun chatId(): Long {
++        val view = field?.get() ?: return 0
++        return view.tele_getDialogId()
++    }
++
++    /** Told on every keystroke: the scripts decide whether to rewrite the field. */
++    @JvmStatic
++    fun inputChanged(view: org.telegram.ui.Components.ChatActivityEnterView, id: Long, text: String) {
++        field = WeakReference(view)
++        dialogId = id
++        if (applying || runtimes.isEmpty()) return
++        val context = JSONObject().put("chatId", id).put("text", text)
++        for (runtime in runtimes) {
++            if (runtime.hasComposeHandlers()) {
++                runtime.dispatchCompose(context)
++            }
++        }
++    }
++
++    /** The script set the field: applied on the ui thread and not fed back to the scripts. */
++    @JvmStatic
++    fun setText(peer: Long, text: String) {
++        org.telegram.messenger.AndroidUtilities.runOnUIThread {
++            val view = field?.get() ?: return@runOnUIThread
++            if (peer != 0L && peer != view.tele_getDialogId()) return@runOnUIThread
++            applying = true
++            view.tele_setComposeText(text)
++            org.telegram.messenger.AndroidUtilities.runOnUIThread({ applying = false }, 80)
++        }
++    }
++
++    @JvmStatic
++    fun insert(text: String): Boolean {
++        val view = field?.get() ?: return false
++        org.telegram.messenger.AndroidUtilities.runOnUIThread {
++            val current = view.messageEditText?.text?.toString().orEmpty()
++            applying = true
++            view.tele_setComposeText(current + text)
++            org.telegram.messenger.AndroidUtilities.runOnUIThread({ applying = false }, 80)
++        }
++        return true
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index ec0b7cd11..63f385db3 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -48,6 +48,7 @@ class ScriptRuntime(
+     private val linkInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     private val notificationInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     private val dropInterceptors = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
++    private val composeHandlers = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+     @Volatile
+     private var settingsTitle: String? = null
+     @Volatile
+@@ -86,6 +87,14 @@ class ScriptRuntime(
+ 
+     fun hasDropInterceptors(): Boolean = dropInterceptors.isNotEmpty()
+ 
++    fun hasComposeHandlers(): Boolean = composeHandlers.isNotEmpty()
++
++    fun dispatchCompose(context: JSONObject) {
++        for (id in composeHandlers) {
++            dispatch(id, "compose", JSONArray().put(context))
++        }
++    }
++
+     /** Asks the script's drop interceptors about shared files; the answer comes back through drop.verdict. */
+     fun requestDrop(token: Int, payload: JSONObject): Boolean {
+         if (!running || handle == 0L || dropInterceptors.isEmpty()) return false
+@@ -272,13 +281,51 @@ class ScriptRuntime(
+                     settingsBuilder = argsValue.optInt("builder")
+                     true
+                 }
++                "compose.register" -> {
++                    if (!allows("account.read", "draft")) {
++                        throw ScriptException("not-granted", "tg.compose.onInput needs the grant 'account.read(draft)'", JSONObject().put("grant", "account.read(draft)"))
++                    }
++                    composeHandlers.add(idOf(value, scalar))
++                    ScriptCompose.register(this)
++                    true
++                }
++                "compose.unregister" -> {
++                    composeHandlers.remove(idOf(value, scalar))
++                    if (composeHandlers.isEmpty()) ScriptCompose.unregister(this)
++                    true
++                }
++                "compose.get" -> {
++                    if (!allows("account.read", "draft")) {
++                        throw ScriptException("not-granted", "tg.compose.get needs the grant 'account.read(draft)'", JSONObject().put("grant", "account.read(draft)"))
++                    }
++                    ScriptCompose.text()
++                }
++                "compose.set" -> {
++                    if (!allows("account.write", "draft")) {
++                        throw ScriptException("not-granted", "tg.compose.set needs the grant 'account.write(draft)'", JSONObject().put("grant", "account.write(draft)"))
++                    }
++                    val argsValue = value ?: JSONObject()
++                    ScriptCompose.setText(peerIdOf(argsValue.opt("peer")), argsValue.optString("text"))
++                    true
++                }
++                "compose.insert" -> {
++                    if (!allows("account.write", "draft")) {
++                        throw ScriptException("not-granted", "tg.compose.insert needs the grant 'account.write(draft)'", JSONObject().put("grant", "account.write(draft)"))
++                    }
++                    ScriptCompose.insert(scalar.orEmpty())
++                }
++                "ui.prompt" -> {
++                    val argsValue = value ?: JSONObject()
++                    ScriptUi.prompt(this, argsValue)
++                    true
++                }
+                 "drop.register" -> {
+-                    dropInterceptors.add(scalar?.toIntOrNull() ?: 0)
++                    dropInterceptors.add(idOf(value, scalar))
+                     ScriptDrops.register(this)
+                     true
+                 }
+                 "drop.unregister" -> {
+-                    dropInterceptors.remove(scalar?.toIntOrNull() ?: 0)
++                    dropInterceptors.remove(idOf(value, scalar))
+                     if (dropInterceptors.isEmpty()) ScriptDrops.unregister(this)
+                     true
+                 }
+@@ -288,12 +335,12 @@ class ScriptRuntime(
+                     true
+                 }
+                 "notification.register" -> {
+-                    notificationInterceptors.add(scalar?.toIntOrNull() ?: 0)
++                    notificationInterceptors.add(idOf(value, scalar))
+                     ScriptNotifications.register(this)
+                     true
+                 }
+                 "notification.unregister" -> {
+-                    notificationInterceptors.remove(scalar?.toIntOrNull() ?: 0)
++                    notificationInterceptors.remove(idOf(value, scalar))
+                     if (notificationInterceptors.isEmpty()) ScriptNotifications.unregister(this)
+                     true
+                 }
+@@ -303,12 +350,12 @@ class ScriptRuntime(
+                     true
+                 }
+                 "link.register" -> {
+-                    linkInterceptors.add(scalar?.toIntOrNull() ?: 0)
++                    linkInterceptors.add(idOf(value, scalar))
+                     ScriptLinks.register(this)
+                     true
+                 }
+                 "link.unregister" -> {
+-                    linkInterceptors.remove(scalar?.toIntOrNull() ?: 0)
++                    linkInterceptors.remove(idOf(value, scalar))
+                     if (linkInterceptors.isEmpty()) ScriptLinks.unregister(this)
+                     true
+                 }
+@@ -415,6 +462,11 @@ class ScriptRuntime(
+         }
+     }
+ 
++    private fun idOf(value: JSONObject?, scalar: String?): Int {
++        val fromObject = value?.optInt("id", 0) ?: 0
++        return if (fromObject != 0) fromObject else (scalar?.toIntOrNull() ?: 0)
++    }
++
+     private fun keyOf(args: String?): String {
+         val text = args ?: return ""
+         return runCatching { JSONObject("{\"v\":$text}").optString("v") }.getOrDefault(text)
+@@ -664,6 +716,8 @@ class ScriptRuntime(
+         ScriptNotifications.unregister(this)
+         dropInterceptors.clear()
+         ScriptDrops.unregister(this)
++        composeHandlers.clear()
++        ScriptCompose.unregister(this)
+         ScriptMenu.clear(this)
+         ScriptDisplay.clearScript(account, id)
+         listeners.clear()
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+index 883a58595..5e3384024 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+@@ -29,4 +29,26 @@ object ScriptUi {
+     fun openChat(account: Int, peer: JSONObject?, messageId: Int) {
+         openChat(account, peer)
+     }
++
++    /** The small text ask of a script: the answer comes back through the dispatch channel. */
++    @JvmStatic
++    fun prompt(runtime: ScriptRuntime, options: JSONObject) {
++        val activity = LaunchActivity.instance ?: run {
++            runtime.dispatch(options.optInt("id"), "prompt", org.json.JSONArray().put(JSONObject.NULL))
++            return
++        }
++        AndroidUtilities.runOnUIThread {
++            tele.ui.settings.TeleDialog.input(
++                activity,
++                null,
++                options.optString("title"),
++                value = options.optString("value"),
++                hint = options.optString("placeholder"),
++                inputType = if (options.optInt("multiline") == 1) android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE else android.text.InputType.TYPE_CLASS_TEXT,
++                maxLength = options.optInt("maxLength"),
++                onDone = { value -> runtime.dispatch(options.optInt("id"), "prompt", org.json.JSONArray().put(value)) },
++                onCancel = { runtime.dispatch(options.optInt("id"), "prompt", org.json.JSONArray().put(JSONObject.NULL)) }
++            )
++        }
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt
+index 6d364c035..6e2fc019d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt
+@@ -30,10 +30,28 @@ object TeleDialog {
+         onDone: (String) -> Unit
+     ) {
+         val context = fragment.parentActivity ?: return
++        input(context, fragment.resourceProvider, title, value, hint, message, inputType, maxLength, positive, onDone, null)
++    }
++
++    @JvmStatic
++    @JvmOverloads
++    fun input(
++        context: android.content.Context,
++        resources: Theme.ResourcesProvider?,
++        title: CharSequence,
++        value: String = "",
++        hint: String = "",
++        message: CharSequence? = null,
++        inputType: Int = InputType.TYPE_CLASS_TEXT,
++        maxLength: Int = 0,
++        positive: CharSequence = LocaleController.getString(R.string.Save),
++        onDone: (String) -> Unit,
++        onCancel: (() -> Unit)? = null
++    ) {
+         val input = EditTextBoldCursor(context)
+         input.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18f)
+-        input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, fragment.resourceProvider))
+-        input.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint, fragment.resourceProvider))
++        input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resources))
++        input.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint, resources))
+         input.setBackgroundDrawable(Theme.createEditTextDrawable(context, true))
+         input.setPadding(0, AndroidUtilities.dp(6f), 0, AndroidUtilities.dp(6f))
+         input.setSingleLine(true)
+@@ -49,7 +67,7 @@ object TeleDialog {
+         val holder = FrameLayout(context)
+         holder.setPadding(AndroidUtilities.dp(24f), 0, AndroidUtilities.dp(24f), 0)
+         holder.addView(input, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
+-        val builder = AlertDialog.Builder(context, fragment.resourceProvider)
++        val builder = AlertDialog.Builder(context, resources)
+             .setTitle(title)
+             .setView(holder)
+             .setPositiveButton(positive) { _, _ -> onDone(input.text.toString()) }
+@@ -57,6 +75,8 @@ object TeleDialog {
+         if (message != null) {
+             builder.setMessage(message)
+         }
+-        builder.show()
++        val dialog = builder.create()
++        dialog.setOnCancelListener { onCancel?.invoke() }
++        dialog.show()
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt
+index 7d6df6ace..cfa3501ae 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt
+@@ -97,7 +97,7 @@ class TeleScriptSettingsActivity(
+                     UItem.asSwitchNoIcon(id, text)
+                         .setChecked(row.optBoolean("value", row.optBoolean("checked")))
+                 )
+-                "item", "button" -> items.add(UItem.asButton(id, text, lc(row.optString("detail"))))
++                "item", "button" -> items.add(UItem.asButton(id, text, lc(row.optString("detail").ifEmpty { row.optString("value") })))
+                 "input", "slider" -> items.add(UItem.asButton(id, text, row.optString("value")))
+                 else -> Unit
+             }

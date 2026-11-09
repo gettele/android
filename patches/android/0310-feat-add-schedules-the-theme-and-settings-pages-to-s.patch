@@ -4,7 +4,7 @@ Date: Mon, 9 Nov 2026 03:24:34 +0300
 Subject: [PATCH] feat: add schedules, the theme and settings pages to scripts
 
 ---
- .../main/assets/tele/scripting/bootstrap.js   | 157 +++++++++++++++++-
+ .../main/assets/tele/scripting/bootstrap.js   | 165 +++++++++++++++++-
  .../src/main/assets/tele/scripting/runtime.js |   4 +
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   1 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   1 +
@@ -13,16 +13,16 @@ Subject: [PATCH] feat: add schedules, the theme and settings pages to scripts
  .../main/java/tele/scripting/ScriptStore.kt   |   4 +-
  .../java/tele/ui/TeleScriptLogActivity.kt     | 147 ++++++++++++++++
  .../main/java/tele/ui/settings/TeleDialog.kt  |  62 +++++++
- .../ui/settings/TeleScriptSettingsActivity.kt | 132 +++++++++++++++
- .../tele/ui/settings/TeleScriptsActivity.kt   |  48 ++----
- 11 files changed, 639 insertions(+), 39 deletions(-)
+ .../ui/settings/TeleScriptSettingsActivity.kt | 156 +++++++++++++++++
+ .../tele/ui/settings/TeleScriptsActivity.kt   |  48 ++---
+ 11 files changed, 670 insertions(+), 40 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleThemeMode.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleDialog.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt
 
 diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
-index d93dde1d0..3d1ee20f3 100644
+index d93dde1d0..91a0a1304 100644
 --- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
 +++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
 @@ -68,6 +68,9 @@
@@ -35,15 +35,17 @@ index d93dde1d0..3d1ee20f3 100644
  	let nextCallback = 1;
  	let nextTimer = 1;
  	const remember = (callback) => {
-@@ -96,6 +99,7 @@
+@@ -96,6 +99,9 @@
  			}
  			const args = revive(message.args ?? []);
  			const result = callback(...args);
 +			pushSettingsRows();
++			// an async handler calls page.invalidate() later; this catches the ones that do not
++			setTimeout(pushSettingsRows, 250);
  			if (result && typeof result.then === 'function') {
  				result.catch(report);
  			}
-@@ -104,6 +108,44 @@
+@@ -104,6 +110,44 @@
  		}
  	};
  
@@ -88,7 +90,7 @@ index d93dde1d0..3d1ee20f3 100644
  	globalThis.__teleTimer = (id) => {
  		const entry = timers.get(Number(id));
  		if (entry === undefined) {
-@@ -360,18 +402,40 @@
+@@ -360,18 +404,44 @@
  			}
  			return disposer(() => {});
  		},
@@ -101,18 +103,21 @@ index d93dde1d0..3d1ee20f3 100644
 +				build: typeof build === 'function' ? build : () => [],
 +			});
 +			return id;
- 		},
- 		invalidatePage: () => {},
--		disposePage: () => {},
++		},
++		invalidatePage: (id) => {
++			if (Number(id) === activeSettingsPage) {
++				pushSettingsRows();
++			}
++		},
 +		disposePage: (id) => {
 +			settingsPages.delete(Number(id));
-+		},
+ 		},
+-		invalidatePage: () => {},
+-		disposePage: () => {},
  		openPage: () => {
 -			throw new TeleError('unsupported', 'script settings pages are not available on android yet');
 +			throw new TeleError('unsupported', 'the settings page screen is not drawn yet');
- 		},
--		registerSettings: () => {
--			throw new TeleError('unsupported', 'script settings pages are not available on android yet');
++		},
 +		registerSettings: (id) => {
 +			const page = settingsPages.get(Number(id));
 +			if (page === undefined) {
@@ -128,7 +133,9 @@ index d93dde1d0..3d1ee20f3 100644
 +		themeGet: () => !!host('theme.get'),
 +		themeSetDark: (dark) => {
 +			host('theme.set', !!dark);
-+		},
+ 		},
+-		registerSettings: () => {
+-			throw new TeleError('unsupported', 'script settings pages are not available on android yet');
 +		toast: (text) => {
 +			host('toast', String(text ?? ''));
  		},
@@ -136,7 +143,7 @@ index d93dde1d0..3d1ee20f3 100644
  		scriptsList: () => host('scripts.list'),
  		scriptsEmit: (event, data, to) => host('scripts.emit', { event, data, to }),
  		scriptsOn: (event, callback) => {
-@@ -381,6 +445,51 @@
+@@ -381,6 +451,51 @@
  		},
  	};
  
@@ -188,7 +195,7 @@ index d93dde1d0..3d1ee20f3 100644
  	const tg = {
  		selfId: host('selfId'),
  		scriptName: host('scriptName'),
-@@ -389,7 +498,39 @@
+@@ -389,7 +504,39 @@
  		peers: {
  			resolve: async (name) => host('resolve', String(name)),
  		},
@@ -697,10 +704,10 @@ index 000000000..6d364c035
 +}
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt
 new file mode 100644
-index 000000000..1f052a036
+index 000000000..7d6df6ace
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptSettingsActivity.kt
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,156 @@
 +package tele.ui.settings
 +
 +import android.content.Context
@@ -730,6 +737,18 @@ index 000000000..1f052a036
 +
 +    private var listView: UniversalRecyclerView? = null
 +    private var rows: JSONArray? = null
++    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
++    // the script may change its rows on its own thread (a prompt answer, a timer): follow them
++    private val watchdog = object : Runnable {
++        override fun run() {
++            val fresh = Scripts.runtime(account, scriptId)?.settingsRows()
++            if (fresh?.toString() != rows?.toString()) {
++                rows = fresh
++                listView?.adapter?.update(true)
++            }
++            handler.postDelayed(this, 400)
++        }
++    }
 +
 +    override fun createView(context: Context): View {
 +        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
@@ -749,6 +768,18 @@ index 000000000..1f052a036
 +    override fun onResume() {
 +        super.onResume()
 +        refresh()
++        handler.removeCallbacks(watchdog)
++        handler.post(watchdog)
++    }
++
++    override fun onPause() {
++        super.onPause()
++        handler.removeCallbacks(watchdog)
++    }
++
++    override fun onFragmentDestroy() {
++        handler.removeCallbacks(watchdog)
++        super.onFragmentDestroy()
 +    }
 +
 +    private fun refresh() {
