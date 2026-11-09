@@ -192,6 +192,15 @@ tg.connection()
 
 `tg.app.theme.setDark(true)` is the same switch as the day and night toggle in the chat list, with the theme names the user picked; `tg.app.theme.isDark()` reads it (both need `app`).
 
+### intercepting links
+
+```ts
+const dispose = tg.interceptLink(({ url }) => 'open')                     // needs interceptLink
+const onlyYouTube = tg.interceptLink(/^https:\/\/(www\.)?youtube\.com/, ({ url }) => url.replace('youtube.com', 'yewtu.be'))
+```
+
+The interceptor gets the url as it would open now and returns `'open'`, `'drop'` or a new url; anything else (or no answer within half a second) opens the original link. A rewritten url goes on to the next interceptor, and the final one opens. Android runs the interceptors on the script thread, so an answer must be synchronous.
+
 ### timers
 
 `setTimeout`, `clearTimeout`, `setInterval` and `clearInterval` work, with a minimum interval of 1 ms and a maximum delay of one hour. timers run on the script thread.
@@ -239,12 +248,12 @@ The page is built when the app opens it, so the rows always show the current val
 - [away-auto-reply](scripts/away-auto-reply.js): answers a private chat once while away; the `away` message action toggles it.
 - [quick-translate](scripts/quick-translate.js): `translate` in a message menu, with the result in the message footer.
 - [theme-scheduler](scripts/theme-scheduler/script.js): night mode by the clock; `tg.schedule` switches the theme at two times of the day.
+- [link-cleaner](scripts/link-cleaner/script.js): strips `utm_` and the usual click ids from the links you open, plus the parameters you add.
 
 the other desktop scripts need APIs this build does not have yet:
 
 | desktop script | why it is not here |
 |---|---|
-| link cleaner | `interceptLink` is not implemented |
 | quiet hours | `interceptNotification` is not implemented |
 | drop guard | `interceptDrop` is not implemented |
 | compose snippets | there is no compose or input hook |
@@ -254,7 +263,7 @@ the other desktop scripts need APIs this build does not have yet:
 ## what is not here yet
 
 - settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
-- link, notification, drop and outgoing-message interceptors;
+- the notification, drop and outgoing-message interceptors;
 - calls, the music player, file pickers and file access, and the theme beyond day and night;
 - local messages, the widget layer and module imports from `tele`.
 
