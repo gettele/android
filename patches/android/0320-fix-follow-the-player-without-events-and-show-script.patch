@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 22:32:22 +0300
+Subject: [PATCH] fix: follow the player without events and show script text
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   |  4 ++
+ .../main/java/tele/scripting/ScriptPlayer.kt  | 49 ++++++++++---------
+ .../main/java/tele/scripting/ScriptRuntime.kt |  4 ++
+ .../src/main/java/tele/scripting/ScriptUi.kt  | 26 ++++++++++
+ 4 files changed, 59 insertions(+), 24 deletions(-)
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index f36e634f2..2d0dd9aa9 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -643,6 +643,10 @@
+ 			step: Number(options?.step ?? 1),
+ 			onChange: typeof options?.onChange === 'function' ? remember(options.onChange) : 0,
+ 		}),
++		text: (options) => host('ui.text', {
++			title: String(options?.title ?? ''),
++			text: String(options?.text ?? ''),
++		}),
+ 		prompt: (options) => new Promise((resolve) => {
+ 			const id = remember((value) => resolve(value === null || value === undefined ? null : String(value)));
+ 			host('ui.prompt', {
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+index 8f8eb828d..11b52e841 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptPlayer.kt
+@@ -12,11 +12,27 @@ import java.util.concurrent.CopyOnWriteArrayList
+ object ScriptPlayer {
+ 
+     private val listeners = CopyOnWriteArrayList<Pair<ScriptRuntime, Int>>()
+-    private var observing = false
++    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
++    private var polling = false
++    private var lastSnapshot = ""
+ 
+-    private val delegate = object : NotificationCenter.NotificationCenterDelegate {
+-        override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
+-            notifyListeners()
++    private val poll = object : Runnable {
++        override fun run() {
++            if (listeners.isEmpty()) {
++                polling = false
++                return
++            }
++            listeners.removeAll { !it.first.isRunning() }
++            val snapshot = current()?.toString() ?: ""
++            if (snapshot != lastSnapshot) {
++                lastSnapshot = snapshot
++                android.util.Log.d("TeleScriptPlayer", "track: " + snapshot)
++                val track = if (snapshot.isEmpty()) JSONObject.NULL else JSONObject(snapshot)
++                for ((runtime, id) in listeners) {
++                    runtime.dispatchPlayer(id, track)
++                }
++            }
++            handler.postDelayed(this, 1000)
+         }
+     }
+ 
+@@ -66,8 +82,11 @@ object ScriptPlayer {
+         if (listeners.none { it.first === runtime && it.second == id }) {
+             listeners.add(runtime to id)
+         }
+-        // the notification centre is happy only on the main thread, and the script calls us on its own
+-        AndroidUtilities.runOnUIThread { ensureObserver() }
++        if (!polling) {
++            polling = true
++            lastSnapshot = current()?.toString() ?: ""
++            handler.post(poll)
++        }
+     }
+ 
+     @JvmStatic
+@@ -79,22 +98,4 @@ object ScriptPlayer {
+     fun unregister(runtime: ScriptRuntime) {
+         listeners.removeAll { it.first === runtime }
+     }
+-
+-    private fun ensureObserver() {
+-        if (observing) return
+-        observing = true
+-        val center = NotificationCenter.getGlobalInstance()
+-        center.addObserver(delegate, NotificationCenter.messagePlayingDidStart)
+-        center.addObserver(delegate, NotificationCenter.messagePlayingPlayStateChanged)
+-        center.addObserver(delegate, NotificationCenter.messagePlayingDidReset)
+-    }
+-
+-    private fun notifyListeners() {
+-        if (listeners.isEmpty()) return
+-        listeners.removeAll { !it.first.isRunning() }
+-        for ((runtime, id) in listeners) {
+-            val track = current()
+-            runtime.dispatchPlayer(id, track ?: JSONObject.NULL)
+-        }
+-    }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index 54819338e..d84161816 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -360,6 +360,10 @@ class ScriptRuntime(
+                     }
+                     ScriptCompose.insert(scalar.orEmpty())
+                 }
++                "ui.text" -> {
++                    ScriptUi.text(this, value ?: JSONObject())
++                    true
++                }
+                 "ui.prompt" -> {
+                     val argsValue = value ?: JSONObject()
+                     ScriptUi.prompt(this, argsValue)
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+index 5e3384024..128b0d7a8 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+@@ -51,4 +51,30 @@ object ScriptUi {
+             )
+         }
+     }
++
++    /** A dialog with a longer text: scrollable, selectable, with copy. */
++    @JvmStatic
++    fun text(runtime: ScriptRuntime, options: JSONObject) {
++        val activity = LaunchActivity.instance ?: return
++        val title = options.optString("title")
++        val text = options.optString("text")
++        AndroidUtilities.runOnUIThread {
++            val builder = org.telegram.ui.ActionBar.AlertDialog.Builder(activity, null)
++            builder.setTitle(title)
++            val view = android.widget.TextView(activity)
++            view.text = text
++            view.setTextIsSelectable(true)
++            view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 16f)
++            view.setTextColor(org.telegram.ui.ActionBar.Theme.getColor(org.telegram.ui.ActionBar.Theme.key_dialogTextBlack))
++            view.setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(8f), AndroidUtilities.dp(24f), AndroidUtilities.dp(8f))
++            val scroll = android.widget.ScrollView(activity)
++            scroll.addView(view)
++            builder.setView(scroll)
++            builder.setPositiveButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Copy), { _, _ ->
++                AndroidUtilities.addToClipboard(text)
++            })
++            builder.setNegativeButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Close), null)
++            builder.show()
++        }
++    }
+ }

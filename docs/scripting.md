@@ -253,6 +253,14 @@ const dispose = tg.registerMessageAction({
 
 Adds an item to the long press menu of a message; the context carries `chatId`, `messageId`, `text`, `date` and `out`. `chats` narrows it to `user`, `group`, `channel` or `all`; the disposer takes the item away. No grant is needed: nothing runs until the item is picked.
 
+### showing text
+
+```ts
+tg.ui.text({ title: 'translate', text: longText })
+```
+
+A dialog with the whole text: scrollable, selectable, with copy. Use it when a toast is too small.
+
 ### asking the user
 
 ```ts
@@ -322,7 +330,7 @@ The page is built when the app opens it, so the rows always show the current val
 - [compose-snippets](scripts/compose-snippets/script.js): expands short codes into text while you type in the message field.
 - [music-status](scripts/music-status/script.js): puts the song you listen to into your bio, and gives the normal bio back when the player stops.
 - [call-assistant](scripts/call-assistant/script.js): pauses the music when a call connects, mutes you on request and logs the length of the call.
-- [quick translate](scripts/quick-translate.js): adds a translate item to the message menu and shows the translation in a toast.
+- [quick translate](scripts/quick-translate.js): adds a translate item to the message menu and shows the translation in a dialog.
 
 the other desktop scripts need APIs this build does not have yet:
 

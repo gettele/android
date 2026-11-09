@@ -21,7 +21,10 @@ export default defineScript({
       onClick: async (context) => {
         try {
           const result = await translate(context.text)
-          tg.toast(`${result.from} → ${target}: ${result.text}`)
+          tg.ui.text({
+            title: `${result.from} → ${target}`,
+            text: result.text,
+          })
         } catch (error) {
           tg.toast(`translate failed: ${String(error)}`)
           tg.log('translate failed', String(error))
