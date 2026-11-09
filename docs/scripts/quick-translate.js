@@ -19,19 +19,11 @@ export default defineScript({
       text: 'translate',
       icon: 'message',
       onClick: async (context) => {
-        const key = `${context.chatId}:${context.messageId}`
-        const existing = shown.get(key)
-        if (existing) {
-          existing()
-          shown.delete(key)
-          return
-        }
         try {
           const result = await translate(context.text)
-          shown.set(key, await tg.decorateMessage(context.chatId, context.messageId, {
-            footer: `${result.from} → ${target}: ${result.text}`,
-          }))
+          tg.toast(`${result.from} → ${target}: ${result.text}`)
         } catch (error) {
+          tg.toast(`translate failed: ${String(error)}`)
           tg.log('translate failed', String(error))
         }
       },
