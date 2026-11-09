@@ -1,0 +1,631 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 10 Nov 2026 02:33:23 +0300
+Subject: [PATCH] fix: run fetch and message decorators asynchronously
+
+---
+ .../main/assets/tele/scripting/bootstrap.js   |  82 +++++------
+ .../main/java/tele/scripting/ScriptDisplay.kt |  51 ++++++-
+ .../main/java/tele/scripting/ScriptRuntime.kt | 127 +++++++++++-------
+ .../src/main/java/tele/scripting/ScriptWeb.kt | 119 +++++++++++++---
+ .../src/main/java/tele/scripting/Scripts.kt   |  27 +++-
+ 5 files changed, 285 insertions(+), 121 deletions(-)
+
+diff --git a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+index 2cc4b3a6e..19130d31e 100644
+--- a/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
++++ b/TMessagesProj/src/main/assets/tele/scripting/bootstrap.js
+@@ -829,35 +829,25 @@
+ 		__teleExtendGlobals(given);
+ 	};
+ 
+-	const decorationResults = new Map();
+ 	globalThis.__teleDecorate = (payload) => {
+ 		const request = JSON.parse(payload);
+-		const callback = callbacks.get(request.id);
+-		if (callback === undefined) {
+-			decorationResults.set(request.key, { ready: true, value: null });
+-			return;
+-		}
+-		try {
+-			const result = __teleRunDecorator(callback, request.raw);
+-			Promise.resolve(result).then(
+-				(value) => decorationResults.set(request.key, { ready: true, value: value ?? null }),
+-				(error) => {
+-					report(error);
+-					decorationResults.set(request.key, { ready: true, value: null });
+-				}
+-			);
+-		} catch (error) {
+-			report(error);
+-			decorationResults.set(request.key, { ready: true, value: null });
+-		}
+-	};
+-	globalThis.__teleDecorateResult = (key) => {
+-		const value = decorationResults.get(key);
+-		if (value === undefined) {
+-			return null;
+-		}
+-		decorationResults.delete(key);
+-		return JSON.stringify(encode(value));
++		const tasks = request.ids.map(async (id) => {
++			const callback = callbacks.get(id);
++			if (callback === undefined) return null;
++			try {
++				return (await __teleRunDecorator(callback, revive(request.raw))) ?? null;
++			} catch (error) {
++				report(error);
++				return null;
++			}
++		});
++		Promise.all(tasks).then((values) => {
++			let value = null;
++			for (const candidate of values) {
++				if (candidate != null) value = candidate;
++			}
++			host('decorate.result', { token: request.token, value });
++		}).catch(report);
+ 	};
+ 
+ 	globalThis.__teleStop = () => {
+@@ -925,21 +915,33 @@
+ 		}
+ 	};
+ 
+-	globalThis.fetch = async (url, init = undefined) => {
++	given.fetchAbort = (id) => host('fetchAbort', id);
++
++	globalThis.fetch = (url, init = undefined) => new Promise((resolve, reject) => {
+ 		const options = init ?? {};
+-		if (options.__teleAbort || options.signal != null) {
+-			throw new TeleError('unsupported', 'fetch signals are not available on android; requests have a native 30 second timeout and stop with the script');
+-		}
+-		const answer = host('fetch', {
+-			url: String(url),
+-			method: options.method ?? 'GET',
+-			headers: options.headers ?? {},
+-			body: (typeof options.body === 'string') ? options.body : null,
+-			redirect: options.redirect ?? 'follow',
+-			abort: options.__teleAbort ?? 0,
++		const callback = remember((answer) => {
++			forget(callback);
++			if (answer?.ok === true) {
++				resolve(new TeleResponse(answer.value));
++			} else {
++				reject(new TeleError(answer?.code ?? 'network', answer?.error ?? 'the request failed', answer?.extra));
++			}
+ 		});
+-		return new TeleResponse(answer);
+-	};
++		try {
++			host('fetch.start', {
++				callback,
++				url: String(url),
++				method: options.method ?? 'GET',
++				headers: options.headers ?? {},
++				body: (typeof options.body === 'string') ? options.body : null,
++				redirect: options.redirect ?? 'follow',
++				abort: options.__teleAbort ?? 0,
++			});
++		} catch (error) {
++			forget(callback);
++			reject(error);
++		}
++	});
+ 
+ 	if (typeof globalThis.TextEncoder !== 'function') {
+ 		globalThis.TextEncoder = class {
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
+index 34b876fa1..edcacedd5 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
+@@ -22,6 +22,10 @@ object ScriptDisplay {
+     private data class Source(val text: String?, val editDate: Int)
+     private data class Entry(val script: String, val token: Long, val value: Decoration, val source: Source?)
+     private data class Cached(val source: Source, val value: Decoration?)
++    private data class Pending(val source: Source, val epoch: Long, val token: Long)
++    private val pending = HashMap<String, Pending>()
++    private val epochs = HashMap<Int, Long>()
++    private val cacheLock = Any()
+     private data class Original(val text: CharSequence, val source: Source, val translated: Boolean, val summarized: Boolean)
+     private val explicit = ConcurrentHashMap<String, Entry>()
+     private val cache = ConcurrentHashMap<String, Cached>()
+@@ -89,10 +93,37 @@ object ScriptDisplay {
+                 explicit.remove(key, entry)
+             }
+         }
+-        cache[key]?.let { if (it.source == source) return it.value }
+-        val result = Scripts.decorateSync(account, message)
+-        cache[key] = Cached(source, result)
+-        return result
++        val work: Pending
++        synchronized(cacheLock) {
++            cache[key]?.let { if (it.source == source) return it.value }
++            pending[key]?.let { if (it.source == source) return null }
++            if (pending.size >= 128) return null
++            work = Pending(source, epochs[account] ?: 0, tokens.incrementAndGet())
++            pending[key] = work
++        }
++        val owner = message.messageOwner
++        val reference = java.lang.ref.WeakReference(message)
++        val requesting = java.util.concurrent.atomic.AtomicBoolean(true)
++        val accepted = Scripts.decorateAsync(account, owner, source.text, source.editDate) { result, complete ->
++            AndroidUtilities.runOnUIThread {
++                val current = reference.get()
++                var accepted = false
++                synchronized(cacheLock) {
++                    if (pending[key] == work) {
++                        pending.remove(key)
++                        if (complete && TeleConfig.SCRIPTING.value && (epochs[account] ?: 0) == work.epoch && current != null && current.currentAccount == account && current.messageOwner === owner && source(current) == work.source) {
++                            if (cache.size >= 512) cache.keys.firstOrNull()?.let(cache::remove)
++                            cache[key] = Cached(work.source, result)
++                            accepted = true
++                        }
++                    }
++                }
++                if (accepted && result != null && !requesting.get()) AndroidUtilities.runOnUIThread({ refresh(account, key) }, 1)
++            }
++        }
++        requesting.set(false)
++        if (!accepted) synchronized(cacheLock) { if (pending[key] == work) pending.remove(key) }
++        return synchronized(cacheLock) { cache[key]?.takeIf { it.source == source }?.value }
+     }
+ 
+     @JvmStatic
+@@ -121,7 +152,11 @@ object ScriptDisplay {
+ 
+     @JvmStatic
+     fun invalidate(account: Int) {
+-        cache.keys.removeAll { it.startsWith("$account:") }
++        synchronized(cacheLock) {
++            epochs[account] = (epochs[account] ?: 0) + 1
++            cache.keys.removeAll { it.startsWith("$account:") }
++            pending.keys.removeAll { it.startsWith("$account:") }
++        }
+         refresh(account)
+     }
+ 
+@@ -136,7 +171,11 @@ object ScriptDisplay {
+     @JvmStatic
+     fun clear() {
+         explicit.clear()
+-        cache.clear()
++        synchronized(cacheLock) {
++            cache.clear()
++            pending.clear()
++            for (account in epochs.keys.toList()) epochs[account] = (epochs[account] ?: 0) + 1
++        }
+         val accounts = synchronized(messages) { messages.keys.map { it.currentAccount }.distinct() }
+         for (account in accounts) refresh(account)
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index a1c7fc397..bdf57abc2 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -11,16 +11,11 @@ import org.telegram.messenger.UserConfig
+ import org.telegram.messenger.Utilities
+ import org.telegram.tgnet.TLRPC
+ import java.util.concurrent.ConcurrentHashMap
+-import java.util.concurrent.FutureTask
+ import java.util.concurrent.LinkedBlockingQueue
+ import java.util.concurrent.ScheduledFuture
+ import java.util.concurrent.ScheduledThreadPoolExecutor
+ import java.util.concurrent.TimeUnit
+ 
+-/**
+- * One script, one isolate, one thread. Host calls from QuickJS block that thread (and only that
+- * thread); every callback into JS is posted to the same queue, so JSValue never crosses threads.
+- */
+ class ScriptRuntime(
+     @JvmField val account: Int,
+     @JvmField val id: String,
+@@ -38,7 +33,11 @@ class ScriptRuntime(
+     private val scheduler = ScheduledThreadPoolExecutor(1)
+     private val timers = ConcurrentHashMap<Int, ScheduledFuture<*>>()
+     private val listeners = ConcurrentHashMap<String, Int>()
+-    private val decorators = ArrayList<Int>()
++    private val decorators = java.util.concurrent.CopyOnWriteArrayList<Int>()
++    private val decorationTokens = java.util.concurrent.atomic.AtomicLong()
++    private val decorationCallbacks = ConcurrentHashMap<Long, (Decoration?) -> Unit>()
++    private val decorationTimeouts = ConcurrentHashMap<Long, ScheduledFuture<*>>()
++    private val decorationTasks = ConcurrentHashMap<Long, Runnable>()
+     @Volatile
+     private var updateListener = 0
+     @Volatile
+@@ -75,6 +74,7 @@ class ScriptRuntime(
+         val current = handle
+         if (current != 0L) QuickJs.interrupt(current)
+         ScriptWeb.cancel(this)
++        cancelDecorations()
+         scheduler.shutdownNow()
+         timers.clear()
+         schedules.clear()
+@@ -154,57 +154,76 @@ class ScriptRuntime(
+         if (!running || handle == 0L) return false
+         val payload = JSONObject().put("id", callback).put("args", args).toString()
+         queue.offer(Runnable {
++            if (!running || handle == 0L) return@Runnable
+             val error = QuickJs.call(handle, "__teleDispatch", payload)
+             if (error != null) fault(error)
+         })
+         return true
+     }
+ 
+-    fun decorationFor(message: org.telegram.messenger.MessageObject): Decoration? {
+-        if (!running || handle == 0L || decorators.isEmpty()) return null
+-        val raw = ScriptTl.messageJson(message.messageOwner) ?: return null
+-        val key = "${message.getDialogId()}:${message.getId()}"
+-        val task = FutureTask<Decoration?> {
+-            if (!running || handle == 0L) return@FutureTask null
+-            var result: Decoration? = null
+-            for (callback in ArrayList(decorators)) {
+-                val payload = JSONObject()
+-                    .put("key", "$key:$callback")
+-                    .put("id", callback)
+-                    .put("raw", raw)
+-                    .toString()
+-                val callError = QuickJs.call(handle, "__teleDecorate", payload)
+-                if (callError != null) {
+-                    fault(callError)
+-                    break
+-                }
+-                val deadline = System.currentTimeMillis() + 200
+-                while (System.currentTimeMillis() < deadline) {
+-                    val jobError = QuickJs.runJobs(handle)
+-                    if (jobError != null) {
+-                        fault(jobError)
+-                        break
+-                    }
+-                    val text = QuickJs.callString(handle, "__teleDecorateResult", "$key:$callback") ?: break
+-                    val value = runCatching { JSONObject(text) }.getOrNull() ?: break
+-                    val ready = value.optBoolean("ready", false)
+-                    if (!ready) break
+-                    val decoration = value.optJSONObject("value") ?: continue
+-                    val parsed = ScriptDisplay.parse(decoration)
+-                    if (parsed != null) result = parsed
+-                    break
+-                }
++    fun decorationFor(message: TLRPC.Message, text: String?, editDate: Int, completion: (Decoration?) -> Unit): Boolean {
++        if (!running || handle == 0L || decorators.isEmpty()) {
++            completion(null)
++            return true
++        }
++        if (decorationCallbacks.size >= 128) return false
++        val token = decorationTokens.incrementAndGet()
++        decorationCallbacks[token] = completion
++        try {
++            decorationTimeouts[token] = scheduler.schedule({
++                decorationTimeouts.remove(token)
++                finishDecoration(token, null)
++            }, 30, TimeUnit.SECONDS)
++        } catch (e: java.util.concurrent.RejectedExecutionException) {
++            decorationCallbacks.remove(token)
++            return false
++        }
++        val callbacks = decorators.toList()
++        val task = Runnable {
++            decorationTasks.remove(token)
++            if (!running || handle == 0L || !decorationCallbacks.containsKey(token)) return@Runnable
++            if (message.message != text || message.edit_date != editDate) {
++                finishDecoration(token, null)
++                return@Runnable
++            }
++            val raw = ScriptTl.messageJson(message)
++            if (message.message != text || message.edit_date != editDate || raw == null) {
++                finishDecoration(token, null)
++                return@Runnable
++            }
++            val payload = JSONObject()
++                .put("token", token)
++                .put("ids", JSONArray(callbacks))
++                .put("raw", raw)
++                .toString()
++            val error = QuickJs.call(handle, "__teleDecorate", payload)
++            if (error != null) {
++                finishDecoration(token, null)
++                fault(error)
+             }
+-            result
+         }
++        decorationTasks[token] = task
+         queue.offer(task)
+-        return try {
+-            task.get(50, TimeUnit.MILLISECONDS)
+-        } catch (e: Throwable) {
+-            task.cancel(false)
+-            queue.remove(task)
+-            null
+-        }
++        return true
++    }
++
++    private fun finishDecoration(token: Long, value: Decoration?) {
++        decorationTasks.remove(token)?.let { queue.remove(it) }
++        decorationTimeouts.remove(token)?.cancel(false)
++        val completion = decorationCallbacks.remove(token) ?: return
++        if (running) completion(value)
++    }
++
++    fun completeDecoration(value: JSONObject) {
++        finishDecoration(value.optLong("token"), value.optJSONObject("value")?.let(ScriptDisplay::parse))
++    }
++
++    fun cancelDecorations() {
++        for (task in decorationTasks.values) queue.remove(task)
++        decorationTasks.clear()
++        for (timeout in decorationTimeouts.values) timeout.cancel(false)
++        decorationTimeouts.clear()
++        decorationCallbacks.clear()
+     }
+ 
+     fun host(handle: Long, name: String, args: String?): String {
+@@ -446,10 +465,11 @@ class ScriptRuntime(
+                     settingsBuilder = 0
+                     true
+                 }
+-                "fetch" -> {
++                "fetch.start" -> {
+                     val argsValue = value ?: throw ScriptException("bad-argument", "fetch needs options")
+-                    ScriptWeb.fetch(this, argsValue)
++                    ScriptWeb.start(this, argsValue)
+                 }
++                "fetch" -> throw ScriptException("unsupported", "use the asynchronous fetch API")
+                 "fetchAbort" -> {
+                     ScriptWeb.abort(this, scalar?.toIntOrNull() ?: 0)
+                     true
+@@ -485,14 +505,20 @@ class ScriptRuntime(
+                     if (!allows("display", "messages")) throw ScriptException("not-granted", "message decorations need display(messages)")
+                     val argsValue = scalar?.toIntOrNull() ?: 0
+                     if (!decorators.contains(argsValue)) decorators.add(argsValue)
++                    cancelDecorations()
+                     ScriptDisplay.invalidate(account)
+                     true
+                 }
+                 "decorate.unregister" -> {
+                     decorators.remove(scalar?.toIntOrNull() ?: 0)
++                    cancelDecorations()
+                     ScriptDisplay.invalidate(account)
+                     true
+                 }
++                "decorate.result" -> {
++                    completeDecoration(value ?: JSONObject())
++                    true
++                }
+                 "decorate.message" -> {
+                     if (!allows("display", "messages")) throw ScriptException("not-granted", "message decorations need display(messages)")
+                     val argsValue = value ?: throw ScriptException("bad-argument", "decorateMessage needs a target")
+@@ -786,6 +812,7 @@ class ScriptRuntime(
+     private fun cleanup() {
+         running = false
+         ScriptWeb.cancel(this)
++        cancelDecorations()
+         queue.clear()
+         val current = handle
+         handle = 0
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
+index 839553e8f..516b0872b 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
+@@ -5,7 +5,7 @@ import okhttp3.Request
+ import okhttp3.RequestBody.Companion.toRequestBody
+ import okhttp3.Response
+ import org.json.JSONObject
+-import org.telegram.messenger.FileLog
++import org.json.JSONArray
+ import java.io.ByteArrayOutputStream
+ import java.net.URI
+ import java.util.Base64
+@@ -27,28 +27,96 @@ object ScriptWeb {
+         .followRedirects(false)
+         .followSslRedirects(false)
+         .build()
+-    private data class Active(val runtime: ScriptRuntime, val abort: Int)
+-    private val calls = ConcurrentHashMap<okhttp3.Call, Active>()
++    private data class Key(val runtime: ScriptRuntime, val callback: Int)
++    private class Job(val key: Key, val args: JSONObject, val abort: Int) {
++        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
++        @Volatile var cancelled = false
++        @Volatile var call: okhttp3.Call? = null
++        @Volatile var task: java.util.concurrent.FutureTask<Unit>? = null
++        @Volatile var timeout: java.util.concurrent.ScheduledFuture<*>? = null
++    }
++    private val jobs = ConcurrentHashMap<Key, Job>()
++    private val executor = java.util.concurrent.ThreadPoolExecutor(
++        4, 4, 30, TimeUnit.SECONDS, java.util.concurrent.ArrayBlockingQueue<Runnable>(64),
++        java.util.concurrent.ThreadFactory { task -> Thread(task, "TeleScriptFetch").apply { isDaemon = true } }
++    ).apply { allowCoreThreadTimeOut(true) }
++
++    private val deadlines = java.util.concurrent.ScheduledThreadPoolExecutor(1,
++        java.util.concurrent.ThreadFactory { task -> Thread(task, "TeleScriptFetchTimeout").apply { isDaemon = true } }
++    ).apply { setRemoveOnCancelPolicy(true) }
+ 
+     @JvmStatic
+-    fun fetch(runtime: ScriptRuntime, args: JSONObject): JSONObject {
++    fun start(runtime: ScriptRuntime, args: JSONObject): Boolean {
++        if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++        val callback = args.optInt("callback")
++        if (callback <= 0) throw ScriptException("bad-argument", "fetch needs a callback")
++        checkGrant(runtime, parse(args.optString("url").trim()))
++        val key = Key(runtime, callback)
++        val job = Job(key, args, args.optInt("abort"))
++        synchronized(jobs) {
++            if (jobs.keys.count { it.runtime === runtime } >= 8) throw ScriptException("busy", "a script may have at most 8 pending fetch requests")
++            if (jobs.putIfAbsent(key, job) != null) throw ScriptException("bad-argument", "fetch callback is already pending")
++        }
++        val task = java.util.concurrent.FutureTask<Unit> {
++            try {
++                complete(job, JSONObject().put("ok", true).put("value", fetch(job)))
++            } catch (e: ScriptException) {
++                complete(job, JSONObject().put("ok", false).put("code", e.errorCode).put("error", e.message).put("extra", e.extra))
++            } catch (e: Throwable) {
++                complete(job, JSONObject().put("ok", false).put("code", "network").put("error", e.message ?: "the request failed"))
++            }
++        }
++        job.task = task
++        job.timeout = deadlines.schedule({ cancel(job, true, "timeout") }, 30, TimeUnit.SECONDS)
++        if (job.cancelled || jobs[key] !== job) {
++            job.timeout?.cancel(false)
++            task.cancel(false)
++            return true
++        }
++        try {
++            executor.execute(task)
++        } catch (e: java.util.concurrent.RejectedExecutionException) {
++            jobs.remove(key, job)
++            job.timeout?.cancel(false)
++            throw ScriptException("busy", "the fetch worker queue is full")
++        }
++        if (!runtime.running) cancel(runtime)
++        return true
++    }
++
++    private fun complete(job: Job, answer: JSONObject) {
++        job.timeout?.cancel(false)
++        if (jobs.remove(job.key, job) && !job.cancelled && job.key.runtime.running) {
++            job.key.runtime.dispatch(job.key.callback, "fetch", JSONArray().put(answer))
++        }
++    }
++
++    private fun active(job: Job) {
++        if (job.cancelled) throw ScriptException("aborted", "the request was aborted")
++        if (!job.key.runtime.running) throw ScriptException("stopped", "the script was stopped")
++        if (System.nanoTime() >= job.deadline) throw ScriptException("timeout", "fetch exceeded 30 seconds")
++    }
++
++    private fun fetch(job: Job): JSONObject {
++        val runtime = job.key.runtime
++        val args = job.args
+         val original = args.optString("url").trim()
+         if (original.isEmpty()) throw ScriptException("bad-argument", "fetch needs a url")
+-        var uri = parse(original)
++        val origin = parse(original)
++        var uri = origin
+         val method = args.optString("method", "GET").uppercase()
+         val headers = args.optJSONObject("headers")
+         val body = args.optString("body", "").ifEmpty { null }
+-        val abort = args.optInt("abort", 0)
+         var redirects = 0
+-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+         while (true) {
+-            if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++            active(job)
+             checkGrant(runtime, uri)
+             val builder = Request.Builder().url(uri.toURL())
+             if (headers != null) {
+                 for (name in headers.keys()) {
+                     val value = headers.optString(name)
+                     if (name.equals("host", true) || name.equals("content-length", true)) continue
++                    if ((uri.host != origin.host || uri.scheme != origin.scheme || uri.port != origin.port) && (name.equals("authorization", true) || name.equals("cookie", true) || name.equals("proxy-authorization", true))) continue
+                     builder.header(name, value)
+                 }
+             }
+@@ -57,13 +125,13 @@ object ScriptWeb {
+                 else -> (body ?: "").toRequestBody(null)
+             }
+             val request = builder.method(method, requestBody).build()
+-            val remaining = deadline - System.nanoTime()
++            val remaining = job.deadline - System.nanoTime()
+             if (remaining <= 0) throw ScriptException("timeout", "fetch exceeded 30 seconds")
+             val call = client.newCall(request)
+             call.timeout().timeout(remaining, TimeUnit.NANOSECONDS)
+-            calls[call] = Active(runtime, abort)
++            job.call = call
+             try {
+-                if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++                active(job)
+                 val answer = call.execute().use {
+                     if (it.isRedirect && redirects < MAX_REDIRECTS) {
+                         val location = it.header("Location")
+@@ -74,15 +142,15 @@ object ScriptWeb {
+                         } else result(it)
+                     } else result(it)
+                 }
+-                if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++                active(job)
+                 if (answer != null) return answer
+             } catch (e: ScriptException) {
+                 throw e
+             } catch (e: Throwable) {
+-                if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++                active(job)
+                 throw ScriptException("network", e.message ?: "the request failed")
+             } finally {
+-                calls.remove(call)
++                job.call = null
+             }
+         }
+     }
+@@ -141,15 +209,30 @@ object ScriptWeb {
+     @JvmStatic
+     fun abort(runtime: ScriptRuntime, id: Int) {
+         if (id == 0) return
+-        for ((call, active) in calls) {
+-            if (active.runtime === runtime && active.abort == id) call.cancel()
++        for ((key, job) in jobs) {
++            if (key.runtime === runtime && job.abort == id) cancel(job, true)
+         }
+     }
+ 
+     @JvmStatic
+     fun cancel(runtime: ScriptRuntime) {
+-        for ((call, active) in calls) {
+-            if (active.runtime === runtime) runCatching { call.cancel() }
++        for ((key, job) in jobs) {
++            if (key.runtime === runtime) cancel(job)
++        }
++    }
++
++    private fun cancel(job: Job, notify: Boolean = false, code: String = "aborted") {
++        job.cancelled = true
++        job.timeout?.cancel(false)
++        val removed = jobs.remove(job.key, job)
++        if (removed && notify && job.key.runtime.running) {
++            val error = JSONObject().put("ok", false).put("code", code).put("error", if (code == "timeout") "fetch exceeded 30 seconds" else "the request was aborted")
++            job.key.runtime.dispatch(job.key.callback, "fetch", JSONArray().put(error))
++        }
++        job.call?.cancel()
++        job.task?.let {
++            it.cancel(false)
++            executor.remove(it)
+         }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+index f2a18028d..611653f12 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+@@ -273,14 +273,27 @@ object Scripts {
+     }
+ 
+     @JvmStatic
+-    fun decorateSync(account: Int, message: MessageObject): Decoration? {
+-        if (!TeleConfig.SCRIPTING.value) return null
+-        var result: Decoration? = null
+-        for (runtime in runtimes.values) {
+-            if (runtime.account != account) continue
+-            runtime.decorationFor(message)?.let { result = it }
++    fun decorateAsync(account: Int, message: TLRPC.Message, text: String?, editDate: Int, completion: (Decoration?, Boolean) -> Unit): Boolean {
++        if (!TeleConfig.SCRIPTING.value) return false
++        val active = runtimes.values.filter { it.account == account && it.isRunning() }.sortedBy { it.id }
++        if (active.isEmpty()) {
++            completion(null, true)
++            return true
++        }
++        val remaining = java.util.concurrent.atomic.AtomicInteger(active.size)
++        val rejected = java.util.concurrent.atomic.AtomicBoolean(false)
++        val results = java.util.concurrent.ConcurrentHashMap<Int, Decoration>()
++        for ((index, runtime) in active.withIndex()) {
++            val accepted = runtime.decorationFor(message, text, editDate) { value ->
++                if (value != null) results[index] = value
++                if (remaining.decrementAndGet() == 0) completion(results.maxByOrNull { it.key }?.value, !rejected.get())
++            }
++            if (!accepted) {
++                rejected.set(true)
++                if (remaining.decrementAndGet() == 0) completion(results.maxByOrNull { it.key }?.value, false)
++            }
+         }
+-        return result
++        return true
+     }
+ 
+     @JvmStatic

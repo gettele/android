@@ -546,7 +546,13 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 |---|---|---|
 | `0325-fix-isolate-scripts-and-enforce-runtime-permissions` | built | native grants для updates, calls, player, draft, interceptors и script bus; player/calls/compose/cache/bus изолированы по аккаунту и runtime. Декорации: owner+token, инвалидация по правке источника, сброс global-кэша и пустых результатов, защита UI при ошибке layout. Молчаливые API-заглушки → unsupported. HTTP отменяется по runtime до конца body, общий 30с deadline редиректов; TL token отменяется при stop/timeout. JNI interrupt защищён от гонки destroy. 68 JVM-проверок display, 31 web, проверки аккаунтов/остановки и 27 JS API прошли. Сетевые тесты используют transport stubs, не настоящие сокеты; полным security-аудитом это не считается. Ручная проверка ожидается |
 
-Оставшиеся ограничения: fetch блокирует поток скрипта; активный AbortSignal отклоняется явно (native deadline и stop работают). Нет caption replacement, модульных импортов, local messages и widget-слоя; синхронные global decorators могут задерживать UI (таймаут ожидания снижен до 50мс на runtime). Старт ждёт account-ready на globalQueue; массовая остановка всё ещё может ждать потоки по очереди. Нужны реальные multi-account/JNI/network stress-проверки. Эти пункты не считаются закрытыми прошедшими stub-тестами.
+Оставшиеся ограничения: нет caption replacement, модульных импортов, local messages и widget-слоя. Старт ждёт account-ready на globalQueue; массовая остановка всё ещё может ждать потоки по очереди. Нужны реальные multi-account/JNI/network stress-проверки. Эти пункты не считаются закрытыми прошедшими stub-тестами.
+
+### асинхронная сеть и декораторы
+
+| Android | статус | примечание |
+|---|---|---|
+| `0327-fix-run-fetch-and-message-decorators-asynchronously` | built | fetch.start возвращается сразу; 4 native worker, не более 8 запросов на runtime, общий 30с deadline включая очередь/редиректы, AbortSignal/timeout через callback, отмена по runtime. Global decorators выполняются на script queue и возвращают результат Promise через decorate.result; UI читает кэш без ожидания/JSON-сериализации; late results проверяются по аккаунту, owner/source revision и epoch, pending/cache ограничены. Полная TL-сериализация на worker читает объект с проверками text/editDate, но не является атомарным deep snapshot всех TL-полей. Прошли 77 display-проверок, 30 deterministic HTTP, реальный loopback HTTP+abort body, Promise/timer/AbortSignal и decorator JS-тесты; финальный APK собран и установлен на emulator-5554. Тестовые скрипты async-display-test/async-fetch-test добавлены выключенными. Повторная ручная проверка ожидается |
 
 ## пачка 29 — html-пузыри .tgw (закрыта)
 

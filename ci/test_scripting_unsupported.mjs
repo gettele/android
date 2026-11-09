@@ -33,7 +33,6 @@ const unsupported = [
   'tg.connection()', 'tg.ui.current()',
   'tg.options.get("known")', 'tg.options.set("known", true)', 'tg.options.onChange(() => {})',
   'tg.options.onChange("known", () => {})',
-  'fetch("https://example.com", { signal: {} })',
 ]
 for (const expression of unsupported) {
   await assert.rejects(async () => vm.runInContext(expression, context), error => {

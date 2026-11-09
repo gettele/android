@@ -50,7 +50,17 @@ import org.telegram.messenger.MessageObject
 object Scripts {
  var decorateCalls = 0
  var decorate: (Int,MessageObject)->Decoration? = { _,_ -> null }
- fun decorateSync(account: Int, message: MessageObject): Decoration? { decorateCalls++; return decorate(account,message) }
+ var defer = false
+ var completeResult = true
+ val pending = ArrayList<() -> Unit>()
+ fun decorateAsync(account: Int, owner: org.telegram.messenger.Owner, text: String?, editDate: Int, complete: (Decoration?, Boolean) -> Unit): Boolean {
+  decorateCalls++
+  val message = org.telegram.messenger.MessageObject.registry.first { it.messageOwner === owner }
+  val task = { complete(decorate(account,message), completeResult) }
+  if(defer) pending.add(task) else task()
+  return true
+ }
+ fun flush() { val work=pending.toList(); pending.clear(); work.forEach { it() } }
 }
 ''',
 'Messenger.kt': '''package org.telegram.messenger
@@ -58,6 +68,8 @@ import tele.TeleConfig
 import tele.scripting.ScriptDisplay
 class Owner(var message: String?, var edit_date: Int = 0)
 class MessageObject(val currentAccount: Int, private val peer: Long, private val id: Int, initial: String) {
+ companion object { val registry = ArrayList<MessageObject>() }
+ init { registry.add(this) }
  var messageOwner = Owner(initial)
  var messageText: CharSequence = initial
  var translated = false
@@ -76,7 +88,7 @@ class MessageObject(val currentAccount: Int, private val peer: Long, private val
  fun getEffectiveEntities(): List<String> = if(TeleConfig.SCRIPTING.value && ScriptDisplay.hasReplacement(this)) emptyList() else entities
 }
 object FileLog { val errors = ArrayList<Throwable>(); fun e(error: Throwable) { errors.add(error) } }
-object AndroidUtilities { fun runOnUIThread(action: ()->Unit) = action() }
+object AndroidUtilities { fun runOnUIThread(action: ()->Unit) = action(); fun runOnUIThread(action: ()->Unit, delay: Long) = action() }
 class NotificationCenter {
  data class Event(val account: Int, val id: Int, val peer: Long, val updated: List<MessageObject>)
  private var account: Int = 0
@@ -241,6 +253,48 @@ fun main() {
  ScriptDisplay.set(6,"failing",700,4,text("failing-replacement"))
  checkEq(1,org.telegram.messenger.FileLog.errors.size,"rendering exception is contained and logged")
  checkEq(0,failing.resetCalls,"failed rendering not reported as updated")
+ Scripts.defer=true
+ Scripts.decorate={ _,_ -> ScriptDisplay.parse(text("async-result")) }
+ val async=MessageObject(7,800,1,"async-source")
+ async.generateLayout(null)
+ val before=Scripts.decorateCalls
+ repeat(10) { async.generateLayout(null) }
+ checkEq(before,Scripts.decorateCalls,"pending requests deduplicate")
+ checkEq("async-source",async.messageText.toString(),"cache miss returns stock immediately")
+ Scripts.flush()
+ checkEq("async-result",async.messageText.toString(),"completion refreshes visible message")
+ ScriptDisplay.invalidate(7)
+ async.messageOwner.message="edited-async"
+ async.messageOwner.edit_date=1
+ async.messageText="edited-async"
+ Scripts.decorate={ _,_ -> ScriptDisplay.parse(text("old-result")) }
+ Scripts.flush()
+ checkEq("edited-async",async.messageText.toString(),"edited source rejects pending result")
+ async.generateLayout(null)
+ ScriptDisplay.invalidate(7)
+ Scripts.decorate={ _,_ -> null }
+ Scripts.flush()
+ checkEq("edited-async",async.messageText.toString(),"invalidated generation rejects late result")
+ ScriptDisplay.invalidate(7)
+ TeleConfig.SCRIPTING.value=false
+ ScriptDisplay.clearScript(7,"stopped")
+ Scripts.flush()
+ checkEq("edited-async",async.messageText.toString(),"stopped account cannot apply late result")
+ TeleConfig.SCRIPTING.value=true
+ Scripts.decorate={ _,_ -> null }
+ async.generateLayout(null)
+ Scripts.flush()
+ val asyncNullCalls=Scripts.decorateCalls
+ async.generateLayout(null)
+ checkEq(asyncNullCalls,Scripts.decorateCalls,"async null results cached")
+ ScriptDisplay.invalidate(7)
+ Scripts.completeResult=false
+ Scripts.flush()
+ val saturatedCalls=Scripts.decorateCalls
+ async.generateLayout(null)
+ checkEq(saturatedCalls+1,Scripts.decorateCalls,"backpressure result not cached as permanent null")
+ Scripts.completeResult=true
+ Scripts.flush()
  println("PASS: $assertions assertions against current ScriptDisplay.kt")
 }
 '''
