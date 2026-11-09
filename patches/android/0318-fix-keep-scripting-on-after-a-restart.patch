@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 9 Nov 2026 21:27:27 +0300
+Subject: [PATCH] fix: keep scripting on after a restart
+
+---
+ TMessagesProj/src/main/java/tele/TeleConfig.kt      |  3 +--
+ .../java/tele/scripting/ScriptMessageActions.kt     |  1 +
+ .../src/main/java/tele/scripting/Scripts.kt         | 13 +++++++++++--
+ .../java/tele/ui/settings/TeleScriptsActivity.kt    |  4 ++++
+ 4 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 088b22a5e..0dab555ba 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -493,10 +493,9 @@ object TeleConfig {
+     }
+ 
+     fun set(item: Item<*>, v: Any?) {
+-        val p = prefs ?: return
+         @Suppress("UNCHECKED_CAST")
+         (item as Item<Any?>).value = v
+-        item.save(p)
++        prefs?.let { item.save(it) }
+     }
+ 
+     // the public options of the settings export
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+index 26cd9484b..1c595bd70 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+@@ -31,6 +31,7 @@ object ScriptMessageActions {
+             }
+         } ?: listOf("all")
+         actions.add(Action(runtime, options.optInt("id"), options.optString("text"), options.optString("icon"), chats))
++        ScriptStore.addLog(runtime.account, runtime.id, "action registered: " + options.optString("text"))
+         return id
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+index 1aa648ca9..9cc2375ed 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+@@ -30,6 +30,7 @@ object Scripts {
+     @JvmStatic
+     fun init() {
+         started = true
++        android.util.Log.d("TeleScriptBoot", "init scripting=" + TeleConfig.SCRIPTING.value + " account=" + UserConfig.selectedAccount)
+         ScriptTypes.write()
+         if (TeleConfig.SCRIPTING.value) startWhenReady(UserConfig.selectedAccount)
+     }
+@@ -51,6 +52,7 @@ object Scripts {
+                     return@postRunnable
+                 }
+             }
++            android.util.Log.d("TeleScriptBoot", "startWhenReady activated=" + UserConfig.getInstance(account).isClientActivated)
+             if (TeleConfig.SCRIPTING.value) start(account)
+         }
+     }
+@@ -92,9 +94,16 @@ object Scripts {
+         if (!TeleConfig.SCRIPTING.value) return
+         for (script in scripts(account)) {
+             if (!ScriptStore.enabled(account, script.id)) continue
+-            if (script.error != null) continue
++            if (script.error != null) {
++                android.util.Log.d("TeleScriptBoot", "skip " + script.id + ": " + script.error)
++                continue
++            }
+             val grants = ScriptStore.grants(account, script.id)
+-            if (ScriptGrants.missing(script.grants, grants).isNotEmpty()) continue
++            if (ScriptGrants.missing(script.grants, grants).isNotEmpty()) {
++                android.util.Log.d("TeleScriptBoot", "skip " + script.id + ": grants " + ScriptGrants.missing(script.grants, grants))
++                continue
++            }
++            android.util.Log.d("TeleScriptBoot", "starting " + script.id)
+             start(account, script, grants)
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
+index f2339f86c..ea0501a0d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
+@@ -428,6 +428,10 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+     override fun onResume() {
+         super.onResume()
+         Scripts.refresh(currentAccount)
++        // the enabled scripts always run while scripting is on, even after a reinstall
++        if (TeleConfig.SCRIPTING.value) {
++            Scripts.start(currentAccount)
++        }
+         recycler?.adapter?.update(true)
+     }
+ 
