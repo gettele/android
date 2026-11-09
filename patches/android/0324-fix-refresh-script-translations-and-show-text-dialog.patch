@@ -1,0 +1,235 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 10 Nov 2026 00:08:53 +0300
+Subject: [PATCH] fix: refresh script translations and show text dialogs
+
+---
+ .../org/telegram/messenger/MessageObject.java |  3 ++
+ .../main/java/tele/scripting/ScriptDisplay.kt | 43 ++++++++++++++++---
+ .../tele/scripting/ScriptMessageActions.kt    |  3 +-
+ .../main/java/tele/scripting/ScriptRuntime.kt | 40 +++++++++--------
+ .../src/main/java/tele/scripting/ScriptUi.kt  | 21 +++++----
+ 5 files changed, 77 insertions(+), 33 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+index 634101966..6ce360523 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+@@ -8243,6 +8243,9 @@ public class MessageObject {
+     }
+ 
+     public ArrayList<TLRPC.MessageEntity> getEntities() {
++        if (tele.TeleConfig.SCRIPTING.getValue() && tele.scripting.ScriptDisplay.hasReplacement(this)) {
++            return new ArrayList<>();
++        }
+         if (messageOwner == null) return null;
+         if (summarized) {
+             if (translated && messageOwner.translatedSummaryText != null) {
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
+index 9373dc596..a037bf107 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptDisplay.kt
+@@ -21,6 +21,9 @@ object ScriptDisplay {
+     private val explicit = ConcurrentHashMap<String, Decoration>()
+     private val owners = ConcurrentHashMap<String, String>()
+     private val cache = ConcurrentHashMap<String, Decoration?>()
++    private val messages = java.util.Collections.synchronizedMap(java.util.WeakHashMap<MessageObject, Boolean>())
++    private data class Original(val text: CharSequence, val source: String?, val editDate: Int, val translated: Boolean, val summarized: Boolean)
++    private val originals = java.util.WeakHashMap<MessageObject, Original>()
+ 
+     private fun key(account: Int, peerId: Long, messageId: Int) = "$account:$peerId:$messageId"
+ 
+@@ -41,7 +44,7 @@ object ScriptDisplay {
+             }
+         }
+         cache.remove(key)
+-        refresh(account)
++        refresh(account, key)
+     }
+ 
+     @JvmStatic
+@@ -77,14 +80,19 @@ object ScriptDisplay {
+ 
+     @JvmStatic
+     fun apply(account: Int, message: MessageObject) {
++        messages[message] = true
++        restore(message)
+         if (!TeleConfig.SCRIPTING.value) return
+-        val decoration = decoration(account, message) ?: return
+-        val text = decoration.text
+-        if (text != null) {
+-            message.messageText = SpannableStringBuilder(text)
++        val text = decoration(account, message)?.text ?: return
++        synchronized(originals) {
++            originals[message] = Original(message.messageText, message.messageOwner.message, message.messageOwner.edit_date, message.translated, message.summarized)
+         }
++        message.messageText = SpannableStringBuilder(text)
+     }
+ 
++    @JvmStatic
++    fun hasReplacement(message: MessageObject): Boolean = synchronized(originals) { originals.containsKey(message) }
++
+     @JvmStatic
+     fun clearScript(account: Int, script: String) {
+         val mine = owners.entries.filter { it.value == script && it.key.startsWith("$account:") }.map { it.key }
+@@ -102,9 +110,30 @@ object ScriptDisplay {
+         cache.clear()
+     }
+ 
+-    private fun refresh(account: Int) {
++    private fun restore(message: MessageObject) {
++        synchronized(originals) {
++            originals.remove(message)?.let {
++                if (message.messageOwner.message == it.source && message.messageOwner.edit_date == it.editDate && message.translated == it.translated && message.summarized == it.summarized) {
++                    message.messageText = it.text
++                }
++            }
++        }
++    }
++
++    private fun refresh(account: Int, target: String? = null) {
+         AndroidUtilities.runOnUIThread {
+-            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.updateInterfaces, 0)
++            val loaded = synchronized(messages) { messages.keys.toList() }
++            for (group in loaded.filter { it.currentAccount == account && (target == null || key(account, it.getDialogId(), it.getId()) == target) }.groupBy { it.getDialogId() }) {
++                val updated = ArrayList<MessageObject>()
++                for (message in group.value) {
++                    restore(message)
++                    message.generateLayout(null)
++                    message.forceUpdate = true
++                    message.resetLayout()
++                    updated.add(message)
++                }
++                NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.replaceMessagesObjects, group.key, updated)
++            }
+         }
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+index fa8f5490f..4e88d0e1f 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptMessageActions.kt
+@@ -63,7 +63,8 @@ object ScriptMessageActions {
+         val context = JSONObject()
+             .put("chatId", JSONObject().put("\$b", message.getDialogId().toString()))
+             .put("messageId", message.getId())
+-            .put("text", message.messageText?.toString() ?: "")
++            .put("text", message.caption?.toString() ?: message.messageText?.toString() ?: "")
++            .put("canReplaceText", message.type == MessageObject.TYPE_TEXT || message.type == MessageObject.TYPE_EMOJIS)
+             .put("date", message.messageOwner?.date ?: 0)
+             .put("out", message.isOut())
+         action.runtime.dispatch(action.callback, "message", JSONArray().put(context))
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index d84161816..dd9c3d60d 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -455,6 +455,7 @@ class ScriptRuntime(
+                     true
+                 }
+                 "decorate.register" -> {
++                    if (!allows("display", "messages")) throw ScriptException("not-granted", "message decorations need display(messages)")
+                     val argsValue = scalar?.toIntOrNull() ?: 0
+                     if (!decorators.contains(argsValue)) decorators.add(argsValue)
+                     true
+@@ -464,16 +465,12 @@ class ScriptRuntime(
+                     true
+                 }
+                 "decorate.message" -> {
++                    if (!allows("display", "messages")) throw ScriptException("not-granted", "message decorations need display(messages)")
+                     val argsValue = value ?: throw ScriptException("bad-argument", "decorateMessage needs a target")
+                     val peerId = peerIdOf(argsValue.opt("peer"))
+-                    if (peerId != 0L) {
+-                        val decoration = argsValue.optJSONObject("decoration")
+-                        if (decoration == null) {
+-                            ScriptDisplay.set(account, id, peerId, argsValue.optLong("id").toInt(), null)
+-                        } else {
+-                            ScriptDisplay.set(account, id, peerId, argsValue.optLong("id").toInt(), decoration)
+-                        }
+-                    }
++                    if (peerId == 0L) throw ScriptException("bad-argument", "decorateMessage needs a resolved target peer")
++                    val decoration = argsValue.optJSONObject("decoration")
++                    ScriptDisplay.set(account, id, peerId, argsValue.optLong("id").toInt(), decoration)
+                     true
+                 }
+                 "accounts.list" -> {
+@@ -585,7 +582,7 @@ class ScriptRuntime(
+             return info(UserConfig.getInstance(account).currentUser)
+         }
+         if (id < 0) {
+-            val raw = -id
++            val raw = -nativePeerId(id)
+             val chat = MessagesController.getInstance(account).getChat(raw)
+                 ?: MessagesController.getInstance(account).getChat(-raw)
+             if (chat != null) return info(chat)
+@@ -636,17 +633,26 @@ class ScriptRuntime(
+         return result
+     }
+ 
++    private fun longValue(value: Any?): Long = when (value) {
++        is Number -> value.toLong()
++        is String -> value.toLongOrNull() ?: 0L
++        is JSONObject -> value.optString("\$b").toLongOrNull() ?: 0L
++        else -> 0L
++    }
++
++    private fun nativePeerId(id: Long): Long =
++        if (id <= -1000000000000L) id + 1000000000000L else id
++
+     private fun peerIdOf(peer: Any?): Long {
+-        if (peer !is JSONObject) return 0
+-        peer.optString("\$b").toLongOrNull()?.let { return it }
++        if (peer !is JSONObject || peer.has("\$b")) return nativePeerId(longValue(peer))
+         return when (peer.optString("_")) {
+             "inputPeerSelf" -> UserConfig.getInstance(account).getClientUserId()
+-            "inputPeerUser" -> peer.optLong("userId")
+-            "inputPeerChat" -> -peer.optLong("chatId")
+-            "inputPeerChannel" -> -1000000000000L - peer.optLong("channelId")
+-            "peerUser" -> peer.optLong("userId")
+-            "peerChat" -> -peer.optLong("chatId")
+-            "peerChannel" -> -1000000000000L - peer.optLong("channelId")
++            "inputPeerUser" -> longValue(peer.opt("userId"))
++            "inputPeerChat" -> -longValue(peer.opt("chatId"))
++            "inputPeerChannel" -> -longValue(peer.opt("channelId"))
++            "peerUser" -> longValue(peer.opt("userId"))
++            "peerChat" -> -longValue(peer.opt("chatId"))
++            "peerChannel" -> -longValue(peer.opt("channelId"))
+             else -> 0
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+index 6bc07955a..1a7509fb7 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptUi.kt
+@@ -52,19 +52,24 @@ object ScriptUi {
+         }
+     }
+ 
+-    /** A whole text of a script: its own screen, scrollable and selectable. */
+     @JvmStatic
+     fun text(runtime: ScriptRuntime, options: JSONObject) {
+-        val activity = LaunchActivity.instance ?: return
+         val title = options.optString("title")
+         val text = options.optString("text")
+-        // the message menu is still up at this point: let it close, or the new screen goes behind it
+         AndroidUtilities.runOnUIThread({
+-            try {
+-                activity.actionBarLayout?.presentFragment(tele.ui.TeleScriptTextActivity(title, text))
+-            } catch (e: Throwable) {
+-                ScriptStore.addLog(runtime.account, runtime.id, "text screen failed: " + e)
+-            }
++            if (!runtime.isRunning()) return@runOnUIThread
++            val fragment = LaunchActivity.getSafeLastFragment() ?: return@runOnUIThread
++            val activity = fragment.parentActivity ?: return@runOnUIThread
++            val dialog = org.telegram.ui.ActionBar.AlertDialog.Builder(activity, fragment.resourceProvider)
++                .setTitle(title)
++                .setMessage(text)
++                .setPositiveButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.OK), null)
++                .setNeutralButton(org.telegram.messenger.LocaleController.getString(org.telegram.messenger.R.string.Copy)) { _, _ ->
++                    AndroidUtilities.addToClipboard(text)
++                }
++                .create()
++            fragment.showDialog(dialog)
++            dialog.messageTextView?.setTextIsSelectable(true)
+         }, 350)
+     }
+ }

@@ -58,11 +58,16 @@ def method_of(display):
     return base if dot < 0 else base[:dot] + '.' + base[dot + 1:]
 
 
-SETFLAG = re.compile(r"setFlag\(flags, FLAG_(\d+), (\w+)\)")
-GUARDED = re.compile(r"if \((\w+) != (?:0|null)\)\s*\{?\s*flags \|= (\d+);")
-READ_FLAG = re.compile(r"hasFlag\(flags, FLAG_(\d+)\)\)\s*\{?\s*(\w+) =")
-READ_BOOL = re.compile(r"(\w+) = hasFlag\(flags, FLAG_(\d+)\);")
-WRITE_FLAG = re.compile(r"hasFlag\(flags, FLAG_(\d+)\)\)\s*\{?\s*stream\.write\w+\(([\w.]+)")
+FLAG = r"(FLAG_\d+|0[xX][0-9a-fA-F]+|\d+)"
+SETFLAG = re.compile(r"setFlag\(flags, " + FLAG + r", (\w+)\)")
+GUARDED = re.compile(r"if \((\w+) != (?:0|null)\)\s*\{?\s*flags \|= " + FLAG + r";")
+READ_FLAG = re.compile(r"hasFlag\(flags, " + FLAG + r"\)\)\s*\{?\s*(\w+) =")
+READ_BOOL = re.compile(r"(\w+) = hasFlag\(flags, " + FLAG + r"\);")
+WRITE_FLAG = re.compile(r"hasFlag\(flags, " + FLAG + r"\)\)\s*\{?\s*stream\.write\w+\(([\w.]+)")
+
+
+def flag_mask(value):
+    return 1 << int(value[5:]) if value.startswith('FLAG_') else int(value, 0)
 
 
 def optional_fields(body):
@@ -76,11 +81,11 @@ def optional_fields(body):
     method = body_of(body, brace)
     result = {}
     for bit, name in SETFLAG.findall(method):
-        result[name] = int(bit)
+        result[name] = flag_mask(bit)
     for name, bit in GUARDED.findall(method):
-        result.setdefault(name, int(bit))
+        result.setdefault(name, flag_mask(bit))
     for bit, name in WRITE_FLAG.findall(method):
-        result.setdefault(name.split('.')[0], int(bit))
+        result.setdefault(name.split('.')[0], flag_mask(bit))
     # reads tell the same mapping from the other side, and cover the classes whose
     # callers set the bits
     read = body.find('public void readParams')
@@ -89,9 +94,9 @@ def optional_fields(body):
         if readBrace >= 0:
             reader = body_of(body, readBrace)
             for bit, name in READ_FLAG.findall(reader):
-                result.setdefault(name, int(bit))
+                result.setdefault(name, flag_mask(bit))
             for name, bit in READ_BOOL.findall(reader):
-                result.setdefault(name, int(bit))
+                result.setdefault(name, flag_mask(bit))
     return result
 
 

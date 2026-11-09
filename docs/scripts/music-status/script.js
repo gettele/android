@@ -9,10 +9,10 @@ export default defineScript({
 
     const write = async (about) => {
       if (about === shown) return
-      shown = about
-      lastUpdate = Date.now()
       tg.log('writing bio:', about)
       await tg.call({ _: 'account.updateProfile', about })
+      shown = about
+      lastUpdate = Date.now()
       tg.log('bio written')
     }
 

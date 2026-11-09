@@ -527,6 +527,13 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 | 0302 | скриптинг (QuickJS, grants, TL, веб-платформа, ссылки и папка) (частично) | built | `0254-feat-add-android-scripting-runtime`; импорт по ссылке (`tg://tele/script?url=`) и SAF-папка со сменой/сбросом, `ConnectionsManager`, `MessagesController`, NDK quickjs-ng, `tele_script_*` JNI/Kotlin, `OkHttp`; L; зависит от 0088, скриптинг; реш.: скриптинг порт всё; по умолч.: папка + SAF; без виджет-слоя и Monaco; в 0302 уже влиты grant «display» (consent, прежняя строка 0303) и веб-платформа/fetch-API (прежняя строка 0320); десктопный фикс 0320 (падение при listing accounts из скрипта) — учесть в `tg`-мосте. документация и примеры: [scripting.md](scripting.md), [scripts](scripts/index.json) — calculator, away auto-reply и quick translate; проверено на эмуляторе: скрипты стартуют, `calculate` отправил `2+2 = 4`, `translate` и `away` появились в меню сообщения. `0298-fix-expose-message-actions-under-both-names` добавляет `tg.messageAction` рядом с `tg.registerMessageAction`; `0302-fix-pad-the-script-import-link-field`: поле import from a link получает боковые паддинги и сходится по ширине с текстом диалога |
 | 0329 | иконки у пунктов меню скриптов | built | `0255-feat-give-script-menus-icons`; `tele/scripting`, меню; S; зависит от 0302, скриптинг; скрипт задаёт иконку пункта меню |
 
+### исправления скриптинга после ручной проверки
+
+| Android | статус | примечание |
+|---|---|---|
+| `0323-fix-send-optional-script-request-fields` | queued | генератор TL-индекса распознаёт числовые маски `hasFlag` и преобразует `FLAG_N` в `1 << N`; `account.updateProfile.about` теперь уходит с битом 4, а не успешным пустым запросом. Кэш профиля обновляется на UI-потоке только после ответа сервера. Пример music status запоминает био только после успешного RPC. 4 регрессионных теста генератора; ручная проверка био ожидается |
+| `0324-fix-refresh-script-translations-and-show-text-dialog` | queued | декорация перестраивает уже загруженное сообщение и восстанавливает оригинал при снятии/выключении скрипта; исходные entities не применяются к переводу. Исправлены channel peer ids и проверка display-grant. `tg.ui.show` показывает нативный диалог с Copy; quick translate подменяет текст локально, повторный тап восстанавливает, подписи медиа открываются диалогом. Ручная проверка ожидается |
+
 ## пачка 29 — html-пузыри .tgw (закрыта)
 
 litehtml через NDK, карточки в пузыре, playground-чат (десктоп 0312/0313).

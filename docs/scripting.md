@@ -2,7 +2,7 @@
 
 settings → tele → scripts: javascript and typescript files that run inside tele, one QuickJS runtime per script and account on their own thread. a script is off until you switch it on, and it only gets the permissions you approve.
 
-this page is the android reference for the API of this build. it is not the full desktop reference: the desktop runtime has settings pages, commands, interceptors, calls, the music player and the widget layer. [what is not here yet](#what-is-not-here-yet) lists the differences.
+this page is the android reference for the API of this build, not the full desktop reference. Android supports script settings pages, selected interceptors, calls and the music player; [what is not here yet](#what-is-not-here-yet) lists the remaining differences.
 
 ## your first script
 
@@ -259,7 +259,7 @@ Adds an item to the long press menu of a message; the context carries `chatId`, 
 tg.ui.show({ title: 'translate', text: longText })
 ```
 
-A screen of its own with the whole text: scrollable, selectable, and a copy button in the bar. Use it when a toast is too small; `tg.ui.text` is a settings row builder, not this.
+A native dialog with scrollable, selectable text and a Copy button; it stays over the current screen. Use it when a toast is too small; `tg.ui.text` is a settings row builder, not this.
 
 ### asking the user
 
@@ -330,20 +330,13 @@ The page is built when the app opens it, so the rows always show the current val
 - [compose-snippets](scripts/compose-snippets/script.js): expands short codes into text while you type in the message field.
 - [music-status](scripts/music-status/script.js): puts the song you listen to into your bio, and gives the normal bio back when the player stops.
 - [call-assistant](scripts/call-assistant/script.js): pauses the music when a call connects, mutes you on request and logs the length of the call.
-- [quick translate](scripts/quick-translate.js): adds a translate item to the message menu and shows the translation in a dialog.
-
-the other desktop scripts need APIs this build does not have yet:
-
-| desktop script | why it is not here |
-|---|---|
-| call assistant | there is no calls API |
-| music status | there is no music player API |
+- [quick translate](scripts/quick-translate.js): replaces a text message locally with its translation; tap Translate again to restore it. Media captions and unavailable replacements use a native text dialog.
 
 ## what is not here yet
 
 - settings entries, commands, keyboard shortcuts, message-field buttons and profile rows;
 - the outgoing-message interceptor, the full message in the notification hook, the attach panel for shared files, and the field of a chat that is not open; keyboard shortcuts are desktop-only.
-- calls, the music player, file pickers and file access, and the theme beyond day and night;
+- file pickers and file access, and the theme beyond day and night;
 - local messages, the widget layer and module imports from `tele`.
 
 ## errors and limits
