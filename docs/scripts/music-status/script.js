@@ -1,9 +1,15 @@
 export default defineScript({
   name: 'music status',
-  grants: ['call(account.updateProfile)'],
-  setup(tg) {
-    let normal = tg.storage.get('bio') ?? ''
-    let shown = null
+  grants: ['call(account.updateProfile)', 'call(users.getFullUser)'],
+  async setup(tg) {
+    let normal = tg.storage.get('bio')
+    if (normal == null) {
+      const profile = await tg.call({ _: 'users.getFullUser', id: { _: 'inputUserSelf' } })
+      if (!profile?.fullUser) throw new Error('could not read the current bio')
+      normal = profile.fullUser.about ?? ''
+      tg.storage.set('bio', normal)
+    }
+    let shown = normal
     let lastUpdate = 0
     let timer = 0
 

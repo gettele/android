@@ -328,9 +328,9 @@ The page is built when the app opens it, so the rows always show the current val
 - [quiet-hours](scripts/quiet-hours/script.js): drops message notifications between two hours, mentions still come through.
 - [drop-guard](scripts/drop-guard/script.js): keeps programs, scripts and files over a limit out of the chats they are shared into.
 - [compose-snippets](scripts/compose-snippets/script.js): expands short codes into text while you type in the message field.
-- [music-status](scripts/music-status/script.js): puts the song you listen to into your bio, and gives the normal bio back when the player stops.
+- [music-status](scripts/music-status/script.js): reads and saves your current bio on first use, puts the song you listen to into your bio, and restores the saved bio when playback stops. Starting without music does not write the bio; the script's settings let you change the saved normal bio.
 - [call-assistant](scripts/call-assistant/script.js): pauses the music when a call connects, mutes you on request and logs the length of the call.
-- [quick translate](scripts/quick-translate.js): replaces a text message locally with its translation; tap Translate again to restore it. Media captions and unavailable replacements use a native text dialog.
+- [quick translate](scripts/quick-translate.js): replaces a text message locally with its translation; tap Translate again to restore it. Media captions and unavailable replacements use a native text dialog. Google redirects may use `www.google.com`, so both that host and `translate.googleapis.com` require explicit fetch grants.
 
 ## what is not here yet
 

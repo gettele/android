@@ -1,6 +1,6 @@
 export default defineScript({
   name: 'quick translate',
-  grants: ['fetch(translate.googleapis.com)', 'display(messages)'],
+  grants: ['fetch(translate.googleapis.com)', 'fetch(www.google.com)', 'display(messages)'],
   setup(tg) {
     const target = tg.storage.get('target') ?? 'en'
     const shown = new Map()
