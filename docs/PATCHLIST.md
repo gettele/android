@@ -538,7 +538,7 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 
 | Android | статус | примечание |
 |---|---|---|
-| `0326-fix-keep-script-decorations-out-of-message-edits` | built | обнаружено вручную: локальная декорация попадала в stock редактор через messageText и могла уйти на сервер при Save. Редактор берёт исходный messageOwner.message, сохраняя stock entities; контекст message action содержит sourceText/editDate. Примеры display-test/quick translate различают версии источника и не оставляют устаревший disposer после правки. Уже сохранённый на сервере текст автоматически не откатывается. Повторная ручная проверка ожидается |
+| `0326-fix-keep-script-decorations-out-of-message-edits` | done | обнаружено вручную: локальная декорация попадала в stock редактор через messageText и могла уйти на сервер при Save. Редактор берёт исходный messageOwner.message, сохраняя stock entities; контекст message action содержит sourceText/editDate. Примеры display-test/quick translate различают версии источника и не оставляют устаревший disposer после правки. Уже сохранённый на сервере текст автоматически не откатывается. Мейнтейнер подтвердил: редактор показывает оригинал, правка сбрасывает старую подмену, повторная подмена и выключение работают ожидаемо |
 
 ### укрепление существующего runtime скриптинга
 
@@ -552,7 +552,7 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 
 | Android | статус | примечание |
 |---|---|---|
-| `0327-fix-run-fetch-and-message-decorators-asynchronously` | built | fetch.start возвращается сразу; 4 native worker, не более 8 запросов на runtime, общий 30с deadline включая очередь/редиректы, AbortSignal/timeout через callback, отмена по runtime. Global decorators выполняются на script queue и возвращают результат Promise через decorate.result; UI читает кэш без ожидания/JSON-сериализации; late results проверяются по аккаунту, owner/source revision и epoch, pending/cache ограничены. Полная TL-сериализация на worker читает объект с проверками text/editDate, но не является атомарным deep snapshot всех TL-полей. Прошли 77 display-проверок, 30 deterministic HTTP, реальный loopback HTTP+abort body, Promise/timer/AbortSignal и decorator JS-тесты; финальный APK собран и установлен на emulator-5554. Тестовые скрипты async-display-test/async-fetch-test добавлены выключенными. Повторная ручная проверка ожидается |
+| `0327-fix-run-fetch-and-message-decorators-asynchronously` | done | fetch.start возвращается сразу; 4 native worker, не более 8 запросов на runtime, общий 30с deadline включая очередь/редиректы, AbortSignal/timeout через callback, отмена по runtime. Global decorators выполняются на script queue и возвращают результат Promise через decorate.result; UI читает кэш без ожидания/JSON-сериализации; late results проверяются по аккаунту, owner/source revision и epoch, pending/cache ограничены. Полная TL-сериализация на worker читает объект с проверками text/editDate, но не является атомарным deep snapshot всех TL-полей. Прошли 77 display-проверок, 30 deterministic HTTP, реальный loopback HTTP+abort body, Promise/timer/AbortSignal и decorator JS-тесты; финальный APK собран и установлен на emulator-5554. Тестовые скрипты async-display-test/async-fetch-test добавлены выключенными. Мейнтейнер подтвердил ручную проверку: асинхронная подмена, отмена pending при выключении, оригинал в редакторе, таймер и AbortSignal во время fetch работают |
 
 ## пачка 29 — html-пузыри .tgw (закрыта)
 
