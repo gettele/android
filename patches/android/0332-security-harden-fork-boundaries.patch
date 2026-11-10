@@ -1,0 +1,3320 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 10 Nov 2026 16:56:56 +0300
+Subject: [PATCH] [security] harden fork boundaries
+
+---
+ .../telegram/messenger/ApplicationLoader.java |   2 +-
+ .../messenger/MessagesController.java         |   2 +-
+ .../messenger/NotificationsController.java    |   1 +
+ .../org/telegram/messenger/UserConfig.java    |   1 +
+ .../org/telegram/ui/SecretMediaViewer.java    |   6 +-
+ .../org/telegram/ui/SecretVoicePlayer.java    |   2 +-
+ .../src/main/java/tele/TeleConfig.kt          |   3 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   1 +
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  30 ++
+ .../src/main/java/tele/helpers/Aliases.kt     |   8 +
+ .../src/main/java/tele/helpers/Bookmarks.kt   |  24 +-
+ .../main/java/tele/helpers/BoundedRegex.kt    |  85 +++++
+ .../main/java/tele/helpers/DeletedChats.kt    |   9 +
+ .../main/java/tele/helpers/DeletedMessages.kt |   7 +
+ .../src/main/java/tele/helpers/DockedMedia.kt |  26 ++
+ .../src/main/java/tele/helpers/DockedStore.kt |   2 +
+ .../main/java/tele/helpers/DraftDiscards.kt   |   6 +-
+ .../main/java/tele/helpers/DraftReplaced.kt   |   2 +-
+ .../src/main/java/tele/helpers/DraftSender.kt |   2 +-
+ .../src/main/java/tele/helpers/FolderIcons.kt |   5 +
+ .../main/java/tele/helpers/GhostPending.kt    |  11 +
+ .../main/java/tele/helpers/LastSeenPeek.kt    | 361 ++++++++++++++----
+ .../java/tele/helpers/LocalBackgrounds.kt     |  16 +-
+ .../src/main/java/tele/helpers/LocalPins.kt   |   9 +
+ .../java/tele/helpers/ObservedActivity.kt     |  11 +
+ .../main/java/tele/helpers/OnlineNotify.kt    |  11 +
+ .../src/main/java/tele/helpers/PastLimit.kt   |   9 +
+ .../main/java/tele/helpers/PrivacyRules.kt    |  95 ++++-
+ .../main/java/tele/helpers/ReactionStrip.kt   |   5 +
+ .../main/java/tele/helpers/RecoveredPosts.kt  |  12 +-
+ .../src/main/java/tele/helpers/ReturnPoint.kt |  14 +-
+ .../src/main/java/tele/helpers/SavedDrafts.kt |  22 +-
+ .../src/main/java/tele/helpers/StarsLock.kt   |  97 ++++-
+ .../main/java/tele/helpers/TeleAccounts.kt    | 100 +++++
+ .../src/main/java/tele/helpers/TeleBackup.kt  |   2 +-
+ .../src/main/java/tele/helpers/TeleChat.kt    |   5 +
+ .../src/main/java/tele/helpers/TeleNotices.kt |  25 +-
+ .../java/tele/helpers/TeleServerNotices.kt    |  54 ++-
+ .../src/main/java/tele/helpers/TeleSilent.kt  |  15 +-
+ .../src/main/java/tele/helpers/TeleUpdater.kt |  26 +-
+ .../main/java/tele/scripting/ScriptDrops.kt   |  28 +-
+ .../main/java/tele/scripting/ScriptLinks.kt   |  28 +-
+ .../tele/scripting/ScriptNotifications.kt     |  30 +-
+ .../main/java/tele/scripting/ScriptReplies.kt |  63 +++
+ .../main/java/tele/scripting/ScriptRuntime.kt |  41 +-
+ .../main/java/tele/scripting/ScriptStore.kt   |  25 ++
+ .../src/main/java/tele/scripting/ScriptWeb.kt |  10 +-
+ .../src/main/java/tele/scripting/Scripts.kt   | 161 ++++++--
+ .../src/main/java/tele/ui/StarsLockUi.kt      |  47 ++-
+ .../tele/ui/settings/TeleScriptsActivity.kt   |   9 +-
+ 50 files changed, 1311 insertions(+), 255 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/BoundedRegex.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleAccounts.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/scripting/ScriptReplies.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index abe1d3cad..e3724cbb9 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -293,7 +293,6 @@ public class ApplicationLoader extends Application {
+         }
+ 
+         super.onCreate();
+-        TeleHooks.init(this);
+ 
+         // AndroidUtilities must be initialized before FileLog
+         final String helloWorld = AndroidUtilities.getHelloWorld();
+@@ -335,6 +334,7 @@ public class ApplicationLoader extends Application {
+         } catch (UnsatisfiedLinkError error) {
+             throw new RuntimeException("can't load native libraries " +  Build.CPU_ABI + " lookup folder " + NativeLoader.getAbiFolder());
+         }
++        TeleHooks.init(this);
+         new ForegroundDetector(this) {
+             @Override
+             public void onActivityStarted(Activity activity) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index d801c31fe..3c5fefdf0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -16268,9 +16268,9 @@ public class MessagesController extends BaseController implements NotificationCe
+         } else {
+             getConnectionsManager().cleanup(type == 2);
+         }
++        tele.helpers.TeleAccounts.onLogout(currentAccount);
+         getUserConfig().clearConfig();
+         SharedPrefsHelper.cleanupAccount(currentAccount);
+-        tele.helpers.PrivacyRules.onAccountRemoved(currentAccount);
+ 
+         boolean shouldHandle = true;
+         ArrayList<NotificationCenter.NotificationCenterDelegate> observers = getNotificationCenter().getObservers(NotificationCenter.appDidLogout);
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+index 02d92ee37..29b25ee63 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+@@ -1095,6 +1095,7 @@ public class NotificationsController extends BaseController implements Notificat
+                     continue;
+                 }
+                 boolean show = tele.scripting.ScriptNotifications.intercept(
++                        currentAccount,
+                         messageObject.getDialogId(),
+                         messageObject.getFromChatId(),
+                         "message",
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java
+index 73e34c24d..5bbd5c539 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/UserConfig.java
+@@ -266,6 +266,7 @@ public class UserConfig extends BaseController {
+             clientUserId = user.id;
+             checkPremiumSelf(oldUser, user);
+         }
++        tele.helpers.TeleAccounts.ensure(currentAccount);
+     }
+ 
+     private void checkPremiumSelf(TLRPC.User oldUser, TLRPC.User newUser) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
+index 522e411cb..fab72c6b3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
+@@ -1566,9 +1566,9 @@ public class SecretMediaViewer implements NotificationCenter.NotificationCenterD
+         }
+ 
+         WindowManager wm = (WindowManager) parentActivity.getSystemService(Context.WINDOW_SERVICE);
+-        if (!tele.TeleConfig.STREAMER_MODE.getValue() &&
+-            !tele.TeleConfig.NEVER_BLOCK_SCREENSHOTS.getValue() &&
+-            !(tele.TeleConfig.ALLOW_SCREENSHOTS_DISAPPEARING.getValue() && tele.TeleHooks.isDisappearing(messageObject))) {
++        if (tele.TeleConfig.STREAMER_MODE.getValue() ||
++            (!tele.TeleConfig.NEVER_BLOCK_SCREENSHOTS.getValue() &&
++             !(tele.TeleConfig.ALLOW_SCREENSHOTS_DISAPPEARING.getValue() && tele.TeleHooks.isDisappearing(messageObject)))) {
+             windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
+         } else {
+             windowLayoutParams.flags &=~ WindowManager.LayoutParams.FLAG_SECURE;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java b/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
+index 4300989ee..8f351f4bb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
+@@ -239,7 +239,7 @@ public class SecretVoicePlayer extends Dialog {
+             WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
+             WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS |
+             WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION;
+-        if (!BuildVars.DEBUG_PRIVATE_VERSION && !tele.TeleConfig.STREAMER_MODE.getValue() && !tele.TeleConfig.NEVER_BLOCK_SCREENSHOTS.getValue()) {
++        if (tele.TeleConfig.STREAMER_MODE.getValue() || (!BuildVars.DEBUG_PRIVATE_VERSION && !tele.TeleConfig.NEVER_BLOCK_SCREENSHOTS.getValue())) {
+             params.flags |= WindowManager.LayoutParams.FLAG_SECURE;
+             AndroidUtilities.logFlagSecure();
+         }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 0dab555ba..2a97c441a 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -456,6 +456,9 @@ object TeleConfig {
+     // salted verifier of the local password for stars and gifts; empty = no password, never exported
+     @JvmField
+     val LOCAL_PASSWORD_HASH = StringItem("local_password_hash", "")
++    // the stable account (backend and user id) that set the password; empty in older builds, never exported
++    @JvmField
++    val LOCAL_PASSWORD_OWNER = StringItem("local_password_owner", "")
+     @JvmField
+     val LOCAL_PASSWORD_BIOMETRIC = BoolItem("local_password_biometric", false)
+     // the protected actions: like the desktop client they ask once a password is set
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 7a87509f2..6601425b9 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -33,6 +33,7 @@ object TeleHooks {
+     fun init(context: Context) {
+         TeleConfig.init(context)
+         TeleDatabaseHelper.init(context)
++        tele.helpers.TeleAccounts.init()
+         TeleCrash.install(context)
+         Utilities.globalQueue.postRunnable { TeleCrash.prepareDiagnostics(context) }
+         Utilities.globalQueue.postRunnable { tele.helpers.TeleTl.preload() }
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index a07797656..f1004327f 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -43,6 +43,7 @@ object TeleDatabaseHelper {
+ 
+     /** [via] 1 is a message archived with its deleted chat, 2 with its deleted topic: such rows never replace a message that was kept on its own. */
+     fun putDeletedMessage(account: Int, dialogId: Long, messageId: Int, date: Int, deletedAt: Int, data: ByteArray, via: Int = 0, mediaNames: String? = null) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -121,6 +122,7 @@ object TeleDatabaseHelper {
+     class DeletedChatRow(val dialogId: Long, val topicId: Long, val deletedAt: Int, val own: Boolean, val whole: Boolean, val data: ByteArray)
+ 
+     fun putDeletedChat(account: Int, row: DeletedChatRow, replace: Boolean) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -190,6 +192,7 @@ object TeleDatabaseHelper {
+ 
+ 
+     fun putMessageVersion(account: Int, dialogId: Long, messageId: Int, editDate: Int, original: Boolean, versionKey: String, data: ByteArray, mediaNames: String? = null) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -289,6 +292,7 @@ object TeleDatabaseHelper {
+     )
+ 
+     fun putDraft(account: Int, dialogId: Long, topicId: Int, id: Long, created: Int, edited: Int, data: ByteArray, discarded: Boolean = false, name: String? = null) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -365,6 +369,7 @@ object TeleDatabaseHelper {
+     data class ChangelogRow(val messageId: Int, val data: ByteArray)
+ 
+     fun putChangelogMessage(account: Int, messageId: Int, date: Int, data: ByteArray) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -392,6 +397,7 @@ object TeleDatabaseHelper {
+     class RecoveredRow(val messageId: Int, val sourceDialogId: Long, val sourceMessageId: Int, val sourceName: String)
+ 
+     fun putRecoveredPost(account: Int, dialogId: Long, messageId: Int, sourceDialogId: Long, sourceMessageId: Int, sourceName: String) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -416,6 +422,7 @@ object TeleDatabaseHelper {
+     class DockedRow(val dialogId: Long, val threadId: Long, val data: ByteArray)
+ 
+     fun putDocked(account: Int, dialogId: Long, threadId: Long, data: ByteArray?) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         if (data == null) {
+             db.delete("tele_docked", "account = ? AND dialog_id = ? AND thread_id = ?", arrayOf(account.toString(), dialogId.toString(), threadId.toString()))
+@@ -670,6 +677,7 @@ object TeleDatabaseHelper {
+     }
+ 
+     fun putNotice(account: Int, row: NoticeRow) {
++        if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         val values = ContentValues().apply {
+             put("account", account)
+@@ -711,6 +719,28 @@ object TeleDatabaseHelper {
+         db.delete("tele_notices", "account = ?", arrayOf(account.toString()))
+     }
+ 
++    fun clearAccount(account: Int) {
++        val db = helper?.writableDatabase ?: return
++        db.beginTransaction()
++        try {
++            for (table in arrayOf("tele_deleted_messages", "tele_message_edits", "tele_deleted_chats", "tele_drafts", "tele_docked", "tele_changelog", "tele_recovered_posts", "tele_bookmarks", "tele_return_points", "tele_read_log", "tele_past_limit", "tele_gif_origin", "tele_notices")) {
++                db.delete(table, "account = ?", arrayOf(account.toString()))
++            }
++            val keys = ArrayList<String>()
++            db.rawQuery("SELECT key FROM tele_kv", null).use { cursor ->
++                while (cursor.moveToNext()) {
++                    val key = cursor.getString(0)
++                    if (key.endsWith(":$account") || key.endsWith(".$account") || key.startsWith("privacy_hidden_words:$account:") ||
++                        key in arrayOf("tele_gift_grid_$account", "tele_gift_grid_last_$account", "tele_gift_grids_$account", "silent_sound_$account", "server_notices_seen_$account")) keys.add(key)
++                }
++            }
++            for (key in keys) db.delete("tele_kv", "key = ?", arrayOf(key))
++            db.setTransactionSuccessful()
++        } finally {
++            db.endTransaction()
++        }
++    }
++
+     private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 12) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+index f2d3947f2..f33d29598 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/Aliases.kt
+@@ -71,6 +71,14 @@ object Aliases {
+         }
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(map) {
++            val prefix = "$account:"
++            map.keys.removeAll { it.startsWith(prefix) }
++        }
++    }
++
+     @JvmStatic
+     fun storedAliasOf(account: Int, dialogId: Long): String? {
+         synchronized(map) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt b/TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt
+index 08c1965f8..6c84e02c9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/Bookmarks.kt
+@@ -58,6 +58,14 @@ object Bookmarks {
+     // the key is used on every bind of a message cell, so it is a plain number, not an object
+     private fun key(account: Int, dialogId: Long): Long = (account.toLong() shl 48) or (dialogId and 0xFFFFFFFFFFFFL)
+ 
++    private fun accountOf(key: Long): Int = (key ushr 48).toInt()
++
++    @JvmStatic
++    fun onLogout(account: Int) {
++        cache.keys.removeAll { accountOf(it) == account }
++        loaded.removeAll { accountOf(it) == account }
++    }
++
+     @JvmStatic
+     fun enabled(): Boolean = TeleConfig.BOOKMARKS.value
+ 
+@@ -92,9 +100,11 @@ object Bookmarks {
+             done?.invoke()
+             return
+         }
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
+             val rows = TeleDatabaseHelper.getBookmarks(account, dialogId)
+             AndroidUtilities.runOnUIThread {
++                if (!TeleAccounts.isCurrent(account, generation)) return@runOnUIThread
+                 val map = cache.getOrPut(key) { ConcurrentHashMap() }
+                 // what was bookmarked while the read was running stays
+                 for (row in rows) map.putIfAbsent(row.messageId, Entry(row.dialogId, row.topicId, row.messageId, row.name, row.preview, row.created))
+@@ -107,9 +117,13 @@ object Bookmarks {
+     /** Every bookmark of the account, newest first, for the list of all of them. */
+     @JvmStatic
+     fun loadAll(account: Int, done: (List<Entry>) -> Unit) {
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
+             val rows = TeleDatabaseHelper.getBookmarks(account).map { Entry(it.dialogId, it.topicId, it.messageId, it.name, it.preview, it.created) }
+-            AndroidUtilities.runOnUIThread { done(rows) }
++            AndroidUtilities.runOnUIThread {
++                if (!TeleAccounts.isCurrent(account, generation)) return@runOnUIThread
++                done(rows)
++            }
+         }
+     }
+ 
+@@ -138,7 +152,9 @@ object Bookmarks {
+         val dialogId = message.dialogId
+         val entry = Entry(dialogId, topicOf(account, message), message.id, null, previewOf(message), ConnectionsManager.getInstance(account).currentTime)
+         cache.getOrPut(key(account, dialogId)) { ConcurrentHashMap() }[entry.messageId] = entry
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+             TeleDatabaseHelper.putBookmark(account, TeleDatabaseHelper.BookmarkRow(entry.dialogId, entry.topicId, entry.messageId, entry.name, entry.preview, entry.created))
+         }
+     }
+@@ -153,7 +169,11 @@ object Bookmarks {
+     fun rename(account: Int, dialogId: Long, messageId: Int, name: String?) {
+         val value = name?.trim()?.take(MAX_NAME)?.ifEmpty { null }
+         cache[key(account, dialogId)]?.get(messageId)?.name = value
+-        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.updateBookmarkName(account, dialogId, messageId, value) }
++        val generation = TeleAccounts.generation(account)
++        Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
++            TeleDatabaseHelper.updateBookmarkName(account, dialogId, messageId, value)
++        }
+     }
+ 
+     // the message menu
+diff --git a/TMessagesProj/src/main/java/tele/helpers/BoundedRegex.kt b/TMessagesProj/src/main/java/tele/helpers/BoundedRegex.kt
+new file mode 100644
+index 000000000..e86404cc3
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/BoundedRegex.kt
+@@ -0,0 +1,85 @@
++package tele.helpers
++
++import java.util.regex.Pattern
++
++/**
++ * Runs user-supplied patterns over incoming text under one shared budget per message.
++ * A hostile rule can spend at most [TIME_NANOS] and [MAX_READS] reads, then the match fails open.
++ */
++internal object BoundedRegex {
++
++    const val TIME_NANOS = 8_000_000L
++    const val MAX_READS = 100_000
++
++    // a timeout check per 256 reads keeps the guard cheap and the overshoot small
++    private const val CHECK_MASK = 0xFF
++
++    private class Exceeded : RuntimeException(null, null, false, false)
++
++    /** One budget is shared by every rule applied to the same message text. */
++    class Budget internal constructor() {
++        private val start = System.nanoTime()
++        private var reads = 0
++        private var failed = false
++
++        internal fun tick() {
++            if ((++reads and CHECK_MASK) != 0) return
++            check()
++        }
++
++        internal fun check() {
++            if (failed) throw Exceeded()
++            if (reads > MAX_READS || System.nanoTime() - start >= TIME_NANOS) {
++                failed = true
++                throw Exceeded()
++            }
++        }
++
++        internal fun abort() {
++            failed = true
++        }
++
++        fun expired(): Boolean =
++            failed || reads > MAX_READS || System.nanoTime() - start >= TIME_NANOS
++    }
++
++    fun newBudget(): Budget = Budget()
++
++    fun find(pattern: Pattern, text: CharSequence, budget: Budget): Boolean {
++        if (budget.expired()) return false
++        return try {
++            pattern.matcher(Guarded(text, 0, text.length, budget)).find()
++        } catch (e: Exceeded) {
++            false
++        } catch (e: StackOverflowError) {
++            budget.abort()
++            false
++        }
++    }
++
++    // every get() counts against the shared budget; sub sequences keep the same guard
++    private class Guarded(
++        private val text: CharSequence,
++        private val offset: Int,
++        override val length: Int,
++        private val budget: Budget
++    ) : CharSequence {
++
++        override fun get(index: Int): Char {
++            if (index < 0 || index >= length) {
++                throw IndexOutOfBoundsException("index $index, length $length")
++            }
++            budget.tick()
++            return text[offset + index]
++        }
++
++        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence {
++            if (startIndex < 0 || endIndex > length || startIndex > endIndex) {
++                throw IndexOutOfBoundsException("start $startIndex, end $endIndex, length $length")
++            }
++            return Guarded(text, offset + startIndex, endIndex - startIndex, budget)
++        }
++
++        override fun toString(): String = text.subSequence(offset, offset + length).toString()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt
+index bcd27b0a7..d35f67179 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedChats.kt
+@@ -45,6 +45,15 @@ object DeletedChats {
+ 
+     private fun topicKey(account: Int, dialogId: Long, topicId: Long) = "$account:$dialogId:$topicId"
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        rows.remove(account)
++        val prefix = "$account:"
++        removed.keys.removeAll { it.startsWith(prefix) }
++        ownTopics.keys.removeAll { it.startsWith(prefix) }
++        snapshots.keys.removeAll { it.startsWith(prefix) }
++    }
++
+     private fun take(map: ConcurrentHashMap<String, Long>, key: String): Boolean {
+         val at = map.remove(key) ?: return false
+         return System.currentTimeMillis() - at < FRESH
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index 1a09457fe..cc2eef391 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -102,6 +102,13 @@ object DeletedMessages {
+ 
+     private fun dialogKey(account: Int, dialogId: Long): Long = (account.toLong() shl 48) or (dialogId and 0xFFFFFFFFFFFFL)
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        keptInChat.remove(account)
++        loadedDialogs.removeAll { (it ushr 48).toInt() == account }
++        purging.removeAll { it.startsWith("$account:") }
++    }
++
+     @JvmStatic
+     fun ensureLoaded(account: Int, dialogId: Long) {
+         val key = dialogKey(account, dialogId)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+index 80139d155..380e76236 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -3,6 +3,7 @@ package tele.helpers
+ import android.text.TextUtils
+ import org.telegram.messenger.AccountInstance
+ import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
+ import org.telegram.messenger.MediaController
+ import org.telegram.messenger.MediaDataController
+ import org.telegram.messenger.MessageObject
+@@ -102,6 +103,28 @@ object DockedMedia {
+         }
+     }
+ 
++    /** Drops the trays of the account and the shot files they kept in tele_docked; shared media paths stay. */
++    @JvmStatic
++    fun onLogout(account: Int) {
++        val kept = ArrayList<File>()
++        for (key in trays.keys.toList()) {
++            if (key.account != account) continue
++            val tray = trays.remove(key) ?: continue
++            for (item in tray.items) {
++                item.path?.let { kept.add(File(it)) }
++                item.imagePath?.let { kept.add(File(it)) }
++            }
++        }
++        loaded.remove(account)
++        val owned = File(ApplicationLoader.getFilesDirFixed(), "tele_docked").canonicalFile
++        for (file in kept) {
++            runCatching {
++                val target = file.canonicalFile
++                if (target.parentFile == owned) target.delete()
++            }
++        }
++    }
++
+     internal fun keyOf(fragment: ChatActivity) = Key(fragment.currentAccount, fragment.dialogId, fragment.threadId)
+ 
+     internal fun tray(key: Key): Tray? {
+@@ -167,11 +190,14 @@ object DockedMedia {
+         val draft = if (entries.isEmpty()) null else SavedDrafts.captureFromField(key.account, enter, null, null, true)
+         clearTray(key)
+         if (draft == null || DraftEditing.isEditing(key.account, key.dialogId, key.threadId.toInt())) return
++        val generation = TeleAccounts.generation(key.account)
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(key.account, generation)) return@postRunnable
+             val files = SavedDrafts.copyAttachedFiles(entries)
+             if (files.isEmpty()) return@postRunnable
+             SavedDrafts.saveDiscardedFiles(key.account, key.dialogId, key.threadId.toInt(), draft, files)
+             AndroidUtilities.runOnUIThread {
++                if (!TeleAccounts.isCurrent(key.account, generation)) return@runOnUIThread
+                 TeleToast.log("docked-discarded", LocaleController.getString(R.string.TeleDraftFilesDiscarded), account = fragment.currentAccount)
+                 BulletinFactory.of(fragment).createSimpleBulletin(R.raw.info, LocaleController.getString(R.string.TeleDraftFilesDiscarded)).show()
+             }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+index fbd881601..0e7399a92 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+@@ -29,7 +29,9 @@ object DockedStore {
+ 
+     fun save(key: DockedMedia.Key, tray: DockedMedia.Tray?) {
+         val data = if (tray == null || tray.items.isEmpty()) null else encode(tray)
++        val generation = TeleAccounts.generation(key.account)
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(key.account, generation)) return@postRunnable
+             runCatching { TeleDatabaseHelper.putDocked(key.account, key.dialogId, key.threadId, data) }.onFailure { FileLog.e(it) }
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt b/TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt
+index 4513192f6..41f092ec9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DraftDiscards.kt
+@@ -21,6 +21,7 @@ class DraftDiscards(private val chat: ChatActivity) : NotificationCenter.Notific
+     private val account = chat.currentAccount
+     private val dialogId = chat.dialogId
+     private val topicId = chat.topicId.toInt()
++    private val generation = TeleAccounts.generation(account)
+     private var previous: Snapshot? = null
+     private val pending = ArrayList<Pending>()
+     private val snapshotRunnable = Runnable { takeSnapshot() }
+@@ -78,11 +79,12 @@ class DraftDiscards(private val chat: ChatActivity) : NotificationCenter.Notific
+     }
+ 
+     private fun checkPending() {
++        if (!TeleAccounts.isCurrent(account, generation)) return
+         val current = fieldText()?.let(::normalized)
+         val list = ArrayList(pending)
+         pending.clear()
+         for (entry in list) {
+-            if (SavedDrafts.sentSince(dialogId, entry.at - SENT_WINDOW)) continue
++            if (SavedDrafts.sentSince(account, dialogId, entry.at - SENT_WINDOW)) continue
+             // the text came back: undone or typed again
+             if (current != null && !editing() && current.contains(normalized(entry.snapshot.text))) continue
+             SavedDrafts.saveDiscarded(account, dialogId, topicId, entry.snapshot.draft, entry.snapshot.reply)
+@@ -94,7 +96,7 @@ class DraftDiscards(private val chat: ChatActivity) : NotificationCenter.Notific
+         val targetDialog = args.getOrNull(0) as? Long ?: return
+         @Suppress("UNCHECKED_CAST")
+         val messages = args.getOrNull(1) as? ArrayList<MessageObject> ?: return
+-        if (messages.any { it.isOut && it.isSending }) SavedDrafts.noteSent(targetDialog)
++        if (messages.any { it.isOut && it.isSending }) SavedDrafts.noteSent(account, targetDialog)
+     }
+ 
+     fun destroy() {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DraftReplaced.kt b/TMessagesProj/src/main/java/tele/helpers/DraftReplaced.kt
+index 34f103af8..304897f4e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DraftReplaced.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DraftReplaced.kt
+@@ -18,7 +18,7 @@ object DraftReplaced {
+         if (!DraftDiscards.lost(was, now)) return
+         // an open field sees its own loss, and a send is not a discard
+         if (DraftDiscards.isOpen(account, dialogId, topicId)) return
+-        if (SavedDrafts.sentSince(dialogId, System.currentTimeMillis() - 2000L)) return
++        if (SavedDrafts.sentSince(account, dialogId, System.currentTimeMillis() - 2000L)) return
+         SavedDrafts.saveDiscarded(account, dialogId, topicId, existing, controller.getDraftMessage(dialogId, threadId))
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DraftSender.kt b/TMessagesProj/src/main/java/tele/helpers/DraftSender.kt
+index e846c1838..8d957a45d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DraftSender.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DraftSender.kt
+@@ -136,7 +136,7 @@ object DraftSender {
+                 start = end
+             }
+         }
+-        SavedDrafts.noteSent(dialogId)
++        SavedDrafts.noteSent(account, dialogId)
+         return true
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt b/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
+index 33c2feefb..dc51ad0dd 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
+@@ -47,6 +47,11 @@ object FolderIcons {
+         }
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        if (account in emoticons.indices) emoticons[account].clear()
++    }
++
+     // runs on the storage queue with every folder the server just sent
+     @JvmStatic
+     fun onRemote(account: Int, filters: List<TLRPC.DialogFilter>) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GhostPending.kt b/TMessagesProj/src/main/java/tele/helpers/GhostPending.kt
+index e109e27e7..a58600c74 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GhostPending.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GhostPending.kt
+@@ -145,6 +145,17 @@ object GhostPending {
+ 
+     private fun key(account: Int, dialogId: Long, sentId: Int) = "$account:$dialogId:$sentId"
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(lock) {
++            entries.removeAll { it.account == account }
++            val prefix = "$account:"
++            recent.keys.removeAll { it.startsWith(prefix) }
++        }
++        synchronized(local) { local.entries.removeAll { it.value.account == account } }
++        persist()
++    }
++
+     // under [lock]
+     private fun ensureLoaded() {
+         if (loaded) return
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LastSeenPeek.kt b/TMessagesProj/src/main/java/tele/helpers/LastSeenPeek.kt
+index fc0b426ea..f0ddf77f4 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LastSeenPeek.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LastSeenPeek.kt
+@@ -2,6 +2,7 @@ package tele.helpers
+ 
+ import android.os.Handler
+ import android.os.Looper
++import android.util.Base64
+ import org.json.JSONArray
+ import org.json.JSONObject
+ import org.telegram.messenger.ContactsController
+@@ -9,6 +10,7 @@ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.UserConfig
+ import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.SerializedData
+ import org.telegram.tgnet.TLRPC
+ import org.telegram.tgnet.tl.TL_account
+ import org.telegram.ui.ActionBar.BaseFragment
+@@ -23,26 +25,66 @@ import tele.db.TeleDatabaseHelper
+ object LastSeenPeek {
+ 
+     private const val KEY = "privacy_last_seen"
++    private const val VERSION = 3
++    private const val LOAD_ATTEMPTS = 20
++    private const val ACCOUNT_WAIT_ATTEMPTS = 120
+     private const val RESTORE_ATTEMPTS = 5
+     private const val RESTORE_DELAY = 2000L
+ 
++    private class Journal(
++        val owner: Long,
++        val testBackend: Boolean,
++        val rules: ArrayList<TLRPC.InputPrivacyRule>?,
++        val legacy: ArrayList<TLRPC.PrivacyRule>?,
++        val encoded: String,
++    )
++
++    private class Guard(val token: Int, val owner: Long, val generation: Int, val testBackend: Boolean)
++
+     private val attempts = HashMap<Int, Int>()
++    private val generation = HashMap<Int, Int>()
++    private val inFlight = HashMap<Int, Int>()
++    private val lock = Any()
++    private var nextToken = 0
+ 
+     private fun key(account: Int) = "$KEY:$account"
+ 
+     @JvmStatic
+     fun peek(fragment: BaseFragment, account: Int, userId: Long) {
+-        peek(fragment, account, userId, 0)
++        if (!TeleConfig.LAST_SEEN_RESTORE.value) {
++            return
++        }
++        val guard = acquire(account) ?: run {
++            show(fragment, TeleLowercase.lc("A last seen peek is already running"))
++            return
++        }
++        peek(fragment, account, userId, 0, guard)
+     }
+ 
+-    private fun peek(fragment: BaseFragment, account: Int, userId: Long, attempt: Int) {
+-        if (!TeleConfig.LAST_SEEN_RESTORE.value) {
++    private fun peek(fragment: BaseFragment, account: Int, userId: Long, attempt: Int, guard: Guard) {
++        if (!holds(account, guard)) {
++            release(account, guard)
+             return
+         }
++        val pending = TeleDatabaseHelper.get(key(account))
++        if (pending != null) {
++            val stale = decode(pending)
++            val testBackend = ConnectionsManager.getInstance(account).isTestBackend()
++            val legacy = stale != null && stale.owner == 0L
++            val ours = stale != null && !legacy && stale.owner == guard.owner && stale.testBackend == testBackend
++            if (ours || legacy) {
++                show(fragment, TeleLowercase.lc("A previous peek is still being restored"))
++                release(account, guard)
++                return
++            }
++            // another owner or backend: that journal must never be applied here
++            TeleDatabaseHelper.put(key(account), null)
++        }
+         val controller = MessagesController.getInstance(account)
+         val user = controller.getUser(userId)
+         if (user == null || user.bot || user.self) {
+             show(fragment, TeleLowercase.lc("This peer has no last seen to peek at"))
++            release(account, guard)
+             return
+         }
+         val rules = ContactsController.getInstance(account).getPrivacyRules(ContactsController.PRIVACY_RULES_TYPE_LASTSEEN)
+@@ -51,27 +93,60 @@ object LastSeenPeek {
+             if (attempt == 0) {
+                 ContactsController.getInstance(account).loadPrivacySettings(true)
+             }
+-            if (attempt < 20) {
+-                Handler(Looper.getMainLooper()).postDelayed({ peek(fragment, account, userId, attempt + 1) }, 500L)
++            if (attempt < LOAD_ATTEMPTS) {
++                Handler(Looper.getMainLooper()).postDelayed({ peek(fragment, account, userId, attempt + 1, guard) }, 500L)
+                 return
+             }
+             show(fragment, TeleLowercase.lc("Could not load the privacy rules"))
++            release(account, guard)
+             return
+         }
+-        val saved = saveRules(rules)
+-        TeleDatabaseHelper.put(key(account), saved)
+-        val input = buildRules(rules, account, userId) ?: run {
+-            TeleDatabaseHelper.put(key(account), null)
++        // both sides must resolve every user to a full input user before anything is sent
++        val original = buildRules(rules, account, 0)
++        val modified = if (original == null) null else buildRules(rules, account, userId)
++        if (original == null || modified == null) {
+             show(fragment, TeleLowercase.lc("Could not build the privacy rules"))
++            release(account, guard)
+             return
+         }
+-        send(account, input) { error ->
++        val encoded = encodeRules(original)
++        if (encoded == null || decodeRules(encoded) == null) {
++            show(fragment, TeleLowercase.lc("Could not build the privacy rules"))
++            release(account, guard)
++            return
++        }
++        val testBackend = ConnectionsManager.getInstance(account).isTestBackend()
++        val journal = JSONObject()
++            .put("v", VERSION)
++            .put("owner", guard.owner)
++            .put("test", testBackend)
++            .put("rules", encoded)
++            .toString()
++        val saved = Journal(guard.owner, testBackend, original, null, journal)
++        synchronized(lock) { attempts.remove(account) }
++        TeleDatabaseHelper.put(key(account), journal)
++        if (TeleDatabaseHelper.get(key(account)) != journal) {
++            // never change the rule without the full restore journal on disk
++            TeleDatabaseHelper.put(key(account), null)
++            show(fragment, TeleLowercase.lc("Could not keep the privacy rules"))
++            release(account, guard)
++            return
++        }
++        val sent = send(account, modified, guard) { error ->
++            if (!holds(account, guard)) {
++                release(account, guard)
++                return@send
++            }
+             if (error != null) {
+                 show(fragment, TeleLowercase.lc("Could not change the last seen privacy"))
+-                restore(account)
++                restore(account, saved, guard)
+                 return@send
+             }
+             Handler(Looper.getMainLooper()).postDelayed({
++                if (!holds(account, guard)) {
++                    release(account, guard)
++                    return@postDelayed
++                }
+                 val status = controller.getUser(userId)?.status
+                 val text = if (status == null) {
+                     TeleLowercase.lc("They hide their last seen from you")
+@@ -79,56 +154,151 @@ object LastSeenPeek {
+                     LocaleController.formatUserStatus(account, controller.getUser(userId), null, null)
+                 }
+                 show(fragment, text)
+-                restore(account)
++                restore(account, saved, guard)
+             }, 1500L)
+         }
++        if (!sent) {
++            if (TeleDatabaseHelper.get(key(account)) == journal) {
++                TeleDatabaseHelper.put(key(account), null)
++            }
++            release(account, guard)
++        }
+     }
+ 
+     /** Restores a pending rule after the app was killed in the middle of a peek. */
+     @JvmStatic
+     fun restorePending() {
+         for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
+-            val saved = TeleDatabaseHelper.get(key(account)) ?: continue
+-            restore(account, saved)
++            val json = TeleDatabaseHelper.get(key(account)) ?: continue
++            if (UserConfig.getInstance(account).clientUserId == 0L) {
++                // the account config is loaded later than this hook
++                waitForAccount(account, json, 0)
++                continue
++            }
++            val guard = acquire(account) ?: continue
++            restore(account, null, guard)
+         }
+     }
+ 
+-    private fun restore(account: Int, saved: String? = null) {
+-        val json = saved ?: TeleDatabaseHelper.get(key(account)) ?: return
+-        val rules = parseRules(json) ?: run {
++    private fun waitForAccount(account: Int, json: String, attempt: Int) {
++        if (attempt >= ACCOUNT_WAIT_ATTEMPTS) {
++            return
++        }
++        Handler(Looper.getMainLooper()).postDelayed({
++            if (TeleDatabaseHelper.get(key(account)) != json) {
++                return@postDelayed
++            }
++            if (UserConfig.getInstance(account).clientUserId == 0L) {
++                waitForAccount(account, json, attempt + 1)
++                return@postDelayed
++            }
++            val guard = acquire(account) ?: return@postDelayed
++            restore(account, null, guard)
++        }, 500L)
++    }
++
++    /**
++     * Forgets the journal of a logged out account and invalidates its pending callbacks, so a new
++     * account in the same slot never receives the previous owner's rules.
++     */
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(lock) {
++            generation[account] = (generation[account] ?: 0) + 1
++            inFlight.remove(account)
++            attempts.remove(account)
++        }
++        TeleDatabaseHelper.put(key(account), null)
++    }
++
++    private fun restore(account: Int, saved: Journal?, guard: Guard) {
++        if (!holds(account, guard)) {
++            release(account, guard)
++            return
++        }
++        val json = saved?.encoded ?: TeleDatabaseHelper.get(key(account)) ?: run {
++            release(account, guard)
++            return
++        }
++        val journal = saved ?: decode(json) ?: run {
++            TeleDatabaseHelper.put(key(account), null)
++            release(account, guard)
++            return
++        }
++        if (journal.owner != 0L && (journal.owner != guard.owner || journal.testBackend != ConnectionsManager.getInstance(account).isTestBackend())) {
+             TeleDatabaseHelper.put(key(account), null)
++            release(account, guard)
+             return
+         }
+-        val input = buildRules(rules, account, 0) ?: return
+-        send(account, input) { error ->
++        // access hashes belong to the account, not to its current data center
++        val rules = journal.rules ?: journal.legacy?.let { buildRules(it, account, 0) }
++        if (rules == null) {
++            // an old journal resolves users lazily; without every access hash it must stay pending
++            retry(account, json, guard)
++            return
++        }
++        val sent = send(account, rules, guard) { error ->
++            if (!holds(account, guard)) {
++                release(account, guard)
++                return@send
++            }
+             if (error == null) {
+                 TeleDatabaseHelper.put(key(account), null)
+-            } else if ((attempts[account] ?: 0) < RESTORE_ATTEMPTS) {
+-                Handler(Looper.getMainLooper()).postDelayed({ restore(account, json) }, RESTORE_DELAY)
++                synchronized(lock) { attempts.remove(account) }
++                release(account, guard)
++            } else {
++                retry(account, json, guard)
+             }
+         }
++        if (!sent) {
++            release(account, guard)
++        }
+     }
+ 
+-    private fun send(account: Int, rules: ArrayList<TLRPC.InputPrivacyRule>, callback: (String?) -> Unit) {
++    private fun retry(account: Int, json: String, guard: Guard) {
++        val count = synchronized(lock) { (attempts[account] ?: 0) + 1 }
++        if (count > RESTORE_ATTEMPTS) {
++            // the journal stays for the next launch
++            synchronized(lock) { attempts[account] = count }
++            release(account, guard)
++            return
++        }
++        synchronized(lock) { attempts[account] = count }
++        Handler(Looper.getMainLooper()).postDelayed({
++            if (!holds(account, guard) || TeleDatabaseHelper.get(key(account)) != json) {
++                release(account, guard)
++                return@postDelayed
++            }
++            restore(account, null, guard)
++        }, RESTORE_DELAY)
++    }
++
++    /** Sends the rules; false means nothing was sent because the account no longer matches. */
++    private fun send(account: Int, rules: ArrayList<TLRPC.InputPrivacyRule>, guard: Guard, callback: (String?) -> Unit): Boolean {
++        if (!holds(account, guard)) {
++            return false
++        }
+         val request = TL_account.setPrivacy()
+         request.key = TLRPC.TL_inputPrivacyKeyStatusTimestamp()
+         request.rules.addAll(rules)
+         ConnectionsManager.getInstance(account).sendRequest(request, { response: Any?, error: TLRPC.TL_error? ->
+             Handler(Looper.getMainLooper()).post {
++                if (!holds(account, guard)) {
++                    callback("account changed")
++                    return@post
++                }
+                 if (error == null) {
+-                    attempts.remove(account)
+                     val privacyRules = response as? TL_account.privacyRules
+                     if (privacyRules != null) {
+                         MessagesController.getInstance(account).putUsers(privacyRules.users, false)
+                         MessagesController.getInstance(account).putChats(privacyRules.chats, false)
+                         ContactsController.getInstance(account).setPrivacyRules(privacyRules.rules, ContactsController.PRIVACY_RULES_TYPE_LASTSEEN)
+                     }
+-                } else {
+-                    attempts[account] = (attempts[account] ?: 0) + 1
+                 }
+                 callback(error?.text)
+             }
+         }, ConnectionsManager.RequestFlagFailOnServerErrors)
++        return true
+     }
+ 
+     private fun show(fragment: BaseFragment, text: String) {
+@@ -137,48 +307,108 @@ object LastSeenPeek {
+         android.widget.Toast.makeText(activity, text, android.widget.Toast.LENGTH_SHORT).show()
+     }
+ 
++    // ownership and single-flight
++
++    private fun acquire(account: Int): Guard? {
++        val owner = UserConfig.getInstance(account).clientUserId
++        if (owner == 0L) {
++            return null
++        }
++        val testBackend = ConnectionsManager.getInstance(account).isTestBackend()
++        synchronized(lock) {
++            if (inFlight.containsKey(account)) {
++                return null
++            }
++            val token = ++nextToken
++            inFlight[account] = token
++            return Guard(token, owner, generation[account] ?: 0, testBackend)
++        }
++    }
++
++    private fun holds(account: Int, guard: Guard): Boolean {
++        if (UserConfig.getInstance(account).clientUserId != guard.owner) {
++            return false
++        }
++        if (ConnectionsManager.getInstance(account).isTestBackend() != guard.testBackend) {
++            return false
++        }
++        synchronized(lock) {
++            if ((generation[account] ?: 0) != guard.generation) {
++                return false
++            }
++            return inFlight[account] == guard.token
++        }
++    }
++
++    private fun release(account: Int, guard: Guard) {
++        synchronized(lock) {
++            if (inFlight[account] == guard.token) {
++                inFlight.remove(account)
++            }
++        }
++    }
++
+     // storage
+ 
+-    private fun saveRules(rules: ArrayList<TLRPC.PrivacyRule>): String {
+-        val array = JSONArray()
+-        for (rule in rules) {
+-            val item = JSONObject()
+-            when (rule) {
+-                is TLRPC.TL_privacyValueAllowAll -> item.put("t", "allow_all")
+-                is TLRPC.TL_privacyValueAllowContacts -> item.put("t", "allow_contacts")
+-                is TLRPC.TL_privacyValueAllowUsers -> {
+-                    item.put("t", "allow_users")
+-                    item.put("u", JSONArray(rule.users))
+-                }
+-                is TLRPC.TL_privacyValueAllowChatParticipants -> {
+-                    item.put("t", "allow_chats")
+-                    item.put("c", JSONArray(rule.chats))
+-                }
+-                is TLRPC.TL_privacyValueAllowCloseFriends -> item.put("t", "allow_close_friends")
+-                is TLRPC.TL_privacyValueAllowPremium -> item.put("t", "allow_premium")
+-                is TLRPC.TL_privacyValueAllowBots -> item.put("t", "allow_bots")
+-                is TLRPC.TL_privacyValueDisallowAll -> item.put("t", "disallow_all")
+-                is TLRPC.TL_privacyValueDisallowContacts -> item.put("t", "disallow_contacts")
+-                is TLRPC.TL_privacyValueDisallowUsers -> {
+-                    item.put("t", "disallow_users")
+-                    item.put("u", JSONArray(rule.users))
+-                }
+-                is TLRPC.TL_privacyValueDisallowChatParticipants -> {
+-                    item.put("t", "disallow_chats")
+-                    item.put("c", JSONArray(rule.chats))
+-                }
+-                is TLRPC.TL_privacyValueDisallowBots -> item.put("t", "disallow_bots")
+-                else -> continue
++    private fun encodeRules(rules: ArrayList<TLRPC.InputPrivacyRule>): String? = runCatching {
++        val stream = SerializedData(rules.sumOf { Math.max(8, it.getObjectSize()) })
++        try {
++            for (rule in rules) {
++                rule.serializeToStream(stream)
+             }
+-            array.put(item)
++            Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
++        } finally {
++            stream.cleanup()
+         }
+-        return array.toString()
++    }.getOrNull()
++
++    private fun decode(json: String): Journal? {
++        val legacy = parseRules(json)
++        if (legacy != null) {
++            return Journal(0L, false, null, legacy, json)
++        }
++        val item = runCatching { JSONObject(json) }.getOrNull() ?: return null
++        if (item.optInt("v", 0) != VERSION) {
++            return null
++        }
++        val owner = item.optLong("owner", 0L)
++        val testBackend = item.optBoolean("test", false)
++        if (owner == 0L) {
++            return null
++        }
++        val rules = decodeRules(item.optString("rules", "")) ?: return null
++        return Journal(owner, testBackend, rules, null, json)
+     }
+ 
++    private fun decodeRules(encoded: String): ArrayList<TLRPC.InputPrivacyRule>? = runCatching {
++        val bytes = Base64.decode(encoded, Base64.NO_WRAP)
++        if (bytes.isEmpty()) {
++            return@runCatching null
++        }
++        val stream = SerializedData(bytes)
++        try {
++            val result = ArrayList<TLRPC.InputPrivacyRule>()
++            while (stream.remaining() > 0) {
++                val rule = TLRPC.InputPrivacyRule.TLdeserialize(stream, stream.readInt32(false), false)
++                if (rule == null) {
++                    return@runCatching null
++                }
++                result.add(rule)
++            }
++            if (result.isEmpty()) null else result
++        } finally {
++            stream.cleanup()
++        }
++    }.getOrNull()
++
++    /** Reads the journal of the previous build, which kept plain privacy rules. */
+     private fun parseRules(json: String): ArrayList<TLRPC.PrivacyRule>? {
+         val rules = ArrayList<TLRPC.PrivacyRule>()
+         try {
+             val array = JSONArray(json)
++            if (array.length() == 0) {
++                return null
++            }
+             for (i in 0 until array.length()) {
+                 val item = array.getJSONObject(i)
+                 when (item.optString("t")) {
+@@ -233,6 +463,8 @@ object LastSeenPeek {
+     /**
+      * Builds the input rules. When userId is not zero the peer is added to the allowed users and
+      * removed from the disallowed ones, so the status of the peer becomes visible for a moment.
++     * Null means at least one user cannot be resolved with its access hash: nothing may be sent,
++     * otherwise the rule silently loses that user.
+      */
+     private fun buildRules(rules: ArrayList<TLRPC.PrivacyRule>, account: Int, userId: Long): ArrayList<TLRPC.InputPrivacyRule>? {
+         val result = ArrayList<TLRPC.InputPrivacyRule>()
+@@ -251,11 +483,10 @@ object LastSeenPeek {
+                 is TLRPC.TL_privacyValueAllowUsers -> {
+                     val input = TLRPC.TL_inputPrivacyValueAllowUsers()
+                     for (id in rule.users) {
+-                        val inputUser = inputUser(controller, id) ?: continue
+                         if (userId != 0L && id == userId) {
+                             continue
+                         }
+-                        input.users.add(inputUser)
++                        input.users.add(inputUser(controller, id) ?: return null)
+                     }
+                     allowUsers = input
+                 }
+@@ -265,8 +496,7 @@ object LastSeenPeek {
+                         if (userId != 0L && id == userId) {
+                             continue
+                         }
+-                        val inputUser = inputUser(controller, id) ?: continue
+-                        input.users.add(inputUser)
++                        input.users.add(inputUser(controller, id) ?: return null)
+                     }
+                     result.add(input)
+                 }
+@@ -284,11 +514,10 @@ object LastSeenPeek {
+             }
+         }
+         if (userId != 0L) {
+-            val inputUser = inputUser(controller, userId) ?: return null
+             if (allowUsers == null) {
+                 allowUsers = TLRPC.TL_inputPrivacyValueAllowUsers()
+             }
+-            allowUsers.users.add(inputUser)
++            allowUsers.users.add(inputUser(controller, userId) ?: return null)
+         }
+         if (allowUsers != null) {
+             result.add(0, allowUsers)
+@@ -298,6 +527,10 @@ object LastSeenPeek {
+ 
+     private fun inputUser(controller: MessagesController, id: Long): TLRPC.InputUser? {
+         val user = controller.getUser(id) ?: return null
+-        return controller.getInputUser(user)
++        val input = controller.getInputUser(user)
++        if (input is TLRPC.TL_inputUser && input.access_hash == 0L) {
++            return null
++        }
++        return input
+     }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt b/TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt
+index ab09870c2..d24556815 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalBackgrounds.kt
+@@ -176,15 +176,23 @@ object LocalBackgrounds {
+     @JvmStatic
+     fun count(account: Int): Int = synchronized(this) { state(account).map.size }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(this) { states[account] = null }
++    }
++
+     /** Puts the entry into memory at once and the storage off the main thread. */
+-    private fun commit(account: Int, dialogId: Long, entry: Entry?, oldFile: String?) {
++    private fun commit(account: Int, dialogId: Long, entry: Entry?, oldFile: String?, generation: Long = TeleAccounts.generation(account)) {
++        if (!TeleAccounts.isCurrent(account, generation)) return
+         val json: String?
+         synchronized(this) {
++            if (!TeleAccounts.isCurrent(account, generation)) return
+             val map = state(account).map
+             if (entry == null) map.remove(dialogId) else map[dialogId] = entry
+             json = encode(map)
+         }
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+             TeleDatabaseHelper.put(key(account), json)
+             if (oldFile != null && oldFile != entry?.file) File(folder(), oldFile).delete()
+         }
+@@ -267,13 +275,14 @@ object LocalBackgrounds {
+         cleanup: Boolean
+     ) {
+         val account = fragment.currentAccount
++        val generation = TeleAccounts.generation(account)
+         closePickers()
+         val old = entry(account, dialogId)?.file
+         val colors = intArrayOf(info.color, info.gradientColor1, info.gradientColor2, info.gradientColor3)
+         val builtIn = Theme.DEFAULT_BACKGROUND_SLUG == info.slug || Theme.THEME_BACKGROUND_SLUG == info.slug
+         val noPicture = image == null && colors.all { it == 0 }
+         if (builtIn || noPicture) {
+-            commit(account, dialogId, Entry(true, null, IntArray(4), 45, 0, false, 0), old)
++            commit(account, dialogId, Entry(true, null, IntArray(4), 45, 0, false, 0), old, generation)
+             if (cleanup) image?.let { Utilities.globalQueue.postRunnable { it.delete() } }
+             return
+         }
+@@ -281,6 +290,7 @@ object LocalBackgrounds {
+         val motion = info.isMotion
+         val dim = (info.intensity * 100).toInt().coerceIn(0, 100)
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+             var name: String? = null
+             var average = 0
+             var intensity = 0
+@@ -305,7 +315,7 @@ object LocalBackgrounds {
+                 intensity = if (pattern) 0 else dim
+             }
+             val entry = Entry(false, name, keptColors, rotation, intensity, motion, average)
+-            commit(account, dialogId, entry, old)
++            commit(account, dialogId, entry, old, generation)
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt b/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
+index 32a75c657..ca0a6cedc 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
+@@ -131,7 +131,9 @@ object LocalPins {
+ 
+     private fun persist(account: Int, s: State) {
+         val json = encode(s)
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+             runCatching { TeleDatabaseHelper.put(key(account), json) }.onFailure { FileLog.e(it) }
+         }
+     }
+@@ -144,9 +146,11 @@ object LocalPins {
+             if (s.loaded || s.loading) return
+             s.loading = true
+         }
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
+             val lists = runCatching { decode(TeleDatabaseHelper.get(key(account))) }.getOrDefault(HashMap())
+             AndroidUtilities.runOnUIThread {
++                if (!TeleAccounts.isCurrent(account, generation) || states[account] !== s) return@runOnUIThread
+                 synchronized(s) {
+                     for ((scope, items) in lists) s.lists.putIfAbsent(scope, items)
+                     s.loaded = true
+@@ -474,6 +478,11 @@ object LocalPins {
+         }
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(this) { states[account] = null }
++    }
++
+     @JvmStatic
+     fun cleanup(account: Int) {
+         synchronized(this) { states[account] = null }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt b/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
+index 006bc1764..a182321d8 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
+@@ -44,7 +44,10 @@ object ObservedActivity {
+ 
+     private fun load(account: Int) {
+         if (!loaded.add(account)) return
++        val generation = TeleAccounts.generation(account)
+         val raw = TeleDatabaseHelper.get(key(account)) ?: return
++        // a logout while the read was in flight must not fill the map for the next owner
++        if (TeleAccounts.generation(account) != generation) return
+         val map = times.getOrPut(account) { ConcurrentHashMap() }
+         for (part in raw.split(';')) {
+             val pair = part.split(':')
+@@ -124,6 +127,14 @@ object ObservedActivity {
+         map.remove(oldest.key)
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        times.remove(account)
++        loaded.remove(account)
++        scheduled.remove(account)
++        lastNotify.remove(account)
++    }
++
+     private fun scheduleSave(account: Int) {
+         if (!scheduled.add(account)) return
+         Utilities.globalQueue.postRunnable({
+diff --git a/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt b/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
+index cdc96dba7..b43a6d888 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/OnlineNotify.kt
+@@ -47,6 +47,17 @@ object OnlineNotify {
+     @JvmStatic
+     fun enabled(): Boolean = TeleConfig.ONLINE_NOTIFY.value
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        if (account !in watched.indices) return
++        synchronized(lock) {
++            watched[account] = null
++            val prefix = "$account:"
++            notified.keys.removeAll { it.startsWith(prefix) }
++        }
++        refreshService()
++    }
++
+     /** Desktop skips yourself, bots and service users. */
+     @JvmStatic
+     fun canWatch(user: TLRPC.User?): Boolean =
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt b/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
+index b2b5eac2d..53f29c3be 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/PastLimit.kt
+@@ -111,7 +111,9 @@ object PastLimit {
+             return
+         }
+         val snapshot = ArrayList(s.lists[kind])
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+             runCatching {
+                 val rows = snapshot.mapNotNull { document -> encode(document)?.let { TeleDatabaseHelper.PastLimitRow(kind, document.id, it) } }
+                 TeleDatabaseHelper.replacePastLimit(account, kind, rows)
+@@ -289,6 +291,11 @@ object PastLimit {
+         }
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(this) { states[account] = null }
++    }
++
+     // the account logs out: its extras must not reach the next user of the slot
+     @Synchronized
+     @JvmStatic
+@@ -331,7 +338,9 @@ object PastLimit {
+             val old = state(account).origins.put(docId, Origin(dialogId, messageId))
+             if (old != null && old.dialogId == dialogId && old.messageId == messageId) return
+         }
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+             runCatching { TeleDatabaseHelper.putGifOrigin(account, docId, dialogId, messageId, MAX_ORIGINS) }.onFailure { FileLog.e(it) }
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+index eb3561d43..0abd66f0c 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/PrivacyRules.kt
+@@ -5,6 +5,7 @@ import org.telegram.messenger.MessageObject
+ import org.telegram.tgnet.TLRPC
+ import tele.TeleConfig
+ import tele.db.TeleDatabaseHelper
++import java.util.LinkedHashMap
+ import java.util.regex.Pattern
+ import java.util.regex.PatternSyntaxException
+ 
+@@ -29,6 +30,32 @@ object PrivacyRules {
+     private val globalWords = HashMap<Int, List<Rule>>()
+     private val chatWords = HashMap<String, List<Rule>>()
+ 
++    private const val VERDICT_CACHE_SIZE = 32
++
++    private var rulesGeneration = 0
++
++    // repeated classification of the same message text; any rule edit drops the cache
++    private val verdicts = LinkedHashMap<VerdictKey, Boolean>(16, 0.75f, true)
++
++    private class VerdictKey(
++        private val account: Int,
++        private val dialogId: Long,
++        private val text: CharSequence,
++        private val generation: Int
++    ) {
++        override fun hashCode(): Int {
++            var result = account
++            result = 31 * result + dialogId.hashCode()
++            result = 31 * result + System.identityHashCode(text)
++            result = 31 * result + generation
++            return result
++        }
++
++        override fun equals(other: Any?): Boolean = other is VerdictKey &&
++            other.account == account && other.dialogId == dialogId &&
++            other.generation == generation && other.text === text
++    }
++
+     private class Rule(val pattern: Pattern)
+ 
+     @JvmStatic
+@@ -216,6 +243,7 @@ object PrivacyRules {
+         TeleDatabaseHelper.put(wordsKey(account), text)
+         synchronized(lock) {
+             globalWords.remove(account)
++            invalidateRulesLocked()
+         }
+     }
+ 
+@@ -227,6 +255,7 @@ object PrivacyRules {
+         TeleDatabaseHelper.put(chatWordsKey(account, dialogId), text)
+         synchronized(lock) {
+             chatWords.remove(chatWordsKey(account, dialogId))
++            invalidateRulesLocked()
+         }
+     }
+ 
+@@ -275,19 +304,65 @@ object PrivacyRules {
+         chatWords.getOrPut(key) { rules(chatHiddenWords(account, dialogId)) }
+     }
+ 
++    private fun invalidateRulesLocked() {
++        rulesGeneration++
++        verdicts.clear()
++    }
++
++    private fun currentRulesLocked(account: Int, dialogId: Long): List<Rule> {
++        val list = ArrayList<Rule>(globalRules(account))
++        list.addAll(chatRules(account, dialogId))
++        return list
++    }
++
+     @JvmStatic
+     fun matchesWords(account: Int, dialogId: Long, text: CharSequence?): Boolean {
+         if (text.isNullOrEmpty()) {
+             return false
+         }
+-        val list = ArrayList<Rule>(globalRules(account))
+-        list.addAll(chatRules(account, dialogId))
+-        for (rule in list) {
+-            if (rule.pattern.matcher(text).find()) {
+-                return true
++        val cacheable = text is String
++        val snapshot = synchronized(lock) {
++            if (cacheable) {
++                val cached = verdicts[VerdictKey(account, dialogId, text, rulesGeneration)]
++                if (cached != null) {
++                    return cached
++                }
+             }
++            rulesGeneration to currentRulesLocked(account, dialogId)
+         }
+-        return false
++        val generation = snapshot.first
++        val list = snapshot.second
++        // one budget covers every rule of this message, so a bad regex cannot be multiplied by the rule count
++        val matched = if (list.isEmpty()) {
++            false
++        } else {
++            val budget = BoundedRegex.newBudget()
++            var found = false
++            for (rule in list) {
++                if (BoundedRegex.find(rule.pattern, text, budget)) {
++                    found = true
++                    break
++                }
++                if (budget.expired()) {
++                    break
++                }
++            }
++            found
++        }
++        synchronized(lock) {
++            if (cacheable && generation == rulesGeneration) {
++                verdicts[VerdictKey(account, dialogId, text, generation)] = matched
++                while (verdicts.size > VERDICT_CACHE_SIZE) {
++                    val oldest = verdicts.keys.iterator()
++                    if (!oldest.hasNext()) {
++                        break
++                    }
++                    oldest.next()
++                    oldest.remove()
++                }
++            }
++        }
++        return matched
+     }
+ 
+     // message classification
+@@ -350,6 +425,14 @@ object PrivacyRules {
+             ignored.remove(account)
+             ghosts.remove(account)
+             globalWords.remove(account)
++            val prefix = "$KEY_WORDS:$account:"
++            val iterator = chatWords.keys.iterator()
++            while (iterator.hasNext()) {
++                if (iterator.next().startsWith(prefix)) {
++                    iterator.remove()
++                }
++            }
++            invalidateRulesLocked()
+         }
+         TeleDatabaseHelper.put(ignoreKey(account), null)
+         TeleDatabaseHelper.put(ghostKey(account), null)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt b/TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt
+index dad9d0966..8837ef41a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ReactionStrip.kt
+@@ -52,6 +52,11 @@ object ReactionStrip {
+         cache.getOrPut(account) { parse(TeleDatabaseHelper.get(KEY + account)) }
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(cache) { cache.remove(account) }
++    }
++
+     fun setPinned(account: Int, list: List<String>) {
+         val fixed = parse(serialize(list))
+         synchronized(cache) { cache[account] = fixed }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt b/TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt
+index 48acfd7fe..bf1dbe985 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/RecoveredPosts.kt
+@@ -33,7 +33,8 @@ object RecoveredPosts {
+         val postId: Int,
+         val forwards: List<TLRPC.Message>,
+         val groupSize: Int,
+-        val at: Long
++        val at: Long,
++        val generation: Long
+     )
+ 
+     private const val PENDING_TIMEOUT = 120_000L
+@@ -64,7 +65,7 @@ object RecoveredPosts {
+         if (forwardedPost(owner, channelId) != postId) return
+         val members = group?.messages?.takeIf { it.contains(message) } ?: arrayListOf(message)
+         val forwards = members.mapNotNull { it.messageOwner }.filter { forwardedPost(it, channelId) > 0 }
+-        pending = Pending(account, channelId, postId, forwards, members.size, SystemClock.elapsedRealtime())
++        pending = Pending(account, channelId, postId, forwards, members.size, SystemClock.elapsedRealtime(), TeleAccounts.generation(account))
+     }
+ 
+     /**
+@@ -81,6 +82,7 @@ object RecoveredPosts {
+         if (!ChatObject.isChannelAndNotMegaGroup(channel) || channel is TLRPC.TL_channelForbidden) return false
+         val weak = WeakReference(chat)
+         MessagesStorage.getInstance(data.account).storageQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(data.account, data.generation)) return@postRunnable
+             val shown = runCatching { store(data) }.onFailure { FileLog.e(it) }.getOrDefault(false)
+             AndroidUtilities.runOnUIThread {
+                 val target = weak.get() ?: return@runOnUIThread
+@@ -216,6 +218,12 @@ object RecoveredPosts {
+         sources.getOrPut(account) { ConcurrentHashMap() }.getOrPut(dialogId) { ConcurrentHashMap() }[messageId] = source
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        if (pending?.account == account) pending = null
++        sources.remove(account)
++    }
++
+     @JvmStatic
+     fun load(account: Int, dialogId: Long) {
+         for (row in TeleDatabaseHelper.getRecoveredPosts(account, dialogId)) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt b/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
+index 9df7589e1..4e5df15f0 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ReturnPoint.kt
+@@ -24,6 +24,12 @@ object ReturnPoint {
+     @JvmStatic
+     fun isLoaded(account: Int, dialogId: Long): Boolean = loaded.contains(account to dialogId)
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        points.keys.removeAll { it.account == account }
++        loaded.removeAll { it.first == account }
++    }
++
+     /** Reads the return points of a chat off the main thread, [done] runs on the main thread. */
+     @JvmStatic
+     fun load(account: Int, dialogId: Long, done: (() -> Unit)?) {
+@@ -31,9 +37,11 @@ object ReturnPoint {
+             done?.invoke()
+             return
+         }
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
+             val rows = TeleDatabaseHelper.getReturnPoints(account, dialogId)
+             AndroidUtilities.runOnUIThread {
++                if (!TeleAccounts.isCurrent(account, generation)) return@runOnUIThread
+                 // a point set while the read was running is newer
+                 for (row in rows) points.putIfAbsent(Key(account, dialogId, row.topicId), row.messageId)
+                 loaded.add(account to dialogId)
+@@ -50,7 +58,11 @@ object ReturnPoint {
+     fun set(account: Int, dialogId: Long, topicId: Long, messageId: Int) {
+         if (points.put(Key(account, dialogId, topicId), messageId) == messageId) return
+         val now = ConnectionsManager.getInstance(account).currentTime
+-        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.putReturnPoint(account, dialogId, topicId, messageId, now) }
++        val generation = TeleAccounts.generation(account)
++        Utilities.globalQueue.postRunnable {
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
++            TeleDatabaseHelper.putReturnPoint(account, dialogId, topicId, messageId, now)
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
+index 43b50eb6c..6e86a6209 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/SavedDrafts.kt
+@@ -57,6 +57,19 @@ object SavedDrafts {
+     @JvmStatic
+     fun storedFile(name: String): File = File(draftsDirectory(), name)
+ 
++    /** Drops the stored files only this account's drafts point to; a shared file is left for its other owner. */
++    @JvmStatic
++    fun onLogout(account: Int) {
++        sent.keys.removeAll { (it ushr 48).toInt() == account }
++        val own = get(account).flatMap { draft -> draft.files.map { it.storedName } }.toHashSet()
++        if (own.isEmpty()) return
++        for (other in 0 until org.telegram.messenger.UserConfig.MAX_ACCOUNT_COUNT) {
++            if (other == account) continue
++            for (draft in get(other)) for (file in draft.files) own.remove(file.storedName)
++        }
++        deleteStoredFiles(own.toList())
++    }
++
+     fun deleteStoredFiles(names: List<String>) {
+         for (name in names) {
+             val file = storedFile(name)
+@@ -198,13 +211,16 @@ object SavedDrafts {
+     // what was sent where and when: a field emptied by sending is not a discarded draft
+     private val sent = HashMap<Long, Long>()
+ 
++    // the same dialog of two accounts must not see each other's sends
++    private fun sentKey(account: Int, dialogId: Long): Long = (account.toLong() shl 48) or (dialogId and 0xFFFFFFFFFFFFL)
++
+     @JvmStatic
+-    fun noteSent(dialogId: Long) {
+-        sent[dialogId] = System.currentTimeMillis()
++    fun noteSent(account: Int, dialogId: Long) {
++        sent[sentKey(account, dialogId)] = System.currentTimeMillis()
+     }
+ 
+     @JvmStatic
+-    fun sentSince(dialogId: Long, time: Long): Boolean = (sent[dialogId] ?: 0L) >= time
++    fun sentSince(account: Int, dialogId: Long, time: Long): Boolean = (sent[sentKey(account, dialogId)] ?: 0L) >= time
+ 
+     private fun deserialize(row: TeleDatabaseHelper.ArchivedDraft): Draft? {
+         return runCatching {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/StarsLock.kt b/TMessagesProj/src/main/java/tele/helpers/StarsLock.kt
+index cdce54386..aee501048 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/StarsLock.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/StarsLock.kt
+@@ -268,6 +268,41 @@ object StarsLock {
+ 
+     // ---- the password ----
+ 
++    /** What a reset may clear: the verifier and its owner as they were when the flow started. */
++    internal class Snapshot(val hash: String, val owner: String)
++
++    internal fun snapshot(): Snapshot =
++        Snapshot(TeleConfig.LOCAL_PASSWORD_HASH.value, TeleConfig.LOCAL_PASSWORD_OWNER.value)
++
++    /** The stable identity of [account]: its user id, marked with the backend it belongs to. */
++    private fun ownerOf(account: Int): String? {
++        if (account < 0 || account >= UserConfig.MAX_ACCOUNT_COUNT) return null
++        val config = UserConfig.getInstance(account)
++        if (!config.isClientActivated) return null
++        val id = config.getClientUserId()
++        if (id == 0L) return null
++        val backend = if (ConnectionsManager.getInstance(account).isTestBackend) "test" else "prod"
++        return "$backend:$id"
++    }
++
++    /** The signed-in account that owns the lock, or -1 when the owner wasn't recorded or isn't signed in now. */
++    internal fun ownerAccount(): Int {
++        val owner = TeleConfig.LOCAL_PASSWORD_OWNER.value
++        if (owner.isEmpty()) return -1
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (ownerOf(account) == owner) return account
++        }
++        return -1
++    }
++
++    /** A password set by an older build has no owner: only the password itself may bind it. */
++    private fun adoptLegacyOwner() {
++        if (TeleConfig.LOCAL_PASSWORD_OWNER.value.isNotEmpty()) return
++        // verification just proved knowledge, the selected account alone proves nothing
++        val owner = ownerOf(UserConfig.selectedAccount) ?: return
++        TeleConfig.set(TeleConfig.LOCAL_PASSWORD_OWNER, owner)
++    }
++
+     private fun matches(password: ByteArray, stored: String): Boolean {
+         val parts = stored.split('$')
+         if (parts.size != 4 || parts[0] != HASH_PREFIX || parts[1].toIntOrNull() != ITERATIONS) return false
+@@ -290,12 +325,23 @@ object StarsLock {
+         val bytes = password.toByteArray(Charsets.UTF_8)
+         Utilities.globalQueue.postRunnable {
+             val ok = matches(bytes, stored)
+-            AndroidUtilities.runOnUIThread { done(ok) }
++            AndroidUtilities.runOnUIThread {
++                // another password may have replaced this one while it was being checked
++                val current = ok && TeleConfig.LOCAL_PASSWORD_HASH.value == stored
++                if (current) adoptLegacyOwner()
++                done(current)
++            }
+         }
+     }
+ 
+-    /** Saves the new password: a fresh salt and a PBKDF2-HMAC-SHA512 hash, the same kdf Telegram uses for the cloud password. */
+-    internal fun save(password: String, done: () -> Unit) {
++    /** Saves the new password and its owner; [done] is false when no account is signed in to own it. */
++    internal fun save(password: String, done: (Boolean) -> Unit) {
++        // the owner is taken before the hash work leaves the UI thread
++        val owner = ownerOf(UserConfig.selectedAccount)
++        if (owner == null) {
++            done(false)
++            return
++        }
+         val bytes = password.toByteArray(Charsets.UTF_8)
+         Utilities.globalQueue.postRunnable {
+             val salt = ByteArray(SALT_SIZE).also { SecureRandom().nextBytes(it) }
+@@ -308,20 +354,34 @@ object StarsLock {
+             ).joinToString("$")
+             AndroidUtilities.runOnUIThread {
+                 TeleConfig.set(TeleConfig.LOCAL_PASSWORD_HASH, stored)
++                TeleConfig.set(TeleConfig.LOCAL_PASSWORD_OWNER, owner)
+                 // the new password is asked once before the next protected action
+                 unlockedAt = 0L
+                 changed()
+-                done()
++                done(true)
+             }
+         }
+     }
+ 
+-    /** Removes the password; a prompt that is open is cancelled, the user starts the action again. */
+-    internal fun clear() {
++    /** Removes the password and its owner, unless another password replaced this one meanwhile. */
++    internal fun clear(snapshot: Snapshot, account: Int = -1): Boolean {
++        if (TeleConfig.LOCAL_PASSWORD_HASH.value != snapshot.hash ||
++            TeleConfig.LOCAL_PASSWORD_OWNER.value != snapshot.owner
++        ) {
++            return false
++        }
++        if (snapshot.owner.isNotEmpty()) {
++            // the owner has to still be signed in for a reset to drop the protection
++            if (ownerAccount() < 0) return false
++            // a flow opened for one account must not clear after that account index changed hands
++            if (account >= 0 && ownerOf(account) != snapshot.owner) return false
++        }
++        TeleConfig.set(TeleConfig.LOCAL_PASSWORD_OWNER, "")
+         TeleConfig.set(TeleConfig.LOCAL_PASSWORD_HASH, "")
+         unlockedAt = 0L
+         prompt?.dismiss()
+         changed()
++        return true
+     }
+ 
+     // ---- reset ----
+@@ -330,19 +390,36 @@ object StarsLock {
+ 
+     internal fun countdown(): Int = COUNTDOWN
+ 
+-    /** The "forgot the password" flow: the cloud password when the account has one, else a 10 seconds wait. */
++    /** The "forgot the password" flow: only the account that set the password may prove it, cloud password or countdown. */
+     internal fun reset(host: Activity, resources: Theme.ResourcesProvider?) {
+-        val account = UserConfig.selectedAccount
++        if (TeleConfig.LOCAL_PASSWORD_OWNER.value.isEmpty()) {
++            // a password from an older build: it has to be entered once before any account can be trusted with it
++            toast("stars-lock-reset-owner", "Enter the local password once to attach it to this account.", true)
++            return
++        }
++        val account = ownerAccount()
++        if (account < 0) {
++            toast("stars-lock-reset-owner", "This password belongs to another account. Sign in to it, or enter the local password.", true)
++            return
++        }
++        val snapshot = snapshot()
+         val progress = AlertDialog(host, AlertDialog.ALERT_TYPE_SPINNER)
+         progress.showDelayed(300)
+         ConnectionsManager.getInstance(account).sendRequest(TL_account.getPassword(), { response, error ->
+             AndroidUtilities.runOnUIThread {
+                 progress.dismiss()
++                // the lock may have been replaced while the server answered
++                if (TeleConfig.LOCAL_PASSWORD_HASH.value != snapshot.hash ||
++                    TeleConfig.LOCAL_PASSWORD_OWNER.value != snapshot.owner
++                ) {
++                    toast("stars-lock-reset-changed", "The local password changed. Try again.", true)
++                    return@runOnUIThread
++                }
+                 if (response is TL_account.Password) {
+                     if (response.has_password) {
+-                        StarsLockUi.resetWithCloud(host, resources, account, response.hint.orEmpty())
++                        StarsLockUi.resetWithCloud(host, resources, account, response.hint.orEmpty(), snapshot)
+                     } else {
+-                        StarsLockUi.resetWithCountdown(host, resources)
++                        StarsLockUi.resetWithCountdown(host, resources, account, snapshot)
+                     }
+                 } else {
+                     toast("stars-lock-reset-failed", error?.text ?: "Could not check the cloud password.", true)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleAccounts.kt b/TMessagesProj/src/main/java/tele/helpers/TeleAccounts.kt
+new file mode 100644
+index 000000000..8b9909ff6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleAccounts.kt
+@@ -0,0 +1,100 @@
++package tele.helpers
++
++import android.content.Context
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.ConnectionsManager
++import tele.db.TeleDatabaseHelper
++import tele.scripting.Scripts
++import java.util.concurrent.atomic.AtomicLongArray
++
++object TeleAccounts {
++    private val generations = AtomicLongArray(UserConfig.MAX_ACCOUNT_COUNT)
++    private val owners = arrayOfNulls<String>(UserConfig.MAX_ACCOUNT_COUNT)
++    private var initialized = false
++    private val clearing = BooleanArray(UserConfig.MAX_ACCOUNT_COUNT)
++    private val prefs get() = ApplicationLoader.applicationContext.getSharedPreferences("tele_account_owners", Context.MODE_PRIVATE)
++
++    fun identity(account: Int): String {
++        val id = UserConfig.getInstance(account).clientUserId
++        if (id == 0L) return ""
++        return (if (ConnectionsManager.getInstance(account).isTestBackend) "test:" else "prod:") + id
++    }
++
++    @JvmStatic
++    @Synchronized
++    fun init() {
++        if (initialized) return
++        initialized = true
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            UserConfig.getInstance(account).loadConfig()
++            ensure(account)
++        }
++    }
++
++    @JvmStatic
++    @Synchronized
++    fun ensure(account: Int): Boolean {
++        if (!initialized || account !in owners.indices || clearing[account]) return false
++        val owner = identity(account)
++        if (owners[account] == owner) return owner.isNotEmpty()
++        val stored = prefs.getString(account.toString(), null)
++        if (stored != owner) {
++            if (stored != null || owner.isEmpty()) clear(account)
++            else Scripts.onLogout(account)
++            if (!prefs.edit().putString(account.toString(), owner).commit()) return false
++        }
++        owners[account] = owner
++        return owner.isNotEmpty()
++    }
++
++    @JvmStatic
++    fun generation(account: Int): Long = generations.get(account)
++
++    @JvmStatic
++    fun isCurrent(account: Int, generation: Long): Boolean =
++        generations.get(account) == generation && owners[account]?.let { it.isNotEmpty() && it == identity(account) } == true
++
++    @JvmStatic
++    @Synchronized
++    fun onLogout(account: Int) {
++        if (!initialized) return
++        owners[account] = ""
++        clear(account)
++        check(prefs.edit().putString(account.toString(), "").commit())
++    }
++
++    private fun clear(account: Int) {
++        clearing[account] = true
++        try {
++        generations.incrementAndGet(account)
++        Scripts.onLogout(account)
++        LastSeenPeek.onLogout(account)
++        PrivacyRules.onAccountRemoved(account)
++        DeletedMessages.onLogout(account)
++        DeletedChats.onLogout(account)
++        RecoveredPosts.onLogout(account)
++        Bookmarks.onLogout(account)
++        ReturnPoint.onLogout(account)
++        DockedMedia.onLogout(account)
++        SavedDrafts.onLogout(account)
++        Aliases.onLogout(account)
++        FolderIcons.onLogout(account)
++        ObservedActivity.onLogout(account)
++        ReactionStrip.onLogout(account)
++        TeleChat.onLogout(account)
++        TeleNotices.onLogout(account)
++        PastLimit.onLogout(account)
++        LocalBackgrounds.onLogout(account)
++        OnlineNotify.onLogout(account)
++        GhostPending.onLogout(account)
++        LocalPins.onLogout(account)
++        TeleSilent.onLogout(account)
++        TeleServerNotices.onLogout(account)
++        TeleMtp.onLogout(account)
++        TeleDatabaseHelper.clearAccount(account)
++        } finally {
++            clearing[account] = false
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
+index 7bc50e5d9..1408c90cd 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
+@@ -14,7 +14,7 @@ object TeleBackup {
+     // the internal values and the server url stay on the device; an import must neither carry nor switch off the local password
+     private val SKIPPED = setOf(
+         "known_settings", "changelog_accounts", "shot_view", "tele_server_url", "diag_last_exit",
+-        "local_password_hash", "local_password_biometric", "local_password_transfer", "local_password_convert",
++        "local_password_hash", "local_password_owner", "local_password_biometric", "local_password_transfer", "local_password_convert",
+         "local_password_sell", "local_password_upgrade", "local_password_buy", "local_password_send",
+         "local_password_reactions", "local_password_paid_media", "local_password_paid_messages",
+         "local_password_subscriptions", "local_password_bot_payments"
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleChat.kt b/TMessagesProj/src/main/java/tele/helpers/TeleChat.kt
+index 63a69ac8e..e1d523e22 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleChat.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleChat.kt
+@@ -93,6 +93,11 @@ object TeleChat {
+         changed(account)
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        states.remove(account)
++    }
++
+     @JvmStatic
+     fun markRead(account: Int) {
+         val s = state(account)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+index 025e3a581..da78f7c4d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+@@ -117,6 +117,19 @@ object TeleNotices {
+     private val actions = HashMap<NoticeKind, Action>()
+     private val queue by lazy { DispatchQueue("teleNotices") }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(lock) { states[account] = null }
++    }
++
++    // a write posted before a logout must not bring the entries of the old owner back
++    private fun postWrite(account: Int, block: () -> Unit) {
++        val generation = TeleAccounts.generation(account)
++        queue.postRunnable {
++            if (TeleAccounts.generation(account) == generation) block()
++        }
++    }
++
+     @JvmStatic
+     fun enabled(): Boolean = TeleConfig.NOTICES.value
+ 
+@@ -169,7 +182,7 @@ object TeleNotices {
+             state.list.add(0, added)
+             trim(state, removed)
+             state.unread = state.list.count { it.unread }
+-            queue.postRunnable {
++            postWrite(account) {
+                 TeleDatabaseHelper.transaction {
+                     TeleDatabaseHelper.removeNotices(account, removed)
+                     if (removed.none { it == id }) TeleDatabaseHelper.putNotice(account, toRow(added))
+@@ -217,7 +230,7 @@ object TeleNotices {
+             if (state.unread == 0) return
+             state.list = ArrayList(state.list.map { if (it.unread) it.copy(unread = false) else it })
+             state.unread = 0
+-            queue.postRunnable { TeleDatabaseHelper.markNoticesRead(account, null) }
++            postWrite(account) { TeleDatabaseHelper.markNoticesRead(account, null) }
+         }
+         changed(account)
+     }
+@@ -239,7 +252,7 @@ object TeleNotices {
+             val state = stateOf(account)
+             if (!state.list.removeAll { it.id == id }) return
+             state.unread = state.list.count { it.unread }
+-            queue.postRunnable { TeleDatabaseHelper.removeNotices(account, listOf(id)) }
++            postWrite(account) { TeleDatabaseHelper.removeNotices(account, listOf(id)) }
+         }
+         changed(account)
+     }
+@@ -251,7 +264,7 @@ object TeleNotices {
+             if (state.list.isEmpty()) return
+             state.list = ArrayList()
+             state.unread = 0
+-            queue.postRunnable { TeleDatabaseHelper.clearNotices(account) }
++            postWrite(account) { TeleDatabaseHelper.clearNotices(account) }
+         }
+         changed(account)
+     }
+@@ -268,7 +281,7 @@ object TeleNotices {
+             if (updated == old) return false
+             state.list[index] = updated
+             state.unread = state.list.count { it.unread }
+-            queue.postRunnable { TeleDatabaseHelper.putNotice(account, toRow(updated)) }
++            postWrite(account) { TeleDatabaseHelper.putNotice(account, toRow(updated)) }
+             return true
+         }
+     }
+@@ -294,7 +307,7 @@ object TeleNotices {
+             val removed = ArrayList<Long>()
+             trim(state, removed)
+             dropped.addAll(removed)
+-            if (dropped.isNotEmpty()) queue.postRunnable { TeleDatabaseHelper.removeNotices(account, dropped) }
++            if (dropped.isNotEmpty()) postWrite(account) { TeleDatabaseHelper.removeNotices(account, dropped) }
+         }.onFailure { FileLog.e(it) }
+         state.unread = state.list.count { it.unread }
+         states[account] = state
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt b/TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt
+index e6a4b4d32..b4ff4599c 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleServerNotices.kt
+@@ -54,6 +54,8 @@ object TeleServerNotices {
+     private const val MAX_USERS = 100000
+     private const val TAG_SIZE = 16
+     private const val MAX_PHOTO_SIZE = 1024 * 1024
++    private const val MAX_PHOTO_DIMENSION = 16384
++    private const val MAX_PHOTO_PIXELS = 32L * 1024 * 1024
+     private const val MAX_REDIRECTS = 4
+     private const val TRANSFER_TIMEOUT = 60_000
+     private const val MAX_SEEN = 500
+@@ -88,7 +90,7 @@ object TeleServerNotices {
+ 
+     private class Seen(var rev: Int, var toasted: Boolean)
+     private class Photo(val name: String, val width: Int, val height: Int)
+-    private class QueuedToast(val account: Int, val notice: FeedNotice)
++    private class QueuedToast(val account: Int, val notice: FeedNotice, val generation: Long)
+ 
+     private val queue by lazy { DispatchQueue("teleServerNotices") }
+     private val photoQueue by lazy { DispatchQueue("teleServerNoticePhotos") }
+@@ -131,6 +133,13 @@ object TeleServerNotices {
+ 
+     private fun enabled(): Boolean = TeleNotices.enabled() && TeleConfig.NOTICES_SERVER.value
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        synchronized(seenLock) { seen[account] = null }
++        synchronized(refreshLock) { fetching.removeAll { it.startsWith("$account:") } }
++        AndroidUtilities.runOnUIThread { toastQueue.removeAll { it.account == account } }
++    }
++
+     @JvmStatic
+     fun onToggled() {
+         queue.postRunnable { refreshSafely() }
+@@ -302,9 +311,11 @@ object TeleServerNotices {
+         for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
+             val config = UserConfig.getInstance(account)
+             if (!config.isClientActivated) continue
++            val generation = TeleAccounts.generation(account)
+             var own: String? = null
+             var derived = false
+             for (notice in feed) {
++                if (!TeleAccounts.isCurrent(account, generation)) break
+                 if (!targeted(notice)) continue
+                 val users = notice.users
+                 if (users != null) {
+@@ -412,13 +423,17 @@ object TeleServerNotices {
+             return
+         }
+         fetching.add("$account:${notice.id}")
++        val generation = TeleAccounts.generation(account)
+         photoQueue.postRunnable {
+             val photo = runCatching { download(base, notice) }.onFailure { FileLog.e("TeleServerNotices: photo ${notice.id}: ${it.message}") }.getOrNull()
++            if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+             queue.postRunnable {
+-                try {
+-                    synchronized(refreshLock) { fetched(account, notice, photo) }
+-                } catch (e: Throwable) {
+-                    FileLog.e(e)
++                if (TeleAccounts.isCurrent(account, generation)) {
++                    try {
++                        synchronized(refreshLock) { fetched(account, notice, photo) }
++                    } catch (e: Throwable) {
++                        FileLog.e(e)
++                    }
+                 }
+             }
+         }
+@@ -447,12 +462,19 @@ object TeleServerNotices {
+         return Photo(name, size.first, size.second)
+     }
+ 
++    // a decoded picture must stay within the allocation the server may ask of us
++    private fun validBounds(width: Int, height: Int): Boolean {
++        if (width <= 0 || height <= 0 || width > MAX_PHOTO_DIMENSION || height > MAX_PHOTO_DIMENSION) return false
++        return width.toLong() * height.toLong() <= MAX_PHOTO_PIXELS
++    }
++
+     // only jpeg and png count, like desktop
+     private fun bounds(bytes: ByteArray): Pair<Int, Int>? {
+         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+         val type = options.outMimeType
+-        if ((type != "image/jpeg" && type != "image/png") || options.outWidth <= 0 || options.outHeight <= 0) return null
++        if (type != "image/jpeg" && type != "image/png") return null
++        if (!validBounds(options.outWidth, options.outHeight)) return null
+         return options.outWidth to options.outHeight
+     }
+ 
+@@ -514,12 +536,16 @@ object TeleServerNotices {
+         photoQueue.postRunnable {
+             val bitmap = runCatching {
+                 val file = File(photoDir(), name)
+-                val limit = minOf(AndroidUtilities.displaySize.x, AndroidUtilities.dp(600f))
++                val limit = minOf(AndroidUtilities.displaySize.x, AndroidUtilities.dp(600f)).coerceAtLeast(1).toLong()
+                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                 BitmapFactory.decodeFile(file.path, options)
+-                var sample = 1
+-                while (options.outWidth / (sample * 2) >= limit) sample *= 2
+-                BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
++                if (!validBounds(options.outWidth, options.outHeight)) return@runCatching null
++                var sample = 1L
++                val width = options.outWidth.toLong()
++                val height = options.outHeight.toLong()
++                // ceil division: the decoder output must not exceed the limit, not just its floor
++                while ((width + sample - 1) / sample > limit || (height + sample - 1) / sample > limit) sample *= 2
++                BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample.toInt() })
+             }.onFailure(FileLog::e).getOrNull()
+             if (bitmap != null) photos.put(name, bitmap)
+             AndroidUtilities.runOnUIThread { done(bitmap) }
+@@ -530,9 +556,11 @@ object TeleServerNotices {
+ 
+     private fun toast(account: Int, notice: FeedNotice) {
+         if (!notice.toast || toasted(account, notice.id)) return
++        val generation = TeleAccounts.generation(account)
+         lastToastQueued = SystemClock.elapsedRealtime()
+         AndroidUtilities.runOnUIThread {
+-            if (toastQueue.none { it.account == account && it.notice.id == notice.id }) toastQueue.add(QueuedToast(account, notice))
++            if (!TeleAccounts.isCurrent(account, generation)) return@runOnUIThread
++            if (toastQueue.none { it.account == account && it.notice.id == notice.id }) toastQueue.add(QueuedToast(account, notice, generation))
+             pump()
+         }
+     }
+@@ -553,6 +581,10 @@ object TeleServerNotices {
+             return
+         }
+         toastQueue.remove(item)
++        if (!TeleAccounts.isCurrent(item.account, item.generation)) {
++            pump()
++            return
++        }
+         if (!enabled() || toasted(item.account, item.notice.id)) {
+             pump()
+             return
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt
+index bf128efda..401bea2d4 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSilent.kt
+@@ -25,6 +25,16 @@ object TeleSilent {
+     @JvmStatic
+     fun enabled(): Boolean = TeleConfig.SILENT_BY_DEFAULT.value || TeleConfig.SILENT_PER_CHAT.value
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        if (account !in sound.indices) return
++        synchronized(sound) { sound[account] = null }
++        synchronized(armedUntil) {
++            armedDialog[account] = 0L
++            armedUntil[account] = 0L
++        }
++    }
++
+     private fun stock(account: Int, dialogId: Long): Boolean =
+         MessagesController.getNotificationsSettings(account).getBoolean("silent_$dialogId", false)
+ 
+@@ -98,7 +108,10 @@ object TeleSilent {
+             }
+             set.joinToString(",")
+         }
+-        Utilities.globalQueue.postRunnable { TeleDatabaseHelper.put(SOUND_KEY + account, ids) }
++        val generation = TeleAccounts.generation(account)
++        Utilities.globalQueue.postRunnable {
++            if (TeleAccounts.isCurrent(account, generation)) TeleDatabaseHelper.put(SOUND_KEY + account, ids)
++        }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+index 384bed163..fd31f4d2b 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleUpdater.kt
+@@ -38,6 +38,9 @@ object TeleUpdater {
+     private const val MAX_FEED_SIZE = 64 * 1024L
+     private const val MAX_APK_SIZE = 512 * 1024 * 1024L
+     private const val APK_MIME = "application/vnd.android.package-archive"
++    private const val MAX_TAG_LENGTH = 96
++    // the only tag shape a release feed may use, so it can't steer local paths
++    private val TAG_PATTERN = Regex("^v\\d+(?:\\.\\d+)*-tele\\.\\d+$")
+ 
+     private val queue by lazy { DispatchQueue("teleUpdater") }
+     private val listeners = CopyOnWriteArraySet<Runnable>()
+@@ -54,6 +57,14 @@ object TeleUpdater {
+ 
+     private fun updatesDir(): File = File(ApplicationLoader.applicationContext.filesDir, "cache/tele_update")
+ 
++    // resolves the name and rejects anything that escapes the update dir; returns the plain File so
++    // the existing name-based resume comparison keeps working
++    private fun updateFile(name: String): File? = runCatching {
++        val dir = updatesDir().canonicalFile
++        val canonical = File(dir, name).canonicalFile
++        if (canonical.parentFile == dir) File(updatesDir(), name) else null
++    }.getOrNull()
++
+     @JvmStatic
+     fun tag(): String = "v${BuildVars.BUILD_VERSION_STRING}-tele.${TeleBuild.BUILD}"
+ 
+@@ -161,7 +172,11 @@ object TeleUpdater {
+                 updatesDir().listFiles()?.forEach(File::delete)
+                 finish(Status(State.LATEST))
+             } else {
+-                val target = File(updatesDir(), "tele-${release.tag}.apk")
++                val target = updateFile("tele-${release.tag}.apk")
++                if (target == null) {
++                    fail(TeleLowercase.lc("Malformed feed"))
++                    return
++                }
+                 updatesDir().listFiles()?.forEach { if (it != target) it.delete() }
+                 if (target.exists() && sha256(target) == release.sha256) {
+                     readyFile = target
+@@ -188,7 +203,8 @@ object TeleUpdater {
+         val counter = (o.opt("counter") as? Number)?.toLong() ?: return null
+         val url = o.optString("url")
+         val sha = o.optString("apk_sha256").lowercase()
+-        if (tag.isEmpty() || base !in 1..0xFFFFFFFFL || counter !in 1..0xFFFFFFFFL
++        if (tag.isEmpty() || tag.length > MAX_TAG_LENGTH || !TAG_PATTERN.matches(tag)
++            || base !in 1..0xFFFFFFFFL || counter !in 1..0xFFFFFFFFL
+             || !url.startsWith("$DOWNLOAD_PREFIX$tag/") || !url.endsWith(".apk")
+             || sha.length != 64 || sha.any { it !in '0'..'9' && it !in 'a'..'f' }) return null
+         val running = runningBase()
+@@ -196,9 +212,13 @@ object TeleUpdater {
+     }
+ 
+     private fun download(release: Release, target: File) {
++        val temp = updateFile(target.name + ".part")
++        if (temp == null) {
++            fail(TeleLowercase.lc("Malformed feed"))
++            return
++        }
+         publish(Status(State.DOWNLOADING, release.tag))
+         target.parentFile?.mkdirs()
+-        val temp = File(target.parentFile, target.name + ".part")
+         var offset = 0L
+         // the part of an interrupted download stays: each retry and the next check resume it
+         val code = retrying {
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt
+index 9c63e391d..f6c481f52 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptDrops.kt
+@@ -8,11 +8,7 @@ import android.provider.OpenableColumns
+ import org.json.JSONArray
+ import org.json.JSONObject
+ import java.io.File
+-import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.CopyOnWriteArrayList
+-import java.util.concurrent.CountDownLatch
+-import java.util.concurrent.TimeUnit
+-import java.util.concurrent.atomic.AtomicInteger
+ 
+ /**
+  * The drop interceptors of the running scripts: files shared into the app are offered to them
+@@ -23,9 +19,7 @@ object ScriptDrops {
+     private const val TIMEOUT_MS = 500L
+ 
+     private val runtimes = CopyOnWriteArrayList<ScriptRuntime>()
+-    private val waiters = ConcurrentHashMap<Int, CountDownLatch>()
+-    private val verdicts = ConcurrentHashMap<Int, Boolean>()
+-    private val tokens = AtomicInteger(1)
++    private val replies = ScriptReplies<Boolean>()
+ 
+     @JvmStatic
+     fun register(runtime: ScriptRuntime) {
+@@ -35,13 +29,12 @@ object ScriptDrops {
+     @JvmStatic
+     fun unregister(runtime: ScriptRuntime) {
+         runtimes.remove(runtime)
++        replies.cancel(runtime)
+     }
+ 
+     @JvmStatic
+-    fun verdict(token: Int, accept: Boolean) {
+-        verdicts[token] = accept
+-        waiters[token]?.countDown()
+-    }
++    fun verdict(runtime: ScriptRuntime, token: Int, accept: Boolean): Boolean =
++        runtime.allows("interceptDrop") && replies.answer(runtime, token, accept)
+ 
+     /** True to accept the files, false when a script drops them. */
+     @JvmStatic
+@@ -64,19 +57,14 @@ object ScriptDrops {
+             files.put(JSONObject().put("name", name).put("size", size))
+         }
+         for (runtime in runtimes) {
+-            if (!runtime.hasDropInterceptors()) continue
+-            val token = tokens.getAndIncrement()
+-            val latch = CountDownLatch(1)
+-            waiters[token] = latch
++            if (!runtime.isRunning() || !runtime.hasDropInterceptors()) continue
++            val token = replies.open(runtime)
+             val payload = JSONObject().put("token", token).put("files", files)
+             if (!runtime.requestDrop(token, payload)) {
+-                waiters.remove(token)
++                replies.close(token)
+                 continue
+             }
+-            val answered = latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
+-            val accept = verdicts.remove(token)
+-            waiters.remove(token)
+-            if (!answered || accept == null) return true
++            val accept = replies.await(token, TIMEOUT_MS) ?: return true
+             if (!accept) return false
+         }
+         return true
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptLinks.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptLinks.kt
+index e01567a6b..f7305fed3 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptLinks.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptLinks.kt
+@@ -2,11 +2,7 @@ package tele.scripting
+ 
+ import android.net.Uri
+ import org.json.JSONObject
+-import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.CopyOnWriteArrayList
+-import java.util.concurrent.CountDownLatch
+-import java.util.concurrent.TimeUnit
+-import java.util.concurrent.atomic.AtomicInteger
+ 
+ /**
+  * The link interceptors of the running scripts: every link the app is about to open is offered to
+@@ -17,9 +13,7 @@ object ScriptLinks {
+     private const val TIMEOUT_MS = 500L
+ 
+     private val runtimes = CopyOnWriteArrayList<ScriptRuntime>()
+-    private val waiters = ConcurrentHashMap<Int, CountDownLatch>()
+-    private val verdicts = ConcurrentHashMap<Int, JSONObject>()
+-    private val tokens = AtomicInteger(1)
++    private val replies = ScriptReplies<JSONObject>()
+ 
+     @JvmStatic
+     fun register(runtime: ScriptRuntime) {
+@@ -29,13 +23,12 @@ object ScriptLinks {
+     @JvmStatic
+     fun unregister(runtime: ScriptRuntime) {
+         runtimes.remove(runtime)
++        replies.cancel(runtime)
+     }
+ 
+     @JvmStatic
+-    fun verdict(token: Int, payload: JSONObject) {
+-        verdicts[token] = payload
+-        waiters[token]?.countDown()
+-    }
++    fun verdict(runtime: ScriptRuntime, token: Int, payload: JSONObject): Boolean =
++        runtime.allows("interceptLink") && replies.answer(runtime, token, payload)
+ 
+     /** The link to open, or null when a script drops it. */
+     @JvmStatic
+@@ -43,18 +36,13 @@ object ScriptLinks {
+         if (runtimes.isEmpty()) return uri
+         var url = uri.toString()
+         for (runtime in runtimes) {
+-            if (!runtime.hasLinkInterceptors()) continue
+-            val token = tokens.getAndIncrement()
+-            val latch = CountDownLatch(1)
+-            waiters[token] = latch
++            if (!runtime.isRunning() || !runtime.hasLinkInterceptors()) continue
++            val token = replies.open(runtime)
+             if (!runtime.requestLink(token, url)) {
+-                waiters.remove(token)
++                replies.close(token)
+                 continue
+             }
+-            val answered = latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
+-            val answer = verdicts.remove(token)
+-            waiters.remove(token)
+-            if (!answered || answer == null) return if (url == uri.toString()) uri else Uri.parse(url)
++            val answer = replies.await(token, TIMEOUT_MS) ?: return if (url == uri.toString()) uri else Uri.parse(url)
+             if (answer.optBoolean("drop")) return null
+             val next = answer.optString("url")
+             if (next.isNotEmpty()) url = next
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt
+index ec1133cfb..94f0b430b 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptNotifications.kt
+@@ -1,11 +1,7 @@
+ package tele.scripting
+ 
+ import org.json.JSONObject
+-import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.CopyOnWriteArrayList
+-import java.util.concurrent.CountDownLatch
+-import java.util.concurrent.TimeUnit
+-import java.util.concurrent.atomic.AtomicInteger
+ 
+ /**
+  * The notification interceptors of the running scripts: a new message notification is offered to
+@@ -16,9 +12,7 @@ object ScriptNotifications {
+     private const val TIMEOUT_MS = 500L
+ 
+     private val runtimes = CopyOnWriteArrayList<ScriptRuntime>()
+-    private val waiters = ConcurrentHashMap<Int, CountDownLatch>()
+-    private val verdicts = ConcurrentHashMap<Int, Boolean>()
+-    private val tokens = AtomicInteger(1)
++    private val replies = ScriptReplies<Boolean>()
+ 
+     @JvmStatic
+     fun register(runtime: ScriptRuntime) {
+@@ -28,23 +22,20 @@ object ScriptNotifications {
+     @JvmStatic
+     fun unregister(runtime: ScriptRuntime) {
+         runtimes.remove(runtime)
++        replies.cancel(runtime)
+     }
+ 
+     @JvmStatic
+-    fun verdict(token: Int, drop: Boolean) {
+-        verdicts[token] = drop
+-        waiters[token]?.countDown()
+-    }
++    fun verdict(runtime: ScriptRuntime, token: Int, drop: Boolean): Boolean =
++        runtime.allows("interceptNotification") && replies.answer(runtime, token, drop)
+ 
+     /** True to show the notification, false to drop it. */
+     @JvmStatic
+-    fun intercept(chatId: Long, fromId: Long, kind: String, mentioned: Boolean, text: String?): Boolean {
++    fun intercept(account: Int, chatId: Long, fromId: Long, kind: String, mentioned: Boolean, text: String?): Boolean {
+         if (runtimes.isEmpty()) return true
+         for (runtime in runtimes) {
+-            if (!runtime.hasNotificationInterceptors()) continue
+-            val token = tokens.getAndIncrement()
+-            val latch = CountDownLatch(1)
+-            waiters[token] = latch
++            if (runtime.account != account || !runtime.isRunning() || !runtime.hasNotificationInterceptors()) continue
++            val token = replies.open(runtime)
+             val payload = JSONObject()
+                 .put("token", token)
+                 .put("chatId", chatId)
+@@ -53,13 +44,10 @@ object ScriptNotifications {
+                 .put("mentioned", mentioned)
+                 .put("text", text ?: "")
+             if (!runtime.requestNotification(token, payload)) {
+-                waiters.remove(token)
++                replies.close(token)
+                 continue
+             }
+-            val answered = latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)
+-            val drop = verdicts.remove(token)
+-            waiters.remove(token)
+-            if (!answered || drop == null) return true
++            val drop = replies.await(token, TIMEOUT_MS) ?: return true
+             if (drop) return false
+         }
+         return true
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptReplies.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptReplies.kt
+new file mode 100644
+index 000000000..5afbda2da
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptReplies.kt
+@@ -0,0 +1,63 @@
++package tele.scripting
++
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.TimeUnit
++import java.util.concurrent.atomic.AtomicInteger
++
++internal class ScriptReplies<T : Any> {
++    internal class Pending<T : Any>(val owner: ScriptRuntime) {
++        val latch = CountDownLatch(1)
++        var answer: T? = null
++        var closed = false
++    }
++
++    private val tokens = AtomicInteger(1)
++    private val pending = ConcurrentHashMap<Int, Pending<T>>()
++
++    fun open(owner: ScriptRuntime): Int {
++        while (true) {
++            val token = tokens.getAndIncrement()
++            if (pending.putIfAbsent(token, Pending(owner)) == null) return token
++        }
++    }
++
++    fun answer(owner: ScriptRuntime, token: Int, value: T): Boolean {
++        val request = pending[token] ?: return false
++        synchronized(request) {
++            if (request.owner !== owner || !owner.isRunning() || request.closed || request.answer != null) return false
++            request.answer = value
++            request.latch.countDown()
++            return true
++        }
++    }
++
++    fun await(token: Int, timeout: Long): T? {
++        val request = pending[token] ?: return null
++        try {
++            request.latch.await(timeout, TimeUnit.MILLISECONDS)
++            synchronized(request) {
++                return if (!request.closed && request.owner.isRunning()) request.answer else null
++            }
++        } catch (e: InterruptedException) {
++            Thread.currentThread().interrupt()
++            return null
++        } finally {
++            close(token)
++        }
++    }
++
++    fun close(token: Int) {
++        val request = pending.remove(token) ?: return
++        synchronized(request) {
++            request.closed = true
++            request.latch.countDown()
++        }
++    }
++
++    fun cancel(owner: ScriptRuntime) {
++        for ((token, request) in pending) {
++            if (request.owner === owner) close(token)
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+index bdf57abc2..3c29e2e37 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptRuntime.kt
+@@ -22,6 +22,7 @@ class ScriptRuntime(
+     @JvmField val script: ScriptFile,
+     private val approved: List<String>
+ ) {
++    private val accountGeneration = tele.helpers.TeleAccounts.generation(account)
+     @Volatile
+     var running = false
+         private set
+@@ -74,6 +75,9 @@ class ScriptRuntime(
+         val current = handle
+         if (current != 0L) QuickJs.interrupt(current)
+         ScriptWeb.cancel(this)
++        ScriptLinks.unregister(this)
++        ScriptNotifications.unregister(this)
++        ScriptDrops.unregister(this)
+         cancelDecorations()
+         scheduler.shutdownNow()
+         timers.clear()
+@@ -94,7 +98,7 @@ class ScriptRuntime(
+ 
+     fun hasComposeHandlers(): Boolean = composeHandlers.isNotEmpty()
+ 
+-    fun isRunning(): Boolean = running
++    fun isRunning(): Boolean = running && tele.helpers.TeleAccounts.isCurrent(account, accountGeneration)
+ 
+     fun dispatchCall(id: Int, call: Any) {
+         dispatch(id, "call", JSONArray().put(call))
+@@ -112,8 +116,9 @@ class ScriptRuntime(
+ 
+     /** Asks the script's drop interceptors about shared files; the answer comes back through drop.verdict. */
+     fun requestDrop(token: Int, payload: JSONObject): Boolean {
+-        if (!running || handle == 0L || dropInterceptors.isEmpty()) return false
++        if (!isRunning() || handle == 0L || dropInterceptors.isEmpty()) return false
+         queue.offer(Runnable {
++            if (!isRunning() || handle == 0L) return@Runnable
+             val error = QuickJs.call(handle, "__teleDrop", payload.toString())
+             if (error != null) fault(error)
+         })
+@@ -122,8 +127,9 @@ class ScriptRuntime(
+ 
+     /** Asks the script's notification interceptors; the answer comes back through notification.verdict. */
+     fun requestNotification(token: Int, payload: JSONObject): Boolean {
+-        if (!running || handle == 0L || notificationInterceptors.isEmpty()) return false
++        if (!isRunning() || handle == 0L || notificationInterceptors.isEmpty()) return false
+         queue.offer(Runnable {
++            if (!isRunning() || handle == 0L) return@Runnable
+             val error = QuickJs.call(handle, "__teleNotification", payload.toString())
+             if (error != null) fault(error)
+         })
+@@ -132,9 +138,10 @@ class ScriptRuntime(
+ 
+     /** Asks the script's interceptors about a link; the answer comes back through link.verdict. */
+     fun requestLink(token: Int, url: String): Boolean {
+-        if (!running || handle == 0L || linkInterceptors.isEmpty()) return false
++        if (!isRunning() || handle == 0L || linkInterceptors.isEmpty()) return false
+         val payload = JSONObject().put("token", token).put("url", url).toString()
+         queue.offer(Runnable {
++            if (!isRunning() || handle == 0L) return@Runnable
+             val error = QuickJs.call(handle, "__teleLink", payload)
+             if (error != null) fault(error)
+         })
+@@ -151,10 +158,10 @@ class ScriptRuntime(
+     fun settingsRows(): JSONArray? = settingsRowsJson
+ 
+     fun dispatch(callback: Int, kind: String, args: JSONArray): Boolean {
+-        if (!running || handle == 0L) return false
++        if (!isRunning() || handle == 0L) return false
+         val payload = JSONObject().put("id", callback).put("args", args).toString()
+         queue.offer(Runnable {
+-            if (!running || handle == 0L) return@Runnable
++            if (!isRunning() || handle == 0L) return@Runnable
+             val error = QuickJs.call(handle, "__teleDispatch", payload)
+             if (error != null) fault(error)
+         })
+@@ -162,7 +169,7 @@ class ScriptRuntime(
+     }
+ 
+     fun decorationFor(message: TLRPC.Message, text: String?, editDate: Int, completion: (Decoration?) -> Unit): Boolean {
+-        if (!running || handle == 0L || decorators.isEmpty()) {
++        if (!isRunning() || handle == 0L || decorators.isEmpty()) {
+             completion(null)
+             return true
+         }
+@@ -181,7 +188,7 @@ class ScriptRuntime(
+         val callbacks = decorators.toList()
+         val task = Runnable {
+             decorationTasks.remove(token)
+-            if (!running || handle == 0L || !decorationCallbacks.containsKey(token)) return@Runnable
++            if (!isRunning() || handle == 0L || !decorationCallbacks.containsKey(token)) return@Runnable
+             if (message.message != text || message.edit_date != editDate) {
+                 finishDecoration(token, null)
+                 return@Runnable
+@@ -211,7 +218,7 @@ class ScriptRuntime(
+         decorationTasks.remove(token)?.let { queue.remove(it) }
+         decorationTimeouts.remove(token)?.cancel(false)
+         val completion = decorationCallbacks.remove(token) ?: return
+-        if (running) completion(value)
++        if (isRunning()) completion(value)
+     }
+ 
+     fun completeDecoration(value: JSONObject) {
+@@ -228,7 +235,7 @@ class ScriptRuntime(
+ 
+     fun host(handle: Long, name: String, args: String?): String {
+         return try {
+-            if (!running) throw ScriptException("stopped", "the script is not running")
++            if (!isRunning()) throw ScriptException("stopped", "the script is not running for this account")
+             val value = args?.takeIf { it.startsWith("{") }?.let { JSONObject(it) }
+             val scalar = scalarOf(args)
+             val result = when (name) {
+@@ -253,7 +260,7 @@ class ScriptRuntime(
+                     if (!allows("call", method)) {
+                         throw ScriptException("not-granted", "tg.call needs the grant 'call($method)'", JSONObject().put("grant", "call($method)"))
+                     }
+-                    ScriptTl.call(account, value.toString()) { running }
++                    ScriptTl.call(account, value.toString()) { isRunning() }
+                 }
+                 "resolve" -> resolvePeer(scalar.orEmpty())
+                 "peerInput" -> peerInput(scalar.orEmpty())
+@@ -421,7 +428,7 @@ class ScriptRuntime(
+                 }
+                 "drop.verdict" -> {
+                     val argsValue = value ?: JSONObject()
+-                    ScriptDrops.verdict(argsValue.optInt("token"), argsValue.optBoolean("accept"))
++                    if (!ScriptDrops.verdict(this, argsValue.optInt("token"), argsValue.optBoolean("accept"))) throw ScriptException("not-granted", "invalid shared-file reply")
+                     true
+                 }
+                 "notification.register" -> {
+@@ -437,7 +444,7 @@ class ScriptRuntime(
+                 }
+                 "notification.verdict" -> {
+                     val argsValue = value ?: JSONObject()
+-                    ScriptNotifications.verdict(argsValue.optInt("token"), argsValue.optBoolean("drop"))
++                    if (!ScriptNotifications.verdict(this, argsValue.optInt("token"), argsValue.optBoolean("drop"))) throw ScriptException("not-granted", "invalid notification reply")
+                     true
+                 }
+                 "link.register" -> {
+@@ -453,7 +460,7 @@ class ScriptRuntime(
+                 }
+                 "link.verdict" -> {
+                     val argsValue = value ?: JSONObject()
+-                    ScriptLinks.verdict(argsValue.optInt("token"), argsValue)
++                    if (!ScriptLinks.verdict(this, argsValue.optInt("token"), argsValue)) throw ScriptException("not-granted", "invalid link reply")
+                     true
+                 }
+                 "settings.rows" -> {
+@@ -605,7 +612,7 @@ class ScriptRuntime(
+         val future = scheduler.schedule({
+             queue.offer(Runnable {
+                 dispatch(id, "schedule", JSONArray())
+-                if (running) {
++                if (isRunning()) {
+                     if (daily != null) scheduleOn(id, daily, 0) else scheduleOn(id, null, every)
+                 }
+             })
+@@ -767,14 +774,14 @@ class ScriptRuntime(
+             }
+             ScriptStore.setLastError(account, id, null)
+             ScriptStore.addLog(account, id, "started ${script.name}")
+-            while (running) {
++            while (isRunning()) {
+                 val task = try {
+                     queue.poll(100, TimeUnit.MILLISECONDS)
+                 } catch (e: InterruptedException) {
+                     null
+                 }
+                 task?.run()
+-                if (!running || handle == 0L) break
++                if (!isRunning() || handle == 0L) break
+                 val error = QuickJs.runJobs(handle)
+                 if (error != null) {
+                     fault(error)
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
+index 2a34020f3..54f25f418 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
+@@ -40,6 +40,31 @@ object ScriptStore {
+         prefs(account).edit().putString("grants:$id", JSONArray(ScriptGrants.normalize(grants)).toString()).apply()
+     }
+ 
++    @Synchronized
++    fun fingerprint(account: Int, id: String): String? = prefs(account).getString("fingerprint:$id", null)
++
++    @Synchronized
++    fun setFingerprint(account: Int, id: String, fingerprint: String?) {
++        prefs(account).edit().apply {
++            if (fingerprint == null) remove("fingerprint:$id") else putString("fingerprint:$id", fingerprint)
++        }.apply()
++    }
++
++    @Synchronized
++    fun clearTrust(account: Int) {
++        val preferences = prefs(account)
++        preferences.edit().apply {
++            for (key in preferences.all.keys) {
++                if (key.startsWith("enabled:") || key.startsWith("grants:") || key.startsWith("fingerprint:")) remove(key)
++            }
++        }.apply()
++    }
++
++    @Synchronized
++    fun clearAccount(account: Int) {
++        prefs(account).edit().clear().commit()
++    }
++
+     @Synchronized
+     fun storage(account: Int, id: String): JSONObject {
+         val text = prefs(account).getString("storage:$id", null) ?: return JSONObject()
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
+index 516b0872b..7b6f5f8fe 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptWeb.kt
+@@ -47,7 +47,7 @@ object ScriptWeb {
+ 
+     @JvmStatic
+     fun start(runtime: ScriptRuntime, args: JSONObject): Boolean {
+-        if (!runtime.running) throw ScriptException("stopped", "the script was stopped")
++        if (!runtime.isRunning()) throw ScriptException("stopped", "the script was stopped")
+         val callback = args.optInt("callback")
+         if (callback <= 0) throw ScriptException("bad-argument", "fetch needs a callback")
+         checkGrant(runtime, parse(args.optString("url").trim()))
+@@ -80,20 +80,20 @@ object ScriptWeb {
+             job.timeout?.cancel(false)
+             throw ScriptException("busy", "the fetch worker queue is full")
+         }
+-        if (!runtime.running) cancel(runtime)
++        if (!runtime.isRunning()) cancel(runtime)
+         return true
+     }
+ 
+     private fun complete(job: Job, answer: JSONObject) {
+         job.timeout?.cancel(false)
+-        if (jobs.remove(job.key, job) && !job.cancelled && job.key.runtime.running) {
++        if (jobs.remove(job.key, job) && !job.cancelled && job.key.runtime.isRunning()) {
+             job.key.runtime.dispatch(job.key.callback, "fetch", JSONArray().put(answer))
+         }
+     }
+ 
+     private fun active(job: Job) {
+         if (job.cancelled) throw ScriptException("aborted", "the request was aborted")
+-        if (!job.key.runtime.running) throw ScriptException("stopped", "the script was stopped")
++        if (!job.key.runtime.isRunning()) throw ScriptException("stopped", "the script was stopped")
+         if (System.nanoTime() >= job.deadline) throw ScriptException("timeout", "fetch exceeded 30 seconds")
+     }
+ 
+@@ -225,7 +225,7 @@ object ScriptWeb {
+         job.cancelled = true
+         job.timeout?.cancel(false)
+         val removed = jobs.remove(job.key, job)
+-        if (removed && notify && job.key.runtime.running) {
++        if (removed && notify && job.key.runtime.isRunning()) {
+             val error = JSONObject().put("ok", false).put("code", code).put("error", if (code == "timeout") "fetch exceeded 30 seconds" else "the request was aborted")
+             job.key.runtime.dispatch(job.key.callback, "fetch", JSONArray().put(error))
+         }
+diff --git a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+index 611653f12..7c78d869a 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/Scripts.kt
+@@ -10,6 +10,7 @@ import org.telegram.messenger.Utilities
+ import org.telegram.tgnet.tl.TL_update
+ import org.telegram.tgnet.TLRPC
+ import tele.TeleConfig
++import tele.helpers.TeleAccounts
+ import java.io.File
+ import java.util.concurrent.ConcurrentHashMap
+ 
+@@ -21,6 +22,8 @@ object Scripts {
+     private val runtimes = ConcurrentHashMap<String, ScriptRuntime>()
+     private val scans = ConcurrentHashMap<Int, List<ScriptFile>>()
+     private val loaded = ConcurrentHashMap<String, String>()
++    private val fingerprints = ConcurrentHashMap<String, String>()
++    private val generations = ConcurrentHashMap<String, Long>()
+     private val messages = ConcurrentHashMap<String, TLRPC.Message>()
+     private val bus = ConcurrentHashMap<String, java.util.concurrent.CopyOnWriteArrayList<Pair<ScriptRuntime, Int>>>()
+     private var started = false
+@@ -36,6 +39,7 @@ object Scripts {
+     }
+ 
+     private fun startWhenReady(account: Int) {
++        val generation = TeleAccounts.generation(account)
+         Utilities.globalQueue.postRunnable {
+             try {
+                 Thread.sleep(1500)
+@@ -45,6 +49,7 @@ object Scripts {
+             var tries = 0
+             while (tries++ < 150) {
+                 if (!TeleConfig.SCRIPTING.value) return@postRunnable
++                if (!TeleAccounts.isCurrent(account, generation)) return@postRunnable
+                 if (UserConfig.getInstance(account).isClientActivated) break
+                 try {
+                     Thread.sleep(100)
+@@ -53,15 +58,14 @@ object Scripts {
+                 }
+             }
+             android.util.Log.d("TeleScriptBoot", "startWhenReady activated=" + UserConfig.getInstance(account).isClientActivated)
+-            if (TeleConfig.SCRIPTING.value) start(account)
++            if (TeleConfig.SCRIPTING.value && TeleAccounts.isCurrent(account, generation)) start(account)
+         }
+     }
+ 
+     @JvmStatic
+     fun scripts(account: Int): List<ScriptFile> {
+-        scans[account]?.let { return it }
+-        val list = ScriptScanner.scan()
+-        scans[account] = list
++        val list = scans[account] ?: ScriptScanner.scan().also { scans[account] = it }
++        for (script in list) verify(account, script)
+         return list
+     }
+ 
+@@ -69,22 +73,18 @@ object Scripts {
+     fun refresh(account: Int): List<ScriptFile> {
+         val list = ScriptScanner.scan()
+         scans[account] = list
+-        val alive = list.map { it.id }.toSet()
++        val prefix = "$account:"
++        fingerprints.keys.removeAll { it.startsWith(prefix) }
++        val alive = list.map { key(account, it.id) }.toSet()
++        loaded.keys.removeAll { it.startsWith(prefix) && it !in alive }
+         for ((key, runtime) in runtimes) {
+-            if (runtime.account == account && runtime.id !in alive) {
++            if (runtime.account == account && key !in alive) {
+                 runtime.stop()
+                 runtimes.remove(key)
++                generations.remove(key)
+             }
+         }
+-        for (script in list) {
+-            val key = key(account, script.id)
+-            val previous = loaded.put(key, script.source)
+-            if (previous != null && previous != script.source) {
+-                runtimes[key]?.stop()
+-                runtimes.remove(key)
+-                ScriptStore.addLog(account, script.id, "source changed, the old runtime stopped")
+-            }
+-        }
++        for (script in list) verify(account, script)
+         if (TeleConfig.SCRIPTING.value) start(account)
+         return list
+     }
+@@ -92,7 +92,9 @@ object Scripts {
+     @JvmStatic
+     fun start(account: Int) {
+         if (!TeleConfig.SCRIPTING.value) return
++        if (!TeleAccounts.ensure(account)) return
+         for (script in scripts(account)) {
++            if (!verify(account, script)) continue
+             if (!ScriptStore.enabled(account, script.id)) continue
+             if (script.error != null) {
+                 android.util.Log.d("TeleScriptBoot", "skip " + script.id + ": " + script.error)
+@@ -113,16 +115,49 @@ object Scripts {
+         val running = runtimes[key]
+         if (running != null && running.running) return
+         val runtime = ScriptRuntime(account, script.id, script, grants)
++        generations[key] = TeleAccounts.generation(account)
+         runtimes[key] = runtime
+         runtime.start()
+     }
+ 
++    private fun current(runtime: ScriptRuntime): Boolean {
++        val generation = generations[key(runtime.account, runtime.id)] ?: return false
++        return TeleAccounts.isCurrent(runtime.account, generation)
++    }
++
++    private fun verify(account: Int, script: ScriptFile): Boolean {
++        val key = key(account, script.id)
++        val expected = fingerprint(account, script)
++        loaded[key] = script.source
++        if (ScriptStore.fingerprint(account, script.id) == expected) return true
++        val trusted = ScriptStore.enabled(account, script.id) || ScriptStore.grants(account, script.id).isNotEmpty()
++        ScriptStore.setEnabled(account, script.id, false)
++        ScriptStore.setGrants(account, script.id, emptyList())
++        ScriptStore.setFingerprint(account, script.id, expected)
++        runtimes[key]?.stop()
++        runtimes.remove(key)
++        generations.remove(key)
++        if (trusted) ScriptStore.addLog(account, script.id, "source changed, approvals revoked")
++        return false
++    }
++
++    private fun fingerprint(account: Int, script: ScriptFile): String =
++        fingerprints.getOrPut(key(account, script.id)) {
++            val location = script.file?.absolutePath ?: script.uri?.toString() ?: script.fileName
++            val digest = java.security.MessageDigest.getInstance("SHA-256")
++            digest.update(location.toByteArray(Charsets.UTF_8))
++            digest.update(0.toByte())
++            digest.update(script.source.toByteArray(Charsets.UTF_8))
++            digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
++        }
++
+     @JvmStatic
+     fun stop(account: Int) {
+         for ((key, runtime) in runtimes) {
+             if (runtime.account != account) continue
+             runtime.stop()
+             runtimes.remove(key)
++            generations.remove(key)
+         }
+     }
+ 
+@@ -131,51 +166,81 @@ object Scripts {
+         for ((key, runtime) in runtimes) {
+             runtime.stop()
+             runtimes.remove(key)
++            generations.remove(key)
+         }
+     }
+ 
+     @JvmStatic
+-    fun runtime(account: Int, id: String): ScriptRuntime? = runtimes[key(account, id)]
++    fun runtime(account: Int, id: String): ScriptRuntime? =
++        if (TeleAccounts.ensure(account)) runtimes[key(account, id)] else null
+ 
+     @JvmStatic
+     fun runtimeStopped(runtime: ScriptRuntime) {
+         runtimes.remove(key(runtime.account, runtime.id), runtime)
++        generations.remove(key(runtime.account, runtime.id))
+         for (list in bus.values) list.removeAll { it.first === runtime }
+     }
+ 
+     @JvmStatic
+-    fun isEnabled(account: Int, id: String): Boolean = ScriptStore.enabled(account, id)
++    fun ensureAccount(account: Int): Boolean = TeleAccounts.ensure(account)
++
++    @JvmStatic
++    fun isEnabled(account: Int, id: String): Boolean =
++        TeleAccounts.ensure(account) && ScriptStore.enabled(account, id)
+ 
+     @JvmStatic
+     fun setEnabled(account: Int, id: String, on: Boolean) {
+-        ScriptStore.setEnabled(account, id, on)
+         if (!on) {
++            ScriptStore.setEnabled(account, id, false)
+             runtimes[key(account, id)]?.stop()
+             runtimes.remove(key(account, id))
++            generations.remove(key(account, id))
+             ScriptStore.setGrants(account, id, emptyList())
+             return
+         }
++        if (!TeleAccounts.ensure(account)) return
+         val script = scripts(account).firstOrNull { it.id == id } ?: return
+-        if (ScriptGrants.missing(script.grants, ScriptStore.grants(account, id)).isEmpty()) {
+-            start(account, script, ScriptStore.grants(account, id))
++        ScriptStore.setFingerprint(account, id, fingerprint(account, script))
++        ScriptStore.setEnabled(account, id, true)
++        val grants = ScriptStore.grants(account, id)
++        if (ScriptGrants.missing(script.grants, grants).isEmpty()) {
++            start(account, script, grants)
+         }
+     }
+ 
+     @JvmStatic
+     fun approve(account: Int, id: String, grants: List<String>) {
++        if (!TeleAccounts.ensure(account)) return
++        val script = scripts(account).firstOrNull { it.id == id } ?: return
++        ScriptStore.setFingerprint(account, id, fingerprint(account, script))
+         ScriptStore.setGrants(account, id, grants)
+         if (!ScriptStore.enabled(account, id)) return
+-        val script = scripts(account).firstOrNull { it.id == id } ?: return
+         if (ScriptGrants.missing(script.grants, grants).isEmpty()) {
+             start(account, script, grants)
+         }
+     }
+ 
++    @JvmStatic
++    fun revokeEverywhere(id: String) {
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            ScriptStore.setEnabled(account, id, false)
++            ScriptStore.setGrants(account, id, emptyList())
++            ScriptStore.setFingerprint(account, id, null)
++            runtimes[key(account, id)]?.stop()
++            runtimes.remove(key(account, id))
++            generations.remove(key(account, id))
++            loaded.remove(key(account, id))
++            fingerprints.remove(key(account, id))
++        }
++    }
++
+     @JvmStatic
+     fun revoke(account: Int, id: String) {
++        if (!TeleAccounts.ensure(account)) return
+         ScriptStore.setGrants(account, id, emptyList())
+         runtimes[key(account, id)]?.stop()
+         runtimes.remove(key(account, id))
++        generations.remove(key(account, id))
+     }
+ 
+     @JvmStatic
+@@ -196,9 +261,23 @@ object Scripts {
+         if (TeleConfig.SCRIPTING.value) start(account)
+     }
+ 
++    @JvmStatic
++    fun onLogout(account: Int) {
++        stop(account)
++        scans.remove(account)
++        val prefix = "$account:"
++        loaded.keys.removeAll { it.startsWith(prefix) }
++        fingerprints.keys.removeAll { it.startsWith(prefix) }
++        generations.keys.removeAll { it.startsWith(prefix) }
++        messages.keys.removeAll { it.startsWith(prefix) }
++        bus.keys.removeAll { it.startsWith(prefix) }
++        ScriptStore.clearAccount(account)
++    }
++
+     @JvmStatic
+     fun onUpdate(account: Int, updates: TLRPC.Updates?) {
+         if (updates == null || !TeleConfig.SCRIPTING.value) return
++        if (!TeleAccounts.ensure(account)) return
+         val peers = JSONObject()
+         runCatching { peers.put("users", JSONArray(updates.users.map { ScriptTl.json(it) })) }
+         runCatching { peers.put("chats", JSONArray(updates.chats.map { ScriptTl.json(it) })) }
+@@ -210,7 +289,7 @@ object Scripts {
+         }
+         val json = ScriptTl.json(updates)
+         for ((key, runtime) in runtimes) {
+-            if (runtime.account != account) continue
++            if (runtime.account != account || !current(runtime)) continue
+             runtime.notifyUpdate(json)
+         }
+         for (update in list) {
+@@ -262,12 +341,13 @@ object Scripts {
+ 
+     private fun notifyAll(account: Int, kind: String, update: JSONObject, peers: JSONObject) {
+         for (runtime in runtimes.values) {
+-            if (runtime.account == account) runtime.notify(kind, update, peers)
++            if (runtime.account == account && current(runtime)) runtime.notify(kind, update, peers)
+         }
+     }
+ 
+     @JvmStatic
+     fun cachedMessage(account: Int, peerId: Long, id: Long): JSONObject? {
++        if (!TeleAccounts.ensure(account)) return null
+         val message = messages["$account:$peerId:$id"] ?: return null
+         return ScriptTl.messageJson(message)
+     }
+@@ -275,7 +355,11 @@ object Scripts {
+     @JvmStatic
+     fun decorateAsync(account: Int, message: TLRPC.Message, text: String?, editDate: Int, completion: (Decoration?, Boolean) -> Unit): Boolean {
+         if (!TeleConfig.SCRIPTING.value) return false
+-        val active = runtimes.values.filter { it.account == account && it.isRunning() }.sortedBy { it.id }
++        if (!TeleAccounts.ensure(account)) {
++            completion(null, true)
++            return true
++        }
++        val active = runtimes.values.filter { it.account == account && it.isRunning() && current(it) }.sortedBy { it.id }
+         if (active.isEmpty()) {
+             completion(null, true)
+             return true
+@@ -297,14 +381,16 @@ object Scripts {
+     }
+ 
+     @JvmStatic
+-    fun menu(account: Int, chatKind: String? = null): List<ScriptMenuItem> = ScriptMenu.list(account, chatKind)
++    fun menu(account: Int, chatKind: String? = null): List<ScriptMenuItem> =
++        if (TeleAccounts.ensure(account)) ScriptMenu.list(account, chatKind) else emptyList()
+ 
+     @JvmStatic
+     fun invokeMenu(account: Int, script: String, callback: Int, context: JSONObject): Boolean =
+-        ScriptMenu.invoke(account, script, callback, context)
++        TeleAccounts.ensure(account) && ScriptMenu.invoke(account, script, callback, context)
+ 
+     @JvmStatic
+     fun host(runtime: ScriptRuntime, name: String, args: JSONObject?): Any? {
++        if (!current(runtime)) throw ScriptException("owner", "the account changed")
+         return when (name) {
+             "scripts.list" -> {
+                 val array = JSONArray()
+@@ -320,7 +406,7 @@ object Scripts {
+                 val message = JSONObject().put("from", runtime.id).put("data", data ?: JSONObject.NULL)
+                 bus[key(runtime.account, event)]?.let { list ->
+                     for ((other, callback) in list) {
+-                        if (other.account != runtime.account || !other.isRunning()) continue
++                        if (other.account != runtime.account || !other.isRunning() || !current(other)) continue
+                         if (target != null && target != JSONObject.NULL && target.toString() != other.id) continue
+                         other.dispatch(callback, "scripts", JSONArray().put(message))
+                     }
+@@ -343,13 +429,19 @@ object Scripts {
+     }
+ 
+     @JvmStatic
+-    fun options(runtime: ScriptRuntime): JSONArray = throw ScriptException("unsupported", "script option discovery is not available on android yet")
++    fun options(runtime: ScriptRuntime): JSONArray {
++        if (!current(runtime)) throw ScriptException("owner", "the account changed")
++        throw ScriptException("unsupported", "script option discovery is not available on android yet")
++    }
+ 
+     @JvmStatic
+-    fun log(account: Int, id: String): List<String> = ScriptStore.log(account, id)
++    fun log(account: Int, id: String): List<String> =
++        if (TeleAccounts.ensure(account)) ScriptStore.log(account, id) else emptyList()
+ 
+     @JvmStatic
+-    fun clearLog(account: Int, id: String) = ScriptStore.clearLog(account, id)
++    fun clearLog(account: Int, id: String) {
++        if (TeleAccounts.ensure(account)) ScriptStore.clearLog(account, id)
++    }
+ 
+     @JvmStatic
+     fun path(): String = ScriptFolder.display()
+@@ -357,17 +449,20 @@ object Scripts {
+     @JvmStatic
+     fun folderChanged() {
+         stopAll()
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) ScriptStore.clearTrust(account)
+         scans.clear()
+         loaded.clear()
++        fingerprints.clear()
++        generations.clear()
+         ScriptTypes.write()
+         if (TeleConfig.SCRIPTING.value) start(UserConfig.selectedAccount)
+     }
+ 
+     @JvmStatic
+     fun delete(account: Int, id: String): Boolean {
+-        runtimes[key(account, id)]?.stop()
+-        runtimes.remove(key(account, id))
+-        scans.remove(account)
++        if (!TeleAccounts.ensure(account)) return false
++        revokeEverywhere(id)
++        scans.clear()
+         ScriptSources.remove(id)
+         return ScriptScanner.delete(id)
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/StarsLockUi.kt b/TMessagesProj/src/main/java/tele/ui/StarsLockUi.kt
+index 1c21880b1..3f128115a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/StarsLockUi.kt
++++ b/TMessagesProj/src/main/java/tele/ui/StarsLockUi.kt
+@@ -208,9 +208,14 @@ object StarsLockUi {
+                 } else {
+                     busy = true
+                     withCurrent {
+-                        StarsLock.save(value) {
+-                            dialog.dismiss()
+-                            StarsLock.toast("stars-lock-saved", if (set) lc("Local password changed.") else lc("Local password set."))
++                        StarsLock.save(value) { saved ->
++                            if (saved) {
++                                dialog.dismiss()
++                                StarsLock.toast("stars-lock-saved", if (set) lc("Local password changed.") else lc("Local password set."))
++                            } else {
++                                busy = false
++                                error.fail(lc("Sign in to an account first."))
++                            }
+                         }
+                     }
+                 }
+@@ -220,9 +225,13 @@ object StarsLockUi {
+             if (!busy) {
+                 busy = true
+                 withCurrent {
+-                    StarsLock.clear()
+-                    dialog.dismiss()
+-                    StarsLock.toast("stars-lock-removed", lc("Local password removed."))
++                    if (StarsLock.clear(StarsLock.snapshot())) {
++                        dialog.dismiss()
++                        StarsLock.toast("stars-lock-removed", lc("Local password removed."))
++                    } else {
++                        busy = false
++                        error.fail(lc("The local password was changed. Try again."))
++                    }
+                 }
+             }
+         }
+@@ -235,8 +244,8 @@ object StarsLockUi {
+         dialog.getButton(DialogInterface.BUTTON_NEUTRAL)?.setOnClickListener { remove() }
+     }
+ 
+-    /** The account has a cloud password: it is the proof to drop the local one. */
+-    fun resetWithCloud(host: Activity, resources: Theme.ResourcesProvider?, account: Int, hint: String) {
++    /** The owner has a cloud password: it is the proof to drop the local one. */
++    internal fun resetWithCloud(host: Activity, resources: Theme.ResourcesProvider?, account: Int, hint: String, snapshot: StarsLock.Snapshot) {
+         // the hint is the user's own text
+         val input = field(host, resources, hint.ifBlank { lc("Cloud password") }, EditorInfo.IME_ACTION_DONE)
+         val error = errorView(host, resources)
+@@ -262,9 +271,13 @@ object StarsLockUi {
+                     StarsLock.checkCloud(account, typed) { problem ->
+                         checking = false
+                         if (problem == null) {
+-                            StarsLock.clear()
+-                            dialog.dismiss()
+-                            StarsLock.toast("stars-lock-removed", lc("Local password removed."))
++                            if (StarsLock.clear(snapshot, account)) {
++                                dialog.dismiss()
++                                StarsLock.toast("stars-lock-removed", lc("Local password removed."))
++                            } else {
++                                dialog.dismiss()
++                                StarsLock.toast("stars-lock-changed", lc("The local password was changed. Try again."), true)
++                            }
+                         } else {
+                             shake(input)
+                             input.selectAll()
+@@ -287,7 +300,7 @@ object StarsLockUi {
+     }
+ 
+     /** No cloud password to ask: the reset waits a few seconds so a stray tap can't drop the protection. */
+-    fun resetWithCountdown(host: Activity, resources: Theme.ResourcesProvider?) {
++    internal fun resetWithCountdown(host: Activity, resources: Theme.ResourcesProvider?, account: Int, snapshot: StarsLock.Snapshot) {
+         val builder = AlertDialog.Builder(host, resources)
+         builder.setTitle(lc("Reset local password"))
+         builder.setMessage(lc("Gifts and stars stop asking for a password."))
+@@ -313,9 +326,13 @@ object StarsLockUi {
+         AndroidUtilities.runOnUIThread(tick, 1000)
+         button?.setOnClickListener {
+             if (left == 0) {
+-                StarsLock.clear()
+-                dialog.dismiss()
+-                StarsLock.toast("stars-lock-removed", lc("Local password removed."))
++                if (StarsLock.clear(snapshot, account)) {
++                    dialog.dismiss()
++                    StarsLock.toast("stars-lock-removed", lc("Local password removed."))
++                } else {
++                    dialog.dismiss()
++                    StarsLock.toast("stars-lock-changed", lc("The local password was changed. Try again."), true)
++                }
+             }
+         }
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
+index 8a52747c4..54a46a75b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleScriptsActivity.kt
+@@ -158,8 +158,11 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+             .add(R.drawable.msg_permissions, lc("Review permissions"), Runnable { showGrants(script) })
+             .add(R.drawable.msg_message, lc("Open log"), Runnable { showLog(script) })
+             .add(R.drawable.msg_retry, lc("Restart"), Runnable {
++                if (!Scripts.ensureAccount(currentAccount)) return@Runnable
++                val grants = ScriptStore.grants(currentAccount, script.id)
+                 Scripts.setEnabled(currentAccount, script.id, false)
+                 Scripts.setEnabled(currentAccount, script.id, true)
++                Scripts.approve(currentAccount, script.id, grants)
+                 recycler?.adapter?.update(true)
+             })
+             .add(R.drawable.msg_delete, lc("Remove"), Runnable { remove(script) })
+@@ -169,6 +172,7 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+ 
+     private fun toggle(script: ScriptFile) {
+         val account = currentAccount
++        if (!Scripts.ensureAccount(account)) return
+         val enabled = Scripts.isEnabled(account, script.id)
+         if (enabled) {
+             Scripts.setEnabled(account, script.id, false)
+@@ -213,6 +217,7 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+     }
+ 
+     private fun showGrants(script: ScriptFile) {
++        if (!Scripts.ensureAccount(currentAccount)) return
+         val approved = ScriptStore.grants(currentAccount, script.id)
+         val message = StringBuilder()
+         for (raw in script.grants) {
+@@ -244,7 +249,7 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+     private fun remove(script: ScriptFile) {
+         AlertDialog.Builder(parentActivity ?: return, resourceProvider)
+             .setTitle(lc("Remove ") + script.name + "?")
+-            .setMessage(lc("The source file is deleted from the scripts folder. The approvals and storage stay per account."))
++            .setMessage(lc("The source file is deleted from the scripts folder. Its approvals are revoked in every account."))
+             .setPositiveButton(lc("Remove")) { _, _ ->
+                 Scripts.delete(currentAccount, script.id)
+                 recycler?.adapter?.update(true)
+@@ -334,6 +339,7 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+                 } else if (result.second != null) {
+                     BulletinFactory.of(this).createSimpleBulletin(R.raw.error, result.second).show()
+                 } else {
++                    result.first?.let { Scripts.revokeEverywhere(it) }
+                     Scripts.refresh(currentAccount)
+                     recycler?.adapter?.update(true)
+                     BulletinFactory.of(this)
+@@ -396,6 +402,7 @@ class TeleScriptsActivity @JvmOverloads constructor(private val installUrl: Stri
+                 } else if (result.second != null) {
+                     BulletinFactory.of(this).createSimpleBulletin(R.raw.error, result.second).show()
+                 } else {
++                    result.first?.let { Scripts.revokeEverywhere(it) }
+                     Scripts.refresh(currentAccount)
+                     recycler?.adapter?.update(true)
+                     BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("Imported ") + result.first + lc(". It is off until you enable it and allow its permissions.")).show()

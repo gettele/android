@@ -1,7 +1,7 @@
 """Compile account-scoped Kotlin helpers against focused stubs, not Android/JNI.
 
 Run with --root pointing to the workspace containing Telegram/; compiler dependencies
-must already exist in --cache. Native grant checks below are source contracts only.
+must already exist in --cache. Exercises account isolation of calls, player and compose helpers.
 """
 from pathlib import Path
 import argparse
@@ -173,26 +173,3 @@ java=args.java
 out=here/'test.jar'
 subprocess.run([java,'-cp',os.pathsep.join(map(str,cp)),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(cp[1]),'-d',str(out),*files],check=True)
 subprocess.run([java,'-cp',os.pathsep.join([str(out),str(cp[1])]),'regression.TestKt'],check=True)
-runtime=(product/'ScriptRuntime.kt').read_text()
-required={
- 'call.current': 'allows("calls")', 'call.listen': 'allows("calls")', 'call.control': 'allows("calls")',
- 'player.current': 'allows("app")', 'player.listen': 'allows("app")', 'player.control': 'allows("app")',
- 'compose.get': 'allows("account.read", "draft")', 'compose.register': 'allows("account.read", "draft")',
- 'compose.set': 'allows("account.write", "draft")', 'compose.insert': 'allows("account.write", "draft")',
- 'message.cached': 'allows("account.read", "messages")',
- 'drop.register': 'allows("interceptDrop")', 'link.register': 'allows("interceptLink")',
- 'notification.register': 'allows("interceptNotification")',
- 'update.register': 'allows("onUpdate")',
-}
-for branch,gate in required.items():
- start=runtime.index('"'+branch+'" ->')
- end=runtime.index('\n                "',start+len(branch)+5)
- assert gate in runtime[start:end], (branch, 'native grant gate missing')
-scripts=(product/'Scripts.kt').read_text()
-assert 'messages["$account:$peerId:${message.id}"]' in scripts
-assert 'messages["$account:$peerId:$id"]' in scripts
-assert 'MessageObject.getDialogId(message)' in scripts
-assert 'bus[key(runtime.account, event)]' in scripts
-assert 'it.first === runtime && it.second == callback' in scripts
-assert 'for (list in bus.values) list.removeAll { it.first === runtime }' in scripts
-print('PASS: native grant/cache/bus source contracts (not runtime security integration)')

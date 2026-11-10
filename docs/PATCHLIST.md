@@ -865,3 +865,20 @@ litehtml через NDK, карточки в пузыре, playground-чат (д
 - android-only: `0296` — выравнивание строк, полей `TeleConfig` и экспорта по [conventions.md](conventions.md); `0297` — параметр `a` для twitter/x и чистка fragment-параметров в link cleaner; `0298` — `tg.messageAction` рядом с `tg.registerMessageAction` для совместимости с `tele.d.ts`; `0299` — группы Tools/tele/For me в меню по умолчанию. android-патч `0304` (остановка подписки на геолокацию) удалён: в 13.2.1 сток чинит это сам (`GoogleLocationProvider` хранит `LocationCallback` на слушателя).
 - порядок реализации строго по пачкам; зависимости: игнор-лист, per-chat ghost и ghost-schedule (пачка 11) → 0166, 0227, 0228, 0229 — сделаны; 0169 (пачка 13) → 0170, 0241, 0244; 0171 → 0255, 0295; 0187 (пачка 23) → 0184–0193, 0217, подарочные платежи, консоль 0195; 0205 (пачка 22) → 0206, 0212, 0213, 0232, 0239, 0240, 0246; 0175 → 0236; 0197/0204 → 0198, 0201, 0234, 0247, 0248, 0230; 0308 → 0309, 0307, 0285, затем 0278 → карта 0305 → 0314 → 0322; 0302 → 0313, 0329; 0312 → 0313; 0195 → 0218, 0298 (прежние: 0101/0121 → 0071; 0012/0081/0108 → 0009; 0080 → 0045; 0118/0119 → 0050)
 - нативная работа (NDK/CMake, все ABI): 0205 (jni tgnet), 0308/0309 (Rust wallet-engine), 0302 (quickjs-ng) — каждая в своей пачке, сборка проверяется на всех ABI
+
+## аудит безопасности 2026-11-10
+
+Отчёт и условия воспроизведения: [security-audit.md](security-audit.md). Сквозной патч `0332-security-harden-fork-boundaries.patch` затрагивает несколько существующих фич и остаётся отдельным коммитом, без переписывания истории очереди.
+
+| область | статус | результат |
+|---|---|---|
+| уведомления скриптов и verdict endpoints | built | account isolation; одноразовые ответы только владельцу pending request; поведенческие регрессии пройдены |
+| доверие импорту и source fingerprint | built | replacement/source/folder/delete отзывают approvals; неизменённый rescan сохраняет; регрессия пройдена |
+| владельцы account slot | built | user ID + backend, logout cleanup таблиц/KV/кешей/вложений, поколения callbacks; при первом обновлении архивы активных аккаунтов сохраняются, script state сбрасывается |
+| streamer mode и секретные окна | built | FLAG_SECURE принудителен в отдельных окнах, ручная проверка ожидается |
+| rollback last seen | built | полный TL journal, owner/backend, single-flight, запрет частичного restore; регрессия пройдена |
+| StarsLock recovery | built | владелец глобального verifier закреплён, legacy привязывается после ввода локального пароля; регрессия пройдена |
+| regex / notices / updater | built | bounded match, лимиты пикселей и обеих сторон, строгий tag и canonical containment |
+
+Сборка `assembleDebug --offline` успешна, APK установлен на `emulator-5554`; запуск и список чатов проверены. Первый smoke выявил ранний вызов native API: `TeleHooks.init` перенесён после `NativeLoader.initNativeLibs`. Ручные сценарии on/off и multi-account не объявлены done.
+

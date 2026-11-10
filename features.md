@@ -10,6 +10,8 @@ tele for android ports the features of [tele for desktop](https://github.com/nit
 
 a patch that fixed something says what it changed after its link, in the same cell.
 
+Security fixes from the [2026-11-10 audit](docs/security-audit.md) are grouped in [0332](patches/android/0332-security-harden-fork-boundaries.patch): script notifications and saved data stay with their account, importing or changing a script revokes its previous approval, pending script replies require their owner, streamer mode protects secret-media windows, last-seen restoration keeps all privacy exceptions, local-password recovery uses the account that owns the lock, and regex, notice images and update paths are bounded. On the first upgrade, existing active-account archives are retained but script approvals and script storage are reset. A legacy local password must be entered once before cloud recovery can be bound to its owner.
+
 [interface](#interface) · [privacy](#privacy) · [links](#links) · [ids](#ids) · [sending](#sending) · [your data](#your-data) · [server](#server) · [money](#money) · [debug](#debug) · [updates](#updates) · [everywhere](#everywhere) · [build](#build)
 
 ## settings

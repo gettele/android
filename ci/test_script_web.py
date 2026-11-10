@@ -35,6 +35,7 @@ class ScriptRuntime(val hosts:Set<String>) {
  val checks=java.util.concurrent.CopyOnWriteArrayList<String>()
  val answers=java.util.concurrent.ConcurrentHashMap<Int,JSONObject>()
  fun dispatch(id:Int,kind:String,args:JSONArray):Boolean {if(!running)return false;answers[id]=args.optJSONObject(0)!!;return true}
+ fun isRunning()=running
  fun allows(name:String,host:String):Boolean { checks.add(host); return name=="fetch" && host in hosts }
 }
 class ScriptException(val errorCode:String,message:String,val extra:JSONObject?=null):RuntimeException(message)
