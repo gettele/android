@@ -2,7 +2,8 @@
 """post a rich message about a published tele release to the telegram channel, made from its tele-changelog.json.
 
 the channel also gets tele desktop's releases, so the post is titled `tele for android N · <version>` and ends
-with a #android footer. needs BOT_TOKEN and CHANNEL in the environment unless --dry-run."""
+with a #android footer. the changes use the same new/fix grouping as the release notes, without the patch list.
+needs BOT_TOKEN and CHANNEL in the environment unless --dry-run."""
 
 import argparse
 import json
@@ -12,23 +13,55 @@ import sys
 import urllib.error
 import urllib.request
 
+from changelog import PATCH, base_version, grouped, patch_url, section_title
+
 
 def escape(text):
     text = re.sub(r'([\\`*_\[\]()~=|$!#+\-])', r'\\\1', text)
     return text.replace('<', '&#60;')
 
 
+def item_line(item, repo, revision):
+    links = []
+    for name in item.get('patches', []):
+        match = PATCH.match(name)
+        number = match.group(1) if match else name
+        links.append(f'[{number}]({patch_url(repo, revision, name)})')
+    meta = links + [escape(value) for value in (item.get('where', ''), item.get('default', '')) if value]
+    suffix = f' ({", ".join(meta)})' if meta else ''
+    return f'- {escape(item["text"])}{suffix}'
+
+
 def message(changelog, repo):
     tag = changelog['tag']
     version, number = tag.removeprefix('v').rsplit('-tele.', 1)
+    upstream = changelog.get('upstream')
+    count = changelog.get('patch_count')
+    revision = changelog.get('revision') or tag
     lines = [escape(changelog['header']), ''] if changelog.get('header') else []
     lines.append(f'## tele for android {escape(number)} · {escape(version)}')
-    for category in changelog['categories']:
-        lines += ['', f'**{escape(category)}**', '']
-        for item in changelog['items']:
-            if item['category'] == category:
-                where = f' ({escape(item["where"])})' if item['where'] else ''
-                lines.append(f'- {escape(item["text"])}{where}')
+    if count is None:
+        lines += ['', escape(f'telegram android {base_version(tag)}.')]
+    else:
+        lines += ['', escape(f'telegram android {base_version(tag)} with {count} '
+                             f'patch{"" if count == 1 else "es"}.')]
+    if upstream and upstream.get('changes'):
+        lines += [
+            '',
+            f'## telegram android {escape(upstream["version"])}',
+            '',
+            f'new in [telegram android {escape(upstream["version"])}]({upstream["url"]}) '
+            f'since {escape(upstream["previous"])}:',
+            '',
+            *[f'- {escape(change)}' for change in upstream['changes']],
+        ]
+    for section, categories in grouped(changelog):
+        title = section_title(section)
+        lines += ['', f'## {title}']
+        for category, items in categories:
+            if category.lower() != title:
+                lines += ['', f'**{escape(category)}**', '']
+            lines += [item_line(item, repo, revision) for item in items]
     lines += [
         '',
         'the apk is in the release: install it over your tele. a running tele finds this release within 3 hours.',

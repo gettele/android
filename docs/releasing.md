@@ -13,22 +13,41 @@ for maintainers. releases are built and published by github actions and need the
 ## before a release
 
 1. **patches.** the queue is exported and committed on `main`, and applies to a fresh clone of `UPSTREAM` (see [development](development.md#checking-the-queue-applies)). every patch of the batch was tested on a device, a ci run takes about an hour and a broken release reaches every user through the updater.
-2. **changelog.** write what's new into `ci/changelog.json`, replacing the previous release's text:
+2. **changelog.** replace `ci/changelog.json` with the changes since the latest **published** release, not since the last editing session. Read that release's `tele-changelog.json`, compare its tag/commit with the current patch queue, and remove everything already shipped. Do not publish or edit an existing GitHub release unless explicitly asked.
 
    ```json
    {
-     "categories": ["interface", "chats"],
+     "categories": ["sending", "scripts", "privacy"],
      "items": [
-       {"text": "scroll to zoom in the photo viewer", "where": "settings → tele → interface", "category": "interface"}
+       {
+         "text": "preview attached photos and videos as an album or a strip",
+         "where": "settings → tele → sending → attach media above the field",
+         "category": "sending",
+         "kind": "new",
+         "default": "off",
+         "options": ["tele-docked-media", "tele-docked-grid"],
+         "patches": ["0333-docked-complete-media-composer.patch"]
+       }
      ]
    }
    ```
 
-   `categories` is the order of the groups in the app and in the release notes, and every item's `category` has to be listed. `where` is where to find it and may be empty: keep the full path to a new option, like `settings → tele → messages → keep deleted for`. the limits are the app's (100 items, 16 categories, 64 characters in a category, 1024 in an item), `python3 ci/changelog.py ci/changelog.json --tag v1-tele.1 --repo gettele/android` validates the file. publishing fails while the items equal the previous release's.
+   The release body follows [tele desktop 23](https://github.com/nitreojs/tele/releases/tag/v7.3.3-tele.23): a linked Telegram base and queue count, optional upstream changes, `## new`, `## fixes`, then `## download`. Keep settings-area categories one level lower as `### sending`, `### scripts`, `### privacy`; do not use `fixes` as a category for new notes. Empty sections/categories are omitted. The channel announcement uses the same grouping; the app continues to receive ordinary `categories`/`items` and ignores release-only metadata.
 
-   write items like the [tele desktop releases](https://github.com/nitreojs/tele/releases): one short lowercase sentence per feature or fix, what the user gets, no trailing period, about 100 characters at most. no implementation details, no lists of every case: the patch and features.md hold those.
+   Each item describes a user-visible change in plain lowercase English, without a trailing period. Give enough detail to understand its effect; do not enumerate implementation details or every edge case. `kind` is `new` or `fix`, independently of the patch subject; extending an existing feature is new, repairing existing behavior is a fix. Link the actual Android patch filenames through `patches`; use `default` for the option's initial state (`off`, `on`, `with scripting`) or `always on` for an unconditional fix. `where` is the real UI path and may be empty. `options` are real `tele-…` setting IDs for live toggles in the app. Never invent a setting path, patch number, upstream feature or verification result.
 
-   the optional `header` and `footer` are one line each (up to 64 characters) put before and after the release notes and the channel post, for one release only: the next release's file drops them like the rest of the previous text. the app ignores them.
+   **Telegram changes:** compare the base in the new tag with the latest published tag, not with an older local summary. If it changed, add an `upstream` object with `version`, `previous`, `url` (official Android release/source notes) and `changes` (a list of verified client changes across the complete version range). The generator renders `## telegram android <version>` with “new since <previous>”. Distinguish stock additions from tele patches, and exclude desktop/iOS-only features or server rollouts not supported by this Android base. Cite the official source in `url`; use source/release diffs when no official user-facing notes exist. If the base is unchanged, omit `upstream` entirely—do not repeat previous Telegram news. With `--previous`, validation rejects missing upstream notes for a base change or stale upstream notes for an unchanged base.
+
+   Before delivery, generate both the JSON and Markdown against the previous published asset, inspect the rendered notes and run the announcement with `--dry-run`. Example for the upcoming tele 11:
+
+   ```bash
+   python3 ci/changelog.py ci/changelog.json --tag v13.2.1-tele.11 --repo gettele/android --previous /path/to/tele10-changelog.json --json /tmp/tele11-changelog.json --notes /tmp/tele11-notes.md
+   python3 ci/announce.py /tmp/tele11-changelog.json --repo gettele/android --dry-run
+   ```
+
+   tele 10 already uses Telegram 13.2.1, so tele 11 on the same base has **no upstream-news section**. [release-11-preview.md](release-11-preview.md) is an unpublished preview generated from the current source; regenerate it when that source changes, and never add it to published history before the release exists. It is not a promise that manual release gates have passed.
+
+   `categories` controls group order; every item's category must be listed. The app limits remain 100 items, 16 categories, 64 characters per category and 1024 per item text. `python3 ci/changelog.py ci/changelog.json --tag v13.2.1-tele.11 --repo gettele/android` validates without writing or publishing. Publishing refuses unchanged previous items. The optional `header` and `footer` remain single lines up to 64 characters, before/after the notes and channel post; the app ignores them.
 
 ## building and publishing
 
@@ -58,7 +77,7 @@ runs on one branch queue one after another, so two releases never pick the same 
 | `tele-update-android.json` | the update feed: `{"tag", "base", "counter", "url", "apk_sha256"}`, where `base` is `APP_VERSION_CODE` (without the abi digit), `counter` is `N`, `url` points at the apk in this release |
 | `tele-changelog.json` | what's new, for the in-app chat: `{"tag", "title", "url", "categories", "items"}`, made from `ci/changelog.json` |
 
-the release notes are made from the same changelog: the items by category, and the download.
+the release notes use the same changelog: Telegram base and patch count, upstream news only for a base change, new features and fixes with categories one heading level below, linked patch references, option locations/defaults, and the Android download. CI pins patch links to the build's commit through `--revision "$GITHUB_SHA"`.
 
 the app reads `releases/latest/download/tele-update-android.json`, updates when `(base, counter)` is newer than its own, checks the sha256 of the download and hands the apk to the system installer. it only accepts urls under `https://github.com/gettele/android/releases/download/<tag>/` ending in `.apk`. after an update it reads `tele-changelog.json` of its own tag once per account. both formats are described in [architecture](architecture.md#update-feed-and-the-tele-server).
 

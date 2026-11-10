@@ -1,11 +1,12 @@
 # releases
 
-every tele android release, newest first. release notes and the in-app what's new are made from `ci/changelog.json` and the published `tele-changelog.json`; this page keeps the same history readable in the repository. [features](features.md) groups the same features by settings page.
+every tele android release, newest first. release notes and the in-app what's new are made from `ci/changelog.json` and the published `tele-changelog.json`; this page keeps the same history readable in the repository. [features](../features.md) groups the same features by settings page. Follow [releasing](releasing.md#before-a-release) when writing the next changelog: new/fix sections keep categories one heading level below, and Telegram news appears only when the base changes from the latest published release.
 
-9 releases, 300 patches at [tele 9](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9). the queue now has 309 patches on telegram 13.2.1; the 9 after tele 9 appear here with the next release.
+10 releases, 309 patches at [tele 10](https://github.com/gettele/android/releases/tag/v13.2.1-tele.10). the queue now has 333 patches on telegram 13.2.1. [tele 11 preview](release-11-preview.md) is unpublished; it must not be counted as a release or assigned a publication date until GitHub publishes it.
 
 | release | base | published | patches |
 |---|---|---|---|
+| [tele 10 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.10) | 13.2.1 | 2026-11-08 | 309 |
 | [tele 9 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9) | 13.1.1 | 2026-11-07 | 300 |
 | [tele 8 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.8) | 13.1.1 | 2026-11-03 | 244 |
 | [tele 7 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.7) | 13.1.1 | 2026-10-26 | 228 |
@@ -15,6 +16,31 @@ every tele android release, newest first. release notes and the in-app what's ne
 | [tele 3 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.3) | 13.0.3 | 2026-10-22 | 141 |
 | [tele 2 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.2) | 13.0.3 | 2026-10-21 | 127 |
 | [tele 1 · 13.0.2](https://github.com/gettele/android/releases/tag/v13.0.2-tele.1) | 13.0.2 | 2026-10-19 | 96 |
+
+### [tele 10 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.10)
+
+#### interface
+
+- tele speaks russian and ukrainian: its pages, menus and messages follow the app language (settings → language)
+- built on telegram 13.2.1, with its native bot widgets, glass menus and new profile pages
+
+#### chats
+
+- turn off bot widgets: they keep their caption and stop running scripts and asking the network (settings → tele → chats)
+
+#### money
+
+- with money turned off, wallet balances are hidden in profiles too (settings → tele → money)
+
+#### fixes
+
+- the language picked in settings applies to the whole interface again, tele's texts included (settings → language)
+- settings search shows every row by its own name and opens it right there (settings search)
+- the tele menus stay as wide as their items, and their thin separators match the theme (message menu, chat menu)
+- two thin separators that meet when a row hides become one (message menu, chat menu)
+- a tele submenu opens where its own item was pressed (message menu, chat menu)
+- a diagnostic report is asked about once, and don't send keeps it away for good
+- scheduled suggested posts are left to telegram instead of failing with an error
 
 ### [tele 9 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9)
 
