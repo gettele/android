@@ -1,6 +1,6 @@
 # features
 
-every tele patch for android, grouped by the settings page that holds its switch. the patch files are in [patches/android](patches/android), and the plan behind them is [docs/PATCHLIST.md](docs/PATCHLIST.md).
+every tele patch for android, grouped by the settings page that holds its switch. the patch files are in [patches/android](patches/android).
 
 everything tele adds lives in settings → tele, grouped into pages. the main settings search finds every tele setting. what's new after an update lists the settings that version added.
 
@@ -10,7 +10,7 @@ tele for android ports the features of [tele for desktop](https://github.com/nit
 
 a patch that fixed something says what it changed after its link, in the same cell.
 
-Security fixes from the [2026-11-10 audit](docs/security-audit.md) are grouped in [0332](patches/android/0332-security-harden-fork-boundaries.patch): script notifications and saved data stay with their account, importing or changing a script revokes its previous approval, pending script replies require their owner, streamer mode protects secret-media windows, last-seen restoration keeps all privacy exceptions, local-password recovery uses the account that owns the lock, and regex, notice images and update paths are bounded. On the first upgrade, existing active-account archives are retained but script approvals and script storage are reset. A legacy local password must be entered once before cloud recovery can be bound to its owner.
+Security fixes from the 2026-11-10 audit are grouped in [0332](patches/android/0332-security-harden-fork-boundaries.patch): script notifications and saved data stay with their account, importing or changing a script revokes its previous approval, pending script replies require their owner, streamer mode protects secret-media windows, last-seen restoration keeps all privacy exceptions, local-password recovery uses the account that owns the lock, and regex, notice images and update paths are bounded. On the first upgrade, existing active-account archives are retained but script approvals and script storage are reset. A legacy local password must be entered once before cloud recovery can be bound to its owner.
 
 Script import notices wrap their complete translated text instead of truncating it after two lines (0332).
 

@@ -105,7 +105,7 @@ every tele setting is a `TeleConfig` item. adding a switch touches:
 
 - new features go at the end of the queue. a commit inserted in the middle renumbers every later patch and breaks their links.
 - never bump `UPSTREAM` in a feature change. moving to a new upstream release is its own change (`chore: rebase patches onto <version>`).
-- every user-facing patch updates [features.md](../features.md) in the same commit as the patch export; [PATCHLIST.md](PATCHLIST.md) keeps the batch plan and statuses true.
+- every user-facing patch updates [features.md](../features.md) in the same commit as the patch export; the local-only `docs/internal/PATCHLIST.md` (not tracked) keeps the batch plan and statuses true.
 
 ## privacy rules for features
 

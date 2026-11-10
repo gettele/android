@@ -43,7 +43,6 @@ everything tele adds lives in settings → tele, grouped into pages.
 - [docs/scripting.md](docs/scripting.md): the android scripting api and [example scripts](docs/scripts/index.json).
 - [docs/server.md](docs/server.md): the tele server protocol and how to run one.
 - [docs/releases.md](docs/releases.md): every published release and what it brought.
-- [docs/PATCHLIST.md](docs/PATCHLIST.md): the plan, patch by patch, what's done and what isn't.
 - [docs/portability.md](docs/portability.md): which desktop features make sense on android and which don't.
 - [docs/releasing.md](docs/releasing.md): how releases are built, signed and published.
 

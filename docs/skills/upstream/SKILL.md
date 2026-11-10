@@ -70,7 +70,7 @@ If it is obsolete:
 git rebase --skip
 cd ../main
 git rm patches/android/<NNNN>-<subject>.patch
-# drop its row from features.md, note it in the 13.x section of docs/PATCHLIST.md
+# drop its row from features.md, note it in the 13.x section of the local docs/internal/PATCHLIST.md
 ```
 
 13.2.1 did this to `0304` (live location kept the gps request alive): the new
@@ -112,7 +112,7 @@ On a conflict git stops at one patch. For each one:
 - **stock fix replaced ours.** drop our hunk, let upstream's code stand (see 2).
 - **functionally contradictory.** upstream changed the behaviour our patch depended on:
   stop, decide whether the feature still makes sense, and if not, skip the patch and put
-  it in the PATCHLIST section for the rebase.
+  it in the local `docs/internal/PATCHLIST.md` section for the rebase.
 
 Never hand-edit anything under `main/patches/`; the tree is the source.
 
@@ -177,8 +177,8 @@ Install the apk and walk the basics with every toggle at its default first:
 open a chat, the message menu incl. `tele`/`Tools` submenus, send text/photo/sticker, the
 profile (badges, id row), settings → tele (every page opens, search finds a setting), the
 chat list title, the folder tabs. Then the areas the rebase touched by hand, from the
-PATCHLIST section of this release. Hand the android-testing part to the maintainer when
-it needs their device or account.
+local `docs/internal/PATCHLIST.md` section of this release. Hand the android-testing part
+to the maintainer when it needs their device or account.
 
 ## 6. export and docs
 
@@ -190,7 +190,7 @@ git format-patch <new-base> -o ../main/patches/android/ --zero-commit --no-signa
 then in `main`:
 
 - `UPSTREAM`: version, full commit, repo (three lines).
-- `docs/PATCHLIST.md`: a `## перенос на <version>` section: what upstream changed that hit
+- the local `docs/internal/PATCHLIST.md` (not tracked): a `## перенос на <version>` section: what upstream changed that hit
   our patches, which fix patches were dropped as obsolete, which features were re-pointed
   and need a device check. Keep it short; the skill and the patches hold the details.
 - `features.md`: drop the rows of dropped patches; every row links a patch file by number,
@@ -204,7 +204,7 @@ then in `main`:
 
 ```bash
 cd ../main
-git add UPSTREAM patches docs/PATCHLIST.md features.md docs/architecture.md docs/releases.md
+git add UPSTREAM patches features.md docs/architecture.md docs/releases.md
 git commit -m "chore: rebase patches onto <version>"
 ```
 
@@ -237,7 +237,7 @@ grep -rn '^<<<<<<< \|^>>>>>>> ' --include=*.java --include=*.kt --include=*.xml 
 - the working tree has no source changes left (`git status --short -- 'TMessagesProj/src'`
   is empty; the wallet prebuilt files and submodule pointers stay as they were);
 - `main` has no dead links: `grep -o 'patches/android/[0-9]\{4\}-[^)]*' features.md
-  docs/PATCHLIST.md` against `ls patches/android`.
+  docs/internal/PATCHLIST.md` against `ls patches/android`.
 
 ## recurring shapes
 

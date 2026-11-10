@@ -32,7 +32,6 @@ tele_android/
     .github/workflows/   build.yml (build, publish and announce the apk), announce.yml (announce a published release by hand), sync.yml (watch for new upstream releases)
     ci/                  release helpers and the next release's changelog (see releasing.md)
     docs/
-      PATCHLIST.md       the plan: batches, patches, statuses (planning file for agents)
       architecture.md    this file
       conventions.md     how fork code, commits and patches should look
       link-cleaner.md    the tracking parameters the link cleaner removes
@@ -43,6 +42,7 @@ tele_android/
       development.md     setup, building, the edit→test→export loop
       releasing.md       versions, building and publishing releases, secrets, signing
       portability.md     snapshot of the portability analysis (343 records)
+      internal/          local-only, not tracked (gitignored): the batch plan (PATCHLIST.md), maintainer decisions, the security audit, per-batch notes
   Telegram/              DrKLO/Telegram checkout, branch `tele` — the code tree
 ```
 
@@ -108,11 +108,11 @@ fork state export/import (json) mirrors tele's settings backup: the spec table i
 
 ## batches and build gates
 
-work is delivered in batches — see [PATCHLIST.md](PATCHLIST.md) (`docs/PATCHLIST.md`) for the current plan. rules:
+work is delivered in batches — the current plan lives in the local-only `docs/internal/PATCHLIST.md` (not tracked). rules:
 
 - a batch is an ordered set of patches that can be built and tested together; infra first, dependent patches after their dependencies.
 - when every patch of a batch is committed (telegram tree) and exported (here), a debug apk is assembled and handed over for manual testing on a device or emulator.
-- a batch is done only after a human verified it. `docs/PATCHLIST.md` statuses: `todo` → `wip` → `built` (batch gate passed) → `done` (manually verified).
+- a batch is done only after a human verified it. `docs/internal/PATCHLIST.md` statuses: `todo` → `wip` → `built` (batch gate passed) → `done` (manually verified).
 
 ## patch files
 
