@@ -1,0 +1,200 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 10 Nov 2026 03:44:37 +0300
+Subject: [PATCH] fix: make script logs selectable
+
+---
+ .../main/java/tele/scripting/ScriptStore.kt   |   2 +-
+ .../java/tele/ui/TeleScriptLogActivity.kt     | 128 ++++++++----------
+ 2 files changed, 57 insertions(+), 73 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt b/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
+index 0a1e53ad0..2a34020f3 100644
+--- a/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
++++ b/TMessagesProj/src/main/java/tele/scripting/ScriptStore.kt
+@@ -78,7 +78,7 @@ object ScriptStore {
+         }
+     }
+ 
+-    private val logTime = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
++    private val logTime = java.text.SimpleDateFormat("'['HH:mm:ss.SSS']'", java.util.Locale.US)
+ 
+     @Synchronized
+     fun addLog(account: Int, id: String, line: String) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt b/TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt
+index 04b56d928..422d0984d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleScriptLogActivity.kt
+@@ -8,32 +8,30 @@ import android.text.SpannableStringBuilder
+ import android.text.Spanned
+ import android.text.style.ForegroundColorSpan
+ import android.util.TypedValue
+-import android.view.Gravity
++import android.view.ActionMode
++import android.view.Menu
++import android.view.MenuItem
+ import android.view.View
+-import android.view.ViewGroup
+-import android.widget.FrameLayout
++import android.widget.ScrollView
+ import android.widget.TextView
+-import androidx.recyclerview.widget.LinearLayoutManager
+-import androidx.recyclerview.widget.RecyclerView
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.R
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.Theme
+ import org.telegram.ui.Components.LayoutHelper
+-import org.telegram.ui.Components.RecyclerListView
+ import tele.scripting.Scripts
+ 
+-/** The log of one script: a screen of monospace lines with their times, selectable, like the mtproto log. */
+ class TeleScriptLogActivity(
+     private val account: Int,
+     private val scriptId: String,
+     private val scriptName: String
+ ) : BaseFragment() {
+ 
+-    private var listView: RecyclerListView? = null
+-    private var adapter: Adapter? = null
+-    private var empty: TextView? = null
++    private var scrollView: ScrollView? = null
++    private var logView: TextView? = null
++    private var shownLines: List<String>? = null
++    private var selecting = false
+     private val handler = Handler(Looper.getMainLooper())
+     private val tick = object : Runnable {
+         override fun run() {
+@@ -58,26 +56,35 @@ class TeleScriptLogActivity(
+         })
+         actionBar.createMenu().addItem(1, R.drawable.msg_delete)
+ 
+-        val content = FrameLayout(context)
+-        content.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
+-        val list = RecyclerListView(context, resourceProvider)
+-        list.layoutManager = LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false)
+-        list.setVerticalScrollBarEnabled(true)
+-        list.setPadding(0, AndroidUtilities.dp(4f), AndroidUtilities.dp(12f), AndroidUtilities.dp(8f))
+-        list.clipToPadding = false
+-        list.adapter = Adapter().also { adapter = it }
+-        content.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+-        listView = list
+-        val none = TextView(context)
+-        none.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+-        none.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider))
+-        none.text = lc("The log is empty.")
+-        none.gravity = Gravity.CENTER
+-        none.visibility = View.GONE
+-        content.addView(none, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER))
+-        empty = none
++        val scroll = ScrollView(context)
++        scroll.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        scroll.isFillViewport = true
++        val text = TextView(context)
++        text.typeface = Typeface.MONOSPACE
++        text.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        text.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++        text.setTextIsSelectable(true)
++        text.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(8f), AndroidUtilities.dp(12f), AndroidUtilities.dp(12f))
++        text.setLineSpacing(AndroidUtilities.dp(2f).toFloat(), 1f)
++        text.customSelectionActionModeCallback = object : ActionMode.Callback {
++            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
++                selecting = true
++                return true
++            }
++            override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean = false
++            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean = false
++            override fun onDestroyActionMode(mode: ActionMode) {
++                selecting = false
++                handler.post { refresh() }
++            }
++        }
++        scroll.addView(text, LayoutHelper.createScroll(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, android.view.Gravity.TOP))
++        scrollView = scroll
++        logView = text
++        shownLines = null
++        selecting = false
+         refresh()
+-        return content
++        return scroll
+     }
+ 
+     override fun onResume() {
+@@ -91,56 +98,33 @@ class TeleScriptLogActivity(
+     }
+ 
+     override fun onFragmentDestroy() {
+-        handler.removeCallbacks(tick)
++        handler.removeCallbacksAndMessages(null)
+         super.onFragmentDestroy()
+     }
+ 
+     private fun refresh() {
++        val view = logView ?: return
++        if (selecting) return
+         val lines = Scripts.log(account, scriptId)
+-        val atBottom = listView == null || listView!!.layoutManager == null ||
+-            (listView!!.layoutManager as LinearLayoutManager).findLastVisibleItemPosition() >= (adapter?.itemCount ?: 0) - 2
+-        adapter?.lines = lines
+-        adapter?.notifyDataSetChanged()
+-        empty?.visibility = if (lines.isEmpty()) View.VISIBLE else View.GONE
+-        if (lines.isNotEmpty() && atBottom) {
+-            listView?.scrollToPosition(lines.size - 1)
+-        }
+-    }
+-
+-    private inner class Adapter : RecyclerListView.SelectionAdapter() {
+-
+-        var lines: List<String> = emptyList()
+-
+-        override fun getItemCount(): Int = lines.size
+-
+-        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean = false
+-
+-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+-            val text = TextView(parent.context)
+-            text.typeface = Typeface.MONOSPACE
+-            text.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
+-            text.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
+-            text.setTextIsSelectable(true)
+-            text.setPadding(AndroidUtilities.dp(12f), AndroidUtilities.dp(2f), AndroidUtilities.dp(4f), AndroidUtilities.dp(2f))
+-            text.setLineSpacing(AndroidUtilities.dp(2f).toFloat(), 1f)
+-            text.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+-            return object : RecyclerView.ViewHolder(text) {}
+-        }
+-
+-        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+-            val view = holder.itemView as TextView
+-            val line = lines[position]
+-            if (line.length > 10 && line[2] == ':' && line[5] == ':') {
+-                val text = SpannableStringBuilder(line)
+-                text.setSpan(
+-                    ForegroundColorSpan(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider)),
+-                    0, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+-                )
+-                view.text = text
+-            } else {
+-                view.text = line
++        if (lines == shownLines) return
++        val scroll = scrollView ?: return
++        val atBottom = !scroll.canScrollVertically(1)
++        val text = SpannableStringBuilder()
++        val color = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider)
++        for (line in lines) {
++            if (text.isNotEmpty()) text.append('\n')
++            val start = text.length
++            text.append(line)
++            val timeLength = when {
++                line.length >= 14 && line[0] == '[' && line[3] == ':' && line[6] == ':' && line[9] == '.' && line[13] == ']' -> 14
++                line.length >= 8 && line[2] == ':' && line[5] == ':' -> 8
++                else -> 0
+             }
++            if (timeLength > 0) text.setSpan(ForegroundColorSpan(color), start, start + timeLength, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+         }
++        view.text = if (lines.isEmpty()) lc("The log is empty.") else text
++        shownLines = lines
++        if (atBottom && lines.isNotEmpty()) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+     }
+ 
+     private fun lc(text: String): String = tele.helpers.TeleLowercase.lc(text)
