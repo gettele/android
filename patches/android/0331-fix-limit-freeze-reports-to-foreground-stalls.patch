@@ -1,0 +1,201 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 10 Nov 2026 04:38:14 +0300
+Subject: [PATCH] fix: limit freeze reports to foreground stalls
+
+---
+ .../src/main/java/tele/helpers/TeleCrash.kt   | 22 ++++++++++----
+ .../src/main/java/tele/helpers/TeleFreeze.kt  | 30 ++++++++++++++-----
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  8 +++++
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  8 +++++
+ 4 files changed, 55 insertions(+), 13 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+index 041c07151..d3f5c3cd1 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleCrash.kt
+@@ -216,11 +216,17 @@ object TeleCrash {
+             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, android ${Build.VERSION.RELEASE} (sdk ${Build.VERSION.SDK_INT})")
+             appendLine(memory(context))
+             appendLine("Tele-Note: $note")
++            if (note.startsWith("freeze ")) appendLine("watchdog: foreground-uptime-v1")
+             if (description.isNotEmpty()) appendLine("exit: $description")
+         }
+         runCatching { diagFile(context).writeText(report) }
+     }
+ 
++    private fun diagnosticAllowed(report: String): Boolean =
++        if (report.lineSequence().any { it.matches(Regex("Tele-Note: freeze \\d+ s")) }) {
++            TeleConfig.DIAG_FREEZE.value && report.contains("watchdog: foreground-uptime-v1")
++        } else TeleConfig.DIAG_NO_DUMP.value
++
+     // the next start after a crash asks before anything leaves the device, like desktop's crash window
+     @JvmStatic
+     fun offerPending(activity: Activity) {
+@@ -231,8 +237,11 @@ object TeleCrash {
+         if (!crash && !diag && !dump) return
+         offered = true
+         // which switch wrote the report: a freeze report follows report freezes, the rest follow the no-dump one
+-        val freeze = diag && runCatching { diagFile(activity).readText() }.getOrNull()?.contains("Tele-Note: freeze") == true
+-        val wanted = if (crash) true else if (freeze) TeleConfig.DIAG_FREEZE.value else TeleConfig.DIAG_NO_DUMP.value
++        val diagnostic = if (diag) runCatching { diagFile(activity).readText() }.getOrNull().orEmpty() else ""
++        val freeze = diagnostic.lineSequence().any { it.matches(Regex("Tele-Note: freeze \\d+ s")) }
++        val legacyFreeze = freeze && !diagnostic.contains("watchdog: foreground-uptime-v1")
++        val wanted = crash || diagnosticAllowed(diagnostic)
++        android.util.Log.i("TeleDiagnostics", "offer build=${TeleBuild.BUILD} crash=$crash diag=$diag watchdog=$freeze legacy=$legacyFreeze noDump=${TeleConfig.DIAG_NO_DUMP.value} freezes=${TeleConfig.DIAG_FREEZE.value} reports=${TeleConfig.SEND_CRASH_REPORTS.value} allowed=$wanted")
+         // a report nobody asked for is dropped: the switch may have been turned off after it was written
+         if (!collecting() || (diag && !wanted)) {
+             clearPending(activity)
+@@ -244,7 +253,7 @@ object TeleCrash {
+             return
+         }
+         val dialog = AlertDialog.Builder(activity)
+-            .setTitle(TeleLowercase.lc(if (crash) "tele crashed" else "Diagnostic report"))
++            .setTitle(TeleLowercase.lc(if (crash) "tele crashed" else if (freeze) "Freeze report" else "Diagnostic report"))
+             .setMessage(
+                 TeleLowercase.lc(
+                     when {
+@@ -261,7 +270,8 @@ object TeleCrash {
+         dialog.setOnCancelListener { clearPending(activity) }
+         dialog.setCanceledOnTouchOutside(false)
+         if (dump) dialog.setOnDismissListener { offerDump(activity) }
+-        dialog.show()
++        val stillWanted = collecting() && (crash || diagnosticAllowed(diagnostic))
++        if (stillWanted) dialog.show() else clearPending(activity)
+     }
+ 
+     // the snapshot is too big for the crash report itself, so it is offered on the next start
+@@ -289,10 +299,12 @@ object TeleCrash {
+     fun sendPendingAsync(context: Context = ApplicationLoader.applicationContext, url: String = TeleServer.serverUrl()) {
+         val base = url
+         val pending = pendingFile(context) ?: return
+-        if (base.isEmpty()) return
++        if (base.isEmpty() || !collecting()) return
+         val appContext = context.applicationContext
+         val report = runCatching { pending.readText() }.getOrNull() ?: return
++        if (pending.name == DIAG_FILE && !diagnosticAllowed(report)) return
+         Thread {
++            if (!collecting() || pending.name == DIAG_FILE && !diagnosticAllowed(report)) return@Thread
+             var connection: java.net.HttpURLConnection? = null
+             try {
+                 val boundary = "----TeleCrashBoundary" + System.currentTimeMillis()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt b/TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt
+index 6b9ed0ce9..c9b0f6cca 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleFreeze.kt
+@@ -26,12 +26,15 @@ object TeleFreeze {
+ 
+     private val beat = AtomicLong(0)
+     private val reported = AtomicBoolean(false)
++    @Volatile
+     private var started = false
++    @Volatile
+     private var thread: Thread? = null
+     private val handler by lazy { Handler(Looper.getMainLooper()) }
+     private val tick = object : Runnable {
+         override fun run() {
+-            beat.set(SystemClock.elapsedRealtime())
++            if (!started) return
++            beat.set(SystemClock.uptimeMillis())
+             // the main thread is alive again: the next episode may be reported
+             reported.set(false)
+             handler.postDelayed(this, TICK_MS)
+@@ -51,6 +54,10 @@ object TeleFreeze {
+     fun lastedSeconds(context: Context = ApplicationLoader.applicationContext): Int {
+         if (!hasMarker(context)) return 0
+         val text = runCatching { markerFile(context).readText() }.getOrNull() ?: return 0
++        if (!text.contains("watchdog: foreground-uptime-v1")) {
++            clear(context)
++            return 0
++        }
+         val match = Regex("freeze (\\d+) s").find(text) ?: return 0
+         return match.groupValues[1].toIntOrNull() ?: 0
+     }
+@@ -64,12 +71,11 @@ object TeleFreeze {
+     fun start() {
+         if (started || !TeleConfig.DIAG_FREEZE.value) return
+         started = true
+-        beat.set(SystemClock.elapsedRealtime())
++        beat.set(SystemClock.uptimeMillis())
+         handler.post(tick)
+-        thread = Thread({ loop() }, "tele-freeze").apply {
+-            isDaemon = true
+-            start()
+-        }
++        val worker = Thread({ loop() }, "tele-freeze").apply { isDaemon = true }
++        thread = worker
++        worker.start()
+     }
+ 
+     @JvmStatic
+@@ -87,7 +93,13 @@ object TeleFreeze {
+             } catch (e: InterruptedException) {
+                 return
+             }
+-            val gap = SystemClock.elapsedRealtime() - beat.get()
++            if (!started || Thread.currentThread() !== thread) return
++            if (!TeleConfig.DIAG_FREEZE.value || ApplicationLoader.mainInterfacePaused || !ApplicationLoader.isScreenOn) {
++                beat.set(SystemClock.uptimeMillis())
++                reported.set(false)
++                continue
++            }
++            val gap = SystemClock.uptimeMillis() - beat.get()
+             if (gap > THRESHOLD_MS && reported.compareAndSet(false, true)) {
+                 write(gap)
+             }
+@@ -95,6 +107,7 @@ object TeleFreeze {
+     }
+ 
+     private fun write(gapMs: Long) {
++        if (!started || Thread.currentThread() !== thread || !TeleConfig.DIAG_FREEZE.value || ApplicationLoader.mainInterfacePaused || !ApplicationLoader.isScreenOn) return
+         try {
+             val context = ApplicationLoader.applicationContext
+             val file = markerFile(context)
+@@ -102,7 +115,8 @@ object TeleFreeze {
+             val seconds = gapMs / 1000L
+             val text = buildString {
+                 appendLine("Tele-Note: freeze $seconds s")
+-                appendLine("start=${SystemClock.elapsedRealtime() - gapMs}")
++                appendLine("watchdog: foreground-uptime-v1")
++                appendLine("start=${SystemClock.uptimeMillis() - gapMs}")
+                 appendLine("Version: ${BuildVars.BUILD_VERSION_STRING}")
+                 appendLine("tele: ${TeleBuild.BUILD}")
+                 appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, android ${Build.VERSION.RELEASE}")
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 2644aa190..11c007a6d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -2,6 +2,14 @@ package tele.helpers
+ 
+ object TeleTextRu {
+     val strings: Map<String, String> = mapOf(
++        "Diagnostic report" to "Диагностический отчёт",
++        "Freeze report" to "Отчёт о зависании",
++        "tele crashed" to "Сбой tele",
++        "The last time tele was launched it crashed. Send the crash report to the tele server?" to "При предыдущем запуске tele произошёл сбой. Отправить отчёт на сервер tele?",
++        "The last run stopped responding. Send the diagnostic report to the tele server?" to "При предыдущем запуске приложение зависло. Отправить отчёт на сервер tele?",
++        "The last run ended without a crash dump. Send the diagnostic report to the tele server?" to "Предыдущий запуск завершился без дампа сбоя. Отправить диагностический отчёт на сервер tele?",
++        "Crash report sent" to "Отчёт о сбое отправлен",
++        "Couldn't send the crash report" to "Не удалось отправить отчёт о сбое",
+         "**tele** delivers messages faster than\nany other application." to "**tele** доставляет сообщения быстрее,\nчем любое другое приложение.",
+         "**tele** has no limits on\nthe size of your media and chats." to "**tele** не ограничивает размер\nваших медиа и чатов.",
+         "**tele** is a Telegram fork with useful improvements.\nIt is **free** and **secure**." to "**tele** — форк Telegram с полезными улучшениями.\nОн **бесплатный** и **безопасный**.",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 0e32ecae9..eb3e1b347 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -2,6 +2,14 @@ package tele.helpers
+ 
+ object TeleTextUk {
+     val strings: Map<String, String> = mapOf(
++        "Diagnostic report" to "Діагностичний звіт",
++        "Freeze report" to "Звіт про зависання",
++        "tele crashed" to "Збій tele",
++        "The last time tele was launched it crashed. Send the crash report to the tele server?" to "Під час попереднього запуску tele стався збій. Надіслати звіт на сервер tele?",
++        "The last run stopped responding. Send the diagnostic report to the tele server?" to "Під час попереднього запуску застосунок завис. Надіслати звіт на сервер tele?",
++        "The last run ended without a crash dump. Send the diagnostic report to the tele server?" to "Попередній запуск завершився без дампа збою. Надіслати діагностичний звіт на сервер tele?",
++        "Crash report sent" to "Звіт про збій надіслано",
++        "Couldn't send the crash report" to "Не вдалося надіслати звіт про збій",
+         "**tele** delivers messages faster than\nany other application." to "**tele** доставляє повідомлення швидше,\nніж будь-який інший застосунок.",
+         "**tele** has no limits on\nthe size of your media and chats." to "**tele** не обмежує\nрозмір ваших медіа та чатів.",
+         "**tele** is a Telegram fork with useful improvements.\nIt is **free** and **secure**." to "**tele** — це форк Telegram із корисними вдосконаленнями.\nВін **безкоштовний** і **безпечний**.",

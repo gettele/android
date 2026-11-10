@@ -548,6 +548,12 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 
 Оставшиеся ограничения: нет caption replacement, модульных импортов, local messages и widget-слоя. Старт ждёт account-ready на globalQueue; массовая остановка всё ещё может ждать потоки по очереди. Нужны реальные multi-account/JNI/network stress-проверки. Эти пункты не считаются закрытыми прошедшими stub-тестами.
 
+### диагностика после простоя устройства
+
+| Android | статус | примечание |
+|---|---|---|
+| `0331-fix-limit-freeze-reports-to-foreground-stalls` | built | watchdog использует uptimeMillis (сон не считается), mainInterfacePaused/isScreenOn и повторный гейт перед записью; старые неверсированные watchdog-маркеры/отчёты отбрасываются. Точная классификация freeze N s отделяет system ANR от watchdog. Общая policy diagnosticAllowed для показа/отправки и повторная проверка перед диалогом; Logcat TeleDiagnostics пишет только тип/тумблеры/build. RU/UK перевод crash/diagnostic/freeze диалогов, отдельный заголовок Freeze report. 26 JVM-проверок, включая actual offerPending body с NO_DUMP off/FREEZE on. **Исходный случай пользователя не воспроизведён:** реальный release APK сборки 10 содержит прежний гейт 0305; указанная no-dump формулировка при выключенном NO_DUMP логически им запрещена. Watchdog-исправления не объявляются доказанной причиной этого случая. Release телефона не изменялся; нужна проверка следующего релиза/логов при повторении |
+
 ### группа Other changes
 
 | Android | статус | примечание |
