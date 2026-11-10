@@ -1,0 +1,1978 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 10 Nov 2026 21:22:53 +0300
+Subject: [PATCH] [docked] complete media composer
+
+---
+ .../ui/Business/QuickRepliesController.java   |  15 +
+ .../java/org/telegram/ui/ChatActivity.java    |   7 +-
+ .../ui/Components/ChatActivityEnterView.java  |  19 +-
+ .../ui/Components/ChatAttachAlert.java        |  54 ++++
+ .../ChatAttachAlertPhotoLayout.java           |  29 ++
+ .../java/org/telegram/ui/LaunchActivity.java  |   5 +
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
+ .../main/java/tele/db/TeleDatabaseHelper.kt   |  30 +-
+ .../main/java/tele/helpers/DockedIngress.kt   | 300 ++++++++++++++++++
+ .../src/main/java/tele/helpers/DockedMedia.kt | 296 +++++++++++------
+ .../src/main/java/tele/helpers/DockedStore.kt |   4 +-
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   7 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   7 +
+ .../src/main/java/tele/ui/DockedGridLayout.kt | 195 ++++++++++++
+ .../src/main/java/tele/ui/TeleDockedStrip.kt  | 253 ++++++++++++---
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   4 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   3 +
+ 18 files changed, 1063 insertions(+), 169 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/DockedIngress.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/DockedGridLayout.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java b/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java
+index 0a5bcae41..250248481 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Business/QuickRepliesController.java
+@@ -22,6 +22,8 @@ import org.telegram.tgnet.tl.TL_account;
+ import org.telegram.tgnet.tl.TL_update;
+ import org.telegram.ui.ChatActivity;
+ 
++import tele.helpers.DockedMedia;
++
+ import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.HashSet;
+@@ -254,6 +256,10 @@ public class QuickRepliesController {
+                 }
+                 loading = false;
+                 if (result != null) {
++                    for (int i = 0; i < result.size(); ++i) {
++                        QuickReply fresh = result.get(i);
++                        notifyDockedRename(findReply(fresh.id), fresh.name);
++                    }
+                     replies.clear();
+                     replies.addAll(result);
+                 }
+@@ -365,6 +371,11 @@ public class QuickRepliesController {
+         return null;
+     }
+ 
++    private void notifyDockedRename(QuickReply reply, String newName) {
++        if (reply == null || reply.name == null || newName == null || TextUtils.equals(reply.name, newName)) return;
++        DockedMedia.renameQuickReply(currentAccount, reply.name, newName);
++    }
++
+     public boolean isNameBusy(String name, int exceptId) {
+         QuickReply reply = findReply(name);
+         return reply != null && reply.id != exceptId;
+@@ -432,6 +443,7 @@ public class QuickRepliesController {
+         QuickReply reply = findReply(topicId);
+         if (reply == null) return;
+         final String oldName = reply.name;
++        notifyDockedRename(reply, name);
+         reply.name = name;
+         TLRPC.TL_messages_editQuickReplyShortcut req = new TLRPC.TL_messages_editQuickReplyShortcut();
+         req.shortcut_id = topicId;
+@@ -457,6 +469,7 @@ public class QuickRepliesController {
+             QuickReply reply = findReply(ids.get(i));
+             replies.remove(reply);
+             deleteLocalReply(reply.name);
++            DockedMedia.removeQuickReply(currentAccount, reply.name);
+ 
+             TLRPC.TL_messages_deleteQuickReplyShortcut req = new TLRPC.TL_messages_deleteQuickReplyShortcut();
+             req.shortcut_id = reply.id;
+@@ -619,6 +632,7 @@ public class QuickRepliesController {
+                     if (quickReply == null) {
+                         quickReply = new QuickReply();
+                     }
++                    notifyDockedRename(quickReply, tlreply.shortcut);
+                     quickReply.id = tlreply.shortcut_id;
+                     quickReply.name = tlreply.shortcut;
+                     quickReply.messagesCount = tlreply.count;
+@@ -639,6 +653,7 @@ public class QuickRepliesController {
+                 TLRPC.TL_quickReply tlreply = ((TL_update.TL_updateNewQuickReply) update).quick_reply;
+                 QuickRepliesController.QuickReply reply = findReply(tlreply.shortcut_id);
+                 if (reply != null) {
++                    notifyDockedRename(reply, tlreply.shortcut);
+                     reply.name = tlreply.shortcut;
+                     reply.messagesCount = tlreply.count;
+                     reply.topMessageId = tlreply.top_message;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index b26ca2f2d..7777dc221 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -4207,10 +4207,12 @@ public class ChatActivity extends BaseFragment implements
+                 } else if (id == edit_quick_reply) {
+                     QuickRepliesController.QuickReply currentQuickReply = QuickRepliesController.getInstance(currentAccount).findReply(getQuickReplyId());
+                     QuickRepliesActivity.openRenameReplyAlert(getContext(), currentAccount, quickReplyShortcut, currentQuickReply, getResourceProvider(), false, name -> {
++                        final String tele_oldShortcut = quickReplyShortcut;
++                        quickReplyShortcut = name;
++                        tele.helpers.DockedMedia.renameQuickReply(currentAccount, tele_oldShortcut, name);
+                         if (currentQuickReply != null) {
+                             QuickRepliesController.getInstance(currentAccount).renameReply(currentQuickReply.id, name);
+                         }
+-                        quickReplyShortcut = name;
+                         avatarContainer.setTitle(name);
+                     });
+                 } else if (id == chat_menu_attach) {
+@@ -14976,6 +14978,9 @@ public class ChatActivity extends BaseFragment implements
+ 
+     @Override
+     public void didSelectPhotos(ArrayList<SendMessagesHelper.SendingMediaInfo> photos, boolean notify, int scheduleDate, int scheduleRepeatPeriod, long payStars) {
++        if (editingMessageObject == null && tele.helpers.DockedIngress.dockSendingMedia(this, photos, true, notify, scheduleDate)) {
++            return;
++        }
+         fillEditingMediaWithCaption(photos.get(0).caption, photos.get(0).entities);
+         SendMessagesHelper.prepareSendingMedia(getAccountInstance(), photos, dialog_id, replyingMessageObject, getThreadMessage(), null, replyingQuote, true, false, editingMessageObject, notify, scheduleDate, scheduleRepeatPeriod, chatMode, photos.get(0).updateStickersOrder, null, getMessageChatSendParams(), 0, false, payStars, getSendMonoForumPeerId(), getSendMessageSuggestionParams());
+         afterMessageSend();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 4d5214aa9..1b900a31e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -3717,6 +3717,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+     }
+ 
+     public int getMessagesCount() {
++        if (parentFragment != null && tele_dockedMedia && !isEditingMessage()) {
++            return tele.helpers.DockedMedia.messageCount(parentFragment) + (parentFragment.messagePreviewParams != null ? parentFragment.messagePreviewParams.getForwardedMessagesCount() : 0);
++        }
+         int count = 0;
+         if (parentFragment != null && parentFragment.messagePreviewParams != null) {
+             count += parentFragment.messagePreviewParams.getForwardedMessagesCount();
+@@ -5548,6 +5551,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                             return false;
+                         }
+                     }
++                    if (parentFragment != null && tele.helpers.DockedIngress.dockInputContent(parentFragment, inputContentInfo.getContentUri(), inputContentInfo.getDescription().getMimeType(0))) {
++                        return true;
++                    }
+                     if (inputContentInfo.getDescription().hasMimeType("image/gif") || SendMessagesHelper.shouldSendWebPAsSticker(null, inputContentInfo.getContentUri())) {
+                         if (isInScheduleMode()) {
+                             AlertsCreator.createScheduleDatePickerDialog(parentActivity, parentFragment.getDialogId(), (notify, scheduleDate, scheduleRepeatPeriod) -> send(inputContentInfo, notify, scheduleDate, scheduleRepeatPeriod), resourcesProvider);
+@@ -5723,6 +5729,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+                     ArrayList<Object> entries = new ArrayList<>();
+                     entries.add(photoEntry);
+                     AndroidUtilities.runOnUIThread(() -> {
++                        if (parentFragment != null && tele.helpers.DockedIngress.dockPaste(parentFragment, photoEntry)) {
++                            return;
++                        }
+                         openPhotoViewerForEdit(entries, file);
+                     });
+                 } catch (Throwable e) {
+@@ -7238,7 +7247,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+     }
+ 
+     private boolean teleSendQuickReplyByName(boolean allowConfirm, int scheduleDate, int scheduleRepeatPeriod, long payStars) {
+-        return allowConfirm && parentFragment != null && messageEditText != null && audioToSend == null && videoToSendMessageObject == null && !richDraftActive && !isEditingMessage() && (telePendingDraftEntries == null || telePendingDraftEntries.isEmpty()) && parentFragment.teleSendQuickReplyByName(messageEditText.getText(), scheduleDate, scheduleRepeatPeriod, payStars);
++        return allowConfirm && !tele_dockedMedia && parentFragment != null && messageEditText != null && audioToSend == null && videoToSendMessageObject == null && !richDraftActive && !isEditingMessage() && (telePendingDraftEntries == null || telePendingDraftEntries.isEmpty()) && parentFragment.teleSendQuickReplyByName(messageEditText.getText(), scheduleDate, scheduleRepeatPeriod, payStars);
+     }
+ 
+     private void teleUpdateDraftMenu() {
+@@ -7362,11 +7371,11 @@ public class ChatActivityEnterView extends FrameLayout implements
+     }
+ 
+     public void tele_setDockedMedia(boolean docked, boolean animated) {
+-        if (tele_dockedMedia == docked) {
+-            return;
++        if (tele_dockedMedia != docked) {
++            tele_dockedMedia = docked;
++            checkSendButton(animated);
+         }
+-        tele_dockedMedia = docked;
+-        checkSendButton(animated);
++        updateSendButtonPaid();
+     }
+ 
+     public void tele_showTopView(boolean show, boolean animated) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+index 19dbf60f5..7b738f97a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlert.java
+@@ -3640,6 +3640,14 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+                     }
+                     return;
+                 }
++                if (tele_dockFromPicker(false, true, isCaptionAbove())) {
++                    if (messageSendPreview != null) {
++                        messageSendPreview.dismiss(false);
++                        messageSendPreview = null;
++                    }
++                    setCaptionAbove(false, false);
++                    return;
++                }
+                 if (editingMessageObject == null && baseFragment instanceof ChatActivity && ((ChatActivity) baseFragment).isInScheduleMode()) {
+                     AlertsCreator.createScheduleDatePickerDialog(getContext(), ((ChatActivity) baseFragment).getDialogId(), (notify, scheduleDate, scheduleRepeatPeriod) -> {
+                         boolean shownDialog = false;
+@@ -4315,6 +4323,9 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+             }
+             return;
+         }
++        if (tele_dockFromPicker(false, true, isCaptionAbove())) {
++            return;
++        }
+         if (editingMessageObject == null && baseFragment instanceof ChatActivity && ((ChatActivity) baseFragment).isInScheduleMode()) {
+             AlertsCreator.createScheduleDatePickerDialog(getContext(), ((ChatActivity) baseFragment).getDialogId(), (notify, scheduleDate, scheduleRepeatPeriod) -> {
+                 if (currentAttachLayout == photoLayout || currentAttachLayout == photoPreviewLayout) {
+@@ -4515,6 +4526,49 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
+         currentAttachLayout.applyCaption(getCommentView().getText());
+     }
+ 
++    /**
++     * Moves a picker selection into the docked tray instead of sending it, when the current
++     * conversation supports docking. Returns true when the selection was docked and the sheet
++     * was dismissed, in which case the caller must not send anything.
++     */
++    public boolean tele_dockFromPicker(boolean forceDocument, boolean group, boolean invert) {
++        if (!tele.helpers.DockedMedia.enabled() || buttonPressed
++                || !(baseFragment instanceof ChatActivity)
++                || !(currentAttachLayout == photoLayout || currentAttachLayout == photoPreviewLayout)
++                || photoLayout == null || editingMessageObject != null || isPhotoPicker || isStickerMode
++                || animatorEphemeralMessageVisibility.getValue()) {
++            return false;
++        }
++        final ChatActivity chatActivity = (ChatActivity) baseFragment;
++        final int mode = chatActivity.getChatMode();
++        if (mode != ChatActivity.MODE_DEFAULT && mode != ChatActivity.MODE_SCHEDULED && mode != ChatActivity.MODE_QUICK_REPLIES) {
++            return false;
++        }
++        final HashMap<Object, Object> selectedPhotos = photoLayout.getSelectedPhotos();
++        final ArrayList<Object> selectedPhotosOrder = photoLayout.getSelectedPhotosOrder();
++        if (selectedPhotos.isEmpty() || selectedPhotos.size() != selectedPhotosOrder.size()) {
++            return false;
++        }
++        // web images and live photos have no file to dock
++        for (int a = 0; a < selectedPhotosOrder.size(); a++) {
++            final Object entry = selectedPhotos.get(selectedPhotosOrder.get(a));
++            if (!(entry instanceof MediaController.PhotoEntry) || ((MediaController.PhotoEntry) entry).isLivePhoto()) {
++                return false;
++            }
++        }
++        if (checkCaption(getCommentView().getText())) {
++            return true;
++        }
++        applyCaption();
++        if (!tele.helpers.DockedMedia.dock(chatActivity, chatActivity.getChatActivityEnterView(), selectedPhotos, selectedPhotosOrder,
++                forceDocument, group, invert, true, 0, 0L, false)) {
++            return false;
++        }
++        setButtonPressed(true);
++        dismiss(true);
++        return true;
++    }
++
+     private boolean sendPressed(boolean notify, int scheduleDate, int scheduleRepeatPeriod, long effectId, boolean invertMedia) {
+         if (buttonPressed) {
+             return false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayout.java
+index 16662caf9..afbcf21de 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayout.java
+@@ -565,6 +565,17 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
+                 PhotoViewer.getInstance().closePhotoAfterSelect = false;
+                 PhotoViewer.getInstance().doneButtonPressed = false;
+             }
++            if (notify && scheduleDate == 0 && !PhotoViewer.getInstance().hasCaptionForAllMedia
++                    && parentAlert.tele_dockFromPicker(forceDocument, true, parentAlert.isCaptionAbove())) {
++                selectedPhotos.clear();
++                cameraPhotos.clear();
++                selectedPhotosOrder.clear();
++                if (PhotoViewer.getInstance() != null) {
++                    PhotoViewer.getInstance().closePhoto(PhotoViewer.getInstance().closePhotoAfterSelectWithAnimation, false);
++                    PhotoViewer.getInstance().doneButtonPressed = true;
++                }
++                return;
++            }
+             AlertsCreator.ensurePaidMessageConfirmation(parentAlert.currentAccount, parentAlert.getDialogId(), getSelectedPhotos().size() + parentAlert.getAdditionalMessagesCount(), payStars -> {
+                 if (parentAlert != null) {
+                     parentAlert.setButtonPressed(true);
+@@ -2226,6 +2237,18 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
+                     PhotoViewer.getInstance().closePhotoAfterSelect = false;
+                     PhotoViewer.getInstance().doneButtonPressed = false;
+                 }
++                if (notify && scheduleDate == 0 && parentAlert.tele_dockFromPicker(forceDocument, true, parentAlert.isCaptionAbove())) {
++                    cameraPhotos.clear();
++                    selectedPhotosOrder.clear();
++                    selectedPhotos.clear();
++                    adapter.notifyDataSetChanged();
++                    cameraAttachAdapter.notifyDataSetChanged();
++                    if (PhotoViewer.getInstance() != null) {
++                        PhotoViewer.getInstance().closePhoto(PhotoViewer.getInstance().closePhotoAfterSelectWithAnimation, false);
++                        PhotoViewer.getInstance().doneButtonPressed = true;
++                    }
++                    return;
++                }
+                 AlertsCreator.ensurePaidMessageConfirmation(parentAlert.currentAccount, parentAlert.getDialogId(), getSelectedCount() + parentAlert.getAdditionalMessagesCount(), payStars -> {
+                     if (PhotoViewer.getInstance() != null) {
+                         PhotoViewer.getInstance().closePhotoAfterSelect = false;
+@@ -3273,6 +3296,9 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
+                     parentAlert.delegate.didPressedButton(7, false, notify, scheduleDate, 0, 0, parentAlert.isCaptionAbove(), false, 0);
+                 }, resourcesProvider);
+             } else {
++                if (parentAlert.tele_dockFromPicker(false, false, parentAlert.isCaptionAbove())) {
++                    return;
++                }
+                 AlertsCreator.ensurePaidMessageConfirmation(parentAlert.currentAccount, parentAlert.getDialogId(), selectedPhotos.size() + parentAlert.getAdditionalMessagesCount(), payStars -> {
+                     parentAlert.applyCaption();
+                     parentAlert.delegate.didPressedButton(7, false, true, 0, 0, 0, parentAlert.isCaptionAbove(), false, payStars);
+@@ -3285,6 +3311,9 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
+                     parentAlert.delegate.didPressedButton(4, true, notify, scheduleDate, 0, 0, parentAlert.isCaptionAbove(), false, 0);
+                 }, resourcesProvider);
+             } else {
++                if (parentAlert.tele_dockFromPicker(true, true, parentAlert.isCaptionAbove())) {
++                    return;
++                }
+                 AlertsCreator.ensurePaidMessageConfirmation(parentAlert.currentAccount, parentAlert.getDialogId(), selectedPhotos.size() + parentAlert.getAdditionalMessagesCount(), payStars -> {
+                     parentAlert.applyCaption();
+                     parentAlert.delegate.didPressedButton(4, true, true, 0, 0, 0, parentAlert.isCaptionAbove(), false, payStars);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index feed96368..92851f684 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -6567,6 +6567,11 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+                         boolean withoutAnimation = dialogsFragment == null || videoPath != null || (photoPathsArray != null && photoPathsArray.size() > 0);
+                         getActionBarLayout().presentFragment(fragment, dialogsFragment != null, withoutAnimation, true, false);
+                         presentedFragmentWithRemoveLast = dialogsFragment != null;
++                        if (contactsToSend == null && voicePath == null && !ContactsContract.Contacts.CONTENT_VCARD_TYPE.equals(documentsMimeType) && tele.helpers.DockedIngress.dockShared(fragment, photoPathsArray, videoPath, documentsPathsArray, documentsUrisArray, sendingText, forceDocument, notify, scheduleDate)) {
++                            sendingText = null;
++                            message = null;
++                            continue;
++                        }
+                         if (videoPath != null && topicId == 0 && !hasSharedMediaEntries) {
+                             fragment.openVideoEditor(videoPath, sendingText);
+                             videoEditorOpened = true;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 2a97c441a..da3f969fb 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -298,6 +298,8 @@ object TeleConfig {
+     @JvmField
+     val DOCKED_MEDIA = BoolItem("docked_media", false)
+     @JvmField
++    val DOCKED_GRID = BoolItem("docked_grid", false)
++    @JvmField
+     val SILENT_VIDEO_AS = StringItem("silent_video_as", "")
+     @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 6601425b9..cc62d44f4 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -136,7 +136,7 @@ object TeleHooks {
+                 tele.helpers.SendOrder.flush(account)
+             }
+         }
+-        if (item === TeleConfig.DOCKED_MEDIA) {
++        if (item === TeleConfig.DOCKED_MEDIA || item === TeleConfig.DOCKED_GRID) {
+             tele.helpers.DockedMedia.onToggled()
+         }
+         if (item === TeleConfig.AUTO_UPDATE) {
+diff --git a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+index f1004327f..d25accf09 100644
+--- a/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
++++ b/TMessagesProj/src/main/java/tele/db/TeleDatabaseHelper.kt
+@@ -419,29 +419,31 @@ object TeleDatabaseHelper {
+         return result
+     }
+ 
+-    class DockedRow(val dialogId: Long, val threadId: Long, val data: ByteArray)
++    class DockedRow(val dialogId: Long, val threadId: Long, val data: ByteArray, val mode: Int = 0, val shortcut: String = "")
+ 
+-    fun putDocked(account: Int, dialogId: Long, threadId: Long, data: ByteArray?) {
++    fun putDocked(account: Int, dialogId: Long, threadId: Long, mode: Int, shortcut: String, data: ByteArray?) {
+         if (!tele.helpers.TeleAccounts.ensure(account)) return
+         val db = helper?.writableDatabase ?: return
+         if (data == null) {
+-            db.delete("tele_docked", "account = ? AND dialog_id = ? AND thread_id = ?", arrayOf(account.toString(), dialogId.toString(), threadId.toString()))
++            db.delete("tele_docked_context", "account = ? AND dialog_id = ? AND thread_id = ? AND mode = ? AND shortcut = ?", arrayOf(account.toString(), dialogId.toString(), threadId.toString(), mode.toString(), shortcut))
+             return
+         }
+         val values = ContentValues().apply {
+             put("account", account)
+             put("dialog_id", dialogId)
+             put("thread_id", threadId)
++            put("mode", mode)
++            put("shortcut", shortcut)
+             put("data", data)
+         }
+-        db.insertWithOnConflict("tele_docked", null, values, SQLiteDatabase.CONFLICT_REPLACE)
++        db.insertWithOnConflict("tele_docked_context", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+     }
+ 
+     fun getDocked(account: Int): List<DockedRow> {
+         val db = helper?.readableDatabase ?: return emptyList()
+         val result = ArrayList<DockedRow>()
+-        db.rawQuery("SELECT dialog_id, thread_id, data FROM tele_docked WHERE account = ?", arrayOf(account.toString())).use { c ->
+-            while (c.moveToNext()) result.add(DockedRow(c.getLong(0), c.getLong(1), c.getBlob(2)))
++        db.rawQuery("SELECT dialog_id, thread_id, data, mode, shortcut FROM tele_docked_context WHERE account = ?", arrayOf(account.toString())).use { c ->
++            while (c.moveToNext()) result.add(DockedRow(c.getLong(0), c.getLong(1), c.getBlob(2), c.getInt(3), c.getString(4) ?: ""))
+         }
+         return result
+     }
+@@ -723,7 +725,7 @@ object TeleDatabaseHelper {
+         val db = helper?.writableDatabase ?: return
+         db.beginTransaction()
+         try {
+-            for (table in arrayOf("tele_deleted_messages", "tele_message_edits", "tele_deleted_chats", "tele_drafts", "tele_docked", "tele_changelog", "tele_recovered_posts", "tele_bookmarks", "tele_return_points", "tele_read_log", "tele_past_limit", "tele_gif_origin", "tele_notices")) {
++            for (table in arrayOf("tele_deleted_messages", "tele_message_edits", "tele_deleted_chats", "tele_drafts", "tele_docked_context", "tele_changelog", "tele_recovered_posts", "tele_bookmarks", "tele_return_points", "tele_read_log", "tele_past_limit", "tele_gif_origin", "tele_notices")) {
+                 db.delete(table, "account = ?", arrayOf(account.toString()))
+             }
+             val keys = ArrayList<String>()
+@@ -741,7 +743,7 @@ object TeleDatabaseHelper {
+         }
+     }
+ 
+-    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 12) {
++    private class Helper(context: Context) : SQLiteOpenHelper(context, "tele.db", null, 13) {
+         override fun onCreate(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_kv (key TEXT PRIMARY KEY, value TEXT)")
+             createArchiveTables(db)
+@@ -758,7 +760,7 @@ object TeleDatabaseHelper {
+             db.execSQL("CREATE INDEX IF NOT EXISTS tele_message_edits_message ON tele_message_edits(account, dialog_id, message_id, edit_date)")
+             createRetentionColumns(db)
+             createDraftsTable(db)
+-            db.execSQL("CREATE TABLE IF NOT EXISTS tele_docked (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, thread_id))")
++            createDockedTable(db)
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_changelog (account INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, message_id))")
+             createRecoveredPostsTable(db)
+             createBookmarkTables(db)
+@@ -792,6 +794,16 @@ object TeleDatabaseHelper {
+             if ("by_chat" !in deleted) db.execSQL("ALTER TABLE tele_deleted_messages ADD COLUMN by_chat INTEGER NOT NULL DEFAULT 0")
+         }
+ 
++        private fun createDockedTable(db: SQLiteDatabase) {
++            db.execSQL("CREATE TABLE IF NOT EXISTS tele_docked_context (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, mode INTEGER NOT NULL DEFAULT 0, shortcut TEXT NOT NULL DEFAULT '', data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, thread_id, mode, shortcut))")
++            // before the modes there was one tray per chat; those rows become the plain ones
++            var legacy = false
++            db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tele_docked'", null).use { legacy = it.moveToFirst() }
++            if (!legacy) return
++            db.execSQL("INSERT OR REPLACE INTO tele_docked_context (account, dialog_id, thread_id, mode, shortcut, data) SELECT account, dialog_id, thread_id, 0, '', data FROM tele_docked")
++            db.execSQL("DROP TABLE tele_docked")
++        }
++
+         private fun createMessageEditTable(db: SQLiteDatabase) {
+             db.execSQL("CREATE TABLE IF NOT EXISTS tele_message_edits (account INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, edit_date INTEGER NOT NULL, original INTEGER NOT NULL, version_key TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (account, dialog_id, message_id, version_key))")
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedIngress.kt b/TMessagesProj/src/main/java/tele/helpers/DockedIngress.kt
+new file mode 100644
+index 000000000..f8fe5d677
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedIngress.kt
+@@ -0,0 +1,300 @@
++package tele.helpers
++
++import android.graphics.BitmapFactory
++import android.media.MediaMetadataRetriever
++import android.net.Uri
++import android.text.TextUtils
++import android.webkit.MimeTypeMap
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.MediaController
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.messenger.Utilities
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import java.io.File
++
++/** Clipboard, IME and external share ingress into the tray: every call docks all of its input or nothing. */
++object DockedIngress {
++    private class Source(val path: String?, val uri: Uri?, val isVideo: Boolean)
++    private class Staged(
++        val entries: List<MediaController.PhotoEntry>,
++        val files: List<String>,
++        val names: List<String>,
++        val copied: List<File>
++    )
++
++    @JvmStatic
++    fun dockPaste(fragment: ChatActivity, entry: MediaController.PhotoEntry): Boolean {
++        if (!dockable(fragment)) return false
++        val path = entry.path ?: return false
++        if (!ownedFile(path)) return false
++        fillImageBounds(entry, path)
++        return DockedMedia.appendEntries(fragment, arrayListOf(entry), false, null)
++    }
++
++    @JvmStatic
++    fun dockShared(
++        fragment: ChatActivity,
++        media: ArrayList<SendMessagesHelper.SendingMediaInfo>?,
++        videoPath: String?,
++        documentsPaths: ArrayList<String>?,
++        documentsUris: ArrayList<Uri>?,
++        caption: CharSequence?,
++        forceDocument: Boolean,
++        notify: Boolean,
++        scheduleDate: Int
++    ): Boolean = dockShare(fragment, media, videoPath, documentsPaths, documentsUris, caption, forceDocument, notify, scheduleDate, true)
++
++    @JvmStatic
++    fun dockSendingMedia(
++        fragment: ChatActivity,
++        infos: ArrayList<SendMessagesHelper.SendingMediaInfo>?,
++        forceDocument: Boolean,
++        notify: Boolean,
++        scheduleDate: Int
++    ): Boolean = dockShare(fragment, infos, null, null, null, null, forceDocument, notify, scheduleDate, false)
++
++    private fun dockShare(
++        fragment: ChatActivity,
++        media: ArrayList<SendMessagesHelper.SendingMediaInfo>?,
++        videoPath: String?,
++        documentsPaths: ArrayList<String>?,
++        documentsUris: ArrayList<Uri>?,
++        caption: CharSequence?,
++        forceDocument: Boolean,
++        notify: Boolean,
++        scheduleDate: Int,
++        requireDefault: Boolean
++    ): Boolean {
++        if (!notify || scheduleDate != 0) return false
++        if (!dockable(fragment) || requireDefault && fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        val fieldAtStart = fragment.chatActivityEnterView?.getFieldText()?.toString().orEmpty()
++
++        val sources = ArrayList<Source>()
++        for (info in media.orEmpty()) {
++            if (info.isLivePhoto) return false
++            val path = info.path ?: info.imagePath
++            val uri = if (path == null) info.uri else null
++            if (path == null && uri == null) return false
++            sources.add(Source(path, uri, info.isVideo))
++        }
++        if (!TextUtils.isEmpty(videoPath)) {
++            val video = videoPath ?: return false
++            if (video.isEmpty()) return false
++            sources.add(Source(video, null, true))
++        }
++        val documents = ArrayList<Source>()
++        for (path in documentsPaths.orEmpty()) documents.add(Source(path, null, false))
++        for (uri in documentsUris.orEmpty()) documents.add(Source(null, uri, false))
++        if (sources.isEmpty() && documents.isEmpty()) return false
++
++        var text = caption
++        if (TextUtils.isEmpty(text)) text = media?.firstOrNull { !TextUtils.isEmpty(it.caption) }?.caption
++
++        val account = fragment.currentAccount
++        val generation = TeleAccounts.generation(account)
++        val dialogId = fragment.dialogId
++        val threadId = fragment.threadId
++        val mode = fragment.chatMode
++        Utilities.globalQueue.postRunnable {
++            val staged = runCatching { stage(sources, documents) }.getOrNull()
++            AndroidUtilities.runOnUIThread {
++                if (!sameContext(fragment, account, generation, dialogId, threadId, mode)) {
++                    discard(staged)
++                    return@runOnUIThread
++                }
++                if (staged == null) {
++                    showError(fragment, account, "docked-ingress-copy", copyFailed())
++                    return@runOnUIThread
++                }
++                if (!dockable(fragment) || fragment.chatMode != mode) {
++                    discard(staged)
++                    showError(fragment, account, "docked-ingress-attach", attachFailed())
++                    return@runOnUIThread
++                }
++                val current = fragment.chatActivityEnterView?.getFieldText()?.toString().orEmpty()
++                val captionToUse = if (current == fieldAtStart) text else null
++                if (!DockedMedia.appendShared(fragment, staged.entries, staged.files, staged.names, forceDocument, captionToUse)) {
++                    discard(staged)
++                    showError(fragment, account, "docked-ingress-attach", attachFailed())
++                }
++            }
++        }
++        return true
++    }
++
++    @JvmStatic
++    fun dockInputContent(fragment: ChatActivity, uri: Uri?, mime: String?): Boolean {
++        if (uri == null) return false
++        if (!dockable(fragment) || AndroidUtilities.isInternalUri(uri)) return false
++        val type = mime ?: ApplicationLoader.applicationContext.contentResolver.getType(uri).orEmpty()
++        val extension = when {
++            type.startsWith("video/") -> "mp4"
++            type == "image/gif" -> "gif"
++            type.startsWith("image/") -> "jpg"
++            else -> "file"
++        }
++        val account = fragment.currentAccount
++        val generation = TeleAccounts.generation(account)
++        val dialogId = fragment.dialogId
++        val threadId = fragment.threadId
++        val mode = fragment.chatMode
++        Utilities.globalQueue.postRunnable {
++            val path = copy(uri, extension)
++            val valid = path != null && ownedFile(path)
++            val entry = if (valid) when {
++                type == "image/gif" || !type.startsWith("image/") && !type.startsWith("video/") -> null
++                type.startsWith("video/") -> mediaEntry(path!!, true)
++                else -> mediaEntry(path!!, false)
++            } else null
++            AndroidUtilities.runOnUIThread {
++                if (!sameContext(fragment, account, generation, dialogId, threadId, mode)) {
++                    path?.let { File(it).delete() }
++                    return@runOnUIThread
++                }
++                if (!valid || path == null) {
++                    path?.let { File(it).delete() }
++                    showError(fragment, account, "docked-ingress-copy", copyFailed())
++                    return@runOnUIThread
++                }
++                val file = File(path)
++                val docked = if (entry != null) {
++                    DockedMedia.appendShared(fragment, arrayListOf(entry), emptyList(), null, false, null)
++                } else {
++                    DockedMedia.appendShared(fragment, emptyList(), arrayListOf(file.absolutePath), arrayListOf(file.name), false, null)
++                }
++                if (!docked) {
++                    file.delete()
++                    showError(fragment, account, "docked-ingress-attach", attachFailed())
++                }
++            }
++        }
++        return true
++    }
++
++    private fun stage(sources: List<Source>, documents: List<Source>): Staged? {
++        val entries = ArrayList<MediaController.PhotoEntry>()
++        val files = ArrayList<String>()
++        val names = ArrayList<String>()
++        val copied = ArrayList<File>()
++        try {
++            for (source in sources) {
++                val path = source.path ?: copy(source.uri!!, null)?.also { copied.add(File(it)) }
++                if (path == null || !ownedFile(path)) return discard(copied)
++                entries.add(mediaEntry(path, source.isVideo))
++            }
++            for (document in documents) {
++                val path = document.path ?: copy(document.uri!!, null)?.also { copied.add(File(it)) }
++                if (path == null || !ownedFile(path)) return discard(copied)
++                val file = File(path)
++                files.add(file.absolutePath)
++                names.add(file.name)
++            }
++        } catch (t: Throwable) {
++            return discard(copied)
++        }
++        return Staged(entries, files, names, copied)
++    }
++
++    private fun sameContext(
++        fragment: ChatActivity,
++        account: Int,
++        generation: Long,
++        dialogId: Long,
++        threadId: Long,
++        mode: Int
++    ): Boolean {
++        return TeleAccounts.isCurrent(account, generation) && fragment.currentAccount == account &&
++            fragment.dialogId == dialogId && fragment.threadId == threadId && fragment.chatMode == mode &&
++            fragment.getParentActivity() != null && fragment.getFragmentView() != null
++    }
++
++    private fun discard(staged: Staged?) {
++        if (staged != null) discard(staged.copied)
++    }
++
++    private fun discard(copied: List<File>): Staged? {
++        for (file in copied) runCatching { file.delete() }
++        return null
++    }
++
++    private fun dockable(fragment: ChatActivity): Boolean {
++        val enter = fragment.chatActivityEnterView ?: return false
++        val mode = fragment.chatMode
++        return !enter.isEditingMessage && !fragment.isSecretChat() && DockedMedia.enabled() &&
++            (mode == ChatActivity.MODE_DEFAULT || mode == ChatActivity.MODE_SCHEDULED || mode == ChatActivity.MODE_QUICK_REPLIES)
++    }
++
++    private fun ownedFile(path: String): Boolean {
++        val file = File(path)
++        return file.isFile && !AndroidUtilities.isInternalUri(Uri.fromFile(file))
++    }
++
++    private fun mediaEntry(path: String, isVideo: Boolean): MediaController.PhotoEntry {
++        val file = File(path)
++        var width = 0
++        var height = 0
++        var duration = 0
++        if (isVideo) {
++            val retriever = MediaMetadataRetriever()
++            try {
++                retriever.setDataSource(path)
++                val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
++                val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
++                val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
++                if (rotation == 90 || rotation == 270) {
++                    width = h
++                    height = w
++                } else {
++                    width = w
++                    height = h
++                }
++                duration = ((retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000L).toInt()
++            } catch (t: Throwable) {
++            } finally {
++                runCatching { retriever.release() }
++            }
++        } else {
++            val options = BitmapFactory.Options()
++            options.inJustDecodeBounds = true
++            runCatching { BitmapFactory.decodeFile(path, options) }
++            width = options.outWidth.coerceAtLeast(0)
++            height = options.outHeight.coerceAtLeast(0)
++        }
++        val orientation = if (isVideo) null else runCatching { AndroidUtilities.getImageOrientation(path) }.getOrNull()
++        val entry = MediaController.PhotoEntry(0, -1, 0, path, if (isVideo) duration else (orientation?.first ?: 0), isVideo, width, height, file.length())
++        if (orientation != null) entry.setOrientation(orientation)
++        if (!isVideo) entry.isLivePhoto()
++        return entry
++    }
++
++    private fun fillImageBounds(entry: MediaController.PhotoEntry, path: String) {
++        if (entry.width <= 0 || entry.height <= 0) {
++            val options = BitmapFactory.Options()
++            options.inJustDecodeBounds = true
++            runCatching { BitmapFactory.decodeFile(path, options) }
++            if (options.outWidth > 0) entry.width = options.outWidth
++            if (options.outHeight > 0) entry.height = options.outHeight
++        }
++        if (entry.size <= 0) entry.size = File(path).length()
++    }
++
++    private fun copy(uri: Uri, ext: String?): String? {
++        if (AndroidUtilities.isInternalUri(uri)) return null
++        val extension = ext ?: MimeTypeMap.getSingleton().getExtensionFromMimeType(
++            ApplicationLoader.applicationContext.contentResolver.getType(uri)
++        ) ?: "file"
++        return runCatching { MediaController.copyFileToCache(uri, extension) }.getOrNull()
++    }
++
++    private fun showError(fragment: ChatActivity, account: Int, site: String, text: CharSequence) {
++        TeleToast.log(site, text, account = account)
++        val factory = if (fragment.getParentActivity() != null) BulletinFactory.of(fragment) else BulletinFactory.global()
++        factory.createSimpleBulletin(R.raw.error, text).show()
++    }
++
++    private fun copyFailed(): CharSequence = TeleLowercase.lc("Could not copy the shared files. Try again.")
++    private fun attachFailed(): CharSequence = TeleLowercase.lc("The shared files could not be attached. Try again.")
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+index 380e76236..8b8670683 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedMedia.kt
+@@ -29,7 +29,7 @@ object DockedMedia {
+     const val SEND_BLOCKED = 1
+     const val SEND_DONE = 2
+ 
+-    data class Key(val account: Int, val dialogId: Long, val threadId: Long)
++    data class Key(val account: Int, val dialogId: Long, val threadId: Long, val mode: Int = ChatActivity.MODE_DEFAULT, val shortcut: String = "")
+ 
+     class Item {
+         var path: String? = null
+@@ -88,6 +88,7 @@ object DockedMedia {
+     @JvmStatic
+     fun enabled(): Boolean = TeleConfig.DOCKED_MEDIA.value
+ 
++
+     internal fun register(strip: TeleDockedStrip) {
+         if (!strips.contains(strip)) strips.add(strip)
+     }
+@@ -125,7 +126,83 @@ object DockedMedia {
+         }
+     }
+ 
+-    internal fun keyOf(fragment: ChatActivity) = Key(fragment.currentAccount, fragment.dialogId, fragment.threadId)
++    internal fun keyOf(fragment: ChatActivity): Key = Key(fragment.currentAccount, fragment.dialogId,
++        if (fragment.chatMode == ChatActivity.MODE_QUICK_REPLIES) 0L else fragment.threadId,
++        fragment.chatMode, if (fragment.chatMode == ChatActivity.MODE_QUICK_REPLIES) fragment.quickReplyShortcut.orEmpty() else "")
++
++    private fun supported(fragment: ChatActivity): Boolean = fragment.chatMode == ChatActivity.MODE_DEFAULT ||
++        fragment.chatMode == ChatActivity.MODE_SCHEDULED || fragment.chatMode == ChatActivity.MODE_QUICK_REPLIES
++
++    @JvmStatic
++    fun messageCount(fragment: ChatActivity): Int =
++        if (!enabled()) 0 else tray(keyOf(fragment))?.items?.size ?: 0
++
++    @JvmStatic
++    fun appendEntries(fragment: ChatActivity, entries: List<MediaController.PhotoEntry>, asFile: Boolean, caption: CharSequence?): Boolean =
++        appendShared(fragment, entries, emptyList(), null, asFile, caption)
++
++    @JvmStatic
++    fun appendShared(fragment: ChatActivity, entries: List<MediaController.PhotoEntry>, files: List<String>, names: List<String>?, asFile: Boolean, caption: CharSequence?): Boolean {
++        val enter = fragment.chatActivityEnterView ?: return false
++        if (!enabled() || !supported(fragment) || enter.isEditingMessage || entries.isEmpty() && files.isEmpty()) return false
++        if (entries.any { it.path == null || !File(it.path).isFile || it.isLivePhoto() } || files.any { !File(it).isFile }) return false
++        val key = keyOf(fragment)
++        ensureLoaded(key.account)
++        val tray = trays.getOrPut(key) { Tray() }
++        if (tray.items.isEmpty()) tray.date = (System.currentTimeMillis() / 1000L).toInt()
++        for (entry in entries) tray.items.add(snapshot(entry, asFile))
++        files.forEachIndexed { index, path ->
++            val file = File(path)
++            tray.items.add(Item().also {
++                it.path = file.absolutePath
++                it.fileName = names?.getOrNull(index)?.takeIf(String::isNotEmpty) ?: file.name
++                it.size = file.length()
++                it.isFile = true
++                it.imageId = -(tray.items.size + 1)
++            })
++        }
++        if (!TextUtils.isEmpty(caption)) enter.setFieldText(caption)
++        changed(key)
++        return true
++    }
++
++    internal fun toggleGroup(key: Key) {
++        val tray = tray(key) ?: return
++        tray.group = !tray.group
++        changed(key)
++    }
++
++    internal fun toggleAsFile(key: Key) {
++        val tray = tray(key) ?: return
++        val items = tray.items.filter { !it.isSticker && !it.isFile }
++        val asFile = items.any { !it.asFile }
++        for (item in items) item.asFile = asFile
++        changed(key)
++    }
++
++    @JvmStatic
++    fun renameQuickReply(account: Int, oldName: String?, newName: String?) {
++        if (oldName.isNullOrEmpty() || newName.isNullOrEmpty() || oldName == newName) return
++        ensureLoaded(account)
++        for (key in trays.keys.toList()) {
++            if (key.account != account || key.mode != ChatActivity.MODE_QUICK_REPLIES || key.shortcut != oldName) continue
++            val tray = trays.remove(key) ?: continue
++            val target = key.copy(shortcut = newName)
++            val existing = trays[target]
++            if (existing == null) trays[target] = tray else existing.items.addAll(tray.items)
++            DockedStore.save(key, null)
++            changed(target)
++        }
++    }
++
++    @JvmStatic
++    fun removeQuickReply(account: Int, name: String?) {
++        if (name.isNullOrEmpty()) return
++        ensureLoaded(account)
++        for (key in trays.keys.toList()) {
++            if (key.account == account && key.mode == ChatActivity.MODE_QUICK_REPLIES && key.shortcut == name) clearTray(key)
++        }
++    }
+ 
+     internal fun tray(key: Key): Tray? {
+         ensureLoaded(key.account)
+@@ -214,8 +291,8 @@ object DockedMedia {
+ 
+     @JvmStatic
+     fun attach(fragment: ChatActivity, enter: ChatActivityEnterView?, topView: ChatActivityEnterTopView?) {
+-        if (enter == null || topView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return
+-        val strip = TeleDockedStrip(fragment.parentActivity ?: topView.context, fragment, enter, topView, keyOf(fragment))
++        if (enter == null || topView == null || !supported(fragment)) return
++        val strip = TeleDockedStrip(fragment.parentActivity ?: topView.context, fragment, enter, topView)
+         topView.addView(strip, org.telegram.ui.Components.LayoutHelper.createFrame(org.telegram.ui.Components.LayoutHelper.MATCH_PARENT, org.telegram.ui.Components.LayoutHelper.MATCH_PARENT.toFloat(), android.view.Gravity.NO_GRAVITY, 0f, 0f, 52f, 0f))
+         strip.sync(false)
+     }
+@@ -253,7 +330,7 @@ object DockedMedia {
+         sticker: Boolean,
+         keepField: Boolean = false
+     ): Boolean {
+-        if (!enabled() || enter == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        if (!enabled() || enter == null || !supported(fragment)) return false
+         val key = keyOf(fragment)
+         // the selection holds the tray it was opened with: it replaces the tray, sent past it the tray goes too
+         val replace = replacing.remove(key)
+@@ -261,8 +338,7 @@ object DockedMedia {
+             if (replace) clearTray(key)
+             return false
+         }
+-        if (!notify || scheduleDate != 0 || payStars != 0L || sticker) return fail()
+-        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return fail()
++        if (!notify || scheduleDate != 0 || sticker) return fail()
+         val entries = ArrayList<MediaController.PhotoEntry>()
+         for (id in order) {
+             val entry = selected[id] as? MediaController.PhotoEntry ?: return fail()
+@@ -313,11 +389,9 @@ object DockedMedia {
+         scheduleDate: Int,
+         payStars: Long
+     ): Boolean {
+-        if (!enabled() || fragment.chatActivityEnterView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        if (!enabled() || fragment.chatActivityEnterView == null || !supported(fragment)) return false
+         if (fragment.chatActivityEnterView.isEditingMessage) return false
+-        if (!notify || scheduleDate != 0 || payStars != 0L || files.isEmpty()) return false
+-        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return false
+-        if (!fragment.checkSlowModeAlert()) return false
++        if (!notify || scheduleDate != 0 || files.isEmpty()) return false
+         val key = keyOf(fragment)
+         ensureLoaded(key.account)
+         val tray = trays.getOrPut(key) { Tray() }
+@@ -345,8 +419,7 @@ object DockedMedia {
+     /** A finished file (a shot) joins the tray instead of being sent, like the desktop client's shot box. */
+     @JvmStatic
+     fun add(fragment: ChatActivity, entry: MediaController.PhotoEntry, asFile: Boolean): Boolean {
+-        if (!enabled() || fragment.chatActivityEnterView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
+-        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return false
++        if (!enabled() || fragment.chatActivityEnterView == null || !supported(fragment)) return false
+         val key = keyOf(fragment)
+         ensureLoaded(key.account)
+         val tray = trays.getOrPut(key) { Tray() }
+@@ -358,8 +431,7 @@ object DockedMedia {
+ 
+     @JvmStatic
+     fun canAttachSticker(fragment: ChatActivity?): Boolean {
+-        if (fragment == null || !enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
+-        return fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) == 0L
++        return fragment != null && enabled() && supported(fragment)
+     }
+ 
+     /** Desktop 0236: a sticker or GIF from the picker goes above the field instead of out at once. */
+@@ -406,8 +478,7 @@ object DockedMedia {
+     /** A gif or silent video that should go out as a video; the viewer edits it before the send. */
+     @JvmStatic
+     fun addVideo(fragment: ChatActivity, path: String, info: VideoEditedInfo): Boolean {
+-        if (!enabled() || fragment.chatActivityEnterView == null || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
+-        if (fragment.messagesController.getSendPaidMessagesStars(fragment.dialogId) != 0L) return false
++        if (!enabled() || fragment.chatActivityEnterView == null || !supported(fragment)) return false
+         val file = File(path)
+         if (file.length() <= 1) return false
+         if (info.estimatedSize < file.length()) info.estimatedSize = file.length()
+@@ -471,7 +542,7 @@ object DockedMedia {
+     fun preselect(fragment: ChatActivity, layout: org.telegram.ui.Components.ChatAttachAlertPhotoLayout) {
+         val key = keyOf(fragment)
+         replacing.remove(key)
+-        if (!enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT) return
++        if (!enabled() || !supported(fragment)) return
+         val tray = tray(key) ?: return
+         val files = tray.items.filter { !it.isSticker && !it.isFile }
+         if (files.isEmpty()) return
+@@ -607,7 +678,8 @@ object DockedMedia {
+                     if (returnToTray) {
+                         org.telegram.ui.PhotoViewer.getInstance().closePhoto(false, false)
+                     } else {
+-                        fragment.chatActivityEnterView?.sendMessage()
++                        if (scheduleDate != 0 || !notify) fragment.chatActivityEnterView?.teleSendThrough(notify, scheduleDate, scheduleRepeatPeriod)
++                        else fragment.chatActivityEnterView?.sendMessage()
+                     }
+                 }
+             }
+@@ -654,113 +726,133 @@ object DockedMedia {
+         repeat: Int,
+         payStars: Long
+     ): Int {
+-        if (!enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT || enter.isEditingMessage) return SEND_NONE
++        if (!enabled() || !supported(fragment) || enter.isEditingMessage) return SEND_NONE
+         val key = keyOf(fragment)
+         val tray = tray(key)
+         if (tray == null || tray.items.isEmpty()) return SEND_NONE
+         if (ChatActivityEnterView.checkPremiumAnimatedEmoji(key.account, key.dialogId, fragment, null, message)) return SEND_BLOCKED
+-        if (!fragment.checkSlowModeAlert()) return SEND_BLOCKED
++        if (scheduleDate == 0 && fragment.chatMode != ChatActivity.MODE_QUICK_REPLIES && !fragment.checkSlowModeAlert()) return SEND_BLOCKED
+         val text = AndroidUtilities.getTrimmedString(message)
+         if (text.length > MessagesController.getInstance(key.account).captionMaxLengthLimit) {
+             TeleToast.log("docked-caption", TeleLowercase.lc("Caption is too long"), account = fragment.currentAccount)
+             BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, TeleLowercase.lc("Caption is too long")).show()
+             return SEND_BLOCKED
+         }
+-        val before = tray.items.size
+-        tray.items.removeAll { item ->
+-            if (item.isSticker) return@removeAll false
+-            val path = item.sendPath()
+-            path == null || !File(path).exists()
+-        }
+-        if (tray.items.size != before) {
+-            TeleToast.log("docked-gone", TeleLowercase.lc("Some attached files are gone"), account = fragment.currentAccount)
+-            BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, TeleLowercase.lc("Some attached files are gone")).show()
+-            if (tray.items.isEmpty()) {
+-                changed(key)
+-                return SEND_BLOCKED
+-            }
++        fun blocked(reason: String): Int {
++            TeleToast.log("docked-send", reason, account = fragment.currentAccount)
++            BulletinFactory.of(fragment).createSimpleBulletin(R.raw.error, reason).show()
++            return SEND_BLOCKED
+         }
+-
+-        val stickerItem = tray.items.firstOrNull { it.isSticker }
+-        val documentItems = tray.items.filter { it.isFile }
+-        val fileItems = tray.items.filter { !it.isSticker && !it.isFile }
+-        val infos = fileItems.map { toInfo(it) }
+-        if (documentItems.isNotEmpty()) {
+-            val paths = ArrayList(documentItems.mapNotNull { it.path })
+-            if (paths.isNotEmpty()) {
+-                val caption = if (text.isEmpty()) null else text.toString()
+-                SendMessagesHelper.prepareSendingDocuments(
+-                    AccountInstance.getInstance(key.account), paths, ArrayList(paths), null,
+-                    caption, null, null, key.dialogId, fragment.replyMessage, fragment.threadMessage,
+-                    null, fragment.replyQuote, null, notify, scheduleDate, 0, null,
+-                    fragment.messageChatSendParams, 0, tray.invert, payStars,
+-                    enter.sendMonoForumPeerId, enter.sendMessageSuggestionParams)
+-            }
+-            tray.items.removeAll { it.isFile }
+-            if (tray.items.isEmpty()) {
+-                trays.remove(key)
+-                changed(key)
+-                return SEND_DONE
++        if (fragment.chatMode == ChatActivity.MODE_QUICK_REPLIES) {
++            val limit = fragment.messagesController.config.quickReplyMessagesLimit.get()
++            if (fragment.messages.size + tray.items.size > limit) {
++                return blocked(AndroidUtilities.replaceTags(LocaleController.formatPluralString("BusinessRepliesToastLimit", limit)).toString())
+             }
+         }
+-        if (stickerItem == null) {
+-            val first = infos.firstOrNull() ?: return SEND_DONE
+-            first.caption = if (text.isEmpty()) null else text.toString()
+-            first.entities = if (text.isEmpty()) null else MediaDataController.getInstance(key.account).getEntities(arrayOf(text), true)
+-            first.updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(text)
+-        }
+-
+-        if (stickerItem != null) {
+-            val caption = if (text.isEmpty()) null else text.toString()
+-            val entities = if (text.isEmpty()) null else MediaDataController.getInstance(key.account).getEntities(arrayOf(text), true)
+-            val inline = stickerItem.inlineResult
+-            val result = if (inline != null) runCatching { org.telegram.tgnet.TLObject.deepCopy(inline, TLRPC.BotInlineResult::TLdeserialize) }.getOrNull() ?: inline else null
+-            if (result != null && result.send_message is TLRPC.TL_botInlineMessageMediaAuto) {
+-                if (caption != null) {
+-                    result.send_message.message = caption
+-                    result.send_message.entities = entities ?: ArrayList()
+-                    result.send_message.flags = result.send_message.flags or 1
++        if (scheduleDate != 0 && tray.items.any { it.ttl > 0 }) {
++            return blocked(TeleLowercase.lc("Can't schedule self-destructing media"))
++        }
++        for (item in tray.items) {
++            if (item.isSticker) {
++                val inline = item.inlineResult
++                val sendable = if (inline != null) {
++                    inline.send_message is TLRPC.TL_botInlineMessageMediaAuto &&
++                        (inline.document is TLRPC.TL_document || inline.photo is TLRPC.TL_photo || inline.content != null || inline.type == "game")
++                } else {
++                    item.document is TLRPC.TL_document
+                 }
+-                val params = HashMap<String, String>()
+-                params["id"] = result.id ?: ""
+-                params["query_id"] = result.query_id.toString()
+-                params["force_gif"] = "1"
+-                SendMessagesHelper.prepareSendingBotContextResult(fragment, AccountInstance.getInstance(key.account), result, params, key.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote, notify, scheduleDate, repeat, fragment.messageChatSendParams, payStars, enter.sendMonoForumPeerId)
+-                if (result.document != null) MediaDataController.getInstance(key.account).addRecentGif(result.document, (System.currentTimeMillis() / 1000L).toInt(), false)
++                if (!sendable) return blocked(TeleLowercase.lc("This attachment can't be sent"))
+             } else {
+-                val document = stickerItem.document as? TLRPC.TL_document
+-                if (document != null) {
+-                    val params = SendMessagesHelper.SendMessageParams.of(document, null, null, key.dialogId, fragment.replyMessage, fragment.threadMessage, caption, entities, null, null, notify, scheduleDate, repeat, 0, null, null, false)
++                val path = if (item.isFile) item.path else item.sendPath()
++                if (path == null || !File(path).isFile) return blocked(TeleLowercase.lc("Some attached files are gone"))
++            }
++        }
++
++        var caption: String? = null
++        var captionEntities: ArrayList<TLRPC.MessageEntity>? = null
++        if (text.isNotEmpty()) {
++            val parsed = arrayOf<CharSequence>(text)
++            captionEntities = MediaDataController.getInstance(key.account).getEntities(parsed, true)
++            caption = parsed[0].toString()
++        }
++
++        val account = AccountInstance.getInstance(key.account)
++        val items = tray.items
++        var index = 0
++        while (index < items.size) {
++            val item = items[index]
++            val first = index == 0
++            if (item.isSticker) {
++                val stickerCaption = if (first) caption else null
++                val stickerEntities = if (first) captionEntities else null
++                val inline = item.inlineResult
++                if (inline != null) {
++                    val result = runCatching { org.telegram.tgnet.TLObject.deepCopy(inline, TLRPC.BotInlineResult::TLdeserialize) }.getOrNull() ?: inline
++                    val auto = result.send_message as? TLRPC.TL_botInlineMessageMediaAuto
++                    if (auto != null && stickerCaption != null) {
++                        auto.message = stickerCaption
++                        auto.entities = stickerEntities ?: ArrayList()
++                        auto.flags = auto.flags or 1
++                    }
++                    val params = HashMap<String, String>()
++                    params["id"] = result.id ?: ""
++                    params["query_id"] = result.query_id.toString()
++                    params["force_gif"] = "1"
++                    SendMessagesHelper.prepareSendingBotContextResult(fragment, account, result, params, key.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote, notify, scheduleDate, repeat, fragment.messageChatSendParams, payStars, enter.sendMonoForumPeerId)
++                    if (result.document != null) MediaDataController.getInstance(key.account).addRecentGif(result.document, (System.currentTimeMillis() / 1000L).toInt(), false)
++                } else {
++                    val document = item.document as TLRPC.TL_document
++                    val params = SendMessagesHelper.SendMessageParams.of(document, null, null, key.dialogId, fragment.replyMessage, fragment.threadMessage, stickerCaption, stickerEntities, null, null, notify, scheduleDate, repeat, 0, null, null, false)
+                     params.replyQuote = fragment.replyQuote
+                     params.sendMessageChatArguments = fragment.messageChatSendParams
+                     params.payStars = payStars
+                     params.monoForumPeer = enter.sendMonoForumPeerId
+                     params.suggestionParams = enter.sendMessageSuggestionParams
++                    params.effect_id = if (first) enter.effectId else 0
++                    params.updateStickersOrder = stickerCaption != null && SendMessagesHelper.checkUpdateStickersOrder(stickerCaption)
+                     SendMessagesHelper.getInstance(key.account).sendMessage(params)
+                 }
++                index++
++                continue
+             }
+-            if (infos.isEmpty()) {
+-                trays.remove(key)
+-                changed(key)
+-                return SEND_DONE
++            if (item.isFile) {
++                var end = index + 1
++                if (tray.group) {
++                    while (end < items.size && items[end].isFile) end++
++                }
++                val paths = ArrayList<String>(end - index)
++                for (i in index until end) paths.add(items[i].path!!)
++                SendMessagesHelper.prepareSendingDocuments(
++                    account, paths, ArrayList(paths), null,
++                    if (first) caption else null, if (first) captionEntities else null, null,
++                    key.dialogId, fragment.replyMessage, fragment.threadMessage, null,
++                    fragment.replyQuote, null, notify, scheduleDate, repeat, null,
++                    fragment.messageChatSendParams, if (first) enter.effectId else 0, tray.invert, payStars,
++                    enter.sendMonoForumPeerId, enter.sendMessageSuggestionParams)
++                index = end
++                continue
++            }
++            val asFile = item.asFile
++            val ttl = item.ttl > 0
++            var end = index
++            while (end < items.size && end - index < 10) {
++                val next = items[end]
++                if (next.isSticker || next.isFile || next.asFile != asFile || (next.ttl > 0) != ttl) break
++                end++
++            }
++            val infos = ArrayList<SendMessagesHelper.SendingMediaInfo>(end - index)
++            for (i in index until end) infos.add(toInfo(items[i]))
++            if (first && caption != null) {
++                infos[0].caption = caption
++                infos[0].entities = captionEntities
++                infos[0].updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(caption)
+             }
+-        }
+-
+-        val account = AccountInstance.getInstance(key.account)
+-        var start = 0
+-        var firstChunk = true
+-        while (start < infos.size) {
+-            val asFile = fileItems[start].asFile
+-            var end = start
+-            while (end < infos.size && end - start < 10 && fileItems[end].asFile == asFile) end++
+-            val chunk = ArrayList(infos.subList(start, end))
+             SendMessagesHelper.prepareSendingMedia(
+-                account, chunk, key.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote,
+-                asFile, tray.group, null, notify, scheduleDate, repeat, fragment.chatMode, firstChunk && infos[0].updateStickersOrder,
+-                null, fragment.messageChatSendParams, enter.effectId, tray.invert, payStars, enter.sendMonoForumPeerId, enter.sendMessageSuggestionParams
++                account, infos, key.dialogId, fragment.replyMessage, fragment.threadMessage, null, fragment.replyQuote,
++                asFile, tray.group, null, notify, scheduleDate, repeat, fragment.chatMode, first && infos[0].updateStickersOrder,
++                null, fragment.messageChatSendParams, if (first) enter.effectId else 0, tray.invert, payStars, enter.sendMonoForumPeerId, enter.sendMessageSuggestionParams
+             )
+-            firstChunk = false
+-            start = end
++            index = end
+         }
+         trays.remove(key)
+         changed(key)
+@@ -791,7 +883,7 @@ object DockedMedia {
+ 
+     @JvmStatic
+     fun restoreDraft(fragment: ChatActivity, draft: SavedDrafts.Draft): Boolean {
+-        if (!enabled() || fragment.chatMode != ChatActivity.MODE_DEFAULT) return false
++        if (!enabled() || !supported(fragment)) return false
+         val key = keyOf(fragment)
+         ensureLoaded(key.account)
+         val tray = trays.getOrPut(key) { Tray() }
+@@ -824,7 +916,7 @@ object DockedMedia {
+     fun keepsDraftLocal(account: Int, dialogId: Long, threadId: Long): Boolean {
+         if (!enabled()) return false
+         ensureLoaded(account)
+-        return trays.any { (key, tray) -> key.account == account && key.dialogId == dialogId && key.threadId == threadId && tray.items.isNotEmpty() }
++        return trays.any { (key, tray) -> key.account == account && key.dialogId == dialogId && key.threadId == threadId && key.mode == ChatActivity.MODE_DEFAULT && tray.items.isNotEmpty() }
+     }
+ 
+     @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+index 0e7399a92..a6e920bfa 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DockedStore.kt
+@@ -21,7 +21,7 @@ object DockedStore {
+         for (row in TeleDatabaseHelper.getDocked(account)) {
+             val tray = decode(row.data) ?: continue
+             if (tray.items.isNotEmpty()) {
+-                result[DockedMedia.Key(account, row.dialogId, row.threadId)] = tray
++                result[DockedMedia.Key(account, row.dialogId, row.threadId, row.mode, row.shortcut)] = tray
+             }
+         }
+         return result
+@@ -32,7 +32,7 @@ object DockedStore {
+         val generation = TeleAccounts.generation(key.account)
+         Utilities.globalQueue.postRunnable {
+             if (!TeleAccounts.isCurrent(key.account, generation)) return@postRunnable
+-            runCatching { TeleDatabaseHelper.putDocked(key.account, key.dialogId, key.threadId, data) }.onFailure { FileLog.e(it) }
++            runCatching { TeleDatabaseHelper.putDocked(key.account, key.dialogId, key.threadId, key.mode, key.shortcut, data) }.onFailure { FileLog.e(it) }
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 11c007a6d..4dfd17e44 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -112,6 +112,7 @@ object TeleTextRu {
+         "Format" to "Формат",
+         "Full changelog" to "Полный список изменений",
+         "GIF" to "GIF",
++        "Group into albums" to "Группировать в альбомы",
+         "Gift for the cell" to "Подарок для ячейки",
+         "Gift grid" to "Сетка подарков",
+         "Gift moved" to "Подарок перемещён",
+@@ -705,9 +706,12 @@ object TeleTextRu {
+         "Selling gifts" to "Продажа подарков",
+         "Send MKV files as videos" to "Отправлять MKV как видео",
+         "Send any method of the built-in layer by hand." to "Отправлять любой метод встроенного слоя вручную.",
++        "Send all as file" to "Отправить всё файлами",
++        "Send all as media" to "Отправить всё как медиа",
+         "Send audio files as voice messages" to "Отправлять аудиофайлы голосовыми сообщениями",
+         "Send crash reports" to "Отправлять отчёты о сбоях",
+         "Send due scheduled messages while tele runs." to "Отправлять запланированные сообщения, пока работает tele.",
++        "Send each item separately" to "Отправлять по отдельности",
+         "Send inline results without \"via @bot\"." to "Отправлять inline-результаты без «via @bot».",
+         "Send messages as scheduled" to "Отправлять сообщения запланированными",
+         "Send pending crash report" to "Отправить ожидающий отчёт о сбое",
+@@ -731,6 +735,9 @@ object TeleTextRu {
+         "Show IDs without spaces." to "Показывать ID без пробелов.",
+         "Show bot button payloads on long press" to "Показывать payload кнопок ботов по долгому нажатию",
+         "Show data center" to "Показывать дата-центр",
++        "Show as album" to "Показать альбомом",
++        "Show as strip" to "Показать лентой",
++        "Show docked media as an album" to "Показывать прикреплённые медиа как альбом",
+         "Show gift IDs." to "Показывать ID подарков.",
+         "Show gift id" to "Показывать ID подарка",
+         "Show hidden characters" to "Показывать скрытые символы",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index eb3e1b347..6b5dd2592 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -112,6 +112,7 @@ object TeleTextUk {
+         "Format" to "Формат",
+         "Full changelog" to "Повний список змін",
+         "GIF" to "GIF",
++        "Group into albums" to "Групувати в альбоми",
+         "Gift for the cell" to "Подарунок для клітинки",
+         "Gift grid" to "Сітка подарунків",
+         "Gift moved" to "Подарунок переміщено",
+@@ -705,9 +706,12 @@ object TeleTextUk {
+         "Selling gifts" to "Продаж подарунків",
+         "Send MKV files as videos" to "Надсилати файли MKV як відео",
+         "Send any method of the built-in layer by hand." to "Надсилати будь-який метод вбудованого шару вручну.",
++        "Send all as file" to "Надіслати все файлами",
++        "Send all as media" to "Надіслати все як медіа",
+         "Send audio files as voice messages" to "Надсилати аудіофайли як голосові повідомлення",
+         "Send crash reports" to "Надсилати звіти про збої",
+         "Send due scheduled messages while tele runs." to "Надсилати заплановані повідомлення, коли настає час, поки tele працює.",
++        "Send each item separately" to "Надсилати окремо",
+         "Send inline results without \"via @bot\"." to "Надсилати вбудовані результати без «via @bot».",
+         "Send messages as scheduled" to "Надсилати повідомлення як заплановані",
+         "Send pending crash report" to "Надіслати звіт про збій, що очікує",
+@@ -731,6 +735,9 @@ object TeleTextUk {
+         "Show IDs without spaces." to "Показувати ID без пробілів.",
+         "Show bot button payloads on long press" to "Показувати дані кнопок ботів при довгому натисканні",
+         "Show data center" to "Показувати дата-центр",
++        "Show as album" to "Показати альбомом",
++        "Show as strip" to "Показати стрічкою",
++        "Show docked media as an album" to "Показувати прикріплені медіа як альбом",
+         "Show gift IDs." to "Показувати ID подарунків.",
+         "Show gift id" to "Показувати ID подарунка",
+         "Show hidden characters" to "Показувати приховані символи",
+diff --git a/TMessagesProj/src/main/java/tele/ui/DockedGridLayout.kt b/TMessagesProj/src/main/java/tele/ui/DockedGridLayout.kt
+new file mode 100644
+index 000000000..aa387a1a8
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/DockedGridLayout.kt
+@@ -0,0 +1,195 @@
++package tele.ui
++
++import android.graphics.RectF
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.RichMessageLayout
++import tele.helpers.DockedMedia
++import kotlin.math.max
++import kotlin.math.min
++
++internal data class DockedSegment(val from: Int, val till: Int, val album: Boolean)
++
++internal data class DockedCell(
++    val index: Int,
++    val rect: RectF,
++    val tl: Float,
++    val tr: Float,
++    val bl: Float,
++    val br: Float,
++)
++
++internal data class DockedAlbum(val cells: List<DockedCell>, val width: Float, val height: Float)
++
++/** Splits a tray into the send groups and lays out the albums with the grouped-media engine. */
++internal object DockedGridLayout {
++    const val MAX_ALBUM = 10
++    private const val NORM_WIDTH = 1000f
++    private const val NORM_HEIGHT = 814f
++
++    fun albumable(item: DockedMedia.Item): Boolean =
++        !item.isFile && !item.isSticker && !item.asFile && item.ttl == 0 &&
++            item.width > 0 && item.height > 0
++
++    fun segments(items: List<DockedMedia.Item>, group: Boolean): List<DockedSegment> {
++        val result = ArrayList<DockedSegment>()
++        var start = -1
++
++        fun flush(till: Int) {
++            if (start < 0) return
++            var from = start
++            while (from < till) {
++                val end = min(till, from + MAX_ALBUM)
++                result.add(DockedSegment(from, end, group && end - from > 1))
++                from = end
++            }
++            start = -1
++        }
++
++        for (i in items.indices) {
++            if (!albumable(items[i])) {
++                flush(i)
++                result.add(DockedSegment(i, i + 1, false))
++                continue
++            }
++            if (start < 0) {
++                start = i
++            } else if (i - start == MAX_ALBUM) {
++                flush(i)
++                start = i
++            }
++        }
++        flush(items.size)
++        return result
++    }
++
++    fun gridAvailable(items: List<DockedMedia.Item>, group: Boolean): Boolean =
++        segments(items, group).any { it.album }
++
++    /**
++     * Lays out one album into cell rectangles; the result is scaled uniformly down to [capPx].
++     */
++    fun album(
++        items: List<DockedMedia.Item>,
++        segment: DockedSegment,
++        maxWidthPx: Int,
++        capPx: Int,
++        gapPx: Float,
++        outerRadiusPx: Float,
++        innerRadiusPx: Float,
++    ): DockedAlbum? {
++        if (!segment.album || segment.till - segment.from < 2) return null
++        val count = segment.till - segment.from
++
++        val ratios = FloatArray(count)
++        for (k in 0 until count) {
++            val item = items[segment.from + k]
++            var w = item.width.toFloat()
++            var h = item.height.toFloat()
++            // PhotoEntry and SavedDrafts store the rotation in degrees, not the Exif 5..8 codes
++            val turned = ((item.orientation % 360) + 360) % 360
++            if (turned == 90 || turned == 270) {
++                val t = w
++                w = h
++                h = t
++            }
++            ratios[k] = if (w > 0f && h > 0f) w / h else 1f
++        }
++
++        val positions = RichMessageLayout.computeGrouped(ratios)
++        if (positions.size != count) return null
++
++        var maxRow = 0
++        for (p in positions) maxRow = max(maxRow, p.maxY.toInt())
++        val rowHeight = FloatArray(maxRow + 1)
++        for (p in positions) {
++            if (p.minY == p.maxY) {
++                rowHeight[p.minY.toInt()] = max(rowHeight[p.minY.toInt()], p.ph)
++            }
++        }
++        for (p in positions) {
++            if (p.minY == p.maxY) continue
++            val span = (p.maxY - p.minY + 1).toInt()
++            val sibling = p.siblingHeights
++            if (sibling != null && sibling.size == span) {
++                for (r in 0 until span) {
++                    val row = p.minY.toInt() + r
++                    rowHeight[row] = max(rowHeight[row], sibling[r])
++                }
++            } else {
++                val per = p.ph / span
++                for (r in p.minY..p.maxY) {
++                    rowHeight[r.toInt()] = max(rowHeight[r.toInt()], per)
++                }
++            }
++        }
++
++        val unit = maxWidthPx / NORM_WIDTH
++        val rowTop = FloatArray(maxRow + 2)
++        var acc = 0f
++        for (r in 0..maxRow) {
++            rowTop[r] = acc * NORM_HEIGHT * unit
++            acc += rowHeight[r]
++        }
++        rowTop[maxRow + 1] = acc * NORM_HEIGHT * unit
++
++        val halfGap = gapPx / 2f
++        val cells = ArrayList<DockedCell>(count)
++        for (i in 0 until count) {
++            val p = positions[i]
++            val top = rowTop[p.minY.toInt()]
++            val height = rowTop[p.maxY.toInt() + 1] - top
++
++            var leftUnits = 0
++            for (j in positions.indices) {
++                if (j == i) continue
++                val q = positions[j]
++                if (q.minY <= p.minY && q.maxY >= p.minY && q.minX < p.minX) {
++                    leftUnits += q.pw
++                }
++            }
++            val left = leftUnits * unit
++            val width = if ((p.flags and MessageObject.POSITION_FLAG_RIGHT) != 0) {
++                maxWidthPx - left
++            } else {
++                p.pw * unit - gapPx
++            }
++
++            val rect = RectF(left, top, left + max(width, 0f), top + max(height, 0f))
++            if ((p.flags and MessageObject.POSITION_FLAG_TOP) == 0) rect.top += halfGap
++            if ((p.flags and MessageObject.POSITION_FLAG_BOTTOM) == 0) rect.bottom -= halfGap
++            if ((p.flags and MessageObject.POSITION_FLAG_LEFT) == 0) rect.left += halfGap
++            if ((p.flags and MessageObject.POSITION_FLAG_RIGHT) == 0) rect.right -= halfGap
++
++            val tl = if ((p.flags and (MessageObject.POSITION_FLAG_TOP or MessageObject.POSITION_FLAG_LEFT)) ==
++                (MessageObject.POSITION_FLAG_TOP or MessageObject.POSITION_FLAG_LEFT)
++            ) outerRadiusPx else innerRadiusPx
++            val tr = if ((p.flags and (MessageObject.POSITION_FLAG_TOP or MessageObject.POSITION_FLAG_RIGHT)) ==
++                (MessageObject.POSITION_FLAG_TOP or MessageObject.POSITION_FLAG_RIGHT)
++            ) outerRadiusPx else innerRadiusPx
++            val bl = if ((p.flags and (MessageObject.POSITION_FLAG_BOTTOM or MessageObject.POSITION_FLAG_LEFT)) ==
++                (MessageObject.POSITION_FLAG_BOTTOM or MessageObject.POSITION_FLAG_LEFT)
++            ) outerRadiusPx else innerRadiusPx
++            val br = if ((p.flags and (MessageObject.POSITION_FLAG_BOTTOM or MessageObject.POSITION_FLAG_RIGHT)) ==
++                (MessageObject.POSITION_FLAG_BOTTOM or MessageObject.POSITION_FLAG_RIGHT)
++            ) outerRadiusPx else innerRadiusPx
++
++            cells.add(DockedCell(segment.from + i, rect, tl, tr, bl, br))
++        }
++
++        var albumHeight = rowTop[maxRow + 1]
++        var albumWidth = 0f
++        for (cell in cells) albumWidth = max(albumWidth, cell.rect.right)
++        val factor = if (albumHeight > capPx && albumHeight > 0f) capPx / albumHeight else 1f
++        if (factor < 1f) {
++            for (cell in cells) {
++                cell.rect.set(
++                    cell.rect.left * factor, cell.rect.top * factor,
++                    cell.rect.right * factor, cell.rect.bottom * factor
++                )
++            }
++            albumHeight *= factor
++            albumWidth *= factor
++        }
++        return DockedAlbum(cells, albumWidth, albumHeight)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+index 01ad394b9..6213c1753 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleDockedStrip.kt
+@@ -5,6 +5,7 @@ import android.graphics.Canvas
+ import android.graphics.Color
+ import android.graphics.Paint
+ import android.graphics.Path
++import android.graphics.RectF
+ import android.view.Gravity
+ import android.view.HapticFeedbackConstants
+ import android.view.MotionEvent
+@@ -31,17 +32,24 @@ import org.telegram.ui.Components.ItemOptions
+ import org.telegram.ui.Components.spoilers.SpoilerEffect
+ import org.telegram.ui.Components.spoilers.SpoilerEffect2
+ import org.telegram.ui.Components.LayoutHelper
++import tele.TeleConfig
++import tele.TeleHooks
+ import tele.helpers.DockedMedia
+ import tele.helpers.TeleLowercase
++import kotlin.math.ceil
+ import kotlin.math.hypot
++import kotlin.math.max
++import kotlin.math.min
++import kotlin.math.roundToInt
+ 
+ class TeleDockedStrip(
+     context: Context,
+     private val fragment: ChatActivity,
+     private val enter: ChatActivityEnterView,
+-    private val topView: ChatActivityEnterTopView,
+-    val key: DockedMedia.Key
++    private val topView: ChatActivityEnterTopView
+ ) : FrameLayout(context) {
++    // a quick reply shortcut can be renamed while the tray is open, so the key is never cached
++    val key: DockedMedia.Key get() = DockedMedia.keyOf(fragment)
+     var panelShown = false
+     private var forced = false
+     private var replyHidden = false
+@@ -49,6 +57,11 @@ class TeleDockedStrip(
+     private var shown: List<DockedMedia.Item> = emptyList()
+     private var shownSpoilers: List<Boolean> = emptyList()
+     private var dragSource: Tile? = null
++    private var gridShown = false
++    private var rowHeight = 0
++    private var lastWidth = 0
++    private var lastStacked = false
++    private val tileViews = ArrayList<Tile>()
+ 
+     private val row = LinearLayout(context)
+     private val scroll = HorizontalScrollView(context)
+@@ -63,6 +76,22 @@ class TeleDockedStrip(
+         setOnClickListener { discard() }
+     }
+ 
++    // the album and the strip are the same media: this switches the tray between them
++    private val gridToggle = android.widget.ImageView(context).apply {
++        scaleType = android.widget.ImageView.ScaleType.CENTER
++        val color = Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider)
++        setColorFilter(android.graphics.PorterDuffColorFilter(color, android.graphics.PorterDuff.Mode.MULTIPLY))
++        background = Theme.createRoundRectDrawable(
++            AndroidUtilities.dp(8f),
++            androidx.core.graphics.ColorUtils.setAlphaComponent(color, 30)
++        )
++        visibility = GONE
++        setOnClickListener {
++            TeleConfig.set(TeleConfig.DOCKED_GRID, !TeleConfig.DOCKED_GRID.value)
++            TeleHooks.onConfigChanged(TeleConfig.DOCKED_GRID)
++        }
++    }
++
+     // a thin bar under the tiles: the strip scrolls, the bar shows where
+     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+     private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+@@ -79,15 +108,25 @@ class TeleDockedStrip(
+         scroll.setFadingEdgeLength(AndroidUtilities.dp(12f))
+         scroll.setOnScrollChangeListener { _, _, _, _, _ -> invalidate() }
+         row.orientation = LinearLayout.HORIZONTAL
++        row.gravity = Gravity.CENTER_VERTICAL
+         row.setPadding(0, 0, AndroidUtilities.dp(4f), 0)
+         setOnDragListener { _, event ->
+             when (event.action) {
+                 android.view.DragEvent.ACTION_DRAG_STARTED -> {
+                     val item = event.localState as? DockedMedia.Item
+                     val index = if (item != null) DockedMedia.tray(key)?.items?.indexOf(item) ?: -1 else -1
+-                    dragSource = if (index >= 0) row.getChildAt(index) as? Tile else null
++                    dragSource = if (index >= 0) tileViews.getOrNull(index) else null
+                     item != null
+                 }
++                android.view.DragEvent.ACTION_DRAG_LOCATION -> {
++                    val edge = AndroidUtilities.dp(28f)
++                    if (event.x < edge) {
++                        scroll.scrollBy(-AndroidUtilities.dp(8f), 0)
++                    } else if (event.x > width - edge) {
++                        scroll.scrollBy(AndroidUtilities.dp(8f), 0)
++                    }
++                    true
++                }
+                 android.view.DragEvent.ACTION_DRAG_ENDED -> {
+                     dragSource?.animate()?.scaleX(1f)?.scaleY(1f)?.setDuration(100)?.start()
+                     dragSource = null
+@@ -96,19 +135,19 @@ class TeleDockedStrip(
+                 android.view.DragEvent.ACTION_DROP -> {
+                     val item = event.localState as? DockedMedia.Item
+                     if (item != null) {
+-                        val localX = event.x - scroll.left + scroll.scrollX - row.left
+-                        val target = dragTarget(localX)
+                         val from = DockedMedia.tray(key)?.items?.indexOf(item) ?: -1
++                        val target = dragTarget(event.x, event.y)
+                         if (target >= 0 && target != from) {
+                             DockedMedia.moveTo(key, item, target)
+                         } else if (from >= 0) {
+-                            val source = row.getChildAt(from)
+-                            val left = if (source != null) scroll.left - scroll.scrollX + row.left + source.left else 0
+-                            val right = if (source != null) left + source.width else 0
+-                            if (localX < left - AndroidUtilities.dp(4f) && from > 0) {
+-                                DockedMedia.moveTo(key, item, from - 1)
+-                            } else if (localX > right + AndroidUtilities.dp(4f)) {
+-                                DockedMedia.moveTo(key, item, from + 1)
++                            val source = tileViews.getOrNull(from)
++                            val bounds = if (source != null) tileBounds(source) else null
++                            if (bounds != null) {
++                                if (event.x < bounds.left - AndroidUtilities.dp(4f) && from > 0) {
++                                    DockedMedia.moveTo(key, item, from - 1)
++                                } else if (event.x > bounds.right + AndroidUtilities.dp(4f)) {
++                                    DockedMedia.moveTo(key, item, from + 1)
++                                }
+                             }
+                         }
+                     }
+@@ -120,6 +159,7 @@ class TeleDockedStrip(
+         scroll.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+         addView(scroll, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat(), Gravity.NO_GRAVITY, INSET, 0f, 0f, BAR_SPACE))
+         addView(close, LayoutHelper.createFrame(52, 46f, Gravity.RIGHT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, BAR_SPACE))
++        addView(gridToggle, LayoutHelper.createFrame(40, 40f, Gravity.RIGHT or Gravity.CENTER_VERTICAL, 0f, 0f, 4f, BAR_SPACE))
+     }
+ 
+     override fun dispatchDraw(canvas: Canvas) {
+@@ -152,7 +192,7 @@ class TeleDockedStrip(
+             val child = topView.getChildAt(i)
+             val params = child.layoutParams as? FrameLayout.LayoutParams ?: continue
+             if (child !is android.widget.ImageView || params.gravity and Gravity.RIGHT != Gravity.RIGHT) continue
+-            child.translationY = if (center) (AndroidUtilities.dp(TRAY_HEIGHT - BAR_SPACE) - params.height) / 2f - params.topMargin else 0f
++            child.translationY = if (center) (trayHeightPx() - AndroidUtilities.dp(BAR_SPACE) - params.height) / 2f - params.topMargin else 0f
+         }
+     }
+ 
+@@ -167,26 +207,43 @@ class TeleDockedStrip(
+         DockedMedia.unregister(this)
+     }
+ 
++    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
++        super.onSizeChanged(w, h, oldw, oldh)
++        if (oldw > 0 && w != oldw) sync(false)
++    }
++
+     fun discard() = DockedMedia.discard(fragment, enter, key)
+ 
++    private fun trayHeightPx(): Int = rowHeight + AndroidUtilities.dp(TRAY_HEIGHT - TILE)
++
+     fun sync(animated: Boolean) {
+         val tray = DockedMedia.tray(key)
++        val items = tray?.items ?: emptyList()
++        val group = tray?.group ?: false
+         val has = DockedMedia.enabled() && tray != null && tray.items.isNotEmpty() && !enter.isEditingMessage
+         // a reply or forward panel stays on top and the tray goes under it
+         val stacked = has && panelShown
+         if (has && tray != null) {
+-            rebuild(tray.items)
++            rebuild(tray.items, group)
++        }
++        val available = has && DockedGridLayout.gridAvailable(items, group)
++        gridToggle.visibility = if (available) VISIBLE else GONE
++        row.setPadding(0, 0, AndroidUtilities.dp(if (available) 48f else 4f), 0)
++        if (available) {
++            gridToggle.setImageResource(if (gridShown) R.drawable.iv_media_slideshow else R.drawable.iv_media_collage)
++            gridToggle.contentDescription = TeleLowercase.lc(if (gridShown) "Show as strip" else "Show as album")
+         }
+         visibility = if (has) VISIBLE else GONE
+         place(stacked)
+         val replyView = topView.replyView
++        val trayHeight = trayHeightPx()
+         if (has && !panelShown) {
+             if (replyView != null && replyView.visibility != GONE) {
+                 replyView.visibility = GONE
+                 replyHidden = true
+             }
+             forced = true
+-            enter.tele_setTopViewHeight(AndroidUtilities.dp(TRAY_HEIGHT))
++            enter.tele_setTopViewHeight(trayHeight)
+             centerClose(true)
+             enter.tele_showTopView(true, animated)
+         } else {
+@@ -194,7 +251,7 @@ class TeleDockedStrip(
+                 replyHidden = false
+                 replyView?.visibility = if (topView.isEditMode) GONE else VISIBLE
+             }
+-            enter.tele_setTopViewHeight(AndroidUtilities.dp(if (stacked) PANEL_HEIGHT + TRAY_HEIGHT else PANEL_HEIGHT))
++            enter.tele_setTopViewHeight(if (stacked) trayHeight + AndroidUtilities.dp(PANEL_HEIGHT) else AndroidUtilities.dp(PANEL_HEIGHT))
+             centerClose(false)
+             if (stacked) {
+                 forced = true
+@@ -231,6 +288,12 @@ class TeleDockedStrip(
+             scrollParams.rightMargin = scrollRight
+             scroll.layoutParams = scrollParams
+         }
++        val toggleParams = gridToggle.layoutParams as FrameLayout.LayoutParams
++        val toggleRight = AndroidUtilities.dp(if (stacked) 56f else 4f)
++        if (toggleParams.rightMargin != toggleRight) {
++            toggleParams.rightMargin = toggleRight
++            gridToggle.layoutParams = toggleParams
++        }
+         close.visibility = if (stacked) VISIBLE else GONE
+         // the reply keeps its own height instead of stretching over the tray
+         val reply = topView.replyView ?: return
+@@ -242,25 +305,105 @@ class TeleDockedStrip(
+         }
+     }
+ 
+-    private fun dragTarget(x: Float): Int {
+-        val tray = DockedMedia.tray(key) ?: return -1
+-        for (i in 0 until minOf(row.childCount, tray.items.size)) {
+-            val child = row.getChildAt(i)
+-            if (x >= child.left && x <= child.right) return i
++    private fun dragTarget(x: Float, y: Float): Int {
++        for ((index, tile) in tileViews.withIndex()) {
++            if (tileBounds(tile).contains(x, y)) return index
+         }
+         return -1
+     }
+ 
+-    private fun rebuild(items: List<DockedMedia.Item>) {
++    // the cell of an album tile is nested in a container, so its place in the scrolled row is summed up
++    private fun tileBounds(tile: View): RectF {
++        var left = 0f
++        var top = 0f
++        var view: View? = tile
++        while (view != null && view !== row) {
++            left += view.left
++            top += view.top
++            view = view.parent as? View
++        }
++        left += row.left + scroll.left - scroll.scrollX
++        top += row.top + scroll.top
++        return RectF(left, top, left + tile.width, top + tile.height)
++    }
++
++    private fun rebuild(items: List<DockedMedia.Item>, group: Boolean) {
+         val spoilers = items.map { it.spoiler }
+-        if (items == shown && spoilers == shownSpoilers) return
++        val grid = TeleConfig.DOCKED_GRID.value && DockedGridLayout.gridAvailable(items, group)
++        if (items == shown && spoilers == shownSpoilers && grid == gridShown &&
++            width == lastWidth && panelShown == lastStacked
++        ) return
++        val switched = grid != gridShown
+         shown = ArrayList(items)
+         shownSpoilers = spoilers
++        gridShown = grid
++        lastWidth = width
++        lastStacked = panelShown
++
+         row.removeAllViews()
+-        items.forEachIndexed { index, item ->
+-            row.addView(Tile(context, item, index), LinearLayout.LayoutParams(AndroidUtilities.dp(TILE + 8f), ViewGroup.LayoutParams.MATCH_PARENT))
++        if (switched) scroll.scrollTo(0, 0)
++        tileViews.clear()
++
++        var target = 0
++        var cap = 0
++        if (grid) {
++            val reserved = AndroidUtilities.dp(INSET + 44f + (if (panelShown) 52f else 0f))
++            val available = width - reserved
++            target = if (available > AndroidUtilities.dp(64f)) {
++                min(available, AndroidUtilities.dp(320f))
++            } else {
++                AndroidUtilities.dp(280f)
++            }
++            val screen = resources.displayMetrics.heightPixels
++            cap = min(AndroidUtilities.dp(200f), screen / 3 - AndroidUtilities.dp(TRAY_HEIGHT - TILE))
++                .coerceAtLeast(AndroidUtilities.dp(TILE))
++        }
++
++        var cell = AndroidUtilities.dp(TILE)
++        for (segment in DockedGridLayout.segments(items, group)) {
++            val album = if (grid && segment.album) {
++                DockedGridLayout.album(
++                    items, segment, target, cap,
++                    AndroidUtilities.dp(2f).toFloat(),
++                    AndroidUtilities.dp(8f).toFloat(),
++                    AndroidUtilities.dp(2f).toFloat()
++                )
++            } else {
++                null
++            }
++            if (album == null) {
++                for (index in segment.from until segment.till) {
++                    val tile = Tile(context, items[index], index, null)
++                    row.addView(tile, LinearLayout.LayoutParams(AndroidUtilities.dp(TILE), AndroidUtilities.dp(TILE)).apply {
++                        marginEnd = AndroidUtilities.dp(8f)
++                    })
++                    tileViews.add(tile)
++                }
++                continue
++            }
++            val albumWidth = ceil(album.width).toInt().coerceAtLeast(1)
++            val albumHeight = ceil(album.height).toInt().coerceAtLeast(1)
++            val box = FrameLayout(context)
++            for (c in album.cells) {
++                val tile = Tile(context, items[c.index], c.index, c)
++                box.addView(tile, FrameLayout.LayoutParams(
++                    c.rect.width().roundToInt().coerceAtLeast(1),
++                    c.rect.height().roundToInt().coerceAtLeast(1)
++                ).apply {
++                    leftMargin = c.rect.left.roundToInt()
++                    topMargin = c.rect.top.roundToInt()
++                })
++                tileViews.add(tile)
++            }
++            row.addView(box, LinearLayout.LayoutParams(albumWidth, albumHeight).apply {
++                marginEnd = AndroidUtilities.dp(8f)
++            })
++            cell = max(cell, albumHeight)
+         }
+-        row.addView(AddTile(context), LinearLayout.LayoutParams(AndroidUtilities.dp(TILE + 8f), ViewGroup.LayoutParams.MATCH_PARENT))
++        rowHeight = cell
++        row.addView(AddTile(context), LinearLayout.LayoutParams(AndroidUtilities.dp(TILE), AndroidUtilities.dp(TILE)).apply {
++            marginEnd = AndroidUtilities.dp(8f)
++        })
+     }
+ 
+     // the attach button gives way to send while the tray holds files; the picker opens from here with them checked
+@@ -273,12 +416,19 @@ class TeleDockedStrip(
+             icon.setColorFilter(android.graphics.PorterDuffColorFilter(color, android.graphics.PorterDuff.Mode.MULTIPLY))
+             icon.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(8f), androidx.core.graphics.ColorUtils.setAlphaComponent(color, 30))
+             icon.contentDescription = LocaleController.getString(R.string.AccDescrAttachButton)
+-            addView(icon, LayoutHelper.createFrame(TILE.toInt(), TILE, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
++            addView(icon, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat(), Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
+             setOnClickListener { fragment.teleOpenAttachMenu() }
+         }
+     }
+ 
+-    private inner class Tile(context: Context, private val item: DockedMedia.Item, private val index: Int) : FrameLayout(context) {
++    private inner class Tile(context: Context, private val item: DockedMedia.Item, private val index: Int, cell: DockedCell?) : FrameLayout(context) {
++        private val radius = AndroidUtilities.dp(8f).toFloat()
++        private val tl = cell?.tl ?: radius
++        private val tr = cell?.tr ?: radius
++        private val bl = cell?.bl ?: radius
++        private val br = cell?.br ?: radius
++        private val boxWidth = cell?.rect?.width()?.roundToInt()?.coerceAtLeast(1) ?: AndroidUtilities.dp(TILE)
++        private val boxHeight = cell?.rect?.height()?.roundToInt()?.coerceAtLeast(1) ?: AndroidUtilities.dp(TILE)
+         private val spoilerEffect = if (item.spoiler) SpoilerEffect() else null
+         private var spoilerEffect2: SpoilerEffect2? = null
+         private val spoilerClip = Path()
+@@ -356,24 +506,25 @@ class TeleDockedStrip(
+         override fun dispatchDraw(canvas: Canvas) {
+             super.dispatchDraw(canvas)
+             if (!item.spoiler) return
+-            val size = AndroidUtilities.dp(TILE)
+-            val top = (height - size) / 2f
+             spoilerClip.rewind()
+-            spoilerClip.addRoundRect(0f, top, size.toFloat(), top + size, AndroidUtilities.dp(8f).toFloat(), AndroidUtilities.dp(8f).toFloat(), Path.Direction.CW)
++            spoilerClip.addRoundRect(
++                0f, 0f, width.toFloat(), height.toFloat(),
++                floatArrayOf(tl, tl, tr, tr, br, br, bl, bl),
++                Path.Direction.CW
++            )
+             val save = canvas.save()
+             canvas.clipPath(spoilerClip)
+-            canvas.translate(0f, top)
+             if (spoilerEffect2 == null || spoilerEffect2!!.destroyed) {
+                 spoilerEffect2 = SpoilerEffect2.getInstance(this)
+             }
+             val effect2 = spoilerEffect2
+             if (effect2 != null) {
+-                effect2.draw(canvas, this, size, size, 1f)
++                effect2.draw(canvas, this, width, height, 1f)
+             } else {
+                 val effect = spoilerEffect
+                 if (effect != null) {
+                     effect.setColor(0x66FFFFFF)
+-                    effect.setBounds(0, 0, size, size)
++                    effect.setBounds(0, 0, width, height)
+                     effect.draw(canvas)
+                 }
+             }
+@@ -383,38 +534,38 @@ class TeleDockedStrip(
+         init {
+             spoilerEffect?.callback = this
+             val image = BackupImageView(context)
+-            image.setRoundRadius(AndroidUtilities.dp(8f))
++            image.setRoundRadius(tl.roundToInt(), tr.roundToInt(), bl.roundToInt(), br.roundToInt())
+             image.outlineProvider = object : android.view.ViewOutlineProvider() {
+                 override fun getOutline(view: android.view.View, outline: android.graphics.Outline) {
+-                    outline.setRoundRect(0, 0, view.width, view.height, AndroidUtilities.dp(8f).toFloat())
++                    val path = Path()
++                    path.addRoundRect(
++                        0f, 0f, view.width.toFloat(), view.height.toFloat(),
++                        floatArrayOf(tl, tl, tr, tr, br, br, bl, bl),
++                        Path.Direction.CW
++                    )
++                    outline.setConvexPath(path)
+                 }
+             }
+             image.clipToOutline = true
++            image.setSize(boxWidth, boxHeight)
+             if (item.spoiler && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                 image.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(
+                     AndroidUtilities.dp(6f).toFloat(), AndroidUtilities.dp(6f).toFloat(), android.graphics.Shader.TileMode.CLAMP
+                 ))
+             }
+-            if (item.width > 0 && item.height > 0) {
+-                val side = AndroidUtilities.dp(TILE).toFloat()
+-                val aspect = item.width.toFloat() / item.height
+-                val w = if (aspect >= 1f) side * aspect else side
+-                val h = if (aspect >= 1f) side else side / aspect
+-                image.setSize(w.toInt(), h.toInt())
+-            }
+-            val filter = "${TILE.toInt()}_${TILE.toInt()}"
++            val filter = "${boxWidth}_${boxHeight}"
+             val placeholder = Theme.chat_attachEmptyDrawable
+             val cover = item.coverPath
+             val thumb = item.thumbPath
+             val path = item.path
+             val document = item.document
+-            addView(image, LayoutHelper.createFrame(TILE.toInt(), TILE, Gravity.LEFT or Gravity.CENTER_VERTICAL, 0f, 0f, 0f, 0f))
++            addView(image, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+             if (item.isFile) {
+                 val name = item.fileName ?: "file"
+                 val type = name.substringAfterLast('.', "").lowercase()
+                 image.contentDescription = name
+                 if (type in IMAGE_DOCUMENT_TYPES) {
+-                    image.setImage(path, "${TILE.toInt()}_${TILE.toInt()}", placeholder)
++                    image.setImage(path, filter, placeholder)
+                 } else {
+                     image.setAspectFit(true)
+                     image.setImageResource(AndroidUtilities.getThumbForNameOrMime(name, type, false))
+@@ -427,7 +578,7 @@ class TeleDockedStrip(
+                 label.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(8f), 0xAA000000.toInt())
+                 label.setPadding(AndroidUtilities.dp(2f), 0, AndroidUtilities.dp(2f), 0)
+                 label.text = (if (type.isEmpty()) "FILE" else type.uppercase()) + "\n" + AndroidUtilities.formatFileSize(item.size)
+-                addView(label, LayoutHelper.createFrame(TILE.toInt(), LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 0f, 0f, 0f, 0f))
++                addView(label, LayoutHelper.createFrame(boxWidth, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.LEFT or Gravity.BOTTOM, 0f, 0f, 0f, 0f))
+             } else if (document != null) {
+                 image.setAspectFit(true)
+                 val color = Theme.getColor(Theme.key_chat_messagePanelIcons, fragment.resourceProvider)
+@@ -463,7 +614,7 @@ class TeleDockedStrip(
+             }
+             val badge = Badge(context)
+             badge.setOnClickListener { removeWithAnimation() }
+-            addView(badge, LayoutHelper.createFrame(BADGE_SIZE, BADGE_SIZE.toFloat(), Gravity.LEFT or Gravity.TOP, TILE - BADGE_SIZE + 2f, 2f, 0f, 0f))
++            addView(badge, LayoutHelper.createFrame(BADGE_SIZE, BADGE_SIZE.toFloat(), Gravity.RIGHT or Gravity.TOP, 0f, 0f, 0f, 0f))
+             if (!item.isFile && document == null) {
+                 // like a tile of the picker: a tap opens the viewer with the editor and the checks
+                 setOnClickListener { DockedMedia.openViewer(fragment, key, index) }
+@@ -491,6 +642,12 @@ class TeleDockedStrip(
+             if (!item.isFile && document == null) {
+                 options.add(if (item.spoiler) R.drawable.msg_spoiler_off else R.drawable.msg_spoiler, if (item.spoiler) TeleLowercase.lc("Remove spoiler") else TeleLowercase.lc("Hide with spoiler")) { DockedMedia.toggleSpoiler(key, item) }
+             }
++            if (!item.isFile && !item.isSticker) {
++                val group = DockedMedia.tray(key)?.group ?: true
++                val asFile = DockedMedia.tray(key)?.items?.any { !it.isSticker && !it.isFile && it.asFile } == true
++                options.add(R.drawable.msg_photos, if (group) TeleLowercase.lc("Send each item separately") else TeleLowercase.lc("Group into albums")) { DockedMedia.toggleGroup(key) }
++                options.add(if (asFile) R.drawable.msg_photos else R.drawable.msg_filehq, if (asFile) TeleLowercase.lc("Send all as media") else TeleLowercase.lc("Send all as file")) { DockedMedia.toggleAsFile(key) }
++            }
+             options.add(R.drawable.msg_delete, TeleLowercase.lc("Remove"), true) { removeWithAnimation() }
+                 .show()
+         }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 358cbf5c3..56284a681 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -476,7 +476,9 @@ object TeleSearch {
+             section(1558, "Open in explorer", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
+             section(1559, "tonscan", "money", TeleSettingsActivity.MODE_MONEY, "Transaction links"),
+             section(1564, "docked", "sending", TeleSettingsActivity.MODE_SENDING, "Attach media above the field (beta)"),
+-            section(1565, "beta", "sending", TeleSettingsActivity.MODE_SENDING, "Attach media above the field (beta)")
++            section(1565, "beta", "sending", TeleSettingsActivity.MODE_SENDING, "Attach media above the field (beta)"),
++            section(1566, "album", "sending", TeleSettingsActivity.MODE_SENDING, "Show docked media as an album"),
++            section(1567, "grid", "sending", TeleSettingsActivity.MODE_SENDING, "Show docked media as an album")
+         ))
+         // a page button and the screen it opens are the same result: the one with the page path wins
+         val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5d52d0e51..620683449 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1526,6 +1526,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 choice("Send silent videos as", TeleConfig.SILENT_VIDEO_AS),
+                 toggle("Send audio files as voice messages", TeleConfig.AUDIO_AS_VOICE),
+                 toggle("Attach media above the field (beta)", TeleConfig.DOCKED_MEDIA),
++                *(if (all || TeleConfig.DOCKED_MEDIA.value) arrayOf(
++                    toggle("Show docked media as an album", TeleConfig.DOCKED_GRID)
++                ) else emptyArray<Row>()),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Scheduled"),
+                 toggle("Send scheduled messages on time", TeleConfig.PUNCTUAL_SCHEDULED),
