@@ -19,6 +19,11 @@ rules that follow from this:
 
 the model is inherited from [nitreojs/tele](https://github.com/nitreojs/tele) (patch queue over telegram desktop — the source of the features being ported) and [teidesu/inugram](https://github.com/teidesu/inugram) (patch queue over telegram android — the model for android-side layout). both are credited here; all fork code is original.
 
+### stable Android identities
+
+Queue positions (`0333-…`) describe application order, desktop references describe origin, and `A001…` identifies a logical Android original or substantial adaptation. These are separate namespaces. [android-patches.md](android-patches.md) documents the public registry, backed by `ci/android-patches.json`. One identity may cover several follow-up files and one cross-cutting file may serve several identities. Pure ports do not need an Android ID. IDs survive rebases, filename changes and retirement; removed entries remain as tombstones. There is still exactly one `patches/android/` queue, with no commit renaming or ordering based on A-IDs.
+
+
 ## repository layout
 
 ```

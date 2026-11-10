@@ -12,8 +12,9 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 
-from changelog import PATCH, base_version, grouped, patch_url, section_title
+from changelog import PATCH, android_url, base_version, grouped, patch_url, section_title
 
 
 def escape(text):
@@ -22,7 +23,8 @@ def escape(text):
 
 
 def item_line(item, repo, revision):
-    links = []
+    links = [f'[{escape(android_id)}]({android_url(repo, revision, android_id)})'
+             for android_id in item.get('android_ids', [])]
     for name in item.get('patches', []):
         match = PATCH.match(name)
         number = match.group(1) if match else name
@@ -67,7 +69,7 @@ def message(changelog, repo):
         'the apk is in the release: install it over your tele. a running tele finds this release within 3 hours.',
         '',
         '<tg-button-row>'
-        f'<tg-button type="url" url="https://github.com/{repo}/releases/tag/{tag}">download</tg-button>'
+        f'<tg-button type="url" url="https://github.com/{quote(repo, safe="/")}/releases/tag/{quote(tag, safe="")}">download</tg-button>'
         '</tg-button-row>',
     ]
     if changelog.get('footer'):

@@ -12,6 +12,9 @@ list `options`: the `tele-…` ids of its settings (the ids of `tg://settings/te
 app's what's new page shows as live toggles; without them the page matches `where` to a setting's name. `kind` is
 `new` or `fix` and defaults to `fix` for the old `fixes` category, `new` otherwise. `patches` are exact filenames
 from patches/android; `default` is the switch's default state in words. both are used only by the release notes.
+an item may also list `android_ids`: stable `A001` ids from the adjacent `android-patches.json` registry. every id
+has to be active and share at least one exact patch with the item, so the notes link the logical change and its
+queue patch without guessing an id from a filename. the registry is read only when an item uses it.
 the optional `header` and `footer` are lines put around the release notes and the channel post of this release only;
 the app skips them.
 
@@ -31,6 +34,8 @@ import os
 import re
 import sys
 from urllib.parse import quote, urlsplit
+
+import android_patches
 
 MAX_ITEMS = 100
 MAX_CATEGORIES = 16
@@ -162,6 +167,48 @@ def patches_of(value, where, source):
     return result
 
 
+def registry_needed(items):
+    return any(isinstance(item, dict) and isinstance(item.get('android_ids'), list) and item['android_ids']
+               for item in items)
+
+
+def registry_of(path, items):
+    if not registry_needed(items):
+        return None
+    registry_path = os.path.join(os.path.dirname(os.path.abspath(path)), 'android-patches.json')
+    try:
+        return android_patches.load(registry_path, patch_dir(path))
+    except android_patches.RegistryError as error:
+        fail(f'the android registry is invalid: {error}')
+
+
+def android_ids_of(value, where, patches, registry):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        fail(f'{where} has to be a list of android ids')
+    if len(value) > MAX_ITEMS:
+        fail(f'{where} has more than {MAX_ITEMS} ids')
+    if value and registry is None:
+        fail(f'{where} needs the android registry next to the source')
+    by_id = {entry['id']: entry for entry in registry or []}
+    result = []
+    for android_id in value:
+        if not android_patches.is_id(android_id):
+            fail(f'{where} has an invalid android id: {android_id!r}')
+        if android_id in result:
+            fail(f'{where} lists {android_id} twice')
+        entry = by_id.get(android_id)
+        if entry is None:
+            fail(f'{where} names an unknown android id: {android_id}')
+        if entry['status'] != 'active':
+            fail(f'{where} names a removed android id: {android_id}')
+        if not set(patches) & set(entry['patches']):
+            fail(f'{where} android id {android_id} covers none of the item\'s patches')
+        result.append(android_id)
+    return result
+
+
 def load(path):
     with open(path, encoding='utf-8') as file:
         try:
@@ -175,10 +222,13 @@ def load(path):
         fail('items has to be a non-empty list')
     if len(raw_items) > MAX_ITEMS:
         fail(f'more than {MAX_ITEMS} items')
+    registry = registry_of(path, raw_items)
     items = []
     for number, raw in enumerate(raw_items, 1):
-        if not isinstance(raw, dict) or set(raw) - {'text', 'where', 'category', 'options', 'kind', 'patches', 'default'}:
-            fail(f'item {number} has to be an object with text, where, category and optionally options, kind, patches and default')
+        if not isinstance(raw, dict) or set(raw) - {'text', 'where', 'category', 'options', 'kind', 'patches',
+                                                    'default', 'android_ids'}:
+            fail(f'item {number} has to be an object with text, where, category and optionally options, kind, '
+                 'patches, default and android_ids')
         item = {
             'text': text_of(raw.get('text'), f'item {number} text', MAX_ITEM, True),
             'where': text_of(raw.get('where', ''), f'item {number} where', MAX_ITEM, False),
@@ -198,6 +248,10 @@ def load(path):
         default = text_of(raw.get('default', ''), f'item {number} default', MAX_ITEM, False)
         if default:
             item['default'] = default
+        android_ids = android_ids_of(raw.get('android_ids'), f'item {number} android_ids',
+                                     item['patches'], registry)
+        if android_ids:
+            item['android_ids'] = android_ids
         if not item['patches']:
             del item['patches']
         items.append(item)
@@ -266,11 +320,19 @@ def grouped(changelog):
 def patch_url(repo, revision, name):
     revision = quote(revision, safe='')
     name = quote(name, safe='')
-    return f'https://github.com/{repo}/blob/{revision}/patches/android/{name}'
+    return f'https://github.com/{quote(repo, safe="/")}/blob/{revision}/patches/android/{name}'
+
+
+def android_url(repo, revision, android_id):
+    revision = quote(revision, safe='')
+    anchor = quote(android_id.lower(), safe='')
+    return (f'https://github.com/{quote(repo, safe="/")}/blob/{revision}/'
+            f'docs/android-patches.md#{anchor}')
 
 
 def bullet(item, repo, revision):
-    links = []
+    links = [f'[{android_id}]({android_url(repo, revision, android_id)})'
+             for android_id in item.get('android_ids', [])]
     for name in item.get('patches', []):
         match = PATCH.match(name)
         number = match.group(1) if match else name

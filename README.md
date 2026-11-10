@@ -38,6 +38,7 @@ everything tele adds lives in settings → tele, grouped into pages.
 ## more
 
 - [all features](features.md), grouped by settings page.
+- [Android patch identities](docs/android-patches.md): stable A-IDs for Android originals and substantial adaptations, separate from queue positions and desktop origins.
 - [docs/link-cleaner.md](docs/link-cleaner.md): the tracking parameters the link cleaner removes.
 - [docs/title-template.md](docs/title-template.md): the chat list title variables and modifiers.
 - [docs/scripting.md](docs/scripting.md): the android scripting api and [example scripts](docs/scripts/index.json).

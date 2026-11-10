@@ -96,6 +96,8 @@ all work happens in the telegram tree, as commits on `tele`.
 
    this rewrites the numbered patch files from the commits. `git status` in `main/` shows exactly which patches changed. `--no-numbered` keeps subjects stable: without it format-patch stamps `[PATCH n/m]` into every file, so adding one patch rewrites all the others.
 
+   For an Android original or substantial adaptation, update its stable A-ID's filenames in `ci/android-patches.json` and [android-patches.md](android-patches.md). A follow-up keeps its existing identity; a rebase changes queue positions, not IDs. Pure desktop ports keep their desktop reference without requiring a new A-ID. Run `python3 ci/android_patches.py` in this repository after exporting and include changed registry files in the same commit; never rename commit subjects or queue files merely to add an ID.
+
 5. **update the local-only `docs/internal/PATCHLIST.md`** (statuses, new rows; not tracked, lives only on your machine) and, for a user-facing patch, [`features.md`](../features.md) (english: one row per feature, with the patch file and the desktop patch it comes from). commit here, one commit per patch:
 
    ```bash

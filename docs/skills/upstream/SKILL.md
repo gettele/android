@@ -196,6 +196,7 @@ then in `main`:
 - `features.md`: drop the rows of dropped patches; every row links a patch file by number,
   and a dropped patch leaves a dead link.
 - `docs/architecture.md`: the `UPSTREAM` example line holds the current base commit.
+- `ci/android-patches.json` and `docs/android-patches.md`: update current queue filenames for every affected Android identity after export. Preserve every A-ID, including removed tombstones; if stock makes an identity obsolete, retire it with a reason rather than deleting or reusing its ID. Validate with `python3 ci/android_patches.py`.
 - `docs/releases.md`: the queue count in the header ("the queue now has N patches").
 - `ci/changelog.json`: notes target the next unpublished release, not `releases.md`. Compare its Telegram base with the latest **published** release. For a base change, add `upstream` with `version`, `previous`, an official Android `url` and verified `changes` covering the whole version range; exclude desktop/iOS-only news. Keep tele additions/fixes in separate `kind` groups with categories one level below. Do not repeat upstream news if that base already shipped. Follow [releasing.md](../../releasing.md#before-a-release), validate with the previous changelog asset and inspect the generated Markdown/announcement dry-run.
 

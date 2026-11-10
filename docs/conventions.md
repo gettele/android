@@ -106,6 +106,7 @@ every tele setting is a `TeleConfig` item. adding a switch touches:
 - new features go at the end of the queue. a commit inserted in the middle renumbers every later patch and breaks their links.
 - never bump `UPSTREAM` in a feature change. moving to a new upstream release is its own change (`chore: rebase patches onto <version>`).
 - every user-facing patch updates [features.md](../features.md) in the same commit as the patch export; the local-only `docs/internal/PATCHLIST.md` (not tracked) keeps the batch plan and statuses true.
+- Android originals and substantial Android adaptations use stable `A001…` identities from [android-patches.md](android-patches.md), not their current queue positions. Update `ci/android-patches.json` and its public documentation when adding, renumbering, merging or removing queue files. Reuse an existing logical identity for follow-up fixes; new IDs are monotonic and retired IDs are never reused. Do not alter commit subjects or `.patch` names merely to embed an A-ID.
 
 ## privacy rules for features
 

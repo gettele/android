@@ -26,7 +26,8 @@ for maintainers. releases are built and published by github actions and need the
          "kind": "new",
          "default": "off",
          "options": ["tele-docked-media", "tele-docked-grid"],
-         "patches": ["0333-docked-complete-media-composer.patch"]
+         "patches": ["0333-docked-complete-media-composer.patch"],
+         "android_ids": ["A014"]
        }
      ]
    }
@@ -35,6 +36,8 @@ for maintainers. releases are built and published by github actions and need the
    The release body follows [tele desktop 23](https://github.com/nitreojs/tele/releases/tag/v7.3.3-tele.23): a linked Telegram base and queue count, optional upstream changes, `## new`, `## fixes`, then `## download`. Keep settings-area categories one level lower as `### sending`, `### scripts`, `### privacy`; do not use `fixes` as a category for new notes. Empty sections/categories are omitted. The channel announcement uses the same grouping; the app continues to receive ordinary `categories`/`items` and ignores release-only metadata.
 
    Each item describes a user-visible change in plain lowercase English, without a trailing period. Give enough detail to understand its effect; do not enumerate implementation details or every edge case. `kind` is `new` or `fix`, independently of the patch subject; extending an existing feature is new, repairing existing behavior is a fix. Link the actual Android patch filenames through `patches`; use `default` for the option's initial state (`off`, `on`, `with scripting`) or `always on` for an unconditional fix. `where` is the real UI path and may be empty. `options` are real `tele-…` setting IDs for live toggles in the app. Never invent a setting path, patch number, upstream feature or verification result.
+
+   `android_ids` names the stable Android identities from [android-patches.md](android-patches.md), backed by `ci/android-patches.json`. It supplements, rather than replaces, `patches`: use only IDs relevant to that release item and the exact queue files changed in this release. A new docked follow-up stays `A014` even if its queue position changes; do not list every historical file of the identity as new. GitHub notes and channel posts link A-IDs to stable registry anchors and queue numbers to the exact patch artifacts at the build revision. The app ignores the extra identity metadata. Unknown, removed or unrelated IDs fail validation.
 
    **Telegram changes:** compare the base in the new tag with the latest published tag, not with an older local summary. If it changed, add an `upstream` object with `version`, `previous`, `url` (official Android release/source notes) and `changes` (a list of verified client changes across the complete version range). The generator renders `## telegram android <version>` with “new since <previous>”. Distinguish stock additions from tele patches, and exclude desktop/iOS-only features or server rollouts not supported by this Android base. Cite the official source in `url`; use source/release diffs when no official user-facing notes exist. If the base is unchanged, omit `upstream` entirely—do not repeat previous Telegram news. With `--previous`, validation rejects missing upstream notes for a base change or stale upstream notes for an unchanged base.
 

@@ -15,11 +15,29 @@ import changelog  # noqa: E402
 REPO = 'gettele/android'
 TAG = 'v13.2.1-tele.11'
 PATCH = '0333-docked-complete-media-composer.patch'
+PATCH2 = '0334-docked-second-change.patch'
+PATCH3 = '0335-docked-third-change.patch'
 OFFICIAL = 'https://github.com/DrKLO/Telegram'
 
 
 def item(text='one change', category='chats', where='settings → tele', **extra):
     value = {'text': text, 'where': where, 'category': category}
+    value.update(extra)
+    return value
+
+
+def registry_entry(android_id='A001', patches=None, status='active', **extra):
+    value = {
+        'id': android_id,
+        'title': 'one logical change',
+        'type': 'original',
+        'status': status,
+        'desktop': [],
+        'description': 'does one thing',
+        'patches': [PATCH] if patches is None and status == 'active' else ([] if patches is None else patches),
+    }
+    if status == 'removed':
+        value.setdefault('reason', 'merged into A001')
     value.update(extra)
     return value
 
@@ -52,6 +70,13 @@ class Fixture(unittest.TestCase):
         with open(path, 'w', encoding='utf-8') as file:
             json.dump(source, file)
         return path
+
+    def add_patch(self, name):
+        with open(os.path.join(self.patches, name), 'w', encoding='utf-8') as file:
+            file.write('patch')
+
+    def registry(self, entries):
+        return self.write({'entries': entries}, 'android-patches.json')
 
     def load(self, source):
         return changelog.load(self.write(source))
@@ -122,6 +147,66 @@ class LoadTest(Fixture):
             self.load({'categories': ['chats'], 'items': [item(category='calls')]})
 
 
+class AndroidIdsTest(Fixture):
+    def test_many_to_many_ids_share_a_patch(self):
+        self.add_patch(PATCH2)
+        self.add_patch(PATCH3)
+        self.registry([
+            registry_entry('A001', [PATCH, PATCH2]),
+            registry_entry('A002', [PATCH2, PATCH3], type='adaptation'),
+        ])
+        _, items, _, _ = self.load({'items': [
+            item(patches=[PATCH2], android_ids=['A001', 'A002']),
+        ]})
+        self.assertEqual(items[0]['android_ids'], ['A001', 'A002'])
+
+    def test_explicit_ids_do_not_stamp_every_intersection(self):
+        self.add_patch(PATCH2)
+        self.registry([
+            registry_entry('A001', [PATCH]),
+            registry_entry('A002', [PATCH2]),
+        ])
+        _, items, _, _ = self.load({'items': [
+            item(patches=[PATCH, PATCH2], android_ids=['A001']),
+        ]})
+        self.assertEqual(items[0]['android_ids'], ['A001'])
+
+    def test_bad_android_ids_are_rejected(self):
+        self.add_patch(PATCH2)
+        self.registry([
+            registry_entry('A001', [PATCH]),
+            registry_entry('A002', [], status='removed'),
+        ])
+        cases = [
+            ('unknown', [PATCH], ['A999']),
+            ('removed', [PATCH], ['A002']),
+            ('unrelated', [PATCH2], ['A001']),
+            ('duplicate', [PATCH], ['A001', 'A001']),
+            ('lowercase', [PATCH], ['a001']),
+            ('short', [PATCH], ['A12']),
+            ('alias', [PATCH], ['A0001']),
+            ('number', [PATCH], [1]),
+        ]
+        for label, patches, ids in cases:
+            with self.subTest(label=label):
+                with self.assertRaises(SystemExit):
+                    self.load({'items': [item(patches=patches, android_ids=ids)]})
+
+    def test_android_ids_have_to_be_a_list(self):
+        with self.assertRaises(SystemExit):
+            self.load({'items': [item(android_ids=PATCH)]})
+
+    def test_legacy_items_never_read_the_registry(self):
+        with open(os.path.join(self.ci, 'android-patches.json'), 'w', encoding='utf-8') as file:
+            file.write('{')
+        _, items, _, _ = self.load({'items': [item()]})
+        self.assertNotIn('android_ids', items[0])
+
+    def test_android_ids_need_the_registry(self):
+        with self.assertRaises(SystemExit):
+            self.load({'items': [item(patches=[PATCH], android_ids=['A001'])]})
+
+
 class UpstreamTest(Fixture):
     def test_missing_upstream_is_fine_when_the_base_is_the_same(self):
         changelog.check_upstream(None, TAG, previous('v13.2.1-tele.10'))
@@ -180,6 +265,8 @@ class PreviousTest(Fixture):
     def test_metadata_only_changes_do_not_look_like_a_new_release(self):
         added = changelog.item_key(item())
         self.assertEqual(added, changelog.item_key(item(kind='fix', patches=[PATCH], default='off')))
+        self.assertEqual(added, changelog.item_key(item(android_ids=['A001'])))
+        self.assertTrue(changelog.repeated(previous(items=[item()]), [item(android_ids=['A001'])]))
         self.assertTrue(changelog.repeated(previous(items=[item()]),
                                           [item(kind='fix', patches=[PATCH], default='off', category='sending')]))
         self.assertTrue(changelog.repeated(previous(items=[item('a'), item('b')]),
@@ -221,6 +308,18 @@ class NotesTest(Fixture):
         default = changelog.notes(self.built([entry], revision=''), REPO)
         self.assertIn(f'/blob/{TAG}/patches/android/{PATCH}', default)
 
+    def test_android_ids_and_queue_links_share_the_revision(self):
+        entry = item('docked media', 'sending', patches=[PATCH2], android_ids=['A001', 'A002'],
+                     default='off')
+        rendered = changelog.notes(self.built([entry], revision='deadbeef'), REPO)
+        identities = [f'[A001](https://github.com/{REPO}/blob/deadbeef/docs/android-patches.md#a001)',
+                      f'[A002](https://github.com/{REPO}/blob/deadbeef/docs/android-patches.md#a002)']
+        patch = f'[0334](https://github.com/{REPO}/blob/deadbeef/patches/android/{PATCH2})'
+        self.assertIn(f'{identities[0]}, {identities[1]}, {patch}, settings → tele, off', rendered)
+        default = changelog.notes(self.built([entry], revision=''), REPO)
+        self.assertIn(f'/blob/{TAG}/docs/android-patches.md#a001', default)
+        self.assertIn(f'/blob/{TAG}/patches/android/{PATCH2}', default)
+
     def test_empty_groups_are_omitted_and_header_footer_kept(self):
         rendered = changelog.notes(self.built([item('only new', 'chats')]), REPO)
         self.assertNotIn('## fixes', rendered)
@@ -256,6 +355,18 @@ class AnnounceTest(Fixture):
     def test_patch_links_quote_the_revision(self):
         message = announce.message(self.built([item(patches=[PATCH])], revision='feature/branch'), REPO)
         self.assertIn('/blob/feature%2Fbranch/patches/android/', message)
+
+    def test_android_ids_and_queue_links_share_the_revision(self):
+        entry = item(patches=[PATCH2], android_ids=['A001', 'A002'])
+        message = announce.message(self.built([entry], revision='feature/branch'), REPO)
+        for android_id in ('A001', 'A002'):
+            self.assertIn(f'[{android_id}](https://github.com/{REPO}/blob/'
+                          f'feature%2Fbranch/docs/android-patches.md#{android_id.lower()})', message)
+        self.assertIn(f'[0334](https://github.com/{REPO}/blob/feature%2Fbranch/'
+                      f'patches/android/{PATCH2})', message)
+        default = announce.message(self.built([entry], revision=''), REPO)
+        self.assertIn(f'/blob/{TAG}/docs/android-patches.md#a001', default)
+        self.assertIn(f'/blob/{TAG}/patches/android/{PATCH2}', default)
 
     def test_legacy_changelog_without_a_patch_count(self):
         legacy = {

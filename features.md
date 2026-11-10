@@ -10,6 +10,8 @@ tele for android ports the features of [tele for desktop](https://github.com/nit
 
 a patch that fixed something says what it changed after its link, in the same cell.
 
+Android originals and substantial Android adaptations also have stable [A-IDs](docs/android-patches.md), independent of queue positions and desktop numbering. The public registry links each logical change to its current files; follow-up fixes keep the same identity. Pure ports retain their desktop reference. [A012](docs/android-patches.md#a012) is the Android scripting host, [A013](docs/android-patches.md#a013) the cross-cutting security hardening, and [A014](docs/android-patches.md#a014) the Android docked composer. Queue links below still identify exact artifacts, not stable IDs.
+
 Security fixes from the 2026-11-10 audit are grouped in [0332](patches/android/0332-security-harden-fork-boundaries.patch): script notifications and saved data stay with their account, importing or changing a script revokes its previous approval, pending script replies require their owner, streamer mode protects secret-media windows, last-seen restoration keeps all privacy exceptions, local-password recovery uses the account that owns the lock, and regex, notice images and update paths are bounded. On the first upgrade, existing active-account archives are retained but script approvals and script storage are reset. A legacy local password must be entered once before cloud recovery can be bound to its owner.
 
 Script import notices wrap their complete translated text instead of truncating it after two lines (0332).
