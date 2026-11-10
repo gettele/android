@@ -548,6 +548,12 @@ quickjs-ng через NDK, grants (в том числе «display»), web-пла
 
 Оставшиеся ограничения: нет caption replacement, модульных импортов, local messages и widget-слоя. Старт ждёт account-ready на globalQueue; массовая остановка всё ещё может ждать потоки по очереди. Нужны реальные multi-account/JNI/network stress-проверки. Эти пункты не считаются закрытыми прошедшими stub-тестами.
 
+### группа Other changes
+
+| Android | статус | примечание |
+|---|---|---|
+| `0330-fix-keep-other-changes-inside-their-settings-group` | built | записи Other changes теперь custom multiline text-строки внутри section-card, а не shadow-строки, разрывавшие группу после одного заголовка. Конечный shadow-разделитель остаётся; текст переносится, поиск/версии используют те же строки. Ручная визуальная проверка ожидается |
+
 ### выделяемый лог скриптов
 
 | Android | статус | примечание |
