@@ -875,12 +875,12 @@ litehtml через NDK, карточки в пузыре, playground-чат (д
 | уведомления скриптов и verdict endpoints | built | account isolation; одноразовые ответы только владельцу pending request; поведенческие регрессии пройдены |
 | доверие импорту и source fingerprint | built | replacement/source/folder/delete отзывают approvals; неизменённый rescan сохраняет; регрессия пройдена |
 | владельцы account slot | built | user ID + backend, logout cleanup таблиц/KV/кешей/вложений, поколения callbacks; при первом обновлении архивы активных аккаунтов сохраняются, script state сбрасывается |
-| streamer mode и секретные окна | built | FLAG_SECURE принудителен в отдельных окнах, ручная проверка ожидается |
+| streamer mode и секретные окна | done | FLAG_SECURE принудителен в отдельных окнах; мейнтейнер подтвердил блокировку скриншотов и записи при Streamer mode независимо от Never block screenshots |
 | rollback last seen | built | полный TL journal, owner/backend, single-flight, запрет частичного restore; регрессия пройдена |
 | StarsLock recovery | built | владелец глобального verifier закреплён, legacy привязывается после ввода локального пароля; регрессия пройдена |
 | regex / notices / updater | built | bounded match, лимиты пикселей и обеих сторон, строгий tag и canonical containment |
 
 Сборка `assembleDebug --offline` успешна, APK установлен на `emulator-5554`; запуск и список чатов проверены. Первый smoke выявил ранний вызов native API: `TeleHooks.init` перенесён после `NativeLoader.initNativeLibs`. Ручные сценарии on/off и multi-account не объявлены done.
 
-Ручная проверка на телефоне: мейнтейнер сообщил, что остальные проверенные сценарии отрабатывают штатно. Для streamer mode подтверждено открытие одноразового фото; это ожидаемо, но не подтверждает блокировку захвата экрана. Найдено обрезание переведённого уведомления импорта скрипта: в `0332` снят двухстрочный лимит для file/link import bulletin. Повторная визуальная проверка длинного перевода ожидается.
+Ручная проверка на телефоне: мейнтейнер сообщил, что остальные проверенные сценарии отрабатывают штатно. Streamer mode проверен: скриншоты и запись блокируются независимо от Never block screenshots; пункт закрыт. Найдено обрезание переведённого уведомления импорта скрипта: в `0332` снят двухстрочный лимит для file/link import bulletin, новая сборка установлена на телефон. Повторная визуальная проверка длинного перевода ожидается.
 
