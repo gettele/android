@@ -46,7 +46,7 @@
 - `test_download_bounds.py`: настоящий TeleUpdater (tag/URL/canonical containment) — PASS; извлечённые без изменений методы notices (размеры, Long overflow, sampling) со stub BitmapFactory — PASS. Реальный Android decoder этим harness не проверяется.
 - `assembleDebug --offline`: успешно после исправления недостающего импорта и порядка native init.
 - `emulator-5554`: APK установлен через `adb install -r`; LaunchActivity resumed, процесс жив, список чатов отображается (`scratch/security-smoke.png`). Первый smoke выявил ранний вызов native API — fork init перенесён после загрузки native libs; повторный старт без нового crash. Ручные feature-сценарии не выполнялись.
-- Экспорт: `Telegram` commit `0f9a971d9`, `main/patches/android/0332-security-harden-fork-boundaries.patch`. Сквозная правка нескольких фич оставлена отдельным коммитом.
+- Экспорт: `Telegram` commit `5f02b4fb1`, `main/patches/android/0332-security-harden-fork-boundaries.patch`. Сквозная правка нескольких фич оставлена отдельным коммитом. По ручному отчёту исправлен двухстрочный лимит переведённого уведомления импорта; APK пересобран успешно. Повторная установка на телефон пока невозможна: adb не видит подключённых устройств; визуальная перепроверка ожидается.
 
 ### Ручная приёмка на emulator-5554
 
