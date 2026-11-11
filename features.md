@@ -28,7 +28,7 @@ the tele row itself and the things around it.
 
 | feature | what it does | where | default | android | desktop |
 |---|---|---|---|---|---|
-| tele-only search | search names and descriptions in English or the app language across tele settings; results open and highlight the matching option, including collapsed groups | settings → tele → search | always on | [0337](patches/android/0337-feat-refresh-tele-settings.patch) | — |
+| tele-only search | search names and descriptions in English or the app language across tele settings; results open and highlight the matching option, including collapsed groups; fixes a crash when opening the search field | settings → tele → search | always on | [0337](patches/android/0337-feat-refresh-tele-settings.patch) | — |
 | glass headers | tele screens use transparent headers and stock glass back buttons | tele screens | always on | [0337](patches/android/0337-feat-refresh-tele-settings.patch) | — |
 | forwarded verification | forwarded headers show one verification checkmark, whether it comes from Telegram or the tele server | forwarded messages | always on | [0337](patches/android/0337-feat-refresh-tele-settings.patch) | — |
 | translated Shot options | the complete Shot options sheet follows the app language in Russian and Ukrainian | message menu → Shot → settings | always on | [0337](patches/android/0337-feat-refresh-tele-settings.patch) | — |
