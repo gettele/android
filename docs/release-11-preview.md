@@ -2,12 +2,14 @@
 
 Unpublished draft, generated from `ci/changelog.json`. Download and release-tag links become available only after publication. This preview does not mark manual release gates as passed.
 
-telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 333 patches.
+telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 334 patches.
 
 ## new
 
 ### sending
 
+- open a round-video camera preview and start recording only when you tap record ([A015](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a015), [0334](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0334-feat-improve-round-video-controls.patch), settings → tele → sending → round video, off)
+- adjust round-video zoom below the preview, with lens stops on compatible rear cameras and a continuous scale elsewhere ([A015](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a015), [0334](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0334-feat-improve-round-video-controls.patch), settings → tele → sending → round video, off)
 - preview attached photos and videos as an album or a strip, with a compact header, grouping and file controls ([A014](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a014), [0333](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0333-docked-complete-media-composer.patch), settings → tele → sending → attach media above the field, off)
 - pasted media, keyboard images and single-chat shares wait above the field; scheduled messages, quick replies and paid chats use the dock too ([A014](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a014), [0333](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0333-docked-complete-media-composer.patch), settings → tele → sending → attach media above the field, with docked media)
 

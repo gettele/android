@@ -2,7 +2,7 @@
 
 This is the public, human-readable registry of tele changes whose design or implementation originates on Android rather than being a direct port of the desktop queue. The canonical machine-readable copy is [`ci/android-patches.json`](../ci/android-patches.json); keep both in sync.
 
-The registry is curated, not exhaustive. It groups follow-up patches into logical changes, so one entry can contain many patch files. It intentionally does not index all 333 files in [`patches/android`](../patches/android): patches not listed here remain attributed to their desktop source or are small technical follow-ups outside this registry. Their absence is **not** a claim that they are pure ports.
+The registry is curated, not exhaustive. It groups follow-up patches into logical changes rather than indexing every file in [`patches/android`](../patches/android). Absence from the registry does not imply a pure desktop port.
 
 ## Schema
 
@@ -54,6 +54,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A012](#a012) | Android scripting host and native scripting UIs | adaptation | active | 23 |
 | [A013](#a013) | Cross-cutting fork security boundaries | original | active | 1 |
 | [A014](#a014) | Docked media composer | adaptation | active | 22 |
+| [A015](#a015) | Round video recording controls | original | active | 1 |
 
 <a id="a001"></a>
 
@@ -361,3 +362,17 @@ Implements the Android media composer above the message field: docked photos, vi
 | [`0294-fix-show-docked-media-menu-on-release-so-drag-stays-.patch`](../patches/android/0294-fix-show-docked-media-menu-on-release-so-drag-stays-.patch) |
 | [`0295-fix-keep-docked-spoilers-after-leaving-the-media-edi.patch`](../patches/android/0295-fix-keep-docked-spoilers-after-leaving-the-media-edi.patch) |
 | [`0333-docked-complete-media-composer.patch`](../patches/android/0333-docked-complete-media-composer.patch) |
+
+<a id="a015"></a>
+
+## A015 — Round video recording controls
+
+**Type:** `original` · **Status:** `active`
+
+**Desktop references:** none (Android-only change).
+
+Adds optional manual recording start and camera zoom controls to the Android round-video recorder.
+
+| patch |
+|---|
+| [`0334-feat-improve-round-video-controls.patch`](../patches/android/0334-feat-improve-round-video-controls.patch) |
