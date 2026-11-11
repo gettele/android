@@ -2,7 +2,7 @@
 
 Unpublished draft, generated from `ci/changelog.json`. Download and release-tag links become available only after publication. This preview does not mark manual release gates as passed.
 
-telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 334 patches.
+telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 335 patches.
 
 ## new
 
@@ -36,6 +36,7 @@ telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 334 patches.
 
 ### privacy
 
+- fix a QuickJS memory-safety vulnerability in widgets and scripts by rejecting async disposal in normal functions and guarding interpreter suspension ([0335](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0335-fix-backport-quickjs-suspension-guards.patch), widget and script runtimes, always on)
 - streamer mode blocks capture of disappearing media even when screenshots are otherwise allowed ([A013](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a013), [0332](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0332-security-harden-fork-boundaries.patch), settings → tele → privacy → streamer mode, with streamer mode)
 - peeking at last seen restores every privacy exception, and local-password recovery checks the account that owns the lock ([A013](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a013), [0332](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0332-security-harden-fork-boundaries.patch), settings → tele → privacy, always on)
 - a legacy local password must be entered once before recovery can be attached to its owner ([A013](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a013), [0332](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0332-security-harden-fork-boundaries.patch), settings → tele → privacy → local password, with a local password)
