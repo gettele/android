@@ -375,6 +375,7 @@ Adds optional manual recording start and camera zoom controls to the Android rou
 
 Rear controls always include wide/minimum, main 1× and telephoto/2× presets; additional accessible lenses add buttons. Digital fallbacks do not claim extra physical lenses, and zoom-out is limited to the camera's actual minimum. The active interval's button shows the current zoom. The ruler targets 5×, or the longest native telephoto above 5× plus 3×, clamped to hardware limits.
 The ruler's actual maximum is also labeled and provides checkpoint haptics, without adding another preset button.
+With a reply panel, pause and resume controls retain the same vertical position throughout the transition to the recorded-video preview.
 
 | patch |
 |---|
