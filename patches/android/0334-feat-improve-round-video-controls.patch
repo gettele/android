@@ -17,14 +17,12 @@ Subject: [PATCH] feat: improve round video controls
  .../src/main/java/tele/TeleConfig.kt          |   4 +
  .../src/main/java/tele/helpers/RoundZoom.kt   | 809 ++++++++++++++++++
  .../main/java/tele/helpers/RoundZoomLenses.kt | 197 +++++
- .../main/java/tele/helpers/TeleCameraProbe.kt | 171 ++++
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   3 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   3 +
- .../tele/ui/settings/TeleSettingsActivity.kt  |   8 +
- 17 files changed, 2012 insertions(+), 71 deletions(-)
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   6 +
+ 16 files changed, 1839 insertions(+), 71 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt
- create mode 100644 TMessagesProj/src/main/java/tele/helpers/TeleCameraProbe.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java b/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java
 index 207b15f9f..9477a27e0 100644
@@ -2677,183 +2675,6 @@ index 000000000..1fba58e7a
 +        return context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
 +    }
 +}
-diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleCameraProbe.kt b/TMessagesProj/src/main/java/tele/helpers/TeleCameraProbe.kt
-new file mode 100644
-index 000000000..271f7fd03
---- /dev/null
-+++ b/TMessagesProj/src/main/java/tele/helpers/TeleCameraProbe.kt
-@@ -0,0 +1,171 @@
-+package tele.helpers
-+
-+import android.Manifest
-+import android.content.Context
-+import android.content.pm.PackageManager
-+import android.graphics.ImageFormat
-+import android.hardware.camera2.CameraAccessException
-+import android.hardware.camera2.CameraCaptureSession
-+import android.hardware.camera2.CameraCharacteristics
-+import android.hardware.camera2.CameraDevice
-+import android.hardware.camera2.CameraManager
-+import android.media.ImageReader
-+import android.os.Build
-+import android.os.Handler
-+import android.os.HandlerThread
-+import android.widget.ScrollView
-+import android.widget.TextView
-+import org.telegram.messenger.AndroidUtilities
-+import org.telegram.ui.ActionBar.AlertDialog
-+import org.telegram.ui.ActionBar.BaseFragment
-+
-+object TeleCameraProbe {
-+    fun show(fragment: BaseFragment) {
-+        val activity = fragment.parentActivity ?: return
-+        fragment.showDialog(AlertDialog.Builder(activity)
-+            .setTitle("Camera access diagnostics")
-+            .setMessage("Local only. Metadata does not open a camera. Frame tests explicitly open one camera for up to 8 seconds, discard the frame, and never record audio or save images. Close other camera screens first.")
-+            .setItems(arrayOf("Read camera metadata", "Test telephoto camera 6", "Test logical camera 7")) { _, index ->
-+                if (index == 0) run(fragment, null) else {
-+                    val id = if (index == 1) "6" else "7"
-+                    fragment.showDialog(AlertDialog.Builder(activity)
-+                        .setTitle("Open camera $id?")
-+                        .setMessage("This will activate the camera and request one frame. No image is saved or sent.")
-+                        .setPositiveButton("Test") { _, _ -> run(fragment, id) }
-+                        .setNegativeButton("Cancel", null).create())
-+                }
-+            }.setNegativeButton("Close", null).create())
-+    }
-+
-+    private fun describeError(error: Throwable): String = when (error) {
-+        is CameraAccessException -> "${error.javaClass.simpleName}(reason=${error.reason}): ${error.message}"
-+        else -> "${error.javaClass.simpleName}: ${error.message}"
-+    }
-+
-+    private fun run(fragment: BaseFragment, testId: String?) {
-+        val activity = fragment.parentActivity ?: return
-+        if (testId != null && activity.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-+            activity.requestPermissions(arrayOf(Manifest.permission.CAMERA), 4128)
-+            return
-+        }
-+        val output = TextView(activity).apply {
-+            setPadding(24, 24, 24, 24)
-+            setTextIsSelectable(true)
-+            text = "Reading…"
-+            setTextColor(org.telegram.ui.ActionBar.Theme.getColor(org.telegram.ui.ActionBar.Theme.key_dialogTextBlack))
-+        }
-+        val report = StringBuilder()
-+        val thread = HandlerThread("TeleCameraProbe").apply { start() }
-+        val handler = Handler(thread.looper)
-+        var device: CameraDevice? = null
-+        var session: CameraCaptureSession? = null
-+        var reader: ImageReader? = null
-+        var finished = false
-+        fun publish() {
-+            val text = report.toString()
-+            AndroidUtilities.runOnUIThread { output.text = text }
-+        }
-+        fun finish(message: String) {
-+            if (finished) return
-+            finished = true
-+            report.append("\n").append(message).append('\n')
-+            handler.removeCallbacksAndMessages(null)
-+            try { session?.close() } catch (_: Exception) { }
-+            try { device?.close() } catch (_: Exception) { }
-+            try { reader?.close() } catch (_: Exception) { }
-+            publish()
-+            thread.quitSafely()
-+        }
-+        val dialog = AlertDialog.Builder(activity)
-+            .setTitle("Camera diagnostics")
-+            .setView(ScrollView(activity).apply { addView(output) })
-+            .setPositiveButton("Copy") { _, _ -> AndroidUtilities.addToClipboard(output.text) }
-+            .setNegativeButton("Close", null).create()
-+        dialog.setOnDismissListener { handler.post { finish("Cancelled / report closed") } }
-+        fragment.showDialog(dialog)
-+        handler.post {
-+            try {
-+                val manager = activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-+                report.append("Device: ${Build.MANUFACTURER} ${Build.MODEL}\nBuild: ${Build.DISPLAY}\nAPI: ${Build.VERSION.SDK_INT}\nPackage: ${activity.packageName}\nUID: ${android.os.Process.myUid()}\n")
-+                val ids = manager.cameraIdList
-+                report.append("Enumerated: ${ids.joinToString()}\n")
-+                val candidates = (ids.toList() + listOf("6", "7")).distinct()
-+                for (id in candidates) {
-+                    report.append("\nCamera $id (listed=${id in ids})\n")
-+                    try {
-+                        val c = manager.getCameraCharacteristics(id)
-+                        val capabilities = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-+                        report.append("facing=${c.get(CameraCharacteristics.LENS_FACING)} (0=front,1=back,2=external)\n")
-+                        report.append("logical=${capabilities?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)}\n")
-+                        if (Build.VERSION.SDK_INT >= 28) report.append("physical=${c.physicalCameraIds.joinToString()}\n")
-+                        report.append("focal=${c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.joinToString()}\nsensor=${c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)}\n")
-+                        if (Build.VERSION.SDK_INT >= 30) report.append("zoom=${c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)}\n")
-+                    } catch (error: Exception) { report.append("METADATA FAILED: ${describeError(error)}\n") }
-+                }
-+                if (testId == null) {
-+                    finish("Metadata only; no camera opened. Missing IDs alone do not prove an access ban.")
-+                    return@post
-+                }
-+                publish()
-+                handler.postDelayed({ finish("TIMEOUT: no frame within 8 seconds; not proof of an OEM ban.") }, 8000)
-+                report.append("\nOpening $testId explicitly…\n")
-+                manager.openCamera(testId, object : CameraDevice.StateCallback() {
-+                    override fun onOpened(camera: CameraDevice) {
-+                        if (finished) { camera.close(); return }
-+                        device = camera
-+                        report.append("OPENED\n")
-+                        publish()
-+                        try {
-+                            val map = manager.getCameraCharacteristics(testId).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-+                            val size = map?.getOutputSizes(ImageFormat.YUV_420_888)?.minByOrNull { it.width.toLong() * it.height }
-+                                ?: throw IllegalStateException("No YUV output; opened but frame test unsupported")
-+                            report.append("YUV ${size.width}x${size.height}\n")
-+                            val target = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2)
-+                            reader = target
-+                            target.setOnImageAvailableListener({ source ->
-+                                if (!finished) try {
-+                                    val dimensions = source.acquireLatestImage()?.use { "${it.width}x${it.height}" }
-+                                    if (dimensions != null) finish("FRAME RECEIVED: $dimensions. Camera $testId is accessible to tele; frame discarded.")
-+                                } catch (error: Exception) { finish("FRAME FAILED: ${describeError(error)}") }
-+                            }, handler)
-+                            camera.createCaptureSession(listOf(target.surface), object : CameraCaptureSession.StateCallback() {
-+                                override fun onConfigured(configured: CameraCaptureSession) {
-+                                    if (finished) { configured.close(); return }
-+                                    session = configured
-+                                    try {
-+                                        val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(target.surface) }
-+                                        configured.setRepeatingRequest(request.build(), null, handler)
-+                                        report.append("SESSION CONFIGURED; waiting for frame\n")
-+                                        publish()
-+                                    } catch (error: Exception) { finish("REQUEST FAILED: ${describeError(error)}") }
-+                                }
-+                                override fun onConfigureFailed(failed: CameraCaptureSession) {
-+                                    failed.close()
-+                                    finish("SESSION FAILED: camera opened; stream configuration rejected, not necessarily an access ban.")
-+                                }
-+                            }, handler)
-+                        } catch (error: Exception) { finish("CONFIGURATION FAILED: ${describeError(error)}") }
-+                    }
-+                    override fun onDisconnected(camera: CameraDevice) {
-+                        camera.close()
-+                        finish("DISCONNECTED: camera unavailable / preempted; not proof of an OEM ban.")
-+                    }
-+                    override fun onError(camera: CameraDevice, error: Int) {
-+                        camera.close()
-+                        val reason = when (error) {
-+                            ERROR_CAMERA_IN_USE -> "CAMERA_IN_USE"
-+                            ERROR_MAX_CAMERAS_IN_USE -> "MAX_CAMERAS_IN_USE"
-+                            ERROR_CAMERA_DISABLED -> "CAMERA_DISABLED"
-+                            ERROR_CAMERA_DEVICE -> "CAMERA_DEVICE"
-+                            ERROR_CAMERA_SERVICE -> "CAMERA_SERVICE"
-+                            else -> "UNKNOWN"
-+                        }
-+                        finish("OPEN ERROR: $reason ($error). Correlate with CameraService logs; this alone does not identify the policy owner.")
-+                    }
-+                }, handler)
-+            } catch (error: Exception) {
-+                finish("FAILED: ${describeError(error)}")
-+            }
-+        }
-+    }
-+}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 index 4dfd17e44..e5654bcb7 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
@@ -2883,18 +2704,10 @@ index 6b5dd2592..55bed4e23 100644
          "Scripts live in the app's external files folder, run on their own thread, and only get the permissions you approve. Imported code is untrusted." to "Скрипти живуть у зовнішній папці файлів застосунку, виконуються у власному потоці й отримують лише схвалені вами дозволи. Імпортований код є недовіреним.",
          "Search and export star transactions" to "Шукати й експортувати транзакції Stars",
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index 620683449..1ffbae812 100644
+index 620683449..8027c2679 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-@@ -663,6 +663,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
-                 "server_send_crash" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.sendPendingAsync(it); refresh() }
-                 "server_share_dump" -> (parentActivity ?: return).let { tele.helpers.TeleCrash.shareDump(it) }
-                 "mtp_log" -> presentFragment(tele.ui.TeleMtpActivity())
-+                "camera_probe" -> tele.helpers.TeleCameraProbe.show(this)
-                 "mtp_console" -> presentFragment(tele.ui.TeleMtpConsoleActivity())
-                 "mtp_clear" -> clearMtpLog()
-                 "mtp_history_clear" -> {
-@@ -995,6 +996,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -995,6 +995,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
          private val DESCRIPTIONS = mapOf(
              "Send MKV files as videos" to "Only when the video track can be read; other files stay files.",
              "Send silent videos as" to "GIF makes a video with no audio track an animation; Video keeps it a video.",
@@ -2902,7 +2715,7 @@ index 620683449..1ffbae812 100644
              "Send videos without sound as GIFs" to "Videos without an audio track go out as GIFs.",
              "Fake upgrade of gifts" to "Rolls the upgrade of a gift locally: nothing is bought and nothing is sent.",
              "Roll animation" to "The attributes of the gift change while the roll runs.",
-@@ -1080,6 +1082,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -1080,6 +1081,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
              "Open collectible gifts in see.tg" to "Open collectible gifts in the see.tg mini app.",
              "Copy custom emoji id" to "Copy a custom emoji's ID from its menu.",
              "Send photos in HD by default" to "Send photos in full quality.",
@@ -2910,14 +2723,13 @@ index 620683449..1ffbae812 100644
              "Attach media above the field (beta)" to "Picked photos and videos wait above the field.",
              "Send scheduled messages on time" to "Send due scheduled messages while tele runs.",
              "Queue messages behind uploading media" to "Text waits for the media being uploaded. Send it early from its menu.",
-@@ -1530,6 +1533,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -1530,6 +1532,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
                      toggle("Show docked media as an album", TeleConfig.DOCKED_GRID)
                  ) else emptyArray<Row>()),
                  Row(TYPE_SHADOW),
 +                Row(TYPE_HEADER, "Round video"),
 +                toggle("Start round video recording manually", TeleConfig.MANUAL_ROUND_START),
 +                toggle("Show zoom controls", TeleConfig.ROUND_ZOOM),
-+                Row(TYPE_LINK, title = "Camera access diagnostics", mode = "camera_probe", id = "tele-camera-probe"),
 +                Row(TYPE_SHADOW),
                  Row(TYPE_HEADER, "Scheduled"),
                  toggle("Send scheduled messages on time", TeleConfig.PUNCTUAL_SCHEDULED),
