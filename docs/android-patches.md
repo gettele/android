@@ -33,7 +33,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 - **Never recycle.** A removed entry keeps its `id` forever. Deleting or reusing an ID would silently repoint external links, release notes and historical diffs.
 - **Removal.** Withdraw a change by setting `status` to `removed`, keeping the `id` and `title`, adding a short `reason`, and setting `patches` to an empty array. Stable history lives in git, not in stale filename references; consumers must not require a removed tombstone to reference files that still exist.
 - **Rebase and renames.** When a rebase renames a patch file or changes its content, update the filename in the existing entry. Do not allocate a new ID or a new entry for the renamed patch. `id` tracks the logical change, not the filename.
-- **Many-to-many.** One entry may list many patches and one patch may legitimately belong to more than one logical entry. Consumers must not assume patch filenames are unique across entries. The current registry has multiple files per entry but no filename shared between entries.
+- **Many-to-many.** One entry may list many patches and one patch may legitimately belong to more than one logical entry. Consumers must not assume patch filenames are unique across entries. Cross-cutting UI follow-up 0337 belongs to A003, A006 and A008.
 - **Grouping.** Add a genuinely independent logical change as a new entry; do not split or merge existing IDs merely to match a new patch layout. Follow-up fixes stay in the entry they serve.
 
 ## Entries
@@ -42,12 +42,12 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 |---|---|---|---|---|
 | [A001](#a001) | Android build credentials and runtime skeleton | original | active | 2 |
 | [A002](#a002) | Android packaging, branding and launcher icons | adaptation | active | 8 |
-| [A003](#a003) | Native tele settings, navigation and search | adaptation | active | 16 |
+| [A003](#a003) | Native tele settings, navigation and search | adaptation | active | 17 |
 | [A004](#a004) | Local names and aliases with shared native editors | adaptation | active | 3 |
 | [A005](#a005) | Retained deleted messages, edit history and saved drafts | adaptation | active | 7 |
-| [A006](#a006) | Public tele server, Argon2 and crash bridge | adaptation | active | 11 |
+| [A006](#a006) | Public tele server, Argon2 and crash bridge | adaptation | active | 12 |
 | [A007](#a007) | Android updater, release notes and local tele chat | adaptation | active | 7 |
-| [A008](#a008) | Message shots and render pipeline | adaptation | active | 5 |
+| [A008](#a008) | Message shots and render pipeline | adaptation | active | 6 |
 | [A009](#a009) | Notification center, presence and service notices | adaptation | active | 9 |
 | [A010](#a010) | Diagnostics, MTProto tools and memory reports | adaptation | active | 6 |
 | [A011](#a011) | Wallet engine Android integration | adaptation | active | 5 |
@@ -120,6 +120,7 @@ Builds the Android tele settings tree: section pages, grouped rows, collapsible 
 | [`0303-fix-open-the-tele-submenus-at-their-item.patch`](../patches/android/0303-fix-open-the-tele-submenus-at-their-item.patch) |
 | [`0306-fix-point-the-settings-search-at-real-rows.patch`](../patches/android/0306-fix-point-the-settings-search-at-real-rows.patch) |
 | [`0330-fix-keep-other-changes-inside-their-settings-group.patch`](../patches/android/0330-fix-keep-other-changes-inside-their-settings-group.patch) |
+| [`0337-feat-refresh-tele-settings.patch`](../patches/android/0337-feat-refresh-tele-settings.patch) — tele-only search and stock glass headers |
 
 <a id="a004"></a>
 
@@ -180,6 +181,7 @@ Adds the Android client for the public tele server: hashed badge feed, Argon2 he
 | [`0073-feat-show-tele-badges-in-bubbles-and-settings.patch`](../patches/android/0073-feat-show-tele-badges-in-bubbles-and-settings.patch) |
 | [`0074-feat-find-chats-by-server-aliases.patch`](../patches/android/0074-feat-find-chats-by-server-aliases.patch) |
 | [`0075-feat-offer-to-send-crash-reports-on-start.patch`](../patches/android/0075-feat-offer-to-send-crash-reports-on-start.patch) |
+| [`0337-feat-refresh-tele-settings.patch`](../patches/android/0337-feat-refresh-tele-settings.patch) — single verification checkmark in forwards |
 
 <a id="a007"></a>
 
@@ -218,6 +220,7 @@ Renders selected messages into a bitmap on Android with 1x-4x scale, incoming-st
 | [`0269-fix-keep-the-sender-of-my-messages-in-shots.patch`](../patches/android/0269-fix-keep-the-sender-of-my-messages-in-shots.patch) |
 | [`0270-fix-keep-badges-clear-of-names-and-restore-shot-tags.patch`](../patches/android/0270-fix-keep-badges-clear-of-names-and-restore-shot-tags.patch) |
 | [`0271-fix-send-docked-shots-like-normal-shots.patch`](../patches/android/0271-fix-send-docked-shots-like-normal-shots.patch) |
+| [`0337-feat-refresh-tele-settings.patch`](../patches/android/0337-feat-refresh-tele-settings.patch) — Russian and Ukrainian Shot options |
 
 <a id="a009"></a>
 
