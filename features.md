@@ -4,6 +4,8 @@ every tele patch for android, grouped by the settings page that holds its switch
 
 everything tele adds lives in settings → tele, grouped into pages. the main settings search finds every tele setting. what's new after an update lists the settings that version added.
 
+The Money page uses the same outlined icon as Money in the chat-list menu ([0336](patches/android/0336-fix-align-money-settings-icon.patch)).
+
 tele for android ports the features of [tele for desktop](https://github.com/nitreojs/tele). the last column links the desktop patch a feature comes from, by its number in the current desktop queue. features that android or its system already does, and ones that need a desktop window, aren't here.
 
 "default" is the state of the switch. `always on` has no switch, `with …` follows another switch. a switch that is off behaves exactly like stock telegram.

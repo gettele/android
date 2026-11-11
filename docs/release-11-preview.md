@@ -2,7 +2,7 @@
 
 Unpublished draft, generated from `ci/changelog.json`. Download and release-tag links become available only after publication. This preview does not mark manual release gates as passed.
 
-telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 335 patches.
+telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 336 patches.
 
 ## new
 
@@ -48,6 +48,7 @@ telegram android [13.2.1](https://github.com/DrKLO/Telegram) with 335 patches.
 
 ### interface
 
+- use the chat-list menu's outlined Money icon in tele settings too ([0336](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0336-fix-align-money-settings-icon.patch), settings → tele → money, always on)
 - the Other changes section keeps its notes inside one card, and long translated script-import notices wrap in full ([A003](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a003), [A013](https://github.com/gettele/android/blob/v13.2.1-tele.11/docs/android-patches.md#a013), [0330](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0330-fix-keep-other-changes-inside-their-settings-group.patch), [0332](https://github.com/gettele/android/blob/v13.2.1-tele.11/patches/android/0332-security-harden-fork-boundaries.patch), settings → tele → what's new, scripts, always on)
 
 ### debug
