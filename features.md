@@ -18,7 +18,7 @@ Security fixes from the 2026-11-10 audit are grouped in [0332](patches/android/0
 
 Script import notices wrap their complete translated text instead of truncating it after two lines (0332).
 
-QuickJS security: [0335](patches/android/0335-fix-backport-quickjs-suspension-guards.patch) backports [TelegramMessenger/quickjs ca3594d](https://github.com/TelegramMessenger/quickjs/commit/ca3594dae5fd0dd6d667be74a322e8e935a2d217) into both the widget sandbox and tele scripting engine. Invalid `await using` loop bindings outside async functions are rejected, and suspending bytecode cannot leave a normal function's stack frame without closing its variable references. This fix is unconditional; disabling widgets is not required for protection. Run `python3 ci/test_quickjs_await.py --telegram ../Telegram` from the patchset repository to check both engines with ASan/UBSan, including valid async syntax.
+QuickJS security: [0335](patches/android/0335-fix-backport-quickjs-suspension-guards.patch) backports [TelegramMessenger/quickjs ca3594d](https://github.com/TelegramMessenger/quickjs/commit/ca3594dae5fd0dd6d667be74a322e8e935a2d217) into both the widget sandbox and tele scripting engine. Invalid `await using` loop bindings outside async functions are rejected, and suspending bytecode cannot leave a normal function's stack frame without closing its variable references. This fix is unconditional; disabling widgets is not required for protection.
 
 [interface](#interface) · [privacy](#privacy) · [links](#links) · [ids](#ids) · [sending](#sending) · [your data](#your-data) · [server](#server) · [money](#money) · [debug](#debug) · [updates](#updates) · [everywhere](#everywhere) · [build](#build)
 

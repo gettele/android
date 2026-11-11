@@ -48,7 +48,7 @@ for maintainers. releases are built and published by github actions and need the
    python3 ci/announce.py /tmp/tele11-changelog.json --repo gettele/android --dry-run
    ```
 
-   tele 10 already uses Telegram 13.2.1, so tele 11 on the same base has **no upstream-news section**. [release-11-preview.md](release-11-preview.md) is an unpublished preview generated from the current source; regenerate it when that source changes, and never add it to published history before the release exists. It is not a promise that manual release gates have passed.
+   tele 10 already uses Telegram 13.2.1, so tele 11 on the same base has **no upstream-news section**. Generate unpublished previews outside the tracked repository; never add them to published history before the release exists. Generated notes do not imply manual release gates have passed.
 
    `categories` controls group order; every item's category must be listed. The app limits remain 100 items, 16 categories, 64 characters per category and 1024 per item text. `python3 ci/changelog.py ci/changelog.json --tag v13.2.1-tele.11 --repo gettele/android` validates without writing or publishing. Publishing refuses unchanged previous items. The optional `header` and `footer` remain single lines up to 64 characters, before/after the notes and channel post; the app ignores them.
 
