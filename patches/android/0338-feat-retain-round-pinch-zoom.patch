@@ -1,0 +1,248 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Wed, 11 Nov 2026 23:33:18 +0300
+Subject: [PATCH] feat: retain round pinch zoom
+
+---
+ .../ui/Components/InstantCameraView.java      | 27 ++++++++++-
+ .../ui/Components/InstantCameraView2.java     | 47 ++++++++++++++-----
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/RoundZoom.kt   |  8 +++-
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  2 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 7 files changed, 77 insertions(+), 13 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java
+index e23a1f3ad..de632edd8 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java
+@@ -250,6 +250,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+     float pinchStartDistance;
+ 
+     float pinchScale;
++    private float tele_pinchBaseZoomRatio = 1f;
+ 
+     boolean isInPinchToZoomTouchMode;
+     boolean maybePinchToZoomTouchMode;
+@@ -534,6 +535,20 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+         return cameraSession == null ? 1f : cameraSession.tele_getZoomRatio();
+     }
+ 
++    private void tele_applyPinchZoom(float scale) {
++        if (!(scale > 0f) || Float.isInfinite(scale)) return;
++        float ratio = tele_pinchBaseZoomRatio * scale;
++        float max = tele_roundZoom != null ? tele_roundZoom.pinchMaximumRatio() : tele_maxZoomRatio();
++        ratio = Math.max(tele_minZoomRatio(), Math.min(max, ratio));
++        if (useCamera2) {
++            if (camera2SessionCurrent != null) {
++                camera2SessionCurrent.tele_setZoomRatio(ratio);
++            }
++        } else if (cameraSession != null) {
++            cameraSession.tele_setZoomRatio(ratio);
++        }
++    }
++
+     private void tele_updateRoundZoom() {
+         if (tele_roundZoom == null) return;
+         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+@@ -3968,6 +3983,10 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+                 pinchStartDistance = (float) Math.hypot(ev.getX(1) - ev.getX(0), ev.getY(1) - ev.getY(0));
+ 
+                 pinchScale = 1f;
++                if (TeleConfig.KEEP_ROUND_PINCH_ZOOM.getValue()) {
++                    if (tele_roundZoom != null) tele_roundZoom.beginPinch();
++                    tele_pinchBaseZoomRatio = tele_currentZoomRatio();
++                }
+ 
+                 pointerId1 = ev.getPointerId(0);
+                 pointerId2 = ev.getPointerId(1);
+@@ -3996,7 +4015,9 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+                 return false;
+             }
+             pinchScale = (float) Math.hypot(ev.getX(index2) - ev.getX(index1), ev.getY(index2) - ev.getY(index1)) / pinchStartDistance;
+-            if (useCamera2) {
++            if (TeleConfig.KEEP_ROUND_PINCH_ZOOM.getValue()) {
++                tele_applyPinchZoom(pinchScale);
++            } else if (useCamera2) {
+                 if (camera2SessionCurrent != null) {
+                     float zoom = Utilities.clamp(pinchScale, camera2SessionCurrent.getMaxZoom(), camera2SessionCurrent.getMinZoom());
+                     camera2SessionCurrent.setZoom(zoom);
+@@ -4019,6 +4040,10 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+         if (finishZoomTransition != null) {
+             return;
+         }
++        if (TeleConfig.KEEP_ROUND_PINCH_ZOOM.getValue()) {
++            if (tele_roundZoom != null) tele_roundZoom.syncRatio(tele_currentZoomRatio());
++            return;
++        }
+ 
+         float zoom;
+         if (useCamera2) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java
+index 0a36c36a2..713efce86 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java
+@@ -126,6 +126,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+     private float panTranslationY;
+     private float animationTranslationY;
+     private float pinchStartDistance;
++    private float tele_pinchBaseZoomRatio = 1f;
+     private float zoomProgress;
+     private int zoomPointerId1 = -1;
+     private int zoomPointerId2 = -1;
+@@ -1159,6 +1160,10 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+             pinchStartDistance = pointerDistance(event, 0, 1);
+             pinchZoomActive = pinchStartDistance > 0f;
+             zoomProgress = 0f;
++            if (TeleConfig.KEEP_ROUND_PINCH_ZOOM.getValue()) {
++                if (tele_roundZoom != null) tele_roundZoom.beginPinch();
++                tele_pinchBaseZoomRatio = tele_currentZoomRatio();
++            }
+             return true;
+         }
+         if (event.getActionMasked() == MotionEvent.ACTION_MOVE && pinchZoomActive) {
+@@ -1172,17 +1177,28 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+             float maximumZoomRatio = capabilities == null
+                     ? 1f
+                     : capabilities.getMaximumZoomRatio();
+-            float requestedZoomRatio = 1f
+-                    + Math.max(0f, scale - 1f) / ZOOM_GESTURE_EFFORT;
+-            zoomProgress = maximumZoomRatio <= 1f
+-                    ? 0f
+-                    : clamp(
+-                            (requestedZoomRatio - 1f) / (maximumZoomRatio - 1f),
+-                            0f,
+-                            1f
+-                    );
+-            session.setZoom(zoomProgress);
+-            tele_zoomRatio = 1f + zoomProgress * (maximumZoomRatio - 1f);
++            if (TeleConfig.KEEP_ROUND_PINCH_ZOOM.getValue()) {
++                float min = session.tele_getMinZoomRatio();
++                float max = Math.max(min, tele_roundZoom != null
++                        ? tele_roundZoom.pinchMaximumRatio()
++                        : maximumZoomRatio);
++                float target = Math.max(min, Math.min(max, tele_pinchBaseZoomRatio * scale));
++                if (session.tele_setZoomRatio(target)) {
++                    tele_zoomRatio = target;
++                }
++            } else {
++                float requestedZoomRatio = 1f
++                        + Math.max(0f, scale - 1f) / ZOOM_GESTURE_EFFORT;
++                zoomProgress = maximumZoomRatio <= 1f
++                        ? 0f
++                        : clamp(
++                                (requestedZoomRatio - 1f) / (maximumZoomRatio - 1f),
++                                0f,
++                                1f
++                        );
++                session.setZoom(zoomProgress);
++                tele_zoomRatio = 1f + zoomProgress * (maximumZoomRatio - 1f);
++            }
+             if (tele_roundZoom != null) tele_roundZoom.syncRatio(tele_zoomRatio);
+             return true;
+         }
+@@ -1213,9 +1229,18 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+         pinchZoomActive = false;
+         zoomPointerId1 = -1;
+         zoomPointerId2 = -1;
++        if (TeleConfig.KEEP_ROUND_PINCH_ZOOM.getValue()) {
++            tele_zoomRatio = tele_currentZoomRatio();
++            if (tele_roundZoom != null) tele_roundZoom.syncRatio(tele_zoomRatio);
++            return;
++        }
+         animateZoomReset();
+     }
+ 
++    private float tele_currentZoomRatio() {
++        return session == null ? tele_zoomRatio : session.tele_getZoomRatio();
++    }
++
+     private void animateZoomReset() {
+         if (session == null) return;
+         if (zoomResetAnimator != null) zoomResetAnimator.cancel();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 77b7989d8..0da095bec 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -302,6 +302,8 @@ object TeleConfig {
+     @JvmField
+     val ROUND_ZOOM = BoolItem("round_zoom", false)
+     @JvmField
++    val KEEP_ROUND_PINCH_ZOOM = BoolItem("keep_round_pinch_zoom", false)
++    @JvmField
+     val SILENT_VIDEO_AS = StringItem("silent_video_as", "")
+     @JvmField
+     val PUNCTUAL_SCHEDULED = BoolItem("punctual_scheduled", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
+index a93df5096..574893ea9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
+@@ -234,6 +234,12 @@ class RoundZoomView(context: Context, private val host: Host) : View(context) {
+         applyAlpha(animate = open)
+     }
+ 
++    fun beginPinch() {
++        cancelPresetAnimation()
++    }
++
++    fun pinchMaximumRatio(): Float = if (available) maxRatio else host.maxZoomRatio()
++
+     fun refresh() {
+         val wantAvailable = TeleConfig.ROUND_ZOOM.value && host.isZoomAvailable()
+         val wasAvailable = available
+@@ -382,7 +388,7 @@ class RoundZoomView(context: Context, private val host: Host) : View(context) {
+     private fun pxPerRatio(): Float {
+         val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
+         val rail = (width - 2 * dp(RAIL_INSET_DP)).coerceAtLeast(dp(40f))
+-        return rail / span
++        return rail * 0.6f / span
+     }
+ 
+     /** The ruler scrolls: [currentRatio] always sits exactly under the fixed center pointer. */
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 663db673a..7952809d5 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -713,6 +713,8 @@ object TeleTextRu {
+         "Scheduled" to "Запланированные",
+         "Round video" to "Кружки",
+         "Start round video recording manually" to "Начинать запись кружка вручную",
++        "Keep zoom after pinching" to "Сохранять зум после щипка",
++        "Keeps the round-video zoom when you lift your fingers. Pinch back to zoom out, or use the zoom buttons when enabled. Resets for a new recording." to "Сохраняет масштаб кружка после отпускания пальцев. Уменьшите его обратным щипком или кнопками зума, если они включены. Для новой записи масштаб сбрасывается.",
+         "The first press only opens the camera preview; press again to start recording." to "Первое нажатие только открывает предпросмотр камеры; нажмите ещё раз, чтобы начать запись.",
+         "Screen capture" to "Захват экрана",
+         "Scripts live in the app's external files folder, run on their own thread, and only get the permissions you approve. Imported code is untrusted." to "Скрипты хранятся во внешней папке файлов приложения, выполняются в своём потоке и получают только одобренные вами разрешения. Импортированный код недоверенный.",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index b39626226..9ceb40893 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -713,6 +713,8 @@ object TeleTextUk {
+         "Scheduled" to "Заплановані",
+         "Round video" to "Кружечки",
+         "Start round video recording manually" to "Починати запис кружечка вручну",
++        "Keep zoom after pinching" to "Зберігати зум після щипка",
++        "Keeps the round-video zoom when you lift your fingers. Pinch back to zoom out, or use the zoom buttons when enabled. Resets for a new recording." to "Зберігає масштаб кружечка після відпускання пальців. Зменште його зворотним щипком або кнопками зуму, якщо вони ввімкнені. Для нового запису масштаб скидається.",
+         "The first press only opens the camera preview; press again to start recording." to "Перше натискання лише відкриває попередній перегляд камери; натисніть ще раз, щоб почати запис.",
+         "Screen capture" to "Знімки екрана",
+         "Scripts live in the app's external files folder, run on their own thread, and only get the permissions you approve. Imported code is untrusted." to "Скрипти живуть у зовнішній папці файлів застосунку, виконуються у власному потоці й отримують лише схвалені вами дозволи. Імпортований код є недовіреним.",
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 822e67faf..71b84201c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1054,6 +1054,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Send MKV files as videos" to "Only when the video track can be read; other files stay files.",
+             "Send silent videos as" to "GIF makes a video with no audio track an animation; Video keeps it a video.",
+             "Show zoom controls" to "Rear lens stops where Camera2 reports them, a continuous slider everywhere else.",
++            "Keep zoom after pinching" to "Keeps the round-video zoom when you lift your fingers. Pinch back to zoom out, or use the zoom buttons when enabled. Resets for a new recording.",
+             "Send videos without sound as GIFs" to "Videos without an audio track go out as GIFs.",
+             "Fake upgrade of gifts" to "Rolls the upgrade of a gift locally: nothing is bought and nothing is sent.",
+             "Roll animation" to "The attributes of the gift change while the roll runs.",
+@@ -1593,6 +1594,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Round video"),
+                 toggle("Start round video recording manually", TeleConfig.MANUAL_ROUND_START),
+                 toggle("Show zoom controls", TeleConfig.ROUND_ZOOM),
++                toggle("Keep zoom after pinching", TeleConfig.KEEP_ROUND_PINCH_ZOOM),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Scheduled"),
+                 toggle("Send scheduled messages on time", TeleConfig.PUNCTUAL_SCHEDULED),

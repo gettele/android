@@ -54,7 +54,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A012](#a012) | Android scripting host and native scripting UIs | adaptation | active | 23 |
 | [A013](#a013) | Cross-cutting fork security boundaries | original | active | 1 |
 | [A014](#a014) | Docked media composer | adaptation | active | 22 |
-| [A015](#a015) | Round video recording controls | original | active | 1 |
+| [A015](#a015) | Round video recording controls | original | active | 2 |
 
 <a id="a001"></a>
 
@@ -380,6 +380,9 @@ Rear controls always include wide/minimum, main 1× and telephoto/2× presets; a
 The ruler's actual maximum is also labeled and provides checkpoint haptics, without adding another preset button.
 With a reply panel, pause and resume controls retain the same vertical position throughout the transition to the recorded-video preview.
 
+The ruler maps its full range to 60% of the rail width. An independent, default-off “Keep zoom after pinching” option retains the current camera zoom after fingers lift, starts subsequent pinches from that zoom, and shares it with the optional buttons. A reverse pinch can zoom back out without buttons; a new recording resets the zoom.
+
 | patch |
 |---|
 | [`0334-feat-improve-round-video-controls.patch`](../patches/android/0334-feat-improve-round-video-controls.patch) |
+| [`0338-feat-retain-round-pinch-zoom.patch`](../patches/android/0338-feat-retain-round-pinch-zoom.patch) — compact ruler and optional retained pinch zoom |
