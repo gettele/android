@@ -11,21 +11,23 @@ Subject: [PATCH] feat: improve round video controls
  .../ui/Components/InstantCameraView.java      | 192 ++++-
  .../ui/Components/InstantCameraView2.java     | 118 ++-
  .../ui/Components/InstantCameraViewBase.java  |  24 +
- .../round/RoundVideoCameraController.java     | 212 ++++-
+ .../round/RoundVideoCameraController.java     | 227 ++++-
  .../recorder/round/RoundVideoGlProcessor.java |  16 +-
  .../recorder/round/RoundVideoSession.java     |  78 +-
  .../src/main/java/tele/TeleConfig.kt          |   4 +
- .../src/main/java/tele/helpers/RoundZoom.kt   | 809 ++++++++++++++++++
+ .../src/main/java/tele/helpers/RoundZoom.kt   | 805 ++++++++++++++++++
  .../main/java/tele/helpers/RoundZoomLenses.kt | 197 +++++
+ .../main/java/tele/helpers/RoundZoomPolicy.kt |  29 +
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   3 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   3 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   6 +
- 16 files changed, 1839 insertions(+), 71 deletions(-)
+ 17 files changed, 1875 insertions(+), 75 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoomPolicy.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java b/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java
-index 207b15f9f..9477a27e0 100644
+index 207b15f9f..106f7bf65 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java
 @@ -37,6 +37,9 @@ import org.telegram.messenger.MessagesController;
@@ -140,7 +142,7 @@ index 207b15f9f..9477a27e0 100644
 +    }
 +
 +    public float tele_getMaxZoomRatio() {
-+        return teleZoomRange != null ? Math.min(maxZoom, teleZoomRange.getUpper()) : maxZoom;
++        return teleZoomRange != null ? teleZoomRange.getUpper() : maxZoom;
 +    }
 +
 +
@@ -1077,7 +1079,7 @@ index f810bafa9..275919397 100644
      public abstract void startAnimation(boolean open, boolean fromPaused);
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
-index 96a93ed28..5dbf0d14d 100644
+index 96a93ed28..1f60c4b7d 100644
 --- a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
 @@ -35,6 +35,9 @@ import java.util.ArrayList;
@@ -1329,7 +1331,7 @@ index 96a93ed28..5dbf0d14d 100644
  
      private void applyZoom(@NonNull CaptureRequest.Builder builder) {
 -        float ratio = 1f + zoomProgress * (maximumZoomRatio - 1f);
-+        float ratio = tele_getZoomRatio();
++        float ratio = clamp(tele_getZoomRatio(), tele_getMinZoomRatio(), maximumZoomRatio);
          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
 -            Range<Float> range = characteristics == null
 -                    ? null
@@ -1366,7 +1368,32 @@ index 96a93ed28..5dbf0d14d 100644
          previewSize = selection.previewSize;
          recordingSize = selection.recordingSize;
          sourceCropSize = selection.sourceCropSize;
-@@ -2250,8 +2376,15 @@ final class RoundVideoCameraController {
+@@ -2213,13 +2339,20 @@ final class RoundVideoCameraController {
+     }
+ 
+     private float readMaximumZoomRatio(@NonNull CameraCharacteristics cameraCharacteristics) {
++        Float digital = cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+         float maximum = 1f;
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+             Range<Float> range = cameraCharacteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+-            if (range != null) maximum = range.getUpper();
+-        } else {
+-            Float value = cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+-            if (value != null) maximum = value;
++            if (range != null) {
++                maximum = range.getUpper();
++            } else if (TeleConfig.ROUND_ZOOM.getValue() && digital != null) {
++                maximum = digital;
++            }
++        } else if (digital != null) {
++            maximum = digital;
++        }
++        if (TeleConfig.ROUND_ZOOM.getValue()) {
++            return Math.max(1f, maximum);
+         }
+         return clamp(maximum, 1f, MAXIMUM_UI_ZOOM_RATIO);
+     }
+@@ -2250,8 +2383,15 @@ final class RoundVideoCameraController {
              @NonNull CameraCandidate current,
              @NonNull RoundVideoSession.CameraFacing facing
      ) {
@@ -1384,7 +1411,7 @@ index 96a93ed28..5dbf0d14d 100644
                  && !hasFlashUnit(current.characteristics);
      }
  
-@@ -2527,18 +2660,57 @@ final class RoundVideoCameraController {
+@@ -2527,18 +2667,57 @@ final class RoundVideoCameraController {
  
      private void updatePreviewTransform() {
          if (!previewTransformEnabled) return;
@@ -1448,7 +1475,7 @@ index 96a93ed28..5dbf0d14d 100644
          float centerX = previewView.getWidth() * 0.5f;
          float centerY = previewView.getHeight() * 0.5f;
          Matrix matrix = new Matrix();
-@@ -2546,7 +2718,7 @@ final class RoundVideoCameraController {
+@@ -2546,7 +2725,7 @@ final class RoundVideoCameraController {
          previewView.setTransform(matrix);
          diagnostics.log("preview transform: view=" + previewView.getWidth() + "x"
                  + previewView.getHeight()
@@ -1659,10 +1686,10 @@ index da3f969fb..77b7989d8 100644
      val COPY_PROTECTED = BoolItem("copy_protected", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
 new file mode 100644
-index 000000000..c7ec15746
+index 000000000..5d8de4736
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
-@@ -0,0 +1,809 @@
+@@ -0,0 +1,805 @@
 +package tele.helpers
 +
 +import android.animation.Animator
@@ -1910,14 +1937,17 @@ index 000000000..c7ec15746
 +        }
 +
 +        val newFront = host.isFrontCamera()
-+        val newMin = host.minZoomRatio().coerceAtLeast(0.1f)
-+        val newMax = max(newMin, host.maxZoomRatio())
++        val hardwareMin = host.minZoomRatio().coerceAtLeast(0.1f)
++        val hardwareMax = max(hardwareMin, host.maxZoomRatio())
 +        val rawStops = if (newFront || !host.supportsLensStops()) {
 +            FloatArray(0)
 +        } else {
-+            RoundZoomLenses.rearLensStops(host.rearCameraId(), newMax, newMin)
++            RoundZoomLenses.rearLensStops(host.rearCameraId(), hardwareMax, hardwareMin)
 +        }
-+        val newStops = rawStops.filter { it in newMin..newMax }.distinct().toFloatArray()
++        val selection = RoundZoomPolicy.select(newFront, hardwareMin, hardwareMax, rawStops)
++        val newMin = selection.minimum
++        val newMax = selection.maximum
++        val newStops = selection.stops
 +
 +        val stopsChanged = !newStops.contentEquals(stops)
 +        if (newFront != front || abs(newMax - maxRatio) > 0.001f || stopsChanged
@@ -2248,16 +2278,13 @@ index 000000000..c7ec15746
 +
 +    private fun drawButtonRow(canvas: Canvas, collapsedAlpha: Float) {
 +        val size = buttonSize()
-+        val active = if (stops.isEmpty()) 0 else stopsIndex(currentRatio)
-+        val activeTolerance = if (stops.isEmpty()) Float.MAX_VALUE else 0.06f
++        val active = RoundZoomPolicy.activeIndex(stops, currentRatio)
 +        for (i in 0 until buttonCount()) {
 +            val left = buttonLeft(i)
 +            val top = 0f
 +            val right = left + size
 +            drawGlass(canvas, buttonGlass.getOrNull(i), left, top, right, size)
-+            val isActive = if (stops.isEmpty()) true else {
-+                i == active && abs(stops[i] - currentRatio) <= activeTolerance
-+            }
++            val isActive = i == active
 +            if (isActive) {
 +                activeFill.color = 0x2EFFFFFF
 +                canvas.drawCircle(
@@ -2267,11 +2294,7 @@ index 000000000..c7ec15746
 +                    activeFill
 +                )
 +            }
-+            val label = if (stops.isEmpty()) {
-+                formatRatio(currentRatio)
-+            } else {
-+                formatRatio(stops[i])
-+            }
++            val label = formatRatio(if (isActive) currentRatio else stops[i])
 +            textPaint.color = textColor()
 +            textPaint.textSize = dp(12f)
 +            textPaint.typeface = Typeface.create(
@@ -2673,6 +2696,41 @@ index 000000000..1fba58e7a
 +    private fun cameraManager(): CameraManager? {
 +        val context = ApplicationLoader.applicationContext ?: return null
 +        return context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/RoundZoomPolicy.kt b/TMessagesProj/src/main/java/tele/helpers/RoundZoomPolicy.kt
+new file mode 100644
+index 000000000..f6c333d41
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/RoundZoomPolicy.kt
+@@ -0,0 +1,29 @@
++package tele.helpers
++
++object RoundZoomPolicy {
++    data class Selection(val minimum: Float, val maximum: Float, val stops: FloatArray)
++
++    fun select(front: Boolean, hardwareMin: Float, hardwareMax: Float, lenses: FloatArray): Selection {
++        val lower = hardwareMin.coerceAtLeast(0.1f)
++        val upper = hardwareMax.coerceAtLeast(lower)
++        val native = lenses.filter { it.isFinite() && it >= lower - 0.02f && it <= upper + 0.02f }
++            .map { it.coerceIn(lower, upper) }.distinct().sorted()
++        val longest = if (front) 1f else native.lastOrNull() ?: 1f
++        val maximum = minOf(upper, if (longest > 5f) longest + 3f else 5f)
++        if (front) return Selection(lower, maximum, FloatArray(0))
++        val wide = native.firstOrNull { it < 0.98f } ?: 0.6f.coerceIn(lower, maximum)
++        val main = 1f.coerceIn(lower, maximum)
++        val tele = maxOf(2f, longest).coerceIn(lower, maximum)
++        val extras = native.filter { it > wide + 0.02f && it < main - 0.02f || it > main + 0.02f && it < tele - 0.02f }
++        val stops = (listOf(wide, main, tele) + extras).sorted().toFloatArray()
++        return Selection(lower, maximum, stops)
++    }
++
++    fun activeIndex(stops: FloatArray, ratio: Float): Int {
++        if (stops.isEmpty()) return 0
++        for (i in stops.lastIndex downTo 0) {
++            if (ratio >= stops[i]) return i
++        }
++        return 0
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
