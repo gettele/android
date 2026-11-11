@@ -11,15 +11,16 @@ Subject: [PATCH] feat: improve round video controls
  .../ui/Components/InstantCameraView.java      | 192 ++++-
  .../ui/Components/InstantCameraView2.java     | 118 ++-
  .../ui/Components/InstantCameraViewBase.java  |  24 +
- .../round/RoundVideoCameraController.java     | 151 +++-
+ .../round/RoundVideoCameraController.java     | 212 ++++-
+ .../recorder/round/RoundVideoGlProcessor.java |  16 +-
  .../recorder/round/RoundVideoSession.java     |  78 +-
  .../src/main/java/tele/TeleConfig.kt          |   4 +
- .../src/main/java/tele/helpers/RoundZoom.kt   | 705 ++++++++++++++++++
+ .../src/main/java/tele/helpers/RoundZoom.kt   | 809 ++++++++++++++++++
  .../main/java/tele/helpers/RoundZoomLenses.kt | 197 +++++
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   3 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   3 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   6 +
- 15 files changed, 1647 insertions(+), 60 deletions(-)
+ 16 files changed, 1817 insertions(+), 71 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt
 
@@ -1026,7 +1027,7 @@ index f810bafa9..275919397 100644
      public abstract void startAnimation(boolean open, boolean fromPaused);
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
-index 96a93ed28..929fc144a 100644
+index 96a93ed28..5dbf0d14d 100644
 --- a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
 @@ -35,6 +35,9 @@ import java.util.ArrayList;
@@ -1190,7 +1191,27 @@ index 96a93ed28..929fc144a 100644
                  createRecordingPipelineWithFallback(previewTexture);
              } else if (glProcessor != null) {
                  glProcessor.updateInputConfiguration(
-@@ -1370,15 +1457,18 @@ final class RoundVideoCameraController {
+@@ -614,6 +701,10 @@ final class RoundVideoCameraController {
+         } else {
+             secondaryRecordingSurface = null;
+         }
++        // The preview path (camera-direct vs GL) changes together with the pipeline, so the
++        // TextureView transform must be re-applied in the same step instead of waiting for the
++        // next session callback, which would leave the camera buffers untransformed meanwhile.
++        postPreviewTransform();
+     }
+ 
+     private void createRecordingPipelineWithFallback(
+@@ -767,7 +858,7 @@ final class RoundVideoCameraController {
+                 + ", standbyId=" + warmCameraDevice.getId()
+                 + ", input=" + (activeInputSecondary ? 1 : 0)
+                 + ", elapsedMs=" + elapsedMs(cameraSwitchStartedNs));
+-        previewView.post(RoundVideoCameraController.this::updatePreviewTransform);
++        postPreviewTransform();
+         callback.onConfigured(
+                 new CameraInfo(
+                         activeFacing,
+@@ -1370,15 +1461,18 @@ final class RoundVideoCameraController {
  
      private void createCaptureSession() {
          CameraDevice device = cameraDevice;
@@ -1212,7 +1233,16 @@ index 96a93ed28..929fc144a 100644
                              ? Arrays.asList(recordingSurface)
                              : Arrays.asList(previewSurface, recordingSurface),
                      sessionCallback,
-@@ -1636,6 +1726,31 @@ final class RoundVideoCameraController {
+@@ -1431,7 +1525,7 @@ final class RoundVideoCameraController {
+                                 + (wasSwitch ? ", switchPath="
+                                 + (lastSwitchUsedWarmDevice ? "WARM_DEVICE" : "SEQUENTIAL")
+                                 + ", switchElapsedMs=" + elapsedMs(cameraSwitchStartedNs) : ""));
+-                        previewView.post(RoundVideoCameraController.this::updatePreviewTransform);
++                        postPreviewTransform();
+                         callback.onConfigured(
+                                 new CameraInfo(
+                                         activeFacing,
+@@ -1636,6 +1730,31 @@ final class RoundVideoCameraController {
      private CaptureRequest.Builder createRepeatingRequestBuilder(boolean logConfiguration)
              throws CameraAccessException {
          CameraDevice device = cameraDevice;
@@ -1244,7 +1274,7 @@ index 96a93ed28..929fc144a 100644
          if (device == null || recordingSurface == null) {
              throw new IllegalStateException("Camera request surfaces are unavailable");
          }
-@@ -1880,16 +1995,15 @@ final class RoundVideoCameraController {
+@@ -1880,16 +1999,15 @@ final class RoundVideoCameraController {
      }
  
      private void applyZoom(@NonNull CaptureRequest.Builder builder) {
@@ -1264,7 +1294,7 @@ index 96a93ed28..929fc144a 100644
          Rect activeArray = characteristics == null
                  ? null
                  : characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
-@@ -2023,6 +2137,10 @@ final class RoundVideoCameraController {
+@@ -2023,6 +2141,10 @@ final class RoundVideoCameraController {
          cameraId = selectedId;
          selectedFacing = facing;
          characteristics = selectedCharacteristics;
@@ -1275,7 +1305,7 @@ index 96a93ed28..929fc144a 100644
          activeFrameRate = frameRatePlan.frameRate;
          activeFpsRange = frameRatePlan.fpsRange;
          frameRateFallbackAttempted = false;
-@@ -2096,6 +2214,10 @@ final class RoundVideoCameraController {
+@@ -2096,6 +2218,10 @@ final class RoundVideoCameraController {
          cameraId = selection.id;
          selectedFacing = selection.facing;
          characteristics = selection.characteristics;
@@ -1286,7 +1316,7 @@ index 96a93ed28..929fc144a 100644
          previewSize = selection.previewSize;
          recordingSize = selection.recordingSize;
          sourceCropSize = selection.sourceCropSize;
-@@ -2250,8 +2372,15 @@ final class RoundVideoCameraController {
+@@ -2250,8 +2376,15 @@ final class RoundVideoCameraController {
              @NonNull CameraCandidate current,
              @NonNull RoundVideoSession.CameraFacing facing
      ) {
@@ -1304,6 +1334,115 @@ index 96a93ed28..929fc144a 100644
                  && !hasFlashUnit(current.characteristics);
      }
  
+@@ -2527,18 +2660,57 @@ final class RoundVideoCameraController {
+ 
+     private void updatePreviewTransform() {
+         if (!previewTransformEnabled) return;
+-        if (glPreviewEnabled) {
++        applyPreviewTransform(isGlPreviewActive(), previewSize, previewCropSize());
++    }
++
++    /**
++     * Applies the transform for the configuration the camera thread just committed. Snapshotted
++     * here so the view can never pair a stale transform with freshly reconfigured buffers.
++     */
++    private void postPreviewTransform() {
++        if (!previewTransformEnabled) return;
++        boolean glOutput = isGlPreviewActive();
++        Size bufferSize = previewSize;
++        int cropSize = previewCropSize();
++        previewView.post(() -> applyPreviewTransform(glOutput, bufferSize, cropSize));
++    }
++
++    private boolean isGlPreviewActive() {
++        return glPreviewEnabled && glProcessor != null;
++    }
++
++    /** Square crop of the preview stream that matches the crop applied to the recording stream. */
++    private int previewCropSize() {
++        Size preview = previewSize;
++        Size recording = recordingSize;
++        if (preview == null) return Math.max(1, sourceCropSize);
++        int previewShortSide = shortSide(preview);
++        int recordingShortSide = recording == null ? 0 : shortSide(recording);
++        int crop = recordingShortSide == 0
++                ? Math.min(sourceCropSize, previewShortSide)
++                : Math.round(sourceCropSize * (float) previewShortSide / recordingShortSide);
++        return Math.max(1, Math.min(crop, previewShortSide));
++    }
++
++    private void applyPreviewTransform(
++            boolean glOutput,
++            @Nullable Size bufferSize,
++            int cropSize
++    ) {
++        if (!previewTransformEnabled) return;
++        if (previewView.getWidth() == 0 || previewView.getHeight() == 0) return;
++        if (glOutput) {
+             previewView.setTransform(new Matrix());
+             diagnostics.log("preview transform: GL output, identity matrix, view="
+                     + previewView.getWidth() + "x" + previewView.getHeight());
+             return;
+         }
+-        Size size = recordingSize;
+-        if (size == null || previewView.getWidth() == 0 || previewView.getHeight() == 0) return;
+-        int cropSize = Math.min(sourceCropSize, Math.min(size.getWidth(), size.getHeight()));
++        if (bufferSize == null || cropSize <= 0) return;
+         boolean swapped = isOutputRotationSwapped();
+-        float scaleX = (swapped ? size.getHeight() : size.getWidth()) / (float) cropSize;
+-        float scaleY = (swapped ? size.getWidth() : size.getHeight()) / (float) cropSize;
++        float scaleX = (swapped ? bufferSize.getHeight() : bufferSize.getWidth())
++                / (float) cropSize;
++        float scaleY = (swapped ? bufferSize.getWidth() : bufferSize.getHeight())
++                / (float) cropSize;
+         float centerX = previewView.getWidth() * 0.5f;
+         float centerY = previewView.getHeight() * 0.5f;
+         Matrix matrix = new Matrix();
+@@ -2546,7 +2718,7 @@ final class RoundVideoCameraController {
+         previewView.setTransform(matrix);
+         diagnostics.log("preview transform: view=" + previewView.getWidth() + "x"
+                 + previewView.getHeight()
+-                + ", source=" + size
++                + ", source=" + bufferSize
+                 + ", crop=" + cropSize
+                 + ", axesSwapped=" + swapped
+                 + ", scale=" + scaleX + "x" + scaleY);
+diff --git a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoGlProcessor.java b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoGlProcessor.java
+index 8dba1ccaa..6a4b8d898 100644
+--- a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoGlProcessor.java
++++ b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoGlProcessor.java
+@@ -396,6 +396,18 @@ final class RoundVideoGlProcessor {
+         RuntimeException[] error = new RuntimeException[1];
+         currentHandler.post(() -> {
+             try {
++                if (primaryInputSize.equals(size)
++                        && secondaryInputSize.equals(size)
++                        && sourceCropSize == cropSize
++                        && cameraTimestampRealtime == timestampRealtime) {
++                    diagnostics.log("GL input unchanged: input=" + size
++                            + ", crop=" + cropSize);
++                    return;
++                }
++                // Resizing a live SurfaceTexture reinterprets buffers the camera already queued
++                // at the old dimensions, so touch each producer only when its size changes.
++                boolean primarySizeChanged = !primaryInputSize.equals(size);
++                boolean secondarySizeChanged = !secondaryInputSize.equals(size);
+                 inputSize = size;
+                 primaryInputSize = size;
+                 secondaryInputSize = size;
+@@ -405,10 +417,10 @@ final class RoundVideoGlProcessor {
+                 cameraTimestampRealtime = timestampRealtime;
+                 primaryTimestampRealtime = timestampRealtime;
+                 secondaryTimestampRealtime = timestampRealtime;
+-                if (inputSurfaceTexture != null) {
++                if (primarySizeChanged && inputSurfaceTexture != null) {
+                     inputSurfaceTexture.setDefaultBufferSize(size.getWidth(), size.getHeight());
+                 }
+-                if (secondaryInputSurfaceTexture != null) {
++                if (secondarySizeChanged && secondaryInputSurfaceTexture != null) {
+                     secondaryInputSurfaceTexture.setDefaultBufferSize(
+                             size.getWidth(),
+                             size.getHeight()
 diff --git a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoSession.java b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoSession.java
 index f63b1df54..9636f5499 100644
 --- a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoSession.java
@@ -1470,12 +1609,14 @@ index da3f969fb..77b7989d8 100644
      val COPY_PROTECTED = BoolItem("copy_protected", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
 new file mode 100644
-index 000000000..613e5ead2
+index 000000000..b8316a180
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,809 @@
 +package tele.helpers
 +
++import android.animation.Animator
++import android.animation.AnimatorListenerAdapter
 +import android.animation.ValueAnimator
 +import android.content.Context
 +import android.graphics.Canvas
@@ -1491,6 +1632,8 @@ index 000000000..613e5ead2
 +import android.view.animation.DecelerateInterpolator
 +import android.widget.FrameLayout
 +import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.LiteMode
++import org.telegram.messenger.SharedConfig
 +import org.telegram.ui.ActionBar.Theme
 +import org.telegram.ui.Components.blur3.BlurredBackgroundDrawableViewFactory
 +import org.telegram.ui.Components.blur3.drawable.BlurredBackgroundDrawable
@@ -1522,18 +1665,25 @@ index 000000000..613e5ead2
 +    }
 +
 +    companion object {
-+        private const val BUTTON_DP = 44f
++        private const val BUTTON_DP = 48f
 +        private const val BUTTON_GAP_DP = 8f
 +        private const val HEIGHT_DP = 88f
 +        private const val MAX_WIDTH_DP = 320f
 +        private const val GLASS_INSET_DP = 4f
-+        private const val RULER_GLASS_TOP_DP = 30f
++        private const val PREVIEW_GAP_DP = 12f
++        private const val CHIP_HEIGHT_DP = 30f
++        private const val CHIP_MIN_WIDTH_DP = 92f
++        private const val CHIP_PADDING_DP = 18f
++        private const val CHIP_GAP_DP = 8f
++        private const val RAIL_TOP_DP = CHIP_HEIGHT_DP + CHIP_GAP_DP
++        private const val RAIL_INSET_DP = 12f
 +        private const val TRACK_TOP_DP = 58f
 +        private const val LABEL_ROW_1_DP = 72f
 +        private const val LABEL_ROW_2_DP = 82f
-+        private const val BUBBLE_HEIGHT_DP = 28f
-+        private const val THUMB_RADIUS_DP = 5.5f
++        private const val PRESET_ANIM_MS = 200L
 +        private const val STOP_TOLERANCE = 0.045f
++        private const val STOP_SNAP = 0.012f
++        private const val POINTER_DOT_DP = 4f
 +
 +        @JvmStatic
 +        fun attach(parent: FrameLayout, host: Host): RoundZoomView {
@@ -1573,7 +1723,6 @@ index 000000000..613e5ead2
 +
 +    private val density = resources.displayMetrics.density
 +    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-+    private val buttonSize = dp(BUTTON_DP)
 +    private val buttonGap = dp(BUTTON_GAP_DP)
 +    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
 +        textAlign = Paint.Align.CENTER
@@ -1601,6 +1750,7 @@ index 000000000..613e5ead2
 +    private var factory: BlurredBackgroundDrawableViewFactory? = null
 +    private val buttonGlass = ArrayList<BlurredBackgroundDrawable?>()
 +    private var rulerGlass: BlurredBackgroundDrawable? = null
++    private var chipGlass: BlurredBackgroundDrawable? = null
 +    private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG)
 +
 +    /** The controls float over the dark camera preview, not over the chat theme. */
@@ -1628,7 +1778,11 @@ index 000000000..613e5ead2
 +    private var longPressFired = false
 +    private var downX = 0f
 +    private var downY = 0f
++    private var dragStartX = 0f
++    private var dragStartRatio = 1f
++    private var ratioDragged = false
 +    private var lastHapticStop = -1
++    private var zoomAnimator: ValueAnimator? = null
 +
 +    private var anchor: View? = null
 +    private var anchorBottomInset = 0
@@ -1657,10 +1811,15 @@ index 000000000..613e5ead2
 +        this.factory = factory
 +        buttonGlass.clear()
 +        rulerGlass = null
++        chipGlass = null
 +        if (factory != null) {
 +            rulerGlass = factory.create(this, recordingColorProvider).apply {
 +                setPadding(dp(1f).roundToInt())
-+                setRadius(dp(26f))
++                setRadius(dp(25f))
++            }
++            chipGlass = factory.create(this, recordingColorProvider).apply {
++                setPadding(dp(1f).roundToInt())
++                setRadius(dp(CHIP_HEIGHT_DP / 2f))
 +            }
 +            rebuildButtonGlass()
 +        }
@@ -1681,7 +1840,9 @@ index 000000000..613e5ead2
 +            pressed = false
 +            dragging = false
 +            longPressFired = false
++            ratioDragged = false
 +            removeCallbacks(longPressRunnable)
++            cancelPresetAnimation()
 +            setExpanded(false)
 +        }
 +        applyAlpha(animate = open)
@@ -1693,6 +1854,7 @@ index 000000000..613e5ead2
 +        available = wantAvailable
 +        if (!available) {
 +            if (wasAvailable) setExpanded(false)
++            cancelPresetAnimation()
 +            applyAlpha(animate = false)
 +            return
 +        }
@@ -1721,13 +1883,16 @@ index 000000000..613e5ead2
 +                setExpanded(false)
 +            }
 +        }
-+        currentRatio = host.currentZoomRatio().coerceIn(minRatio, maxRatio)
++        if (!dragging && zoomAnimator == null) {
++            currentRatio = host.currentZoomRatio().coerceIn(minRatio, maxRatio)
++        }
 +        if (!wasAvailable) applyAlpha(animate = false)
 +        invalidate()
 +    }
 +
 +    fun syncRatio(ratio: Float) {
 +        if (!available) return
++        if (dragging || zoomAnimator != null) return
 +        val clamped = ratio.coerceIn(minRatio, maxRatio)
 +        if (abs(clamped - currentRatio) < 0.001f) return
 +        currentRatio = clamped
@@ -1748,26 +1913,41 @@ index 000000000..613e5ead2
 +
 +    private fun rebuildButtonGlass() {
 +        val count = buttonCount()
++        val radius = (buttonSize() / 2f - dp(GLASS_INSET_DP)).coerceAtLeast(dp(6f))
 +        while (buttonGlass.size > count) {
 +            buttonGlass.removeAt(buttonGlass.size - 1)
 +        }
 +        while (buttonGlass.size < count) {
 +            buttonGlass.add(factory?.create(this, recordingColorProvider)?.apply {
 +                setPadding(dp(GLASS_INSET_DP).roundToInt())
-+                setRadius(dp(BUTTON_DP / 2f - GLASS_INSET_DP))
++                setRadius(radius)
 +            })
 +        }
 +    }
 +
 +    private fun buttonCount(): Int = if (stops.isEmpty()) 1 else stops.size
 +
++    /** Preferred 48dp lens button, shrunk only when a very wide lens row would not fit. */
++    private fun buttonSize(): Float {
++        val count = buttonCount()
++        if (width <= 0) return dp(BUTTON_DP)
++        val usable = width - dp(8f)
++        val fitted = (usable - (count - 1) * buttonGap) / count
++        return min(dp(BUTTON_DP), fitted).coerceAtLeast(dp(28f))
++    }
++
 +    private fun rowWidth(): Float {
 +        val count = buttonCount()
-+        return count * buttonSize + (count - 1) * buttonGap
++        return count * buttonSize() + (count - 1) * buttonGap
 +    }
 +
 +    private fun buttonLeft(index: Int): Float {
-+        return (width - rowWidth()) / 2f + index * (buttonSize + buttonGap)
++        return (width - rowWidth()) / 2f + index * (buttonSize() + buttonGap)
++    }
++
++    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
++        super.onSizeChanged(w, h, oldw, oldh)
++        if (w != oldw) rebuildButtonGlass()
 +    }
 +
 +    private fun setExpanded(value: Boolean) {
@@ -1809,67 +1989,109 @@ index 000000000..613e5ead2
 +        return best
 +    }
 +
-+    private fun valueToX(value: Float): Float {
-+        val start = dp(18f)
-+        val end = width - dp(18f)
-+        val fraction = if (maxRatio <= minRatio) 0f else (value - minRatio) / (maxRatio - minRatio)
-+        return start + (end - start) * fraction.coerceIn(0f, 1f)
++    private fun pxPerRatio(): Float {
++        val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
++        val rail = (width - 2 * dp(RAIL_INSET_DP)).coerceAtLeast(dp(40f))
++        return rail / span
 +    }
 +
-+    private fun xToValue(x: Float): Float {
-+        val start = dp(18f)
-+        val end = width - dp(18f)
-+        if (end <= start) return minRatio
-+        val fraction = ((x - start) / (end - start)).coerceIn(0f, 1f)
-+        return minRatio + (maxRatio - minRatio) * fraction
++    /** The ruler scrolls: [currentRatio] always sits exactly under the fixed center pointer. */
++    private fun ratioToX(value: Float): Float {
++        return width / 2f + (value - currentRatio) * pxPerRatio()
 +    }
 +
-+    private fun updateRatioFromX(x: Float) {
++    /** Drag mapping: ratio = start - (x - startX) / pxPerRatio. Zero delta returns [startRatio]. */
++    private fun ratioForDrag(startRatio: Float, startX: Float, x: Float): Float {
++        val scale = pxPerRatio()
++        if (scale <= 0f) return startRatio.coerceIn(minRatio, maxRatio)
++        return (startRatio - (x - startX) / scale).coerceIn(minRatio, maxRatio)
++    }
++
++    private fun dragTo(x: Float) {
 +        if (!available) return
-+        currentRatio = xToValue(x)
-+        host.applyZoomRatio(currentRatio)
-+        val index = stopsIndex(currentRatio)
-+        if (index >= 0 && index != lastHapticStop) {
-+            val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
-+            if (abs(stops[index] - currentRatio) < span * STOP_TOLERANCE) {
++        if (pxPerRatio() <= 0f) return
++        val target = ratioForDrag(dragStartRatio, dragStartX, x)
++        if (abs(target - currentRatio) < 0.0005f) return
++        ratioDragged = true
++        applyRatio(target)
++        val index = stopsIndex(target)
++        val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
++        if (index >= 0 && abs(stops[index] - target) < span * STOP_TOLERANCE) {
++            if (index != lastHapticStop) {
 +                lastHapticStop = index
 +                haptic(HapticFeedbackConstants.CLOCK_TICK)
 +            }
++        } else {
++            lastHapticStop = -1
 +        }
-+        invalidate()
 +    }
 +
-+    private fun applyStop(value: Float) {
++    private fun applyRatio(value: Float) {
 +        currentRatio = value.coerceIn(minRatio, maxRatio)
 +        host.applyZoomRatio(currentRatio)
-+        lastHapticStop = stopsIndex(currentRatio)
-+        haptic(HapticFeedbackConstants.CLOCK_TICK)
 +        invalidate()
 +    }
 +
++    private fun animateTo(value: Float) {
++        val target = value.coerceIn(minRatio, maxRatio)
++        cancelPresetAnimation()
++        if (abs(target - currentRatio) < 0.001f) return
++        haptic(HapticFeedbackConstants.CLOCK_TICK)
++        if (!animationsEnabled()) {
++            applyRatio(target)
++            return
++        }
++        zoomAnimator = ValueAnimator.ofFloat(currentRatio, target).apply {
++            duration = PRESET_ANIM_MS
++            interpolator = DecelerateInterpolator()
++            addUpdateListener { animation -> applyRatio(animation.animatedValue as Float) }
++            addListener(object : AnimatorListenerAdapter() {
++                override fun onAnimationEnd(animation: Animator) {
++                    if (zoomAnimator === animation) {
++                        zoomAnimator = null
++                        applyRatio(target)
++                    }
++                }
++            })
++            start()
++        }
++    }
++
++    private fun cancelPresetAnimation() {
++        val animator = zoomAnimator ?: return
++        // Cleared first so the cancel callback does not finish on the target.
++        zoomAnimator = null
++        animator.cancel()
++    }
++
++    private fun animationsEnabled(): Boolean {
++        return SharedConfig.animationsEnabled() && LiteMode.isEnabled(LiteMode.FLAG_CHAT_SCALE)
++    }
++
++    /** Stop magnetism only after a real drag, and only within a hair of a lens stop. */
 +    private fun snapToStop() {
-+        if (stops.isEmpty()) return
++        if (!ratioDragged || stops.isEmpty()) return
 +        val index = stopsIndex(currentRatio)
 +        if (index < 0) return
 +        val value = stops[index]
-+        if (abs(value - currentRatio) < (maxRatio - minRatio) * 0.08f) {
-+            currentRatio = value
-+            host.applyZoomRatio(value)
-+            invalidate()
++        if (abs(value - currentRatio) < (maxRatio - minRatio) * STOP_SNAP) {
++            applyRatio(value)
 +        }
 +    }
 +
 +    private fun stopAt(x: Float): Int {
 +        if (stops.isEmpty()) return -1
++        val size = buttonSize()
 +        val left = buttonLeft(0)
-+        val index = ((x - left) / (buttonSize + buttonGap)).toInt()
++        val index = ((x - left) / (size + buttonGap)).toInt()
 +        if (index !in stops.indices) return -1
 +        val buttonLeft = buttonLeft(index)
-+        return if (x in buttonLeft..(buttonLeft + buttonSize)) index else -1
++        return if (x in buttonLeft..(buttonLeft + size)) index else -1
 +    }
 +
 +    private fun inButtonRow(x: Float, y: Float): Boolean {
-+        if (y < 0f || y > buttonSize) return false
++        val size = buttonSize()
++        if (y < 0f || y > size) return false
 +        val left = (width - rowWidth()) / 2f
 +        return x >= left && x <= left + rowWidth()
 +    }
@@ -1879,11 +2101,14 @@ index 000000000..613e5ead2
 +        when (event.actionMasked) {
 +            MotionEvent.ACTION_DOWN -> {
 +                if (!expanded && !inButtonRow(event.x, event.y)) return false
++                cancelPresetAnimation()
 +                pressed = true
 +                dragging = false
 +                longPressFired = false
++                ratioDragged = false
 +                downX = event.x
 +                downY = event.y
++                dragStartRatio = currentRatio
 +                lastHapticStop = stopsIndex(currentRatio)
 +                removeCallbacks(autoCollapseRunnable)
 +                if (!expanded) {
@@ -1897,14 +2122,25 @@ index 000000000..613e5ead2
 +            MotionEvent.ACTION_MOVE -> {
 +                if (!pressed) return false
 +                if (longPressFired || dragging) {
-+                    updateRatioFromX(event.x)
++                    if (!dragging) {
++                        dragging = true
++                        dragStartX = downX
++                        dragStartRatio = currentRatio
++                    }
++                    dragTo(event.x)
 +                } else if (abs(event.x - downX) > touchSlop
 +                    || abs(event.y - downY) > touchSlop
 +                ) {
-+                    dragging = true
 +                    removeCallbacks(longPressRunnable)
 +                    openExpanded()
-+                    updateRatioFromX(event.x)
++                    val dx = event.x - downX
++                    if (abs(dx) > touchSlop) {
++                        // Begin the relative drag at the slop edge so nothing jumps on open.
++                        dragging = true
++                        dragStartX = downX + (if (dx >= 0) touchSlop else -touchSlop)
++                        dragStartRatio = currentRatio
++                        dragTo(event.x)
++                    }
 +                }
 +                return true
 +            }
@@ -1912,28 +2148,30 @@ index 000000000..613e5ead2
 +                if (!pressed) return false
 +                pressed = false
 +                removeCallbacks(longPressRunnable)
-+                if (longPressFired || dragging) {
-+                    updateRatioFromX(event.x)
++                if (dragging) {
++                    dragTo(event.x)
 +                    snapToStop()
 +                    setExpanded(false)
-+                } else if (expanded) {
-+                    snapToStop()
++                } else if (longPressFired || expanded) {
++                    // A hold or tap without motion keeps the zoom it opened with.
 +                    setExpanded(false)
 +                } else if (stops.isNotEmpty()) {
 +                    val index = stopAt(event.x)
-+                    if (index >= 0) applyStop(stops[index])
++                    if (index >= 0) animateTo(stops[index])
 +                } else {
 +                    openExpanded()
 +                    postDelayed(autoCollapseRunnable, 1200L)
 +                }
 +                dragging = false
 +                longPressFired = false
++                ratioDragged = false
 +                return true
 +            }
 +            MotionEvent.ACTION_CANCEL -> {
 +                pressed = false
 +                dragging = false
 +                longPressFired = false
++                ratioDragged = false
 +                removeCallbacks(longPressRunnable)
 +                setExpanded(false)
 +                return true
@@ -1949,7 +2187,7 @@ index 000000000..613e5ead2
 +
 +        val collapsedAlpha = 1f - expansion
 +        if (collapsedAlpha > 0.001f) {
-+            canvas.saveLayerAlpha(0f, 0f, width.toFloat(), buttonSize, (255 * collapsedAlpha).toInt())
++            canvas.saveLayerAlpha(0f, 0f, width.toFloat(), buttonSize(), (255 * collapsedAlpha).toInt())
 +            drawButtonRow(canvas, collapsedAlpha)
 +            canvas.restore()
 +        }
@@ -1959,13 +2197,14 @@ index 000000000..613e5ead2
 +    }
 +
 +    private fun drawButtonRow(canvas: Canvas, collapsedAlpha: Float) {
++        val size = buttonSize()
 +        val active = if (stops.isEmpty()) 0 else stopsIndex(currentRatio)
 +        val activeTolerance = if (stops.isEmpty()) Float.MAX_VALUE else 0.06f
 +        for (i in 0 until buttonCount()) {
 +            val left = buttonLeft(i)
 +            val top = 0f
-+            val right = left + buttonSize
-+            drawGlass(canvas, buttonGlass.getOrNull(i), left, top, right, buttonSize)
++            val right = left + size
++            drawGlass(canvas, buttonGlass.getOrNull(i), left, top, right, size)
 +            val isActive = if (stops.isEmpty()) true else {
 +                i == active && abs(stops[i] - currentRatio) <= activeTolerance
 +            }
@@ -1973,8 +2212,8 @@ index 000000000..613e5ead2
 +                activeFill.color = 0x2EFFFFFF
 +                canvas.drawCircle(
 +                    (left + right) / 2f,
-+                    (top + buttonSize) / 2f,
-+                    buttonSize / 2f - dp(GLASS_INSET_DP),
++                    (top + size) / 2f,
++                    size / 2f - dp(GLASS_INSET_DP),
 +                    activeFill
 +                )
 +            }
@@ -1984,51 +2223,48 @@ index 000000000..613e5ead2
 +                formatRatio(stops[i])
 +            }
 +            textPaint.color = textColor()
-+            textPaint.textSize = dp(11f)
++            textPaint.textSize = dp(12f)
 +            textPaint.typeface = Typeface.create(
 +                "sans-serif-medium",
 +                if (isActive) Typeface.BOLD else Typeface.NORMAL
 +            )
 +            textPaint.alpha = if (isActive) 255 else (collapsedAlpha * 205).toInt()
-+            val baseline = (top + buttonSize - (textPaint.ascent() + textPaint.descent())) / 2f
++            val baseline = (top + size - (textPaint.ascent() + textPaint.descent())) / 2f
 +            canvas.drawText(label, (left + right) / 2f, baseline, textPaint)
 +            textPaint.alpha = 255
 +        }
 +    }
 +
 +    private fun drawRuler(canvas: Canvas) {
-+        val half = width / 2f * (0.62f + 0.38f * expansion)
-+        canvas.save()
-+        canvas.clipRect(width / 2f - half, 0f, width / 2f + half, height.toFloat())
 +        canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (255 * expansion).toInt())
-+
-+        val glassTop = dp(RULER_GLASS_TOP_DP)
-+        drawGlass(canvas, rulerGlass, 0f, glassTop, width.toFloat(), height.toFloat())
++        val railTop = dp(RAIL_TOP_DP)
++        drawGlass(canvas, rulerGlass, 0f, railTop, width.toFloat(), height.toFloat())
 +        if (rulerGlass == null) {
-+            rect.set(0f, glassTop, width.toFloat(), height.toFloat())
-+            canvas.drawRoundRect(rect, dp(26f), dp(26f), fallbackPaint)
-+            canvas.drawRoundRect(rect, dp(26f), dp(26f), fallbackStroke)
++            rect.set(0f, railTop, width.toFloat(), height.toFloat())
++            canvas.drawRoundRect(rect, dp(25f), dp(25f), fallbackPaint)
++            canvas.drawRoundRect(rect, dp(25f), dp(25f), fallbackStroke)
 +        }
 +
-+        val left = dp(18f)
-+        val right = width - dp(18f)
++        drawChip(canvas)
++
 +        val trackY = dp(TRACK_TOP_DP)
 +        val trackColor = 0x66FFFFFF
 +        val strongColor = textColor()
++        val centerX = width / 2f
++
++        canvas.save()
++        canvas.clipRect(dp(2f), railTop, width - dp(2f), height.toFloat())
 +
 +        trackPaint.color = trackColor
-+        canvas.drawLine(left, trackY, right, trackY, trackPaint)
++        canvas.drawLine(dp(RAIL_INSET_DP), trackY, width - dp(RAIL_INSET_DP), trackY, trackPaint)
 +
-+        val currentX = valueToX(currentRatio)
-+        fillPaint.color = strongColor
-+        canvas.drawLine(left, trackY, currentX, trackY, fillPaint)
-+
-+        drawMinorTicks(canvas, left, right, trackY, trackColor)
++        drawMinorTicks(canvas, trackY, trackColor)
 +
 +        tickPaint.strokeWidth = dp(1.5f)
 +        val lastRight = floatArrayOf(-Float.MAX_VALUE, -Float.MAX_VALUE)
 +        for (stop in stops) {
-+            val x = valueToX(stop)
++            val x = ratioToX(stop)
++            if (x < -dp(40f) || x > width + dp(40f)) continue
 +            val isActive = abs(stop - currentRatio) <= STOP_TOLERANCE
 +            tickPaint.color = if (isActive) strongColor else trackColor
 +            canvas.drawLine(x, trackY - dp(5f), x, trackY + dp(5f), tickPaint)
@@ -2054,68 +2290,73 @@ index 000000000..613e5ead2
 +            textPaint.alpha = 255
 +        }
 +
-+        tickPaint.strokeWidth = dp(2f)
-+        tickPaint.color = accentColor()
-+        canvas.drawCircle(currentX, trackY, dp(THUMB_RADIUS_DP), tickPaint)
-+        fillPaint.color = Color.WHITE
-+        canvas.drawCircle(currentX, trackY, dp(THUMB_RADIUS_DP - 1.6f), fillPaint)
-+
-+        drawCurrentBubble(canvas, currentX)
-+
 +        canvas.restore()
++
++        // Fixed pointer: the zoom under it is the one shown in the chip.
++        fillPaint.color = 0xF2FFFFFF.toInt()
++        fillPaint.strokeWidth = dp(2f)
++        canvas.drawLine(centerX, trackY - dp(13f), centerX, trackY + dp(7f), fillPaint)
++        tickPaint.color = accentColor()
++        canvas.drawCircle(centerX, trackY, dp(POINTER_DOT_DP), tickPaint)
++
 +        canvas.restore()
 +    }
 +
-+    private fun drawMinorTicks(
-+        canvas: Canvas,
-+        left: Float,
-+        right: Float,
-+        trackY: Float,
-+        color: Int
-+    ) {
++    private fun drawMinorTicks(canvas: Canvas, trackY: Float, color: Int) {
 +        val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
-+        val pxSpan = (right - left).coerceAtLeast(1f)
-+        val step = niceStep(span / (pxSpan / dp(10f)))
-+        var value = ceil(minRatio / step) * step
++        val scale = pxPerRatio()
++        if (scale <= 0f) return
++        val halfWindow = (width / 2f) / scale
++        val from = max(minRatio, currentRatio - halfWindow)
++        val to = min(maxRatio, currentRatio + halfWindow)
++        val step = niceStep(span / (width / dp(10f)).coerceAtLeast(1f))
++        var value = ceil(from / step) * step
 +        tickPaint.color = color
 +        tickPaint.strokeWidth = dp(1f)
 +        var guard = 0
-+        while (value <= maxRatio + 0.0001f && guard < 200) {
-+            val x = valueToX(value)
-+            val major = abs(value - value.roundToInt()) < 0.001f
-+            val height = dp(if (major) 6f else 3.5f)
-+            canvas.drawLine(x, trackY - height, x, trackY + height, tickPaint)
++        while (value <= to + 0.0001f && guard < 200) {
++            val x = ratioToX(value)
++            if (x >= dp(4f) && x <= width - dp(4f)) {
++                val major = abs(value - value.roundToInt()) < 0.001f
++                val height = dp(if (major) 6f else 3.5f)
++                canvas.drawLine(x, trackY - height, x, trackY + height, tickPaint)
++            }
 +            value += step
 +            guard++
 +        }
 +    }
 +
-+    private fun drawCurrentBubble(canvas: Canvas, currentX: Float) {
-+        val bubbleAlpha = ((expansion - 0.45f) / 0.55f).coerceIn(0f, 1f)
-+        if (bubbleAlpha <= 0.001f) return
++    /** Wide glass chip above the rail, always centered; only its label changes while scrolling. */
++    private fun drawChip(canvas: Canvas) {
++        val chipAlpha = ((expansion - 0.3f) / 0.7f).coerceIn(0f, 1f)
++        if (chipAlpha <= 0.001f) return
 +        val label = formatRatio(currentRatio)
 +        textPaint.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
 +        textPaint.textSize = dp(12f)
 +        textPaint.alpha = 255
-+        val bubbleWidth = max(dp(46f), textPaint.measureText(label) + dp(16f))
-+        val bubbleHeight = dp(BUBBLE_HEIGHT_DP)
-+        val halfWidth = bubbleWidth / 2f
-+        val centerX = currentX.coerceIn(halfWidth + dp(2f), width - halfWidth - dp(2f))
-+        val top = dp(1f)
++        val chipWidth = max(
++            dp(CHIP_MIN_WIDTH_DP),
++            textPaint.measureText(label) + dp(CHIP_PADDING_DP) * 2f
++        )
++        val chipHeight = dp(CHIP_HEIGHT_DP)
++        val left = width / 2f - chipWidth / 2f
++        val top = 0f
 +        canvas.saveLayerAlpha(
 +            0f,
 +            0f,
 +            width.toFloat(),
-+            bubbleHeight + dp(2f),
-+            (255 * bubbleAlpha).toInt()
++            chipHeight,
++            (255 * chipAlpha).toInt()
 +        )
-+        rect.set(centerX - halfWidth, top, centerX + halfWidth, top + bubbleHeight)
-+        bubblePaint.color = accentColor()
-+        canvas.drawRoundRect(rect, dp(14f), dp(14f), bubblePaint)
++        drawGlass(canvas, chipGlass, left, top, left + chipWidth, top + chipHeight)
++        if (chipGlass == null) {
++            rect.set(left, top, left + chipWidth, top + chipHeight)
++            canvas.drawRoundRect(rect, chipHeight / 2f, chipHeight / 2f, bubblePaint)
++            canvas.drawRoundRect(rect, chipHeight / 2f, chipHeight / 2f, fallbackStroke)
++        }
 +        textPaint.color = Color.WHITE
-+        textPaint.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-+        val baseline = (top + bubbleHeight - (textPaint.ascent() + textPaint.descent())) / 2f
-+        canvas.drawText(label, centerX, baseline, textPaint)
++        val baseline = top + (chipHeight - (textPaint.ascent() + textPaint.descent())) / 2f
++        canvas.drawText(label, width / 2f, baseline, textPaint)
 +        canvas.restore()
 +    }
 +
@@ -2142,6 +2383,7 @@ index 000000000..613e5ead2
 +    private fun updateColors() {
 +        fallbackPaint.color = 0x66000000
 +        fallbackStroke.color = 0x33FFFFFF
++        bubblePaint.color = 0x66000000
 +    }
 +
 +    private fun textColor(): Int {
@@ -2156,7 +2398,7 @@ index 000000000..613e5ead2
 +    private fun positionUnderAnchor() {
 +        val anchor = anchor ?: return
 +        val params = layoutParams as? FrameLayout.LayoutParams ?: return
-+        val top = (anchor.top + anchor.height - anchorBottomInset + dp(6f)).roundToInt()
++        val top = (anchor.top + anchor.height - anchorBottomInset + dp(PREVIEW_GAP_DP)).roundToInt()
 +        if (params.topMargin != top) {
 +            params.topMargin = top
 +            requestLayout()
@@ -2173,6 +2415,7 @@ index 000000000..613e5ead2
 +        removeCallbacks(longPressRunnable)
 +        removeCallbacks(autoCollapseRunnable)
 +        expansionAnimator?.cancel()
++        cancelPresetAnimation()
 +        anchor?.removeOnLayoutChangeListener(anchorLayoutListener)
 +        super.onDetachedFromWindow()
 +    }
