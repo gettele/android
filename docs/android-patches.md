@@ -373,6 +373,8 @@ Implements the Android media composer above the message field: docked photos, vi
 
 Adds optional manual recording start and camera zoom controls to the Android round-video recorder. Round glass controls sit below the centered camera preview; holding a control opens a scrolling zoom ruler with a fixed pointer, glass zoom label and lens checkpoints, preserving the selected zoom. Preset changes animate the zoom. Lens discovery accounts for sensor size as well as focal length, rather than treating digital zoom values as separate cameras.
 
+Camera access diagnostics compares the enumerated Camera2 IDs with explicit metadata requests for CPH2499 cameras `6` and `7`. Separate confirmed frame tests activate one camera for up to eight seconds and discard the image. Reports remain local and copyable; open, session and frame failures are distinguished without treating every failure as an OEM access ban.
+
 | patch |
 |---|
 | [`0334-feat-improve-round-video-controls.patch`](../patches/android/0334-feat-improve-round-video-controls.patch) |
