@@ -374,6 +374,7 @@ Implements the Android media composer above the message field: docked photos, vi
 Adds optional manual recording start and camera zoom controls to the Android round-video recorder. Round glass controls sit below the centered camera preview; holding a control opens a scrolling zoom ruler with a fixed pointer, glass zoom label and lens checkpoints, preserving the selected zoom. Preset changes animate the zoom. Lens discovery accounts for sensor size as well as focal length, rather than treating digital zoom values as separate cameras.
 
 Rear controls always include wide/minimum, main 1× and telephoto/2× presets; additional accessible lenses add buttons. Digital fallbacks do not claim extra physical lenses, and zoom-out is limited to the camera's actual minimum. The active interval's button shows the current zoom. The ruler targets 5×, or the longest native telephoto above 5× plus 3×, clamped to hardware limits.
+The ruler's actual maximum is also labeled and provides checkpoint haptics, without adding another preset button.
 
 | patch |
 |---|

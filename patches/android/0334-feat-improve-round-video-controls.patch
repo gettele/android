@@ -15,13 +15,13 @@ Subject: [PATCH] feat: improve round video controls
  .../recorder/round/RoundVideoGlProcessor.java |  16 +-
  .../recorder/round/RoundVideoSession.java     |  78 +-
  .../src/main/java/tele/TeleConfig.kt          |   4 +
- .../src/main/java/tele/helpers/RoundZoom.kt   | 805 ++++++++++++++++++
+ .../src/main/java/tele/helpers/RoundZoom.kt   | 807 ++++++++++++++++++
  .../main/java/tele/helpers/RoundZoomLenses.kt | 197 +++++
  .../main/java/tele/helpers/RoundZoomPolicy.kt |  29 +
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   3 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   3 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   6 +
- 17 files changed, 1875 insertions(+), 75 deletions(-)
+ 17 files changed, 1877 insertions(+), 75 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoomPolicy.kt
@@ -232,7 +232,7 @@ index 7777dc221..623a02cc8 100644
              if (invoked) {
                  final AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
-index 1b900a31e..8c65bb329 100644
+index 1b900a31e..0e80fd418 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 @@ -327,6 +327,12 @@ public class ChatActivityEnterView extends FrameLayout implements
@@ -461,7 +461,7 @@ index 1b900a31e..8c65bb329 100644
 +        if ((tele.TeleConfig.MANUAL_ROUND_START.getValue() || tele.TeleConfig.ROUND_ZOOM.getValue())
 +                && isInVideoMode() && hasRecordVideo && (recordingAudioVideo || sendButtonVisible)) {
 +            if (topView != null && topView.getVisibility() != GONE && topView.getLayoutParams() != null && topView.getLayoutParams().height > 0) {
-+                offset = topView.getLayoutParams().height * getTopViewEnterProgress();
++                offset = Math.min(dp(12), topView.getLayoutParams().height) * getTopViewEnterProgress();
 +            }
 +        }
 +        if (tele_recordControlsOffset != offset) {
@@ -1686,10 +1686,10 @@ index da3f969fb..77b7989d8 100644
      val COPY_PROTECTED = BoolItem("copy_protected", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
 new file mode 100644
-index 000000000..5d8de4736
+index 000000000..a93df5096
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
-@@ -0,0 +1,805 @@
+@@ -0,0 +1,807 @@
 +package tele.helpers
 +
 +import android.animation.Animator
@@ -1849,6 +1849,7 @@ index 000000000..5d8de4736
 +    private var minRatio = 1f
 +    private var maxRatio = 1f
 +    private var stops = FloatArray(0)
++    private var checkpoints = FloatArray(0)
 +    private var currentRatio = 1f
 +    private var pressed = false
 +    private var dragging = false
@@ -1957,6 +1958,7 @@ index 000000000..5d8de4736
 +            minRatio = newMin
 +            maxRatio = newMax
 +            stops = if (newStops.size < 2) FloatArray(0) else newStops
++            checkpoints = if (stops.lastOrNull() == maxRatio) stops else stops + maxRatio
 +            currentRatio = currentRatio.coerceIn(minRatio, maxRatio)
 +            if (stopsChanged) {
 +                rebuildButtonGlass()
@@ -2059,8 +2061,8 @@ index 000000000..5d8de4736
 +    private fun stopsIndex(value: Float): Int {
 +        var best = -1
 +        var distance = Float.MAX_VALUE
-+        for (i in stops.indices) {
-+            val d = abs(stops[i] - value)
++        for (i in checkpoints.indices) {
++            val d = abs(checkpoints[i] - value)
 +            if (d < distance) {
 +                distance = d
 +                best = i
@@ -2096,7 +2098,7 @@ index 000000000..5d8de4736
 +        applyRatio(target)
 +        val index = stopsIndex(target)
 +        val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
-+        if (index >= 0 && abs(stops[index] - target) < span * STOP_TOLERANCE) {
++        if (index >= 0 && abs(checkpoints[index] - target) < span * STOP_TOLERANCE) {
 +            if (index != lastHapticStop) {
 +                lastHapticStop = index
 +                haptic(HapticFeedbackConstants.CLOCK_TICK)
@@ -2150,10 +2152,10 @@ index 000000000..5d8de4736
 +
 +    /** Stop magnetism only after a real drag, and only within a hair of a lens stop. */
 +    private fun snapToStop() {
-+        if (!ratioDragged || stops.isEmpty()) return
++        if (!ratioDragged || checkpoints.isEmpty()) return
 +        val index = stopsIndex(currentRatio)
 +        if (index < 0) return
-+        val value = stops[index]
++        val value = checkpoints[index]
 +        if (abs(value - currentRatio) < (maxRatio - minRatio) * STOP_SNAP) {
 +            applyRatio(value)
 +        }
@@ -2335,7 +2337,7 @@ index 000000000..5d8de4736
 +
 +        tickPaint.strokeWidth = dp(1.5f)
 +        val lastRight = floatArrayOf(-Float.MAX_VALUE, -Float.MAX_VALUE)
-+        for (stop in stops) {
++        for (stop in checkpoints) {
 +            val x = ratioToX(stop)
 +            if (x < -dp(40f) || x > width + dp(40f)) continue
 +            val isActive = abs(stop - currentRatio) <= STOP_TOLERANCE
