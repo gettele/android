@@ -4,28 +4,40 @@ Date: Wed, 11 Nov 2026 04:25:26 +0300
 Subject: [PATCH] feat: improve round video controls
 
 ---
- .../messenger/camera/Camera2Session.java      |  38 +-
- .../messenger/camera/CameraSession.java       |  16 +
+ .../messenger/camera/Camera2Session.java      |  71 +-
+ .../messenger/camera/CameraSession.java       |  20 +
  .../java/org/telegram/ui/ChatActivity.java    |  20 +
- .../ui/Components/ChatActivityEnterView.java  | 100 ++-
- .../ui/Components/InstantCameraView.java      | 176 ++++-
- .../ui/Components/InstantCameraView2.java     | 111 ++-
- .../ui/Components/InstantCameraViewBase.java  |  14 +
- .../round/RoundVideoCameraController.java     | 130 +++-
- .../recorder/round/RoundVideoSession.java     |  73 +-
+ .../ui/Components/ChatActivityEnterView.java  | 115 ++-
+ .../ui/Components/InstantCameraView.java      | 192 ++++-
+ .../ui/Components/InstantCameraView2.java     | 118 ++-
+ .../ui/Components/InstantCameraViewBase.java  |  24 +
+ .../round/RoundVideoCameraController.java     | 151 +++-
+ .../recorder/round/RoundVideoSession.java     |  78 +-
  .../src/main/java/tele/TeleConfig.kt          |   4 +
- .../src/main/java/tele/helpers/RoundZoom.kt   | 639 ++++++++++++++++++
+ .../src/main/java/tele/helpers/RoundZoom.kt   | 705 ++++++++++++++++++
+ .../main/java/tele/helpers/RoundZoomLenses.kt | 197 +++++
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   3 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   3 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   6 +
- 14 files changed, 1281 insertions(+), 52 deletions(-)
+ 15 files changed, 1647 insertions(+), 60 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java b/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java
-index 207b15f9f..fe3060941 100644
+index 207b15f9f..9477a27e0 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/camera/Camera2Session.java
-@@ -73,6 +73,8 @@ public class Camera2Session {
+@@ -37,6 +37,9 @@ import org.telegram.messenger.MessagesController;
+ import org.telegram.messenger.UserConfig;
+ import org.telegram.messenger.Utilities;
+ 
++import tele.TeleConfig;
++import tele.helpers.RoundZoomLenses;
++
+ import java.io.File;
+ import java.io.FileOutputStream;
+ import java.io.IOException;
+@@ -73,6 +76,8 @@ public class Camera2Session {
      private Rect sensorSize;
      private float maxZoom = 1f;
      private float currentZoom = 1f;
@@ -34,7 +46,62 @@ index 207b15f9f..fe3060941 100644
  
      private final Size previewSize;
  
-@@ -345,6 +347,7 @@ public class Camera2Session {
+@@ -85,6 +90,7 @@ public class Camera2Session {
+         final CameraManager cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+ 
+         float bestAspectRatio = 0;
++        int bestCoverage = -1;
+         Size bestSize = null;
+         String cameraId = null;
+         try {
+@@ -102,17 +108,30 @@ public class Camera2Session {
+                 if ((viewWidth / (float) viewHeight >= 1f) != (cameraAspectRatio >= 1f)) {
+                     cameraAspectRatio = 1f / cameraAspectRatio;
+                 }
+-                if (bestAspectRatio <= 0 || Math.abs((float) viewWidth / viewHeight - bestAspectRatio) > Math.abs((float) viewWidth / viewHeight - cameraAspectRatio)) {
+-                    if (confMap != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+-                        Size size = chooseOptimalSize(confMap.getOutputSizes(SurfaceTexture.class), viewWidth, viewHeight, false);
+-                        if (size != null) {
++                if (confMap != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++                    Size size = chooseOptimalSize(confMap.getOutputSizes(SurfaceTexture.class), viewWidth, viewHeight, false);
++                    if (size != null) {
++                        final float viewAspectRatio = (float) viewWidth / viewHeight;
++                        final float bestDistance = bestAspectRatio <= 0
++                                ? Float.MAX_VALUE
++                                : Math.abs(viewAspectRatio - bestAspectRatio);
++                        final float distance = Math.abs(viewAspectRatio - cameraAspectRatio);
++                        final int coverage = TeleConfig.ROUND_ZOOM.getValue()
++                                ? RoundZoomLenses.lensCoverage(id)
++                                : 0;
++                        final boolean closer = bestAspectRatio <= 0 || bestDistance > distance + 0.0001f;
++                        final boolean tie = bestAspectRatio > 0
++                                && Math.abs(bestDistance - distance) <= 0.0001f;
++                        final boolean richer = tie
++                                && TeleConfig.ROUND_ZOOM.getValue()
++                                && coverage > bestCoverage;
++                        if (closer || richer) {
+                             bestAspectRatio = cameraAspectRatio;
++                            bestCoverage = coverage;
+                             cameraId = id;
+                             bestSize = size;
+                         }
+                     }
+-                } else {
+-
+                 }
+             }
+         } catch (Exception e) {
+@@ -196,6 +215,9 @@ public class Camera2Session {
+             sensorSize = cameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+             final Float value = cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+             maxZoom = (value == null || value < 1f) ? 1f : value;
++            teleZoomRange = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
++                    ? cameraCharacteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
++                    : null;
+             cameraManager.openCamera(cameraId, cameraStateCallback, handler);
+         } catch (Exception e) {
+             FileLog.e(e);
+@@ -345,6 +367,7 @@ public class Camera2Session {
          if (!isInitiated()) return;
          if (captureRequestBuilder == null || cameraDevice == null || sensorSize == null) return;
  
@@ -42,7 +109,7 @@ index 207b15f9f..fe3060941 100644
          currentZoom = Utilities.clamp(value, maxZoom, 1f);
          updateCaptureRequest();
  
-@@ -355,6 +358,35 @@ public class Camera2Session {
+@@ -355,6 +378,36 @@ public class Camera2Session {
          }
      }
  
@@ -75,10 +142,11 @@ index 207b15f9f..fe3060941 100644
 +        return teleZoomRange != null ? Math.min(maxZoom, teleZoomRange.getUpper()) : maxZoom;
 +    }
 +
++
      private boolean flashing;
      public void setFlash(boolean flash) {
          if (flashing != flash) {
-@@ -494,7 +526,11 @@ public class Camera2Session {
+@@ -494,7 +547,11 @@ public class Camera2Session {
                  captureRequestBuilder.set(CaptureRequest.CONTROL_CAPTURE_INTENT, CaptureRequest.CONTROL_CAPTURE_INTENT_VIDEO_RECORD);
              }
  
@@ -92,15 +160,19 @@ index 207b15f9f..fe3060941 100644
                  final int centerY = sensorSize.height() / 2;
                  final int deltaX = (int) ((0.5f * sensorSize.width()) / currentZoom);
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/camera/CameraSession.java b/TMessagesProj/src/main/java/org/telegram/messenger/camera/CameraSession.java
-index 0fce94006..4f0e7024c 100644
+index 0fce94006..da51c2813 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/camera/CameraSession.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/camera/CameraSession.java
-@@ -478,6 +478,22 @@ public class CameraSession {
+@@ -478,6 +478,26 @@ public class CameraSession {
          isVideo = true;
      }
  
 +    public float tele_getMaxZoomRatio() {
 +        return Math.max(1, maxZoom);
++    }
++
++    public float tele_getMinZoomRatio() {
++        return 1f;
 +    }
 +
 +    public void tele_setZoomRatio(float ratio) {
@@ -119,7 +191,7 @@ index 0fce94006..4f0e7024c 100644
          currentZoom = value;
          if (isVideo && Camera.Parameters.FLASH_MODE_ON.equals(currentFlashMode)) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 7777dc221..137d4b7b5 100644
+index 7777dc221..623a02cc8 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -2570,6 +2570,23 @@ public class ChatActivity extends BaseFragment implements
@@ -150,14 +222,14 @@ index 7777dc221..137d4b7b5 100644
      }
  
      public boolean checkRecordLocked(boolean invoked, boolean forceCloseOnDiscard) {
-+        if (chatActivityEnterView != null && chatActivityEnterView.teleCancelRoundVideoPreview()) {
++        if (chatActivityEnterView != null && chatActivityEnterView.teleCancelRoundVideoPreview(invoked)) {
 +            return true;
 +        }
          if (chatActivityEnterView != null && chatActivityEnterView.isRecordLocked()) {
              if (invoked) {
                  final AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), themeDelegate);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
-index 1b900a31e..472b853ef 100644
+index 1b900a31e..b8febd375 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
 @@ -327,6 +327,12 @@ public class ChatActivityEnterView extends FrameLayout implements
@@ -233,37 +305,38 @@ index 1b900a31e..472b853ef 100644
                      }
                  }
              } else {
-@@ -3060,6 +3088,12 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -3060,6 +3088,14 @@ public class ChatActivityEnterView extends FrameLayout implements
                  if (isLiveComment) return false;
                  createRecordCircle();
                  if (motionEvent.getAction() == MotionEvent.ACTION_DOWN) {
++                    teleRoundStartClick = false;
 +                    telePreviewDownX = motionEvent.getX() + audioVideoButtonContainer.getX();
 +                    if (teleRoundPreview && !recordingAudioVideo && isInVideoMode()) {
 +                        teleRoundStartClick = true;
++                        getParent().requestDisallowInterceptTouchEvent(true);
 +                        delegate.needStartRoundVideoRecording();
 +                        return true;
 +                    }
                      if (recordCircle.isSendButtonVisible()) {
                          if (!hasRecordVideo || calledRecordRunnable) {
                              startedDraggingX = -1;
-@@ -3134,6 +3168,16 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -3134,6 +3170,15 @@ public class ChatActivityEnterView extends FrameLayout implements
                      }
                      return true;
                  } else if (motionEvent.getAction() == MotionEvent.ACTION_UP || motionEvent.getAction() == MotionEvent.ACTION_CANCEL) {
++                    // recordStarted can clear preview state before this touch ends.
++                    if (teleRoundStartClick) {
++                        teleRoundStartClick = false;
++                        return true;
++                    }
 +                    if (motionEvent.getAction() == MotionEvent.ACTION_CANCEL && teleRoundPreview && !recordingAudioVideo) {
 +                        teleCancelRoundVideoPreview();
 +                        return false;
 +                    }
-+                    if (teleRoundStartClick) {
-+                        teleRoundStartClick = false;
-+                        if (motionEvent.getAction() == MotionEvent.ACTION_UP) {
-+                            return true;
-+                        }
-+                    }
                      if (motionEvent.getAction() == MotionEvent.ACTION_CANCEL && recordingAudioVideo) {
                          if (slideToCancelProgress < 0.7f) {
                              if (hasRecordVideo && isInVideoMode()) {
-@@ -3160,6 +3204,14 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -3160,6 +3205,14 @@ public class ChatActivityEnterView extends FrameLayout implements
                          return false;
                      }
  
@@ -278,14 +351,22 @@ index 1b900a31e..472b853ef 100644
                      float x = motionEvent.getX() + audioVideoButtonContainer.getX();
                      float dist = (x - startedDraggingX);
                      float alpha = 1.0f + dist / distCanMove;
-@@ -6441,7 +6493,25 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -6441,7 +6494,33 @@ public class ChatActivityEnterView extends FrameLayout implements
          startLockTransition();
      }
  
 +    /** Closes the manual round-video preview before recording starts. */
 +    public boolean teleCancelRoundVideoPreview() {
++        return teleCancelRoundVideoPreview(true);
++    }
++
++    /** Claims back for the manual round-video preview; only closes it once the gesture is committed. */
++    public boolean teleCancelRoundVideoPreview(boolean invoked) {
 +        if (!teleRoundPreview || recordingAudioVideo) {
 +            return false;
++        }
++        if (!invoked) {
++            return true;
 +        }
 +        teleRoundPreview = false;
 +        teleRoundStartClick = false;
@@ -304,7 +385,20 @@ index 1b900a31e..472b853ef 100644
          if (hasRecordVideo && isInVideoMode()) {
              CameraController.getInstance().cancelOnInitRunnable(onFinishInitCameraRunnable);
              delegate.needStartRecordVideo(5, true, 0, 0, voiceOnce ? 0x7FFFFFFF : 0, effectId, 0);
-@@ -14092,6 +14162,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -6741,6 +6820,12 @@ public class ChatActivityEnterView extends FrameLayout implements
+     }
+ 
+     public void onDestroy() {
++        if (teleOpenPreviewRunnable != null) {
++            CameraController.getInstance().cancelOnInitRunnable(teleOpenPreviewRunnable);
++            teleOpenPreviewRunnable = null;
++        }
++        teleRoundPreview = false;
++        teleRoundStartClick = false;
+         if (audioTimelineView != null) {
+             audioTimelineView.destroy();
+         }
+@@ -14092,6 +14177,9 @@ public class ChatActivityEnterView extends FrameLayout implements
                  } else {
                      updateRecordInterface(RECORD_STATE_CANCEL, true);
                  }
@@ -314,7 +408,7 @@ index 1b900a31e..472b853ef 100644
              }
          } else if (id == NotificationCenter.recordStarted) {
              int guid = (Integer) args[0];
-@@ -14115,6 +14188,11 @@ public class ChatActivityEnterView extends FrameLayout implements
+@@ -14115,6 +14203,11 @@ public class ChatActivityEnterView extends FrameLayout implements
              if (recordDot != null) {
                  recordDot.enterAnimation = false;
              }
@@ -327,7 +421,7 @@ index 1b900a31e..472b853ef 100644
              recordingAudioVideo = false;
              audioToSend = null;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java
-index 6b57a2a05..76b15b710 100644
+index 6b57a2a05..e23a1f3ad 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView.java
 @@ -106,6 +106,9 @@ import org.telegram.ui.Stories.recorder.DualCameraView;
@@ -357,7 +451,7 @@ index 6b57a2a05..76b15b710 100644
  
  
      @SuppressLint("ClickableViewAccessibility")
-@@ -433,6 +439,57 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -433,6 +439,66 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
          };
          addView(textureOverlayView, new LayoutParams(AndroidUtilities.roundPlayingMessageSize, AndroidUtilities.roundPlayingMessageSize, Gravity.CENTER));
  
@@ -378,6 +472,14 @@ index 6b57a2a05..76b15b710 100644
 +                    return null;
 +                }
 +                return camera2SessionCurrent.cameraId;
++            }
++
++            @Override
++            public float minZoomRatio() {
++                if (useCamera2) {
++                    return camera2SessionCurrent == null ? 1f : camera2SessionCurrent.tele_getMinZoomRatio();
++                }
++                return cameraSession == null ? 1f : cameraSession.tele_getMinZoomRatio();
 +            }
 +
 +            @Override
@@ -408,14 +510,15 @@ index 6b57a2a05..76b15b710 100644
 +                        && cameraReady
 +                        && !flipAnimationInProgress
 +                        && isCameraSessionInitiated()
-+                        && tele_maxZoomRatio() > 1f;
++                        && (tele_maxZoomRatio() > 1.001f || tele_minZoomRatio() < 0.999f);
 +            }
 +        });
++        tele_roundZoom.setAnchor(cameraContainer, 0);
 +
          setVisibilityFromPause = false;
          setVisibility(INVISIBLE);
      }
-@@ -442,6 +499,32 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -442,6 +508,39 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
          drawable.setPadding(dp(6));
          drawable.setRadius(dp(21));
          buttonsLayout.setBackground(drawable);
@@ -429,6 +532,13 @@ index 6b57a2a05..76b15b710 100644
 +            return camera2SessionCurrent == null ? 1f : camera2SessionCurrent.tele_getMaxZoomRatio();
 +        }
 +        return cameraSession == null ? 1f : cameraSession.tele_getMaxZoomRatio();
++    }
++
++    private float tele_minZoomRatio() {
++        if (useCamera2) {
++            return camera2SessionCurrent == null ? 1f : camera2SessionCurrent.tele_getMinZoomRatio();
++        }
++        return cameraSession == null ? 1f : cameraSession.tele_getMinZoomRatio();
 +    }
 +
 +    private float tele_currentZoomRatio() {
@@ -448,7 +558,7 @@ index 6b57a2a05..76b15b710 100644
      }
  
      private Boolean wasFlashing;
-@@ -457,6 +540,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -457,6 +556,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
              }
          }
  
@@ -456,7 +566,7 @@ index 6b57a2a05..76b15b710 100644
          if (useCamera2) {
              if (camera2Sessions[1] != null) {
                  camera2Sessions[1].setFlash(flashing && !isFrontface && recording);
-@@ -685,7 +769,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -685,7 +785,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
              } else {
                  videoEncoder.pause();
              }
@@ -465,7 +575,7 @@ index 6b57a2a05..76b15b710 100644
              videoEncoder.resume();
              hideCamera(false);
              if (videoPlayer != null) {
-@@ -706,6 +790,31 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -706,6 +806,31 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
          return !recording;
      }
  
@@ -497,7 +607,7 @@ index 6b57a2a05..76b15b710 100644
      public void showCamera(boolean fromPaused) {
          if (textureView != null) {
              return;
-@@ -871,7 +980,9 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -871,7 +996,9 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
          setVisibility(VISIBLE);
  
          startAnimation(true, fromPaused);
@@ -508,7 +618,7 @@ index 6b57a2a05..76b15b710 100644
      }
  
      public InstantViewCameraContainer getCameraContainer() {
-@@ -880,6 +991,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -880,6 +1007,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
  
      public void startAnimation(boolean open, boolean fromPaused) {
          dispatchAnimationState(open, fromPaused);
@@ -516,7 +626,7 @@ index 6b57a2a05..76b15b710 100644
          if (animatorSet != null) {
              animatorSet.removeAllListeners();
              animatorSet.cancel();
-@@ -973,7 +1085,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -973,7 +1101,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
      }
  
      public void send(int state, boolean notify, int scheduleDate, int scheduleRepeatPeriod, int ttl, long effectId, long stars) {
@@ -525,7 +635,7 @@ index 6b57a2a05..76b15b710 100644
              return;
          }
          stopProgressTimer();
-@@ -1079,6 +1191,8 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -1079,6 +1207,8 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
      }
  
      public void cancel(boolean byGesture) {
@@ -534,7 +644,7 @@ index 6b57a2a05..76b15b710 100644
          stopProgressTimer();
          if (videoPlayer != null) {
              videoPlayer.releasePlayer(true);
-@@ -1125,6 +1239,8 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -1125,6 +1255,8 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
      }
  
      public void hideCamera(boolean async) {
@@ -543,7 +653,7 @@ index 6b57a2a05..76b15b710 100644
          destroy(async);
          cameraContainer.setTranslationX(0);
          textureOverlayView.setTranslationX(0);
-@@ -1847,36 +1963,44 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -1847,36 +1979,44 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
  
              boolean captureFirstFrameThumb = false;
              if (!recording) {
@@ -610,7 +720,7 @@ index 6b57a2a05..76b15b710 100644
                  videoEncoder.frameAvailable(cameraSurface[surfaceIndex], bothCameras ? surfaceIndex : cameraId, System.nanoTime());
              }
  
-@@ -3865,6 +3989,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -3865,6 +4005,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
                  float zoom = Math.min(1f, Math.max(0, pinchScale - 1f));
                  cameraSession.setZoom(zoom);
              }
@@ -618,7 +728,7 @@ index 6b57a2a05..76b15b710 100644
          } else if ((ev.getActionMasked() == MotionEvent.ACTION_UP || (ev.getActionMasked() == MotionEvent.ACTION_POINTER_UP && checkPointerIds(ev)) || ev.getActionMasked() == MotionEvent.ACTION_CANCEL) && isInPinchToZoomTouchMode) {
              isInPinchToZoomTouchMode = false;
              finishZoom();
-@@ -3899,6 +4024,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
+@@ -3899,6 +4040,7 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
                          cameraSession.setZoom((float) valueAnimator.getAnimatedValue());
                      }
                  }
@@ -627,7 +737,7 @@ index 6b57a2a05..76b15b710 100644
              finishZoomTransition.addListener(new AnimatorListenerAdapter() {
                  @Override
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java
-index 0dcb5854c..e1bdfc91e 100644
+index 0dcb5854c..0a36c36a2 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraView2.java
 @@ -52,6 +52,9 @@ import org.telegram.ui.Components.voip.CellFlickerDrawable;
@@ -650,7 +760,7 @@ index 0dcb5854c..e1bdfc91e 100644
      private boolean heavyOperationsStopped;
      private float previousWindowBrightness = Float.NaN;
      private int textureViewSize;
-@@ -281,6 +287,56 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -281,6 +287,63 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
          muteImageView.setAlpha(0f);
          addView(muteImageView, LayoutHelper.createFrame(48, 48, Gravity.CENTER));
  
@@ -673,6 +783,11 @@ index 0dcb5854c..e1bdfc91e 100644
 +                    return null;
 +                }
 +                return session == null ? null : session.tele_getCameraId();
++            }
++
++            @Override
++            public float minZoomRatio() {
++                return session == null ? 1f : session.tele_getMinZoomRatio();
 +            }
 +
 +            @Override
@@ -700,14 +815,16 @@ index 0dcb5854c..e1bdfc91e 100644
 +                        && stateInfo.canControlCamera()
 +                        && !cameraFlipInProgress
 +                        && capabilities != null
-+                        && capabilities.getMaximumZoomRatio() > 1f;
++                        && (capabilities.getMaximumZoomRatio() > 1.001f
++                        || session.tele_getMinZoomRatio() < 0.999f);
 +            }
 +        });
++        tele_roundZoom.setAnchor(cameraContainer, 14);
 +
          textureView.setOnTouchListener(this::handleZoomTouch);
          super.setVisibility(INVISIBLE);
      }
-@@ -294,6 +350,9 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -294,6 +357,9 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
          drawable.setPadding(dp(6));
          drawable.setRadius(dp(21));
          buttonsLayout.setBackground(drawable);
@@ -717,7 +834,7 @@ index 0dcb5854c..e1bdfc91e 100644
      }
  
      @Override
-@@ -327,6 +386,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -327,6 +393,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
  
      @Override
      public void destroy(boolean async) {
@@ -725,7 +842,7 @@ index 0dcb5854c..e1bdfc91e 100644
          setRecordingUiFrameClockActive(false);
          cancelCameraFlipAnimation();
          if (zoomResetAnimator != null) zoomResetAnimator.cancel();
-@@ -366,6 +426,32 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -366,6 +433,32 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
          );
      }
  
@@ -758,7 +875,7 @@ index 0dcb5854c..e1bdfc91e 100644
      @Override
      public void showCamera(boolean fromPaused) {
          if (session != null) return;
-@@ -379,6 +465,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -379,6 +472,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
          startedNotificationSent = false;
          stopNotificationSent = false;
          lastVisibleDurationMs = 0L;
@@ -766,7 +883,7 @@ index 0dcb5854c..e1bdfc91e 100644
          progressView.setProgress(0f);
          showInitialPlaceholder();
          upload = new TelegramRoundVideoUpload(currentAccount, secretChat);
-@@ -395,14 +482,19 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -395,14 +489,19 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
                  .setOutputListener(upload)
                  .setScreenFlashController(this::setScreenFlashEnabled)
                  .build();
@@ -788,7 +905,7 @@ index 0dcb5854c..e1bdfc91e 100644
          if (visibilityAnimator != null) {
              visibilityAnimator.removeAllListeners();
              visibilityAnimator.cancel();
-@@ -497,6 +589,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -497,6 +596,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
              long stars
      ) {
          if (session == null || stateInfo == null) return;
@@ -796,7 +913,7 @@ index 0dcb5854c..e1bdfc91e 100644
          if (state == 3) {
              pauseForPreview();
              return;
-@@ -543,6 +636,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -543,6 +643,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
  
      @Override
      public void cancel(boolean byGesture) {
@@ -804,7 +921,7 @@ index 0dcb5854c..e1bdfc91e 100644
          // Refused once the result was delivered: the recording is being sent.
          if (session == null || !session.cancel()) return;
          pendingSend = null;
-@@ -754,6 +848,9 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -754,6 +855,9 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
                  @NonNull RoundVideoSession.CameraCapabilities cameraCapabilities
          ) {
              capabilities = cameraCapabilities;
@@ -814,7 +931,7 @@ index 0dcb5854c..e1bdfc91e 100644
              if (cameraCapabilities.getActiveFacing() != null) {
                  SharedSettings.roundVideoLastCamera.set(cameraCapabilities.getActiveFacing());
              }
-@@ -970,6 +1067,8 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -970,6 +1074,8 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
                          ? RoundVideoSession.CameraFacing.BACK
                          : RoundVideoSession.CameraFacing.FRONT;
          if (session.setCameraFacing(facing)) {
@@ -823,7 +940,7 @@ index 0dcb5854c..e1bdfc91e 100644
              switchCameraDrawable.setCurrentFrame(0);
              switchCameraDrawable.start();
          }
-@@ -1016,6 +1115,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -1016,6 +1122,7 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
                  && capabilities != null
                  && capabilities.getFlashType() != RoundVideoSession.FlashType.NONE);
          updateFlashIcon();
@@ -831,7 +948,7 @@ index 0dcb5854c..e1bdfc91e 100644
      }
  
      private void togglePreviewMuted() {
-@@ -1075,6 +1175,8 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -1075,6 +1182,8 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
                              1f
                      );
              session.setZoom(zoomProgress);
@@ -840,7 +957,7 @@ index 0dcb5854c..e1bdfc91e 100644
              return true;
          }
          if (event.getActionMasked() == MotionEvent.ACTION_POINTER_UP && pinchZoomActive) {
-@@ -1115,6 +1217,11 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
+@@ -1115,6 +1224,11 @@ public final class InstantCameraView2 extends InstantCameraViewBase {
          zoomResetAnimator.addUpdateListener(animation -> {
              zoomProgress = (float) animation.getAnimatedValue();
              if (session != null) session.setZoom(zoomProgress);
@@ -853,10 +970,41 @@ index 0dcb5854c..e1bdfc91e 100644
          zoomResetAnimator.start();
      }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraViewBase.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraViewBase.java
-index f810bafa9..8f3bcd660 100644
+index f810bafa9..275919397 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraViewBase.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/InstantCameraViewBase.java
-@@ -123,6 +123,20 @@ public abstract class InstantCameraViewBase extends FrameLayout {
+@@ -3,6 +3,7 @@ package org.telegram.ui.Components;
+ import android.content.Context;
+ import android.graphics.Paint;
+ import android.graphics.RectF;
++import android.os.Build;
+ import android.view.TextureView;
+ import android.view.View;
+ import android.widget.FrameLayout;
+@@ -15,6 +16,8 @@ import org.telegram.ui.ActionBar.Theme;
+ import org.telegram.ui.Components.blur3.BlurredBackgroundDrawableViewFactory;
+ import org.telegram.ui.Components.blur3.drawable.color.BlurredBackgroundColorProvider;
+ 
++import tele.TeleConfig;
++
+ /** Common UI contract implemented by the legacy and Camera2 round-video views. */
+ public abstract class InstantCameraViewBase extends FrameLayout {
+ 
+@@ -57,6 +60,13 @@ public abstract class InstantCameraViewBase extends FrameLayout {
+ 
+     /** Returns whether the Camera2 implementation is used: the local choice, else the server flag. */
+     public static boolean isCamera2Enabled(int account) {
++        // Lens stops need the Camera2 round-video controller; only auto-select it when the user has
++        // not explicitly chosen the legacy implementation.
++        if (TeleConfig.ROUND_ZOOM.getValue()
++                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
++                && !SharedSettings.roundVideoCamera2Enabled.isSet()) {
++            return true;
++        }
+         return SharedSettings.roundVideoCamera2Enabled.isSet() ?
+             SharedSettings.roundVideoCamera2Enabled.get() :
+             !AppGlobalConfig.getInstance(account).roundVideoRecorderV2Disabled.get();
+@@ -123,6 +133,20 @@ public abstract class InstantCameraViewBase extends FrameLayout {
      /** Opens the camera UI and starts the selected implementation. */
      public abstract void showCamera(boolean fromPaused);
  
@@ -878,10 +1026,20 @@ index f810bafa9..8f3bcd660 100644
      public abstract void startAnimation(boolean open, boolean fromPaused);
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
-index 96a93ed28..b4873ffdb 100644
+index 96a93ed28..929fc144a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoCameraController.java
-@@ -176,6 +176,9 @@ final class RoundVideoCameraController {
+@@ -35,6 +35,9 @@ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Set;
+ 
++import tele.TeleConfig;
++import tele.helpers.RoundZoomLenses;
++
+ final class RoundVideoCameraController {
+ 
+     interface Callback {
+@@ -176,6 +179,9 @@ final class RoundVideoCameraController {
      private long timelineOffsetUs;
      private volatile float zoomProgress;
      private float maximumZoomRatio = 1f;
@@ -891,7 +1049,7 @@ index 96a93ed28..b4873ffdb 100644
      private boolean torchEnabled;
      private boolean torchVerificationPending;
      private int torchVerificationFrames;
-@@ -301,6 +304,7 @@ final class RoundVideoCameraController {
+@@ -301,6 +307,7 @@ final class RoundVideoCameraController {
          requestedFacing = facing;
          active = true;
          stopping = false;
@@ -899,7 +1057,7 @@ index 96a93ed28..b4873ffdb 100644
          frameRateFallbackAttempted = false;
          commonStartRecorder = null;
          previewTransformEnabled = true;
-@@ -314,6 +318,57 @@ final class RoundVideoCameraController {
+@@ -314,6 +321,57 @@ final class RoundVideoCameraController {
          maybeOpenCamera();
      }
  
@@ -957,7 +1115,7 @@ index 96a93ed28..b4873ffdb 100644
      boolean setCameraFacing(@NonNull RoundVideoSession.CameraFacing facing) {
          requestedFacing = facing;
          Handler handler = cameraHandler;
-@@ -323,6 +378,7 @@ final class RoundVideoCameraController {
+@@ -323,6 +381,7 @@ final class RoundVideoCameraController {
      }
  
      boolean setZoom(float progress) {
@@ -965,7 +1123,7 @@ index 96a93ed28..b4873ffdb 100644
          zoomProgress = clamp(progress, 0f, 1f);
          Handler handler = cameraHandler;
          if (!active || handler == null) return false;
-@@ -331,6 +387,25 @@ final class RoundVideoCameraController {
+@@ -331,6 +390,32 @@ final class RoundVideoCameraController {
          return true;
      }
  
@@ -984,6 +1142,13 @@ index 96a93ed28..b4873ffdb 100644
 +        return Float.isNaN(ratio) ? 1f + zoomProgress * (maximumZoomRatio - 1f) : ratio;
 +    }
 +
++    float tele_getMinZoomRatio() {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && teleZoomRange != null) {
++            return teleZoomRange.getLower();
++        }
++        return 1f;
++    }
++
 +    String tele_getCameraId() {
 +        return cameraId;
 +    }
@@ -991,7 +1156,7 @@ index 96a93ed28..b4873ffdb 100644
      boolean setTorchEnabled(boolean enabled) {
          Handler handler = cameraHandler;
          if (!active || handler == null) return false;
-@@ -356,6 +431,7 @@ final class RoundVideoCameraController {
+@@ -356,6 +441,7 @@ final class RoundVideoCameraController {
          diagnostics.log("camera segment stop requested");
          handler.post(() -> {
              active = false;
@@ -999,7 +1164,7 @@ index 96a93ed28..b4873ffdb 100644
              cancelCommonStartWait();
              if (recorder != null) {
                  long stopPresentationTimeUs = recorder.requestStop();
-@@ -376,6 +452,7 @@ final class RoundVideoCameraController {
+@@ -376,6 +462,7 @@ final class RoundVideoCameraController {
  
      void release() {
          active = false;
@@ -1007,7 +1172,7 @@ index 96a93ed28..b4873ffdb 100644
          previewView.setSurfaceTextureListener(null);
          previewView.removeOnLayoutChangeListener(layoutChangeListener);
          Handler handler = cameraHandler;
-@@ -500,7 +577,7 @@ final class RoundVideoCameraController {
+@@ -500,7 +587,7 @@ final class RoundVideoCameraController {
              return;
          }
          if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
@@ -1016,7 +1181,7 @@ index 96a93ed28..b4873ffdb 100644
              reportError(new SecurityException("Audio recording permission is not granted"));
              return;
          }
-@@ -529,7 +606,7 @@ final class RoundVideoCameraController {
+@@ -529,7 +616,7 @@ final class RoundVideoCameraController {
                  previewTexture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
              }
              if (previewSurface == null) previewSurface = new Surface(previewTexture);
@@ -1025,7 +1190,7 @@ index 96a93ed28..b4873ffdb 100644
                  createRecordingPipelineWithFallback(previewTexture);
              } else if (glProcessor != null) {
                  glProcessor.updateInputConfiguration(
-@@ -1370,15 +1447,18 @@ final class RoundVideoCameraController {
+@@ -1370,15 +1457,18 @@ final class RoundVideoCameraController {
  
      private void createCaptureSession() {
          CameraDevice device = cameraDevice;
@@ -1047,7 +1212,7 @@ index 96a93ed28..b4873ffdb 100644
                              ? Arrays.asList(recordingSurface)
                              : Arrays.asList(previewSurface, recordingSurface),
                      sessionCallback,
-@@ -1636,6 +1716,31 @@ final class RoundVideoCameraController {
+@@ -1636,6 +1726,31 @@ final class RoundVideoCameraController {
      private CaptureRequest.Builder createRepeatingRequestBuilder(boolean logConfiguration)
              throws CameraAccessException {
          CameraDevice device = cameraDevice;
@@ -1079,7 +1244,7 @@ index 96a93ed28..b4873ffdb 100644
          if (device == null || recordingSurface == null) {
              throw new IllegalStateException("Camera request surfaces are unavailable");
          }
-@@ -1880,16 +1985,15 @@ final class RoundVideoCameraController {
+@@ -1880,16 +1995,15 @@ final class RoundVideoCameraController {
      }
  
      private void applyZoom(@NonNull CaptureRequest.Builder builder) {
@@ -1099,7 +1264,7 @@ index 96a93ed28..b4873ffdb 100644
          Rect activeArray = characteristics == null
                  ? null
                  : characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
-@@ -2023,6 +2127,10 @@ final class RoundVideoCameraController {
+@@ -2023,6 +2137,10 @@ final class RoundVideoCameraController {
          cameraId = selectedId;
          selectedFacing = facing;
          characteristics = selectedCharacteristics;
@@ -1110,7 +1275,7 @@ index 96a93ed28..b4873ffdb 100644
          activeFrameRate = frameRatePlan.frameRate;
          activeFpsRange = frameRatePlan.fpsRange;
          frameRateFallbackAttempted = false;
-@@ -2096,6 +2204,10 @@ final class RoundVideoCameraController {
+@@ -2096,6 +2214,10 @@ final class RoundVideoCameraController {
          cameraId = selection.id;
          selectedFacing = selection.facing;
          characteristics = selection.characteristics;
@@ -1121,8 +1286,26 @@ index 96a93ed28..b4873ffdb 100644
          previewSize = selection.previewSize;
          recordingSize = selection.recordingSize;
          sourceCropSize = selection.sourceCropSize;
+@@ -2250,8 +2372,15 @@ final class RoundVideoCameraController {
+             @NonNull CameraCandidate current,
+             @NonNull RoundVideoSession.CameraFacing facing
+     ) {
+-        return facing == RoundVideoSession.CameraFacing.BACK
+-                && hasFlashUnit(candidate.characteristics)
++        if (facing != RoundVideoSession.CameraFacing.BACK) return false;
++        if (TeleConfig.ROUND_ZOOM.getValue()) {
++            final int candidateCoverage = RoundZoomLenses.lensCoverage(candidate.id);
++            final int currentCoverage = RoundZoomLenses.lensCoverage(current.id);
++            if (candidateCoverage != currentCoverage) {
++                return candidateCoverage > currentCoverage;
++            }
++        }
++        return hasFlashUnit(candidate.characteristics)
+                 && !hasFlashUnit(current.characteristics);
+     }
+ 
 diff --git a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoSession.java b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoSession.java
-index f63b1df54..8265ef7c7 100644
+index f63b1df54..9636f5499 100644
 --- a/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoSession.java
 +++ b/TMessagesProj/src/main/java/org/telegram/utils/recorder/round/RoundVideoSession.java
 @@ -321,6 +321,7 @@ public final class RoundVideoSession {
@@ -1217,7 +1400,7 @@ index f63b1df54..8265ef7c7 100644
      /** Finalizes the current segment and starts recorded-video preview. */
      @MainThread
      public boolean pauseRecording() {
-@@ -745,11 +791,29 @@ public final class RoundVideoSession {
+@@ -745,11 +791,34 @@ public final class RoundVideoSession {
      @MainThread
      public boolean setZoom(float progress) {
          requireMainThread();
@@ -1240,6 +1423,11 @@ index f63b1df54..8265ef7c7 100644
 +        return cameraController.tele_getZoomRatio();
 +    }
 +
++    /** Returns the minimum zoom ratio the active logical camera exposes. */
++    public float tele_getMinZoomRatio() {
++        return cameraController.tele_getMinZoomRatio();
++    }
++
 +    /** Returns the active Camera2 device id. */
 +    public String tele_getCameraId() {
 +        return cameraController.tele_getCameraId();
@@ -1248,7 +1436,7 @@ index f63b1df54..8265ef7c7 100644
      /** Enables the rear torch or requests front-camera screen flash. */
      @MainThread
      public boolean setFlashEnabled(boolean enabled) {
-@@ -1407,7 +1471,8 @@ public final class RoundVideoSession {
+@@ -1407,7 +1476,8 @@ public final class RoundVideoSession {
                  previewPlaying,
                  cameraSwitching,
                  flashEnabled,
@@ -1282,10 +1470,10 @@ index da3f969fb..77b7989d8 100644
      val COPY_PROTECTED = BoolItem("copy_protected", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
 new file mode 100644
-index 000000000..817741c47
+index 000000000..613e5ead2
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/RoundZoom.kt
-@@ -0,0 +1,639 @@
+@@ -0,0 +1,705 @@
 +package tele.helpers
 +
 +import android.animation.ValueAnimator
@@ -1295,10 +1483,6 @@ index 000000000..817741c47
 +import android.graphics.Paint
 +import android.graphics.RectF
 +import android.graphics.Typeface
-+import android.graphics.drawable.GradientDrawable
-+import android.hardware.camera2.CameraCharacteristics
-+import android.hardware.camera2.CameraManager
-+import android.os.Build
 +import android.view.Gravity
 +import android.view.HapticFeedbackConstants
 +import android.view.MotionEvent
@@ -1307,21 +1491,22 @@ index 000000000..817741c47
 +import android.view.animation.DecelerateInterpolator
 +import android.widget.FrameLayout
 +import org.telegram.messenger.AndroidUtilities
-+import org.telegram.messenger.ApplicationLoader
 +import org.telegram.ui.ActionBar.Theme
 +import org.telegram.ui.Components.blur3.BlurredBackgroundDrawableViewFactory
++import org.telegram.ui.Components.blur3.drawable.BlurredBackgroundDrawable
 +import org.telegram.ui.Components.blur3.drawable.color.BlurredBackgroundColorProvider
 +import tele.TeleConfig
 +import java.util.Locale
 +import kotlin.math.abs
++import kotlin.math.ceil
 +import kotlin.math.max
 +import kotlin.math.min
 +import kotlin.math.roundToInt
 +
 +/**
-+ * Round-video zoom: lens stops for the rear camera when Camera2 exposes a reliable zoom-ratio
-+ * range for its physical lenses, a continuous rail everywhere else. The view is a glass pill that
-+ * expands under a long press; dragging it changes the zoom and ticks at the lens stops.
++ * Round-video lens picker: a row of round glass lens buttons directly under the preview, and a
++ * wide zoom ruler that is shown only while a press is held. Stops come from
++ * [RoundZoomLenses], so no lens is offered unless the active camera can actually reach it.
 + */
 +class RoundZoomView(context: Context, private val host: Host) : View(context) {
 +
@@ -1329,6 +1514,7 @@ index 000000000..817741c47
 +        fun isFrontCamera(): Boolean
 +        fun supportsLensStops(): Boolean
 +        fun rearCameraId(): String?
++        fun minZoomRatio(): Float
 +        fun maxZoomRatio(): Float
 +        fun currentZoomRatio(): Float
 +        fun applyZoomRatio(ratio: Float)
@@ -1336,99 +1522,34 @@ index 000000000..817741c47
 +    }
 +
 +    companion object {
-+        private const val COLLAPSED_DP = 50
-+        private const val EXPANDED_DP = 168
-+        private const val HEIGHT_DP = 38
-+        private const val MIN_STOP_GAP = 1.12f
++        private const val BUTTON_DP = 44f
++        private const val BUTTON_GAP_DP = 8f
++        private const val HEIGHT_DP = 88f
++        private const val MAX_WIDTH_DP = 320f
++        private const val GLASS_INSET_DP = 4f
++        private const val RULER_GLASS_TOP_DP = 30f
++        private const val TRACK_TOP_DP = 58f
++        private const val LABEL_ROW_1_DP = 72f
++        private const val LABEL_ROW_2_DP = 82f
++        private const val BUBBLE_HEIGHT_DP = 28f
++        private const val THUMB_RADIUS_DP = 5.5f
++        private const val STOP_TOLERANCE = 0.045f
 +
 +        @JvmStatic
 +        fun attach(parent: FrameLayout, host: Host): RoundZoomView {
 +            val view = RoundZoomView(parent.context, host)
++            val width = min(
++                parent.resources.displayMetrics.widthPixels - AndroidUtilities.dp(32f),
++                AndroidUtilities.dp(MAX_WIDTH_DP)
++            ).coerceAtLeast(AndroidUtilities.dp(220f))
 +            val params = FrameLayout.LayoutParams(
-+                AndroidUtilities.dp(COLLAPSED_DP.toFloat()),
-+                AndroidUtilities.dp(HEIGHT_DP.toFloat()),
-+                Gravity.END or Gravity.BOTTOM
++                width,
++                AndroidUtilities.dp(HEIGHT_DP),
++                Gravity.TOP or Gravity.CENTER_HORIZONTAL
 +            )
-+            params.marginEnd = AndroidUtilities.dp(10f)
-+            params.bottomMargin = AndroidUtilities.dp(10f)
++            params.topMargin = AndroidUtilities.dp(8f)
 +            parent.addView(view, params)
 +            return view
-+        }
-+
-+        @JvmStatic
-+        fun rearLensStops(maxRatio: Float, preferredId: String?): FloatArray {
-+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || maxRatio <= 1.01f) {
-+                return FloatArray(0)
-+            }
-+            return try {
-+                val context = ApplicationLoader.applicationContext ?: return FloatArray(0)
-+                val manager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
-+                    ?: return FloatArray(0)
-+                var id = preferredId
-+                if (id == null) {
-+                    var fallback: String? = null
-+                    var withFlash: String? = null
-+                    for (candidateId in manager.cameraIdList) {
-+                        val candidate = manager.getCameraCharacteristics(candidateId) ?: continue
-+                        if (candidate.get(CameraCharacteristics.LENS_FACING)
-+                            != CameraCharacteristics.LENS_FACING_BACK
-+                        ) continue
-+                        if (fallback == null) fallback = candidateId
-+                        if (withFlash == null
-+                            && candidate.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-+                        ) withFlash = candidateId
-+                    }
-+                    id = withFlash ?: fallback ?: return FloatArray(0)
-+                }
-+                val characteristics = manager.getCameraCharacteristics(id) ?: return FloatArray(0)
-+                if (characteristics.get(CameraCharacteristics.LENS_FACING)
-+                    != CameraCharacteristics.LENS_FACING_BACK
-+                ) return FloatArray(0)
-+                val range = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-+                    ?: return FloatArray(0)
-+                val physical = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-+                    characteristics.physicalCameraIds
-+                } else {
-+                    emptySet()
-+                }
-+                if (physical.isEmpty()) return FloatArray(0)
-+                val reference = characteristics
-+                    .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-+                    ?.firstOrNull() ?: return FloatArray(0)
-+                if (reference <= 0f) return FloatArray(0)
-+                val factors = ArrayList<Float>()
-+                fun add(focal: Float) {
-+                    if (focal <= 0f) return
-+                    val factor = focal / reference
-+                    if (factor < 0.4f || factor > maxRatio + 0.001f) return
-+                    if (factor < range.lower - 0.001f || factor > range.upper + 0.001f) return
-+                    for (existing in factors) {
-+                        if (abs(existing - factor) < 0.08f) return
-+                    }
-+                    factors.add(factor)
-+                }
-+                add(reference)
-+                for (physicalId in physical) {
-+                    val physicalCharacteristics =
-+                        manager.getCameraCharacteristics(physicalId) ?: continue
-+                    physicalCharacteristics
-+                        .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-+                        ?.forEach { add(it) }
-+                }
-+                factors.sort()
-+                if (factors.size < 2) return FloatArray(0)
-+                val separated = ArrayList<Float>(factors.size)
-+                for (factor in factors) {
-+                    if (separated.isEmpty()
-+                        || factor / separated[separated.size - 1] >= MIN_STOP_GAP
-+                    ) {
-+                        separated.add(factor)
-+                    }
-+                }
-+                if (separated.size < 2) FloatArray(0) else separated.toFloatArray()
-+            } catch (_: Throwable) {
-+                FloatArray(0)
-+            }
 +        }
 +
 +        @JvmStatic
@@ -1440,29 +1561,57 @@ index 000000000..817741c47
 +                String.format(Locale.US, "%.1f×", ratio)
 +            }
 +        }
++
++        private fun niceStep(raw: Float): Float {
++            val candidates = floatArrayOf(.05f, .1f, .2f, .25f, .5f, 1f, 2f, 2.5f, 5f, 10f)
++            for (candidate in candidates) {
++                if (candidate >= raw) return candidate
++            }
++            return raw
++        }
 +    }
 +
 +    private val density = resources.displayMetrics.density
 +    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-+        color = textColor()
++    private val buttonSize = dp(BUTTON_DP)
++    private val buttonGap = dp(BUTTON_GAP_DP)
++    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
 +        textAlign = Paint.Align.CENTER
 +        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
 +    }
 +    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
 +        strokeCap = Paint.Cap.ROUND
-+        color = 0x55FFFFFF
++        strokeWidth = dp(1.5f)
 +    }
 +    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
 +        strokeCap = Paint.Cap.ROUND
-+        color = 0xFFFFFFFF.toInt()
++        strokeWidth = dp(1.5f)
 +    }
 +    private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
 +        strokeCap = Paint.Cap.ROUND
-+        color = 0x99FFFFFF.toInt()
 +    }
-+    private val rail = RectF()
-+    private val fallbackBackground = GradientDrawable()
++    private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
++    private val fallbackStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
++        style = Paint.Style.STROKE
++        strokeWidth = dp(0.66f)
++    }
++    private val activeFill = Paint(Paint.ANTI_ALIAS_FLAG)
++    private val rect = RectF()
++
++    private var factory: BlurredBackgroundDrawableViewFactory? = null
++    private val buttonGlass = ArrayList<BlurredBackgroundDrawable?>()
++    private var rulerGlass: BlurredBackgroundDrawable? = null
++    private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG)
++
++    /** The controls float over the dark camera preview, not over the chat theme. */
++    private val recordingColorProvider = object : BlurredBackgroundColorProvider {
++        override fun getShadowColor(): Int = 0x66000000
++        override fun getBackgroundColor(): Int = 0x66000000
++        override fun getStrokeColorTop(): Int = 0x33FFFFFF
++        override fun getStrokeColorBottom(): Int = 0x1AFFFFFF
++        override fun getOutlineColor(): Int = 0x24FFFFFF
++        override fun getOutlineWidth(): Float = dp(0.66f)
++    }
 +
 +    private var available = false
 +    private var hostOpen = false
@@ -1476,58 +1625,65 @@ index 000000000..817741c47
 +    private var currentRatio = 1f
 +    private var pressed = false
 +    private var dragging = false
-+    private var dragFromCollapsed = false
 +    private var longPressFired = false
 +    private var downX = 0f
 +    private var downY = 0f
-+    private var dragStartX = 0f
-+    private var dragStartRatio = 1f
 +    private var lastHapticStop = -1
 +
-+    private val collapseRunnable = Runnable { setExpanded(false) }
++    private var anchor: View? = null
++    private var anchorBottomInset = 0
++    private val anchorLayoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
++        positionUnderAnchor()
++    }
++
++    private val autoCollapseRunnable = Runnable { setExpanded(false) }
 +    private val longPressRunnable = Runnable {
-+        if (!pressed || dragging) return@Runnable
++        if (!pressed) return@Runnable
 +        longPressFired = true
-+        dragging = true
-+        dragStartX = downX
-+        dragStartRatio = currentRatio
-+        setExpanded(true)
-+        haptic(HapticFeedbackConstants.LONG_PRESS)
++        openExpanded()
 +    }
 +
 +    init {
-+        isClickable = true
++        isClickable = false
 +        isFocusable = false
 +        visibility = INVISIBLE
-+        updateFallbackBackground()
 +    }
 +
-+    private fun textColor(): Int = if (Theme.isCurrentThemeDark()) Color.WHITE else Color.BLACK
-+
-+    private fun updateFallbackBackground() {
-+        val dark = Theme.isCurrentThemeDark()
-+        fallbackBackground.shape = GradientDrawable.RECTANGLE
-+        fallbackBackground.cornerRadius = AndroidUtilities.dp(HEIGHT_DP / 2f).toFloat()
-+        fallbackBackground.setColor(if (dark) 0x66000000 else 0x66FFFFFF)
-+        fallbackBackground.setStroke(AndroidUtilities.dp(0.66f), if (dark) 0x33FFFFFF else 0x33000000)
-+    }
-+
++    @Suppress("UNUSED_PARAMETER")
 +    fun setGlassBackground(
 +        factory: BlurredBackgroundDrawableViewFactory?,
 +        provider: BlurredBackgroundColorProvider?
 +    ) {
-+        if (factory == null) {
-+            background = fallbackBackground
-+            return
++        this.factory = factory
++        buttonGlass.clear()
++        rulerGlass = null
++        if (factory != null) {
++            rulerGlass = factory.create(this, recordingColorProvider).apply {
++                setPadding(dp(1f).roundToInt())
++                setRadius(dp(26f))
++            }
++            rebuildButtonGlass()
 +        }
-+        val drawable = factory.create(this, provider)
-+        drawable.setPadding(AndroidUtilities.dp(6f))
-+        drawable.setRadius(AndroidUtilities.dp(HEIGHT_DP / 2f).toFloat())
-+        background = drawable
++        invalidate()
++    }
++
++    fun setAnchor(anchor: View, bottomInsetDp: Int) {
++        this.anchor?.removeOnLayoutChangeListener(anchorLayoutListener)
++        this.anchor = anchor
++        this.anchorBottomInset = AndroidUtilities.dp(bottomInsetDp.toFloat())
++        anchor.addOnLayoutChangeListener(anchorLayoutListener)
++        positionUnderAnchor()
 +    }
 +
 +    fun setHostOpen(open: Boolean) {
 +        hostOpen = open
++        if (!open) {
++            pressed = false
++            dragging = false
++            longPressFired = false
++            removeCallbacks(longPressRunnable)
++            setExpanded(false)
++        }
 +        applyAlpha(animate = open)
 +    }
 +
@@ -1540,25 +1696,30 @@ index 000000000..817741c47
 +            applyAlpha(animate = false)
 +            return
 +        }
++
 +        val newFront = host.isFrontCamera()
-+        val newMax = host.maxZoomRatio().coerceAtLeast(1f)
-+        val newStops = if (newFront || !host.supportsLensStops()) {
++        val newMin = host.minZoomRatio().coerceAtLeast(0.1f)
++        val newMax = max(newMin, host.maxZoomRatio())
++        val rawStops = if (newFront || !host.supportsLensStops()) {
 +            FloatArray(0)
 +        } else {
-+            rearLensStops(newMax, host.rearCameraId())
++            RoundZoomLenses.rearLensStops(host.rearCameraId(), newMax, newMin)
 +        }
-+        val newMin = if (newStops.isEmpty()) 1f else min(1f, newStops[0])
-+        if (newFront != front || abs(newMax - maxRatio) > 0.001f
-+            || !newStops.contentEquals(stops)
++        val newStops = rawStops.filter { it in newMin..newMax }.distinct().toFloatArray()
++
++        val stopsChanged = !newStops.contentEquals(stops)
++        if (newFront != front || abs(newMax - maxRatio) > 0.001f || stopsChanged
++            || abs(newMin - minRatio) > 0.001f
 +        ) {
 +            front = newFront
++            minRatio = newMin
 +            maxRatio = newMax
-+            minRatio = newMin.coerceAtMost(newMax)
-+            stops = newStops.filter { it in minRatio..maxRatio }.toFloatArray()
-+            if (stops.size < 2) stops = FloatArray(0)
++            stops = if (newStops.size < 2) FloatArray(0) else newStops
 +            currentRatio = currentRatio.coerceIn(minRatio, maxRatio)
-+            setExpanded(false)
-+            applyCollapsedWidth()
++            if (stopsChanged) {
++                rebuildButtonGlass()
++                setExpanded(false)
++            }
 +        }
 +        currentRatio = host.currentZoomRatio().coerceIn(minRatio, maxRatio)
 +        if (!wasAvailable) applyAlpha(animate = false)
@@ -1582,27 +1743,40 @@ index 000000000..817741c47
 +            alpha = target
 +        }
 +        visibility = if (available) VISIBLE else INVISIBLE
++        if (target == 0f) setExpanded(false)
++    }
++
++    private fun rebuildButtonGlass() {
++        val count = buttonCount()
++        while (buttonGlass.size > count) {
++            buttonGlass.removeAt(buttonGlass.size - 1)
++        }
++        while (buttonGlass.size < count) {
++            buttonGlass.add(factory?.create(this, recordingColorProvider)?.apply {
++                setPadding(dp(GLASS_INSET_DP).roundToInt())
++                setRadius(dp(BUTTON_DP / 2f - GLASS_INSET_DP))
++            })
++        }
++    }
++
++    private fun buttonCount(): Int = if (stops.isEmpty()) 1 else stops.size
++
++    private fun rowWidth(): Float {
++        val count = buttonCount()
++        return count * buttonSize + (count - 1) * buttonGap
++    }
++
++    private fun buttonLeft(index: Int): Float {
++        return (width - rowWidth()) / 2f + index * (buttonSize + buttonGap)
 +    }
 +
 +    private fun setExpanded(value: Boolean) {
-+        if (expanded == value) {
-+            if (value) scheduleCollapse()
-+            return
-+        }
++        if (expanded == value) return
 +        expanded = value
-+        removeCallbacks(collapseRunnable)
-+        if (value) scheduleCollapse()
++        removeCallbacks(autoCollapseRunnable)
 +        expansionAnimator?.cancel()
-+        if (!value) {
-+            expansion = 0f
-+            applyCollapsedWidth()
-+            invalidate()
-+            return
-+        }
-+        updateViewWidth()
-+        expansionAnimator = ValueAnimator.ofFloat(expansion, 1f)
-+        expansionAnimator?.apply {
-+            duration = 180L
++        expansionAnimator = ValueAnimator.ofFloat(expansion, if (value) 1f else 0f).apply {
++            duration = if (value) 180L else 140L
 +            interpolator = DecelerateInterpolator()
 +            addUpdateListener { animation ->
 +                expansion = animation.animatedValue as Float
@@ -1610,37 +1784,12 @@ index 000000000..817741c47
 +            }
 +            start()
 +        }
++        invalidate()
 +    }
 +
-+    private fun collapsedWidthPx(): Int {
-+        if (stops.isEmpty()) {
-+            return AndroidUtilities.dp(COLLAPSED_DP.toFloat())
-+        }
-+        val unit = AndroidUtilities.dp(34f)
-+        return (AndroidUtilities.dp(18f) + stops.size * unit)
-+            .coerceIn(AndroidUtilities.dp(COLLAPSED_DP.toFloat()), AndroidUtilities.dp(210f))
-+    }
-+
-+    private fun applyCollapsedWidth() {
-+        if (expanded) return
-+        layoutParams.width = collapsedWidthPx()
-+        requestLayout()
-+    }
-+
-+    private fun updateViewWidth() {
-+        if (!expanded) return
-+        val widthDp = if (stops.isEmpty()) {
-+            EXPANDED_DP
-+        } else {
-+            max(EXPANDED_DP, 40 + stops.size * 44).coerceAtMost(240)
-+        }
-+        layoutParams.width = AndroidUtilities.dp(widthDp.toFloat())
-+        requestLayout()
-+    }
-+
-+    private fun scheduleCollapse() {
-+        removeCallbacks(collapseRunnable)
-+        if (expanded && !pressed) postDelayed(collapseRunnable, 1600L)
++    private fun openExpanded() {
++        if (!expanded) setExpanded(true)
++        removeCallbacks(autoCollapseRunnable)
 +    }
 +
 +    private fun haptic(constant: Int) {
@@ -1661,15 +1810,15 @@ index 000000000..817741c47
 +    }
 +
 +    private fun valueToX(value: Float): Float {
-+        val start = paddingLeft + dp(16f)
-+        val end = width - paddingRight - dp(16f)
++        val start = dp(18f)
++        val end = width - dp(18f)
 +        val fraction = if (maxRatio <= minRatio) 0f else (value - minRatio) / (maxRatio - minRatio)
-+        return start + (end - start) * fraction
++        return start + (end - start) * fraction.coerceIn(0f, 1f)
 +    }
 +
 +    private fun xToValue(x: Float): Float {
-+        val start = paddingLeft + dp(16f)
-+        val end = width - paddingRight - dp(16f)
++        val start = dp(18f)
++        val end = width - dp(18f)
 +        if (end <= start) return minRatio
 +        val fraction = ((x - start) / (end - start)).coerceIn(0f, 1f)
 +        return minRatio + (maxRatio - minRatio) * fraction
@@ -1677,44 +1826,17 @@ index 000000000..817741c47
 +
 +    private fun updateRatioFromX(x: Float) {
 +        if (!available) return
-+        val value = xToValue(x)
-+        currentRatio = value
-+        host.applyZoomRatio(value)
-+        val index = stopsIndex(value)
++        currentRatio = xToValue(x)
++        host.applyZoomRatio(currentRatio)
++        val index = stopsIndex(currentRatio)
 +        if (index >= 0 && index != lastHapticStop) {
-+            val distance = abs(stops[index] - value)
 +            val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
-+            if (distance < span * 0.05f) {
++            if (abs(stops[index] - currentRatio) < span * STOP_TOLERANCE) {
 +                lastHapticStop = index
 +                haptic(HapticFeedbackConstants.CLOCK_TICK)
 +            }
 +        }
 +        invalidate()
-+    }
-+
-+    private fun updateRatioFromDrag(x: Float) {
-+        if (!available) return
-+        val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
-+        val value = (dragStartRatio + (x - dragStartX) / dp(120f) * span)
-+            .coerceIn(minRatio, maxRatio)
-+        currentRatio = value
-+        host.applyZoomRatio(value)
-+        val index = stopsIndex(value)
-+        if (index >= 0 && index != lastHapticStop) {
-+            val distance = abs(stops[index] - value)
-+            if (distance < span * 0.05f) {
-+                lastHapticStop = index
-+                haptic(HapticFeedbackConstants.CLOCK_TICK)
-+            }
-+        }
-+        invalidate()
-+    }
-+
-+    private fun collapsedStopAt(x: Float): Int {
-+        if (stops.isEmpty()) return -1
-+        val cell = width.toFloat() / stops.size
-+        if (cell <= 0f) return -1
-+        return (x / cell).toInt().coerceIn(0, stops.size - 1)
 +    }
 +
 +    private fun applyStop(value: Float) {
@@ -1730,56 +1852,59 @@ index 000000000..817741c47
 +        val index = stopsIndex(currentRatio)
 +        if (index < 0) return
 +        val value = stops[index]
-+        if (abs(value - currentRatio) < (maxRatio - minRatio) * 0.12f) {
++        if (abs(value - currentRatio) < (maxRatio - minRatio) * 0.08f) {
 +            currentRatio = value
 +            host.applyZoomRatio(value)
 +            invalidate()
 +        }
 +    }
 +
++    private fun stopAt(x: Float): Int {
++        if (stops.isEmpty()) return -1
++        val left = buttonLeft(0)
++        val index = ((x - left) / (buttonSize + buttonGap)).toInt()
++        if (index !in stops.indices) return -1
++        val buttonLeft = buttonLeft(index)
++        return if (x in buttonLeft..(buttonLeft + buttonSize)) index else -1
++    }
++
++    private fun inButtonRow(x: Float, y: Float): Boolean {
++        if (y < 0f || y > buttonSize) return false
++        val left = (width - rowWidth()) / 2f
++        return x >= left && x <= left + rowWidth()
++    }
++
 +    override fun onTouchEvent(event: MotionEvent): Boolean {
 +        if (!available || !hostOpen || !isEnabled) return false
 +        when (event.actionMasked) {
 +            MotionEvent.ACTION_DOWN -> {
++                if (!expanded && !inButtonRow(event.x, event.y)) return false
 +                pressed = true
 +                dragging = false
-+                dragFromCollapsed = false
 +                longPressFired = false
 +                downX = event.x
 +                downY = event.y
-+                dragStartX = event.x
-+                dragStartRatio = currentRatio
 +                lastHapticStop = stopsIndex(currentRatio)
-+                removeCallbacks(collapseRunnable)
-+                postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
++                removeCallbacks(autoCollapseRunnable)
++                if (!expanded) {
++                    postDelayed(
++                        longPressRunnable,
++                        ViewConfiguration.getLongPressTimeout().toLong()
++                    )
++                }
 +                return true
 +            }
 +            MotionEvent.ACTION_MOVE -> {
 +                if (!pressed) return false
-+                if (longPressFired) {
-+                    updateRatioFromDrag(event.x)
-+                } else if (!dragging
-+                    && (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop)
++                if (longPressFired || dragging) {
++                    updateRatioFromX(event.x)
++                } else if (abs(event.x - downX) > touchSlop
++                    || abs(event.y - downY) > touchSlop
 +                ) {
 +                    dragging = true
 +                    removeCallbacks(longPressRunnable)
-+                    if (!expanded) {
-+                        dragFromCollapsed = true
-+                        dragStartX = downX
-+                        dragStartRatio = currentRatio
-+                        setExpanded(true)
-+                    }
-+                    if (dragFromCollapsed) {
-+                        updateRatioFromDrag(event.x)
-+                    } else {
-+                        updateRatioFromX(event.x)
-+                    }
-+                } else if (dragging) {
-+                    if (dragFromCollapsed) {
-+                        updateRatioFromDrag(event.x)
-+                    } else {
-+                        updateRatioFromX(event.x)
-+                    }
++                    openExpanded()
++                    updateRatioFromX(event.x)
 +                }
 +                return true
 +            }
@@ -1787,42 +1912,27 @@ index 000000000..817741c47
 +                if (!pressed) return false
 +                pressed = false
 +                removeCallbacks(longPressRunnable)
-+                if (longPressFired) {
-+                    snapToStop()
-+                    setExpanded(false)
-+                } else if (dragging) {
-+                    if (dragFromCollapsed) {
-+                        updateRatioFromDrag(event.x)
-+                    } else {
-+                        updateRatioFromX(event.x)
-+                    }
-+                    snapToStop()
-+                    setExpanded(false)
-+                } else if (expanded) {
++                if (longPressFired || dragging) {
 +                    updateRatioFromX(event.x)
 +                    snapToStop()
 +                    setExpanded(false)
++                } else if (expanded) {
++                    snapToStop()
++                    setExpanded(false)
 +                } else if (stops.isNotEmpty()) {
-+                    val stop = collapsedStopAt(event.x)
-+                    if (stop >= 0 && stopsIndex(currentRatio) == stop) {
-+                        setExpanded(true)
-+                    } else if (stop >= 0) {
-+                        applyStop(stops[stop])
-+                    } else {
-+                        setExpanded(true)
-+                    }
++                    val index = stopAt(event.x)
++                    if (index >= 0) applyStop(stops[index])
 +                } else {
-+                    setExpanded(true)
++                    openExpanded()
++                    postDelayed(autoCollapseRunnable, 1200L)
 +                }
 +                dragging = false
-+                dragFromCollapsed = false
 +                longPressFired = false
 +                return true
 +            }
 +            MotionEvent.ACTION_CANCEL -> {
 +                pressed = false
 +                dragging = false
-+                dragFromCollapsed = false
 +                longPressFired = false
 +                removeCallbacks(longPressRunnable)
 +                setExpanded(false)
@@ -1835,95 +1945,442 @@ index 000000000..817741c47
 +    override fun onDraw(canvas: Canvas) {
 +        super.onDraw(canvas)
 +        if (width <= 0 || height <= 0) return
-+        labelPaint.color = textColor()
-+        tickPaint.color = if (Theme.isCurrentThemeDark()) 0x99FFFFFF.toInt() else 0x99000000.toInt()
-+        trackPaint.color = if (Theme.isCurrentThemeDark()) 0x55FFFFFF else 0x55000000
-+        fillPaint.color = textColor()
++        updateColors()
 +
-+        val collapsedFactor = 1f - expansion
-+        val centerY = height / 2f
-+        if (collapsedFactor > 0.001f) {
-+            canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (255 * collapsedFactor).toInt())
-+            if (stops.isEmpty()) {
-+                labelPaint.textSize = dp(13f)
-+                labelPaint.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-+                val y = centerY - (labelPaint.ascent() + labelPaint.descent()) / 2f
-+                canvas.drawText(formatRatio(currentRatio), width / 2f, y, labelPaint)
-+            } else {
-+                val active = stopsIndex(currentRatio)
-+                val cell = width.toFloat() / stops.size
-+                for (i in stops.indices) {
-+                    labelPaint.typeface = Typeface.create(
-+                        "sans-serif-medium",
-+                        if (i == active) Typeface.BOLD else Typeface.NORMAL
-+                    )
-+                    labelPaint.textSize = dp(if (i == active) 13f else 11.5f)
-+                    labelPaint.alpha = if (i == active) 255 else 190
-+                    val y = centerY - (labelPaint.ascent() + labelPaint.descent()) / 2f
-+                    canvas.drawText(
-+                        formatRatio(stops[i]),
-+                        cell * (i + 0.5f),
-+                        y,
-+                        labelPaint
-+                    )
-+                }
-+                labelPaint.alpha = 255
-+            }
++        val collapsedAlpha = 1f - expansion
++        if (collapsedAlpha > 0.001f) {
++            canvas.saveLayerAlpha(0f, 0f, width.toFloat(), buttonSize, (255 * collapsedAlpha).toInt())
++            drawButtonRow(canvas, collapsedAlpha)
 +            canvas.restore()
 +        }
-+        if (expansion <= 0.001f) return
-+
-+        canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (255 * expansion).toInt())
-+        val start = paddingLeft + dp(16f)
-+        val end = width - paddingRight - dp(16f)
-+        val trackY = height * 0.34f
-+        rail.set(start, trackY - dp(1.5f), end, trackY + dp(1.5f))
-+        canvas.drawRoundRect(rail, dp(2f), dp(2f), trackPaint)
-+        val currentX = valueToX(currentRatio)
-+        rail.set(start, trackY - dp(1.5f), max(start, currentX), trackY + dp(1.5f))
-+        canvas.drawRoundRect(rail, dp(2f), dp(2f), fillPaint)
-+
-+        labelPaint.textSize = dp(11f)
-+        if (stops.isEmpty()) {
-+            tickPaint.strokeWidth = dp(2f)
-+            canvas.drawCircle(currentX, trackY, dp(6f), tickPaint)
-+            canvas.drawCircle(currentX, trackY, dp(4.5f), fillPaint)
-+            labelPaint.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-+            labelPaint.textSize = dp(12f)
-+            val label = formatRatio(currentRatio)
-+            canvas.drawText(
-+                label,
-+                width / 2f,
-+                height * 0.8f - (labelPaint.ascent() + labelPaint.descent()) / 2f,
-+                labelPaint
-+            )
-+        } else {
-+            tickPaint.strokeWidth = dp(1.5f)
-+            for (i in stops.indices) {
-+                val stop = stops[i]
-+                val x = valueToX(stop)
-+                val active = abs(stop - currentRatio) < 0.001f
-+                    || abs(stop - currentRatio) < (maxRatio - minRatio) * 0.02f
-+                labelPaint.typeface = Typeface.create(
-+                    "sans-serif-medium",
-+                    if (active) Typeface.BOLD else Typeface.NORMAL
-+                )
-+                labelPaint.textSize = dp(if (active) 12f else 11f)
-+                labelPaint.alpha = if (active) 255 else 190
-+                canvas.drawText(
-+                    formatRatio(stop),
-+                    x,
-+                    height * 0.82f - (labelPaint.ascent() + labelPaint.descent()) / 2f,
-+                    labelPaint
-+                )
-+                canvas.drawLine(x, trackY - dp(5f), x, trackY + dp(5f), tickPaint)
-+            }
-+            labelPaint.alpha = 255
++        if (expansion > 0.001f) {
++            drawRuler(canvas)
 +        }
++    }
++
++    private fun drawButtonRow(canvas: Canvas, collapsedAlpha: Float) {
++        val active = if (stops.isEmpty()) 0 else stopsIndex(currentRatio)
++        val activeTolerance = if (stops.isEmpty()) Float.MAX_VALUE else 0.06f
++        for (i in 0 until buttonCount()) {
++            val left = buttonLeft(i)
++            val top = 0f
++            val right = left + buttonSize
++            drawGlass(canvas, buttonGlass.getOrNull(i), left, top, right, buttonSize)
++            val isActive = if (stops.isEmpty()) true else {
++                i == active && abs(stops[i] - currentRatio) <= activeTolerance
++            }
++            if (isActive) {
++                activeFill.color = 0x2EFFFFFF
++                canvas.drawCircle(
++                    (left + right) / 2f,
++                    (top + buttonSize) / 2f,
++                    buttonSize / 2f - dp(GLASS_INSET_DP),
++                    activeFill
++                )
++            }
++            val label = if (stops.isEmpty()) {
++                formatRatio(currentRatio)
++            } else {
++                formatRatio(stops[i])
++            }
++            textPaint.color = textColor()
++            textPaint.textSize = dp(11f)
++            textPaint.typeface = Typeface.create(
++                "sans-serif-medium",
++                if (isActive) Typeface.BOLD else Typeface.NORMAL
++            )
++            textPaint.alpha = if (isActive) 255 else (collapsedAlpha * 205).toInt()
++            val baseline = (top + buttonSize - (textPaint.ascent() + textPaint.descent())) / 2f
++            canvas.drawText(label, (left + right) / 2f, baseline, textPaint)
++            textPaint.alpha = 255
++        }
++    }
++
++    private fun drawRuler(canvas: Canvas) {
++        val half = width / 2f * (0.62f + 0.38f * expansion)
++        canvas.save()
++        canvas.clipRect(width / 2f - half, 0f, width / 2f + half, height.toFloat())
++        canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (255 * expansion).toInt())
++
++        val glassTop = dp(RULER_GLASS_TOP_DP)
++        drawGlass(canvas, rulerGlass, 0f, glassTop, width.toFloat(), height.toFloat())
++        if (rulerGlass == null) {
++            rect.set(0f, glassTop, width.toFloat(), height.toFloat())
++            canvas.drawRoundRect(rect, dp(26f), dp(26f), fallbackPaint)
++            canvas.drawRoundRect(rect, dp(26f), dp(26f), fallbackStroke)
++        }
++
++        val left = dp(18f)
++        val right = width - dp(18f)
++        val trackY = dp(TRACK_TOP_DP)
++        val trackColor = 0x66FFFFFF
++        val strongColor = textColor()
++
++        trackPaint.color = trackColor
++        canvas.drawLine(left, trackY, right, trackY, trackPaint)
++
++        val currentX = valueToX(currentRatio)
++        fillPaint.color = strongColor
++        canvas.drawLine(left, trackY, currentX, trackY, fillPaint)
++
++        drawMinorTicks(canvas, left, right, trackY, trackColor)
++
++        tickPaint.strokeWidth = dp(1.5f)
++        val lastRight = floatArrayOf(-Float.MAX_VALUE, -Float.MAX_VALUE)
++        for (stop in stops) {
++            val x = valueToX(stop)
++            val isActive = abs(stop - currentRatio) <= STOP_TOLERANCE
++            tickPaint.color = if (isActive) strongColor else trackColor
++            canvas.drawLine(x, trackY - dp(5f), x, trackY + dp(5f), tickPaint)
++
++            val label = formatRatio(stop)
++            textPaint.color = strongColor
++            textPaint.textSize = dp(10f)
++            textPaint.typeface = Typeface.create(
++                "sans-serif-medium",
++                if (isActive) Typeface.BOLD else Typeface.NORMAL
++            )
++            textPaint.alpha = if (isActive) 255 else 200
++            val halfText = textPaint.measureText(label) / 2f
++            var row = 0
++            if (x - halfText < lastRight[0] + dp(2f)) row = 1
++            if (row == 1 && x - halfText < lastRight[1] + dp(2f)) {
++                row = 0
++            }
++            lastRight[row] = max(lastRight[row], x + halfText)
++            val centerY = dp(if (row == 0) LABEL_ROW_1_DP else LABEL_ROW_2_DP)
++            val baseline = centerY - (textPaint.ascent() + textPaint.descent()) / 2f
++            canvas.drawText(label, x, baseline, textPaint)
++            textPaint.alpha = 255
++        }
++
++        tickPaint.strokeWidth = dp(2f)
++        tickPaint.color = accentColor()
++        canvas.drawCircle(currentX, trackY, dp(THUMB_RADIUS_DP), tickPaint)
++        fillPaint.color = Color.WHITE
++        canvas.drawCircle(currentX, trackY, dp(THUMB_RADIUS_DP - 1.6f), fillPaint)
++
++        drawCurrentBubble(canvas, currentX)
++
++        canvas.restore()
 +        canvas.restore()
 +    }
 +
++    private fun drawMinorTicks(
++        canvas: Canvas,
++        left: Float,
++        right: Float,
++        trackY: Float,
++        color: Int
++    ) {
++        val span = (maxRatio - minRatio).coerceAtLeast(0.001f)
++        val pxSpan = (right - left).coerceAtLeast(1f)
++        val step = niceStep(span / (pxSpan / dp(10f)))
++        var value = ceil(minRatio / step) * step
++        tickPaint.color = color
++        tickPaint.strokeWidth = dp(1f)
++        var guard = 0
++        while (value <= maxRatio + 0.0001f && guard < 200) {
++            val x = valueToX(value)
++            val major = abs(value - value.roundToInt()) < 0.001f
++            val height = dp(if (major) 6f else 3.5f)
++            canvas.drawLine(x, trackY - height, x, trackY + height, tickPaint)
++            value += step
++            guard++
++        }
++    }
++
++    private fun drawCurrentBubble(canvas: Canvas, currentX: Float) {
++        val bubbleAlpha = ((expansion - 0.45f) / 0.55f).coerceIn(0f, 1f)
++        if (bubbleAlpha <= 0.001f) return
++        val label = formatRatio(currentRatio)
++        textPaint.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
++        textPaint.textSize = dp(12f)
++        textPaint.alpha = 255
++        val bubbleWidth = max(dp(46f), textPaint.measureText(label) + dp(16f))
++        val bubbleHeight = dp(BUBBLE_HEIGHT_DP)
++        val halfWidth = bubbleWidth / 2f
++        val centerX = currentX.coerceIn(halfWidth + dp(2f), width - halfWidth - dp(2f))
++        val top = dp(1f)
++        canvas.saveLayerAlpha(
++            0f,
++            0f,
++            width.toFloat(),
++            bubbleHeight + dp(2f),
++            (255 * bubbleAlpha).toInt()
++        )
++        rect.set(centerX - halfWidth, top, centerX + halfWidth, top + bubbleHeight)
++        bubblePaint.color = accentColor()
++        canvas.drawRoundRect(rect, dp(14f), dp(14f), bubblePaint)
++        textPaint.color = Color.WHITE
++        textPaint.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
++        val baseline = (top + bubbleHeight - (textPaint.ascent() + textPaint.descent())) / 2f
++        canvas.drawText(label, centerX, baseline, textPaint)
++        canvas.restore()
++    }
++
++    private fun drawGlass(
++        canvas: Canvas,
++        drawable: BlurredBackgroundDrawable?,
++        left: Float,
++        top: Float,
++        right: Float,
++        bottom: Float
++    ) {
++        if (drawable != null) {
++            drawable.alpha = 255
++            drawable.setBounds(
++                left.roundToInt(),
++                top.roundToInt(),
++                right.roundToInt(),
++                bottom.roundToInt()
++            )
++            drawable.draw(canvas)
++        }
++    }
++
++    private fun updateColors() {
++        fallbackPaint.color = 0x66000000
++        fallbackStroke.color = 0x33FFFFFF
++    }
++
++    private fun textColor(): Int {
++        return Color.WHITE
++    }
++
++    private fun accentColor(): Int {
++        val color = Theme.getColor(Theme.key_chat_messagePanelVoiceBackground)
++        return if (color == 0) 0xFF3390EC.toInt() else color
++    }
++
++    private fun positionUnderAnchor() {
++        val anchor = anchor ?: return
++        val params = layoutParams as? FrameLayout.LayoutParams ?: return
++        val top = (anchor.top + anchor.height - anchorBottomInset + dp(6f)).roundToInt()
++        if (params.topMargin != top) {
++            params.topMargin = top
++            requestLayout()
++        }
++    }
++
++    override fun onAttachedToWindow() {
++        super.onAttachedToWindow()
++        anchor?.addOnLayoutChangeListener(anchorLayoutListener)
++        positionUnderAnchor()
++    }
++
++    override fun onDetachedFromWindow() {
++        removeCallbacks(longPressRunnable)
++        removeCallbacks(autoCollapseRunnable)
++        expansionAnimator?.cancel()
++        anchor?.removeOnLayoutChangeListener(anchorLayoutListener)
++        super.onDetachedFromWindow()
++    }
++
 +    private fun dp(value: Float): Float = value * density
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt b/TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt
+new file mode 100644
+index 000000000..1fba58e7a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/RoundZoomLenses.kt
+@@ -0,0 +1,197 @@
++package tele.helpers
++
++import android.content.Context
++import android.hardware.camera2.CameraCharacteristics
++import android.hardware.camera2.CameraManager
++import android.os.Build
++import android.util.SizeF
++import org.telegram.messenger.ApplicationLoader
++import kotlin.math.abs
++import kotlin.math.hypot
++
++/**
++ * Maps the lenses a Camera2 logical camera can actually reach onto zoom-ratio stops.
++ *
++ * Focal lengths are compared as equivalent focal lengths (focal / sensor diagonal), otherwise a
++ * smaller ultra-wide sensor looks like a longer lens and every ratio is wrong.
++ */
++object RoundZoomLenses {
++
++    /** One selectable ratio and the physical camera behind it, when the device names it. */
++    data class LensRoute(val ratio: Float, val physicalId: String? = null)
++
++    private const val RANGE_EPSILON = 0.02f
++    private const val DUPLICATE_RATIO = 0.015f
++
++    private val routeCache = HashMap<String, List<LensRoute>>()
++
++    @JvmStatic
++    fun rearLensStops(cameraId: String?, maxRatio: Float, minRatio: Float): FloatArray {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return FloatArray(0)
++        if (maxRatio <= 1.001f && minRatio >= 0.999f) return FloatArray(0)
++        val routes = routesFor(cameraId, maxRatio, minRatio)
++        if (routes.size < 2) return FloatArray(0)
++        return routes.map { it.ratio }.sorted().toFloatArray()
++    }
++
++    /** Number of distinct lenses the logical camera exposes; used to pick the richest rear camera. */
++    @JvmStatic
++    fun lensCoverage(cameraId: String?): Int {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || cameraId == null) return 0
++        return routesFor(cameraId, Float.MAX_VALUE, 0f).size
++    }
++
++    /** Best accessible rear logical camera, preferring one that reaches the most lenses. */
++    @JvmStatic
++    fun bestRearCameraId(preferredId: String?): String? {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return preferredId
++        val manager = cameraManager() ?: return preferredId
++        val ids = try {
++            manager.cameraIdList
++        } catch (_: Throwable) {
++            return preferredId
++        }
++        if (preferredId != null && ids.contains(preferredId)) {
++            return preferredId
++        }
++        var bestId: String? = null
++        var bestCoverage = -1
++        var bestFlash = false
++        for (id in ids) {
++            try {
++                val characteristics = manager.getCameraCharacteristics(id)
++                if (characteristics.get(CameraCharacteristics.LENS_FACING)
++                    != CameraCharacteristics.LENS_FACING_BACK
++                ) continue
++                val coverage = lensCoverage(id)
++                val flash = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
++                if (coverage > bestCoverage || (coverage == bestCoverage && flash && !bestFlash)) {
++                    bestId = id
++                    bestCoverage = coverage
++                    bestFlash = flash
++                }
++            } catch (_: Throwable) {
++            }
++        }
++        return bestId ?: preferredId
++    }
++
++    @JvmStatic
++    fun routesFor(cameraId: String?, maxRatio: Float, minRatio: Float): List<LensRoute> {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
++        val id = cameraId ?: bestRearCameraId(null) ?: return emptyList()
++        val key = "$id|$minRatio|$maxRatio"
++        synchronized(routeCache) {
++            routeCache[key]?.let { return it }
++        }
++        val routes = computeRoutes(id, maxRatio, minRatio)
++        synchronized(routeCache) {
++            routeCache[key] = routes
++        }
++        return routes
++    }
++
++    private fun computeRoutes(cameraId: String, maxRatio: Float, minRatio: Float): List<LensRoute> {
++        val manager = cameraManager() ?: return emptyList()
++        val id = cameraId
++        return try {
++            val characteristics = manager.getCameraCharacteristics(id) ?: return emptyList()
++            if (characteristics.get(CameraCharacteristics.LENS_FACING)
++                != CameraCharacteristics.LENS_FACING_BACK
++            ) return emptyList()
++            val range = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
++                ?: return emptyList()
++            val lower = maxOf(range.lower, minRatio)
++            val upper = minOf(range.upper, maxRatio)
++            if (upper <= lower) return emptyList()
++
++            val reference = referenceEquivalentFocus(manager, characteristics)
++                ?: return emptyList()
++
++            val factors = ArrayList<LensRoute>()
++            fun add(focal: Float, sensor: SizeF?, physicalId: String?) {
++                if (focal <= 0f || sensor == null) return
++                val diagonal = hypot(sensor.width, sensor.height)
++                if (diagonal <= 0f) return
++                val equivalent = focal / diagonal
++                if (equivalent <= 0f) return
++                var factor = equivalent / reference
++                if (factor < lower - RANGE_EPSILON || factor > upper + RANGE_EPSILON) return
++                factor = factor.coerceIn(lower, upper)
++                if (abs(factor - 1f) < 0.005f) factor = 1f
++                for (existing in factors) {
++                    if (abs(existing.ratio - factor) <= DUPLICATE_RATIO) return
++                }
++                factors.add(LensRoute(factor, physicalId))
++            }
++
++            val physicalIds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++                characteristics.physicalCameraIds
++            } else {
++                emptySet()
++            }
++            for (physicalId in physicalIds) {
++                try {
++                    val physical = manager.getCameraCharacteristics(physicalId) ?: continue
++                    val sensor = physicalSize(physical)
++                    physical.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
++                        ?.forEach { add(it, sensor, physicalId) }
++                } catch (_: Throwable) {
++                }
++            }
++            if (factors.size < 2) emptyList() else factors.sortedBy { it.ratio }
++        } catch (_: Throwable) {
++            emptyList()
++        }
++    }
++
++    /**
++     * Equivalent focus of the main (largest-sensor) lens; the logical camera's own focal list is
++     * only a fallback because its sensor size describes the wide lens, not every listed focal.
++     */
++    private fun referenceEquivalentFocus(
++        manager: CameraManager,
++        characteristics: CameraCharacteristics
++    ): Float? {
++        val physicalIds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++            characteristics.physicalCameraIds
++        } else {
++            emptySet()
++        }
++        var best: Pair<Float, Float>? = null
++        for (physicalId in physicalIds) {
++            try {
++                val physical = manager.getCameraCharacteristics(physicalId) ?: continue
++                val sensor = physicalSize(physical) ?: continue
++                val focal = physical.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
++                    ?.firstOrNull() ?: continue
++                if (focal <= 0f) continue
++                val diagonal = hypot(sensor.width, sensor.height)
++                if (diagonal <= 0f) continue
++                if (best == null || diagonal > best.second) {
++                    best = (focal / diagonal) to diagonal
++                }
++            } catch (_: Throwable) {
++            }
++        }
++        if (best != null) return best.first
++        val logicalSensor = physicalSize(characteristics) ?: return null
++        val logicalFocal = characteristics.get(
++            CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS
++        )?.firstOrNull() ?: return null
++        if (logicalFocal <= 0f) return null
++        val diagonal = hypot(logicalSensor.width, logicalSensor.height)
++        return if (diagonal > 0f) logicalFocal / diagonal else null
++    }
++
++    private fun physicalSize(characteristics: CameraCharacteristics): SizeF? {
++        val size = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
++            ?: return null
++        return if (size.width > 0f && size.height > 0f) size else null
++    }
++
++    private fun cameraManager(): CameraManager? {
++        val context = ApplicationLoader.applicationContext ?: return null
++        return context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
++    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 index 4dfd17e44..e5654bcb7 100644

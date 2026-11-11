@@ -371,7 +371,7 @@ Implements the Android media composer above the message field: docked photos, vi
 
 **Desktop references:** none (Android-only change).
 
-Adds optional manual recording start and camera zoom controls to the Android round-video recorder.
+Adds optional manual recording start and camera zoom controls to the Android round-video recorder. Round glass controls sit below the camera preview; holding a control opens a zoom ruler with lens checkpoints. Lens discovery accounts for sensor size as well as focal length, rather than treating digital zoom values as separate cameras.
 
 | patch |
 |---|
