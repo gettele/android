@@ -33,7 +33,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 - **Never recycle.** A removed entry keeps its `id` forever. Deleting or reusing an ID would silently repoint external links, release notes and historical diffs.
 - **Removal.** Withdraw a change by setting `status` to `removed`, keeping the `id` and `title`, adding a short `reason`, and setting `patches` to an empty array. Stable history lives in git, not in stale filename references; consumers must not require a removed tombstone to reference files that still exist.
 - **Rebase and renames.** When a rebase renames a patch file or changes its content, update the filename in the existing entry. Do not allocate a new ID or a new entry for the renamed patch. `id` tracks the logical change, not the filename.
-- **Many-to-many.** One entry may list many patches and one patch may legitimately belong to more than one logical entry. Consumers must not assume patch filenames are unique across entries. Cross-cutting UI follow-up 0337 belongs to A003, A006 and A008.
+- **Many-to-many.** One entry may list many patches and one patch may legitimately belong to more than one logical entry. Consumers must not assume patch filenames are unique across entries. Cross-cutting UI follow-up 0336 belongs to A003, A006 and A008.
 - **Grouping.** Add a genuinely independent logical change as a new entry; do not split or merge existing IDs merely to match a new patch layout. Follow-up fixes stay in the entry they serve.
 
 ## Entries
@@ -120,7 +120,7 @@ Builds the Android tele settings tree: section pages, grouped rows, collapsible 
 | [`0303-fix-open-the-tele-submenus-at-their-item.patch`](../patches/android/0303-fix-open-the-tele-submenus-at-their-item.patch) |
 | [`0306-fix-point-the-settings-search-at-real-rows.patch`](../patches/android/0306-fix-point-the-settings-search-at-real-rows.patch) |
 | [`0330-fix-keep-other-changes-inside-their-settings-group.patch`](../patches/android/0330-fix-keep-other-changes-inside-their-settings-group.patch) |
-| [`0337-feat-refresh-tele-settings.patch`](../patches/android/0337-feat-refresh-tele-settings.patch) — tele-only search and stock glass headers |
+| [`0336-feat-refresh-tele-settings.patch`](../patches/android/0336-feat-refresh-tele-settings.patch) — tele-only search and stock glass headers |
 
 <a id="a004"></a>
 
@@ -181,7 +181,7 @@ Adds the Android client for the public tele server: hashed badge feed, Argon2 he
 | [`0073-feat-show-tele-badges-in-bubbles-and-settings.patch`](../patches/android/0073-feat-show-tele-badges-in-bubbles-and-settings.patch) |
 | [`0074-feat-find-chats-by-server-aliases.patch`](../patches/android/0074-feat-find-chats-by-server-aliases.patch) |
 | [`0075-feat-offer-to-send-crash-reports-on-start.patch`](../patches/android/0075-feat-offer-to-send-crash-reports-on-start.patch) |
-| [`0337-feat-refresh-tele-settings.patch`](../patches/android/0337-feat-refresh-tele-settings.patch) — single verification checkmark in forwards |
+| [`0336-feat-refresh-tele-settings.patch`](../patches/android/0336-feat-refresh-tele-settings.patch) — single verification checkmark in forwards |
 
 <a id="a007"></a>
 
@@ -220,7 +220,7 @@ Renders selected messages into a bitmap on Android with 1x-4x scale, incoming-st
 | [`0269-fix-keep-the-sender-of-my-messages-in-shots.patch`](../patches/android/0269-fix-keep-the-sender-of-my-messages-in-shots.patch) |
 | [`0270-fix-keep-badges-clear-of-names-and-restore-shot-tags.patch`](../patches/android/0270-fix-keep-badges-clear-of-names-and-restore-shot-tags.patch) |
 | [`0271-fix-send-docked-shots-like-normal-shots.patch`](../patches/android/0271-fix-send-docked-shots-like-normal-shots.patch) |
-| [`0337-feat-refresh-tele-settings.patch`](../patches/android/0337-feat-refresh-tele-settings.patch) — Russian and Ukrainian Shot options |
+| [`0336-feat-refresh-tele-settings.patch`](../patches/android/0336-feat-refresh-tele-settings.patch) — Russian and Ukrainian Shot options |
 
 <a id="a009"></a>
 
@@ -385,4 +385,4 @@ The ruler maps its full range to 60% of the rail width. An independent, default-
 | patch |
 |---|
 | [`0334-feat-improve-round-video-controls.patch`](../patches/android/0334-feat-improve-round-video-controls.patch) |
-| [`0338-feat-retain-round-pinch-zoom.patch`](../patches/android/0338-feat-retain-round-pinch-zoom.patch) — compact ruler and optional retained pinch zoom |
+| [`0337-feat-retain-round-pinch-zoom.patch`](../patches/android/0337-feat-retain-round-pinch-zoom.patch) — compact ruler and optional retained pinch zoom |

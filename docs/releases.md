@@ -2,10 +2,11 @@
 
 every tele android release, newest first. release notes and the in-app what's new are made from `ci/changelog.json` and the published `tele-changelog.json`; this page keeps the same history readable in the repository. [features](../features.md) groups the same features by settings page. Follow [releasing](releasing.md#before-a-release) when writing the next changelog: new/fix sections keep categories one heading level below, and Telegram news appears only when the base changes from the latest published release.
 
-10 releases, 309 patches at [tele 10](https://github.com/gettele/android/releases/tag/v13.2.1-tele.10). the queue now has 336 patches on telegram 13.2.1. Upcoming changes live in `ci/changelog.json`; only published releases belong in this history.
+11 releases, 336 patches at [tele 11](https://github.com/gettele/android/releases/tag/v13.2.1-tele.11). the queue now has 341 patches on telegram 13.2.2. Upcoming changes live in `ci/changelog.json`; only published releases belong in this history.
 
 | release | base | published | patches |
 |---|---|---|---|
+| [tele 11 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.11) | 13.2.1 | 2026-11-11 | 336 |
 | [tele 10 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.10) | 13.2.1 | 2026-11-08 | 309 |
 | [tele 9 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9) | 13.1.1 | 2026-11-07 | 300 |
 | [tele 8 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.8) | 13.1.1 | 2026-11-03 | 244 |
