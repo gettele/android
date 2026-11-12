@@ -1,13 +1,13 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: test <test@example.com>
-Date: Thu, 12 Nov 2026 20:26:04 +0300
+Date: Thu, 12 Nov 2026 22:34:19 +0300
 Subject: [PATCH] fix: close widget engine RCEs
 
 ---
  .../jni/third_party/quickjs-ng/libunicode.c   |   2 +-
- .../jni/third_party/quickjs-ng/quickjs.c      | 253 ++++++++++++++----
- .../ios/Sources/CQuickJS/quickjs/quickjs.c    | 211 ++++++++++++---
- 3 files changed, 368 insertions(+), 98 deletions(-)
+ .../jni/third_party/quickjs-ng/quickjs.c      | 283 ++++++++++++++----
+ .../ios/Sources/CQuickJS/quickjs/quickjs.c    | 241 +++++++++++----
+ 3 files changed, 412 insertions(+), 114 deletions(-)
 
 diff --git a/TMessagesProj/jni/third_party/quickjs-ng/libunicode.c b/TMessagesProj/jni/third_party/quickjs-ng/libunicode.c
 index 6d539331e..5a681bf39 100644
@@ -23,10 +23,21 @@ index 6d539331e..5a681bf39 100644
  
  #define M(id) (1U << UNICODE_GC_ ## id)
 diff --git a/TMessagesProj/jni/third_party/quickjs-ng/quickjs.c b/TMessagesProj/jni/third_party/quickjs-ng/quickjs.c
-index 225c567b9..6af35d2d8 100644
+index 6ca030b9f..01b079105 100644
 --- a/TMessagesProj/jni/third_party/quickjs-ng/quickjs.c
 +++ b/TMessagesProj/jni/third_party/quickjs-ng/quickjs.c
-@@ -9018,6 +9018,7 @@ static JSValue js_bytecode_autoinit(JSContext *ctx, JSObject *p, JSAtom atom,
+@@ -217,7 +217,9 @@ typedef enum JSErrorEnum {
+     JS_PLAIN_ERROR = JS_NATIVE_ERROR_COUNT
+ } JSErrorEnum;
+ 
+-#define JS_MAX_LOCAL_VARS 65535
++/* the variable and scope indexes must fit on 16 bits. The (-1) and
++   ARG_SCOPE_END values are reserved. */
++#define JS_MAX_LOCAL_VARS 65534
+ #define JS_STACK_SIZE_MAX 65534
+ #define JS_STRING_LEN_MAX ((1 << 30) - 1)
+ // 1,024 bytes is about the cutoff point where it starts getting
+@@ -9018,6 +9020,7 @@ static JSValue js_bytecode_autoinit(JSContext *ctx, JSObject *p, JSAtom atom,
                                       "Object.defineProperty", 3,
                                       JS_CFUNC_generic_magic, 0),
                  JS_AtomToValue(ctx, JS_ATOM_Symbol_iterator),
@@ -34,7 +45,52 @@ index 225c567b9..6af35d2d8 100644
              };
              return js_bytecode_eval(ctx, qjsc_builtin_array_fromasync,
                                      sizeof(qjsc_builtin_array_fromasync),
-@@ -21396,6 +21397,26 @@ static JSValue js_generator_next(JSContext *ctx, JSValueConst this_val,
+@@ -18718,7 +18721,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+                 JSValue obj;
+                 int scope_idx;
+                 call_argc = get_u16(pc);
+-                scope_idx = get_u16(pc + 2) - 1;
++                scope_idx = get_u16(pc + 2) + ARG_SCOPE_END;
+                 pc += 4;
+                 call_argv = sp - call_argc;
+                 sf->cur_pc = pc;
+@@ -18750,7 +18753,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+                 JSValue *tab;
+                 JSValue obj;
+ 
+-                scope_idx = get_u16(pc) - 1;
++                scope_idx = get_u16(pc) + ARG_SCOPE_END;
+                 pc += 2;
+                 sf->cur_pc = pc;
+                 tab = build_arg_list(ctx, &len, sp[-1]);
+@@ -20855,17 +20858,23 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+ 
+         CASE(OP_await):
+             ret_val = js_int32(FUNC_RET_AWAIT);
+-            goto done_generator;
++            goto generator_exit;
+         CASE(OP_yield):
+             ret_val = js_int32(FUNC_RET_YIELD);
+-            goto done_generator;
++            goto generator_exit;
+         CASE(OP_yield_star):
+         CASE(OP_async_yield_star):
+             ret_val = js_int32(FUNC_RET_YIELD_STAR);
+-            goto done_generator;
++            goto generator_exit;
+         CASE(OP_return_async):
+         CASE(OP_initial_yield):
+             ret_val = JS_UNDEFINED;
++        generator_exit:
++            /* A normal frame must close its stack-backed variable references. */
++            if (unlikely(b->func_kind == JS_FUNC_NORMAL)) {
++                JS_ThrowInternalError(ctx, "suspending opcode in a normal function");
++                goto exception;
++            }
+             goto done_generator;
+ 
+         CASE(OP_nop):
+@@ -21390,6 +21399,26 @@ static JSValue js_generator_next(JSContext *ctx, JSValueConst this_val,
      return ret;
  }
  
@@ -61,7 +117,7 @@ index 225c567b9..6af35d2d8 100644
  static JSValue js_call_generator_function(JSContext *ctx, JSValueConst func_obj,
                                            JSValueConst this_obj,
                                            int argc, JSValueConst *argv,
-@@ -21426,7 +21447,7 @@ static JSValue js_call_generator_function(JSContext *ctx, JSValueConst func_obj,
+@@ -21420,7 +21449,7 @@ static JSValue js_call_generator_function(JSContext *ctx, JSValueConst func_obj,
      /* the body only starts running on the first next(); root captured
         locals against the generator object from now on (the initial resume
         above only reaches OP_initial_yield, before any user code) */
@@ -70,7 +126,7 @@ index 225c567b9..6af35d2d8 100644
      return obj;
   fail:
      free_generator_stack_rt(ctx->rt, s);
-@@ -22081,7 +22102,7 @@ static JSValue js_async_generator_function_call(JSContext *ctx,
+@@ -22075,7 +22104,7 @@ static JSValue js_async_generator_function_call(JSContext *ctx,
      s->generator = JS_VALUE_GET_OBJ(obj);
      /* root captured locals against the async generator object (the initial
         resume above only reaches OP_initial_yield, before any user code) */
@@ -79,7 +135,7 @@ index 225c567b9..6af35d2d8 100644
      JS_SetOpaqueInternal(obj, s);
      return obj;
   fail:
-@@ -25477,7 +25498,7 @@ static __exception int emit_class_init_start(JSParseState *s,
+@@ -25471,7 +25500,7 @@ static __exception int emit_class_init_start(JSParseState *s,
      return 0;
  }
  
@@ -88,7 +144,7 @@ index 225c567b9..6af35d2d8 100644
  {
      int cpool_idx;
  
-@@ -25486,10 +25507,13 @@ static void emit_class_init_end(JSParseState *s, ClassFieldsDef *cf)
+@@ -25480,10 +25509,13 @@ static void emit_class_init_end(JSParseState *s, ClassFieldsDef *cf)
      s->cur_func = s->cur_func->parent;
  
      cpool_idx = cpool_add(s, JS_NULL);
@@ -102,7 +158,7 @@ index 225c567b9..6af35d2d8 100644
  }
  
  static void emit_return(JSParseState *s, bool hasval);
-@@ -25553,6 +25577,8 @@ static __exception int js_parse_class_default_ctor(JSParseState *s,
+@@ -25547,6 +25579,8 @@ static __exception int js_parse_class_default_ctor(JSParseState *s,
      int idx;
      /* the real object will be set at the end of the compilation */
      idx = cpool_add(s, JS_NULL);
@@ -111,7 +167,16 @@ index 225c567b9..6af35d2d8 100644
      fd->parent_cpool_idx = idx;
  
      return 0;
-@@ -26008,7 +26034,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
+@@ -25961,6 +25995,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
+             goto fail;
+     }
+     /* patch the constant pool index for the constructor */
++    if (JS_HasException(ctx) || ctor_fd->parent_cpool_idx < 0)
++        goto fail;
+     put_u32(fd->byte_code.buf + ctor_cpool_offset, ctor_fd->parent_cpool_idx);
+ 
+     /* store the class source code in the constructor. */
+@@ -26002,7 +26038,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
          if (var_idx < 0)
              goto fail;
          if (cf->fields_init_fd) {
@@ -121,7 +186,7 @@ index 225c567b9..6af35d2d8 100644
          } else {
              emit_op(s, OP_undefined);
          }
-@@ -26031,7 +26058,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
+@@ -26025,7 +26062,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
      if (class_fields[1].fields_init_fd != NULL) {
          ClassFieldsDef *cf = &class_fields[1];
          emit_op(s, OP_dup);
@@ -131,7 +196,16 @@ index 225c567b9..6af35d2d8 100644
          emit_op(s, OP_call_method);
          emit_u16(s, 0);
          emit_op(s, OP_drop);
-@@ -33876,15 +33904,23 @@ static void var_object_test(JSContext *ctx, JSFunctionDef *s,
+@@ -29107,6 +29145,8 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
+     bool is_await_using = false;
+     if (tok == TOK_AWAIT) {
+         int u;
++        if (!(s->cur_func->func_kind & JS_FUNC_ASYNC))
++            return js_parse_error(s, "await using declaration is only valid in async functions");
+         if (next_token(s))
+             return -1;
+         u = is_using(s, false);
+@@ -33868,15 +33908,23 @@ static void var_object_test(JSContext *ctx, JSFunctionDef *s,
      s->jump_size++;
  }
  
@@ -157,7 +231,7 @@ index 225c567b9..6af35d2d8 100644
  static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                               JSAtom var_name, int scope_level, int op,
                               DynBuf *bc, uint8_t *bc_buf,
-@@ -33993,12 +34029,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -33985,12 +34033,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                  /* Create a dummy object with a named slot that is
                     a reference to the local variable */
                  if (var_idx & ARGUMENT_VAR_OFFSET) {
@@ -174,7 +248,7 @@ index 225c567b9..6af35d2d8 100644
                      dbuf_putc(bc, OP_make_loc_ref);
                      dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
                      dbuf_put_u16(bc, var_idx);
-@@ -34086,7 +34124,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34078,7 +34128,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                  var_idx = idx;
                  break;
              } else if (vd->var_name == JS_ATOM__with_ && !is_pseudo_var) {
@@ -184,7 +258,7 @@ index 225c567b9..6af35d2d8 100644
                  idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL, idx, vd->var_name, false, false, JS_VAR_NORMAL);
                  if (idx >= 0) {
                      dbuf_putc(bc, OP_get_var_ref);
-@@ -34123,7 +34162,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34115,7 +34166,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
          /* check eval object */
          if (!is_arg_scope && fd->var_object_idx >= 0 && !is_pseudo_var) {
              vd = &fd->vars[fd->var_object_idx];
@@ -194,7 +268,7 @@ index 225c567b9..6af35d2d8 100644
              idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL,
                                    fd->var_object_idx, vd->var_name,
                                    false, false, JS_VAR_NORMAL);
-@@ -34135,7 +34175,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34127,7 +34179,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
          /* check eval object in argument scope */
          if (fd->arg_var_object_idx >= 0 && !is_pseudo_var) {
              vd = &fd->vars[fd->arg_var_object_idx];
@@ -204,7 +278,7 @@ index 225c567b9..6af35d2d8 100644
              idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL,
                                    fd->arg_var_object_idx, vd->var_name,
                                    false, false, JS_VAR_NORMAL);
-@@ -34190,12 +34231,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34182,12 +34235,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
      if (var_idx >= 0) {
          /* find the corresponding closure variable */
          if (var_idx & ARGUMENT_VAR_OFFSET) {
@@ -221,7 +295,7 @@ index 225c567b9..6af35d2d8 100644
              idx = get_closure_var(ctx, s, fd,
                                    JS_CLOSURE_LOCAL, var_idx,
                                    var_name,
-@@ -34376,7 +34419,8 @@ static int resolve_scope_private_field1(JSContext *ctx,
+@@ -34368,7 +34423,8 @@ static int resolve_scope_private_field1(JSContext *ctx,
          if (idx >= 0) {
              var_kind = fd->vars[idx].var_kind;
              if (is_ref) {
@@ -231,7 +305,7 @@ index 225c567b9..6af35d2d8 100644
                  idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL, idx, var_name,
                                        true, true, JS_VAR_NORMAL);
                  if (idx < 0)
-@@ -34524,17 +34568,20 @@ static int resolve_scope_private_field(JSContext *ctx, JSFunctionDef *s,
+@@ -34516,17 +34572,20 @@ static int resolve_scope_private_field(JSContext *ctx, JSFunctionDef *s,
      return 0;
  }
  
@@ -255,7 +329,7 @@ index 225c567b9..6af35d2d8 100644
  }
  
  /* XXX: should handle the argument scope generically */
-@@ -34548,7 +34595,7 @@ static bool is_var_in_arg_scope(const JSVarDef *vd)
+@@ -34540,7 +34599,7 @@ static bool is_var_in_arg_scope(const JSVarDef *vd)
              vd->var_kind == JS_VAR_FUNCTION_NAME);
  }
  
@@ -264,7 +338,7 @@ index 225c567b9..6af35d2d8 100644
  {
      JSFunctionDef *fd;
      JSVarDef *vd;
-@@ -34599,10 +34646,12 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -34591,10 +34650,12 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
      /* mark all local variables as captured since eval can access any of them */
      if (!s->is_eval) {
          for (i = 0; i < s->arg_count; i++) {
@@ -279,7 +353,7 @@ index 225c567b9..6af35d2d8 100644
          }
      }
  
-@@ -34638,7 +34687,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -34630,7 +34691,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
          scope_idx = fd->scopes[scope_level].first;
          while (scope_idx >= 0) {
              vd = &fd->vars[scope_idx];
@@ -289,7 +363,7 @@ index 225c567b9..6af35d2d8 100644
              get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL, scope_idx,
                              vd->var_name, vd->is_const, vd->is_lexical, vd->var_kind);
              scope_idx = vd->scope_next;
-@@ -34650,7 +34700,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -34642,7 +34704,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
              for(i = 0; i < fd->arg_count; i++) {
                  vd = &fd->args[i];
                  if (vd->var_name != JS_ATOM_NULL) {
@@ -299,7 +373,7 @@ index 225c567b9..6af35d2d8 100644
                      get_closure_var(ctx, s, fd,
                                      JS_CLOSURE_ARG, i, vd->var_name, false,
                                      vd->is_lexical, JS_VAR_NORMAL);
-@@ -34662,7 +34713,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -34654,7 +34717,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
                  if (vd->scope_level == 0 &&
                      vd->var_name != JS_ATOM__ret_ &&
                      vd->var_name != JS_ATOM_NULL) {
@@ -309,7 +383,7 @@ index 225c567b9..6af35d2d8 100644
                      get_closure_var(ctx, s, fd,
                                      JS_CLOSURE_LOCAL, i, vd->var_name, false,
                                      vd->is_lexical, JS_VAR_NORMAL);
-@@ -34673,7 +34725,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -34665,7 +34729,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
                  vd = &fd->vars[i];
                  /* do not close top level last result */
                  if (vd->scope_level == 0 && is_var_in_arg_scope(vd)) {
@@ -319,7 +393,7 @@ index 225c567b9..6af35d2d8 100644
                      get_closure_var(ctx, s, fd,
                                      JS_CLOSURE_LOCAL, i, vd->var_name, false,
                                      vd->is_lexical, JS_VAR_NORMAL);
-@@ -34693,6 +34746,7 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -34685,6 +34750,7 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
              }
          }
      }
@@ -327,21 +401,21 @@ index 225c567b9..6af35d2d8 100644
  }
  
  static void set_closure_from_var(JSContext *ctx, JSClosureVar *cv,
-@@ -34724,6 +34778,13 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
+@@ -34716,6 +34782,13 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
      s->closure_var = js_malloc(ctx, sizeof(s->closure_var[0]) * count);
      if (!s->closure_var)
          return -1;
 +    /* OP_eval carries scope.first + 1 as a u16. ARG_SCOPE_END (-2) in a
 +       strict function with an empty destructuring parameter turns that into
 +       0xFFFF, and get_u16()-1 then indexes far past b->vardefs. */
-+    if (scope_idx < -1 || scope_idx >= b->var_count) {
++    if (scope_idx < ARG_SCOPE_END || scope_idx >= b->var_count) {
 +        JS_ThrowSyntaxError(ctx, "invalid eval scope index");
 +        return -1;
 +    }
      /* Add lexical variables in scope at the point of evaluation */
      for (i = scope_idx; i >= 0;) {
          vd = &b->vardefs[b->arg_count + i];
-@@ -34774,6 +34835,18 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
+@@ -34766,6 +34839,18 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
          cv->var_idx = i;
          cv->var_name = JS_DupAtom(ctx, cv0->var_name);
      }
@@ -360,7 +434,7 @@ index 225c567b9..6af35d2d8 100644
      return 0;
  }
  
-@@ -35199,7 +35272,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35191,17 +35276,19 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
              {
                  int call_argc = get_u16(bc_buf + pos + 1);
                  scope = get_u16(bc_buf + pos + 1 + 2);
@@ -369,8 +443,9 @@ index 225c567b9..6af35d2d8 100644
 +                    goto fail;
                  dbuf_putc(&bc_out, op);
                  dbuf_put_u16(&bc_out, call_argc);
-                 dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
-@@ -35207,7 +35281,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+-                dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
++                dbuf_put_u16(&bc_out, s->scopes[scope].first - ARG_SCOPE_END);
+             }
              break;
          case OP_apply_eval: /* convert scope index to adjusted variable index */
              scope = get_u16(bc_buf + pos + 1);
@@ -378,9 +453,12 @@ index 225c567b9..6af35d2d8 100644
 +            if (mark_eval_captured_variables(ctx, s, scope))
 +                goto fail;
              dbuf_putc(&bc_out, op);
-             dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
+-            dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
++            dbuf_put_u16(&bc_out, s->scopes[scope].first - ARG_SCOPE_END);
              break;
-@@ -35221,6 +35296,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+         case OP_scope_get_var_undef:
+         case OP_scope_get_var:
+@@ -35213,6 +35300,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
              scope = get_u16(bc_buf + pos + 5);
              pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                           NULL, NULL, pos_next);
@@ -389,7 +467,7 @@ index 225c567b9..6af35d2d8 100644
              JS_FreeAtom(ctx, var_name);
              break;
          case OP_scope_make_ref:
-@@ -35234,6 +35311,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35226,6 +35315,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
                  ls->ref_count--;  /* always remove label reference */
                  pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                               bc_buf, ls, pos_next);
@@ -398,7 +476,7 @@ index 225c567b9..6af35d2d8 100644
                  JS_FreeAtom(ctx, var_name);
              }
              break;
-@@ -35842,7 +35921,8 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
+@@ -35834,7 +35925,8 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
          } else {
              /* mapped arguments need all args to be captured */
              for (i = 0; i < s->arg_count; i++) {
@@ -408,7 +486,7 @@ index 225c567b9..6af35d2d8 100644
              }
              dbuf_putc(&bc_out, OP_special_object);
              dbuf_putc(&bc_out, OP_SPECIAL_OBJECT_MAPPED_ARGUMENTS);
-@@ -37014,8 +37094,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
+@@ -37006,8 +37098,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
         so it is necessary to create the closure variables before any
         other variable lookup is done. */
  #ifndef QJS_DISABLE_PARSER
@@ -421,7 +499,7 @@ index 225c567b9..6af35d2d8 100644
  #endif // QJS_DISABLE_PARSER
  
      /* add the module global variables in the closure */
-@@ -37035,7 +37117,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
+@@ -37027,7 +37121,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
          if (JS_IsException(func_obj))
              goto fail;
          /* save it in the constant pool */
@@ -433,7 +511,7 @@ index 225c567b9..6af35d2d8 100644
          fd->cpool[cpool_idx] = func_obj;
      }
  
-@@ -37069,6 +37154,24 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
+@@ -37061,6 +37158,24 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
      if (resolve_labels(ctx, fd))
          goto fail;
  
@@ -458,7 +536,16 @@ index 225c567b9..6af35d2d8 100644
      if (compute_stack_size(ctx, fd, &stack_size) < 0)
          goto fail;
  
-@@ -37893,6 +37996,8 @@ done:
+@@ -37621,6 +37736,8 @@ static __exception int js_parse_function_decl2(JSParseState *s,
+                 } else {
+                     /* unnamed arg for destructuring */
+                     idx = add_arg(ctx, fd, JS_ATOM_NULL);
++                    if (idx < 0)
++                        goto fail;
+                     emit_op(s, OP_get_arg);
+                     emit_u16(s, idx);
+                 }
+@@ -37885,6 +38002,8 @@ done:
  
          /* the real object will be set at the end of the compilation */
          idx = cpool_add(s, JS_NULL);
@@ -467,7 +554,7 @@ index 225c567b9..6af35d2d8 100644
          fd->parent_cpool_idx = idx;
  
          if (is_expr) {
-@@ -39660,9 +39765,8 @@ static int JS_ReadFunctionBytecode(BCReaderState *s, JSFunctionBytecode *b,
+@@ -39652,9 +39771,8 @@ static int JS_ReadFunctionBytecode(BCReaderState *s, JSFunctionBytecode *b,
  
  static JSValue JS_ReadBigInt(BCReaderState *s)
  {
@@ -478,7 +565,7 @@ index 225c567b9..6af35d2d8 100644
      js_limb_t v;
      uint8_t v8;
  
-@@ -39701,7 +39805,7 @@ static JSValue JS_ReadBigInt(BCReaderState *s)
+@@ -39693,7 +39811,7 @@ static JSValue JS_ReadBigInt(BCReaderState *s)
      bc_read_trace(s, "}\n");
      return JS_CompactBigInt(s->ctx, p);
   fail:
@@ -487,7 +574,7 @@ index 225c567b9..6af35d2d8 100644
      return JS_EXCEPTION;
  }
  
-@@ -40306,6 +40410,7 @@ static JSValue JS_ReadRegExp(BCReaderState *s)
+@@ -40298,6 +40416,7 @@ static JSValue JS_ReadRegExp(BCReaderState *s)
      JSContext *ctx = s->ctx;
      JSString *pattern;
      JSString *bc;
@@ -495,7 +582,7 @@ index 225c567b9..6af35d2d8 100644
  
      pattern = JS_ReadString(s);
      if (!pattern)
-@@ -40324,9 +40429,16 @@ static JSValue JS_ReadRegExp(BCReaderState *s)
+@@ -40316,9 +40435,16 @@ static JSValue JS_ReadRegExp(BCReaderState *s)
          return JS_ThrowInternalError(ctx, "bad regexp bytecode");
      }
  
@@ -515,7 +602,7 @@ index 225c567b9..6af35d2d8 100644
  }
  
  static JSValue JS_ReadDate(BCReaderState *s)
-@@ -44034,6 +44146,7 @@ static JSValue js_array_find(JSContext *ctx, JSValueConst this_val,
+@@ -44026,6 +44152,7 @@ static JSValue js_array_find(JSContext *ctx, JSValueConst this_val,
              }
          }
          JS_FreeValue(ctx, val);
@@ -523,7 +610,7 @@ index 225c567b9..6af35d2d8 100644
          JS_FreeValue(ctx, index_val);
      }
      JS_FreeValue(ctx, obj);
-@@ -49972,14 +50085,13 @@ static JSValue JS_RegExpDelete(JSContext *ctx, JSValueConst this_val, JSValue ar
+@@ -49964,14 +50091,13 @@ static JSValue JS_RegExpDelete(JSContext *ctx, JSValueConst this_val, JSValue ar
      if (JS_IsException(str_val))
          goto fail;
      str = JS_VALUE_GET_STRING(str_val);
@@ -541,7 +628,7 @@ index 225c567b9..6af35d2d8 100644
      }
      /* size by alloc_count: the register executor uses capture[] beyond
         the capture positions for its registers (see js_regexp_exec). */
-@@ -53704,14 +53816,22 @@ static JSValue js_map_clear(JSContext *ctx, JSValueConst this_val,
+@@ -53696,14 +53822,22 @@ static JSValue js_map_clear(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv, int magic)
  {
      JSMapState *s = JS_GetOpaque2(ctx, this_val, JS_CLASS_MAP + magic);
@@ -566,7 +653,7 @@ index 225c567b9..6af35d2d8 100644
      }
      return JS_UNDEFINED;
  }
-@@ -53870,12 +53990,20 @@ static void js_map_finalizer(JSRuntime *rt, JSValueConst val)
+@@ -53862,12 +53996,20 @@ static void js_map_finalizer(JSRuntime *rt, JSValueConst val)
      if (s) {
          /* if the object is deleted we are sure that no iterator is
             using it */
@@ -590,7 +677,7 @@ index 225c567b9..6af35d2d8 100644
                      JS_FreeValueRT(rt, mr->key);
                  JS_FreeValueRT(rt, mr->value);
              }
-@@ -63287,19 +63415,29 @@ static JSValue js_finrec_unregister(JSContext *ctx, JSValueConst this_val, int a
+@@ -63279,19 +63421,29 @@ static JSValue js_finrec_unregister(JSContext *ctx, JSValueConst this_val, int a
      if (!is_valid_weakref_target(token))
          return JS_ThrowTypeError(ctx, "invalid unregister token");
  
@@ -626,7 +713,7 @@ index 225c567b9..6af35d2d8 100644
  }
  
  static const JSCFunctionListEntry js_finrec_proto_funcs[] = {
-@@ -63380,6 +63518,12 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
+@@ -63372,6 +63524,12 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
          case JS_WEAK_REF_KIND_WEAK_REF:
              wrd = wr->u.weak_ref_data;
              wrd->target = JS_UNDEFINED;
@@ -639,7 +726,7 @@ index 225c567b9..6af35d2d8 100644
              break;
          case JS_WEAK_REF_KIND_FINALIZATION_REGISTRY_ENTRY:
              fre = wr->u.fin_rec_entry;
-@@ -63401,9 +63545,8 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
+@@ -63393,9 +63551,8 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
              js_free_rt(rt, mr);
              break;
          case JS_WEAK_REF_KIND_WEAK_REF:
@@ -652,10 +739,66 @@ index 225c567b9..6af35d2d8 100644
          case JS_WEAK_REF_KIND_FINALIZATION_REGISTRY_ENTRY: {
              fre = wr->u.fin_rec_entry;
 diff --git a/TMessagesProj/jni/twidget/widget-sandbox/packages/ios/Sources/CQuickJS/quickjs/quickjs.c b/TMessagesProj/jni/twidget/widget-sandbox/packages/ios/Sources/CQuickJS/quickjs/quickjs.c
-index 83afccd1f..bf1efa6fe 100644
+index 63d8487cc..194e7fae3 100644
 --- a/TMessagesProj/jni/twidget/widget-sandbox/packages/ios/Sources/CQuickJS/quickjs/quickjs.c
 +++ b/TMessagesProj/jni/twidget/widget-sandbox/packages/ios/Sources/CQuickJS/quickjs/quickjs.c
-@@ -22133,6 +22133,26 @@ static JSValue js_generator_next(JSContext *ctx, JSValueConst this_val,
+@@ -217,7 +217,9 @@ typedef enum JSErrorEnum {
+     JS_PLAIN_ERROR = JS_NATIVE_ERROR_COUNT
+ } JSErrorEnum;
+ 
+-#define JS_MAX_LOCAL_VARS 65535
++/* the variable and scope indexes must fit on 16 bits. The (-1) and
++   ARG_SCOPE_END values are reserved. */
++#define JS_MAX_LOCAL_VARS 65534
+ #define JS_STACK_SIZE_MAX 65534
+ #define JS_STRING_LEN_MAX ((1 << 30) - 1)
+ // 1,024 bytes is about the cutoff point where it starts getting
+@@ -19403,7 +19405,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+                 JSValue obj;
+                 int scope_idx;
+                 call_argc = get_u16(pc);
+-                scope_idx = get_u16(pc + 2) - 1;
++                scope_idx = get_u16(pc + 2) + ARG_SCOPE_END;
+                 pc += 4;
+                 call_argv = sp - call_argc;
+                 sf->cur_pc = pc;
+@@ -19435,7 +19437,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+                 JSValue *tab;
+                 JSValue obj;
+ 
+-                scope_idx = get_u16(pc) - 1;
++                scope_idx = get_u16(pc) + ARG_SCOPE_END;
+                 pc += 2;
+                 sf->cur_pc = pc;
+                 tab = build_arg_list(ctx, &len, sp[-1]);
+@@ -21588,17 +21590,23 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+ 
+         CASE(OP_await):
+             ret_val = js_int32(FUNC_RET_AWAIT);
+-            goto done_generator;
++            goto generator_exit;
+         CASE(OP_yield):
+             ret_val = js_int32(FUNC_RET_YIELD);
+-            goto done_generator;
++            goto generator_exit;
+         CASE(OP_yield_star):
+         CASE(OP_async_yield_star):
+             ret_val = js_int32(FUNC_RET_YIELD_STAR);
+-            goto done_generator;
++            goto generator_exit;
+         CASE(OP_return_async):
+         CASE(OP_initial_yield):
+             ret_val = JS_UNDEFINED;
++        generator_exit:
++            /* A normal frame must close its stack-backed variable references. */
++            if (unlikely(b->func_kind == JS_FUNC_NORMAL)) {
++                JS_ThrowInternalError(ctx, "suspending opcode in a normal function");
++                goto exception;
++            }
+             goto done_generator;
+ 
+         CASE(OP_nop):
+@@ -22127,6 +22135,26 @@ static JSValue js_generator_next(JSContext *ctx, JSValueConst this_val,
      return ret;
  }
  
@@ -682,7 +825,7 @@ index 83afccd1f..bf1efa6fe 100644
  static JSValue js_call_generator_function(JSContext *ctx, JSValueConst func_obj,
                                            JSValueConst this_obj,
                                            int argc, JSValueConst *argv,
-@@ -22163,7 +22183,7 @@ static JSValue js_call_generator_function(JSContext *ctx, JSValueConst func_obj,
+@@ -22157,7 +22185,7 @@ static JSValue js_call_generator_function(JSContext *ctx, JSValueConst func_obj,
      /* the body only starts running on the first next(); root captured
         locals against the generator object from now on (the initial resume
         above only reaches OP_initial_yield, before any user code) */
@@ -691,7 +834,7 @@ index 83afccd1f..bf1efa6fe 100644
      return obj;
   fail:
      free_generator_stack_rt(ctx->rt, s);
-@@ -22841,7 +22861,7 @@ static JSValue js_async_generator_function_call(JSContext *ctx,
+@@ -22835,7 +22863,7 @@ static JSValue js_async_generator_function_call(JSContext *ctx,
      s->generator = JS_VALUE_GET_OBJ(obj);
      /* root captured locals against the async generator object (the initial
         resume above only reaches OP_initial_yield, before any user code) */
@@ -700,7 +843,7 @@ index 83afccd1f..bf1efa6fe 100644
      JS_SetOpaqueInternal(obj, s);
      return obj;
   fail:
-@@ -26240,7 +26260,7 @@ static __exception int emit_class_init_start(JSParseState *s,
+@@ -26234,7 +26262,7 @@ static __exception int emit_class_init_start(JSParseState *s,
      return 0;
  }
  
@@ -709,7 +852,7 @@ index 83afccd1f..bf1efa6fe 100644
  {
      int cpool_idx;
  
-@@ -26249,10 +26269,13 @@ static void emit_class_init_end(JSParseState *s, ClassFieldsDef *cf)
+@@ -26243,10 +26271,13 @@ static void emit_class_init_end(JSParseState *s, ClassFieldsDef *cf)
      s->cur_func = s->cur_func->parent;
  
      cpool_idx = cpool_add(s, JS_NULL);
@@ -723,7 +866,7 @@ index 83afccd1f..bf1efa6fe 100644
  }
  
  static void emit_return(JSParseState *s, bool hasval);
-@@ -26316,6 +26339,8 @@ static __exception int js_parse_class_default_ctor(JSParseState *s,
+@@ -26310,6 +26341,8 @@ static __exception int js_parse_class_default_ctor(JSParseState *s,
      int idx;
      /* the real object will be set at the end of the compilation */
      idx = cpool_add(s, JS_NULL);
@@ -732,7 +875,16 @@ index 83afccd1f..bf1efa6fe 100644
      fd->parent_cpool_idx = idx;
  
      return 0;
-@@ -26771,7 +26796,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
+@@ -26724,6 +26757,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
+             goto fail;
+     }
+     /* patch the constant pool index for the constructor */
++    if (JS_HasException(ctx) || ctor_fd->parent_cpool_idx < 0)
++        goto fail;
+     put_u32(fd->byte_code.buf + ctor_cpool_offset, ctor_fd->parent_cpool_idx);
+ 
+     /* store the class source code in the constructor. */
+@@ -26765,7 +26800,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
          if (var_idx < 0)
              goto fail;
          if (cf->fields_init_fd) {
@@ -742,7 +894,7 @@ index 83afccd1f..bf1efa6fe 100644
          } else {
              emit_op(s, OP_undefined);
          }
-@@ -26794,7 +26820,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
+@@ -26788,7 +26824,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
      if (class_fields[1].fields_init_fd != NULL) {
          ClassFieldsDef *cf = &class_fields[1];
          emit_op(s, OP_dup);
@@ -752,7 +904,16 @@ index 83afccd1f..bf1efa6fe 100644
          emit_op(s, OP_call_method);
          emit_u16(s, 0);
          emit_op(s, OP_drop);
-@@ -34635,15 +34662,23 @@ static void var_object_test(JSContext *ctx, JSFunctionDef *s,
+@@ -29841,6 +29878,8 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
+     bool is_await_using = false;
+     if (tok == TOK_AWAIT) {
+         int u;
++        if (!(s->cur_func->func_kind & JS_FUNC_ASYNC))
++            return js_parse_error(s, "await using declaration is only valid in async functions");
+         if (next_token(s))
+             return -1;
+         u = is_using(s, false);
+@@ -34627,15 +34666,23 @@ static void var_object_test(JSContext *ctx, JSFunctionDef *s,
      s->jump_size++;
  }
  
@@ -778,7 +939,7 @@ index 83afccd1f..bf1efa6fe 100644
  static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                               JSAtom var_name, int scope_level, int op,
                               DynBuf *bc, uint8_t *bc_buf,
-@@ -34752,12 +34787,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34744,12 +34791,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                  /* Create a dummy object with a named slot that is
                     a reference to the local variable */
                  if (var_idx & ARGUMENT_VAR_OFFSET) {
@@ -795,7 +956,7 @@ index 83afccd1f..bf1efa6fe 100644
                      dbuf_putc(bc, OP_make_loc_ref);
                      dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
                      dbuf_put_u16(bc, var_idx);
-@@ -34845,7 +34882,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34837,7 +34886,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                  var_idx = idx;
                  break;
              } else if (vd->var_name == JS_ATOM__with_ && !is_pseudo_var) {
@@ -805,7 +966,7 @@ index 83afccd1f..bf1efa6fe 100644
                  idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL, idx, vd->var_name, false, false, JS_VAR_NORMAL);
                  if (idx >= 0) {
                      dbuf_putc(bc, OP_get_var_ref);
-@@ -34882,7 +34920,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34874,7 +34924,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
          /* check eval object */
          if (!is_arg_scope && fd->var_object_idx >= 0 && !is_pseudo_var) {
              vd = &fd->vars[fd->var_object_idx];
@@ -815,7 +976,7 @@ index 83afccd1f..bf1efa6fe 100644
              idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL,
                                    fd->var_object_idx, vd->var_name,
                                    false, false, JS_VAR_NORMAL);
-@@ -34894,7 +34933,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34886,7 +34937,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
          /* check eval object in argument scope */
          if (fd->arg_var_object_idx >= 0 && !is_pseudo_var) {
              vd = &fd->vars[fd->arg_var_object_idx];
@@ -825,7 +986,7 @@ index 83afccd1f..bf1efa6fe 100644
              idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL,
                                    fd->arg_var_object_idx, vd->var_name,
                                    false, false, JS_VAR_NORMAL);
-@@ -34949,12 +34989,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
+@@ -34941,12 +34993,14 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
      if (var_idx >= 0) {
          /* find the corresponding closure variable */
          if (var_idx & ARGUMENT_VAR_OFFSET) {
@@ -842,7 +1003,7 @@ index 83afccd1f..bf1efa6fe 100644
              idx = get_closure_var(ctx, s, fd,
                                    JS_CLOSURE_LOCAL, var_idx,
                                    var_name,
-@@ -35135,7 +35177,8 @@ static int resolve_scope_private_field1(JSContext *ctx,
+@@ -35127,7 +35181,8 @@ static int resolve_scope_private_field1(JSContext *ctx,
          if (idx >= 0) {
              var_kind = fd->vars[idx].var_kind;
              if (is_ref) {
@@ -852,7 +1013,7 @@ index 83afccd1f..bf1efa6fe 100644
                  idx = get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL, idx, var_name,
                                        true, true, JS_VAR_NORMAL);
                  if (idx < 0)
-@@ -35283,17 +35326,20 @@ static int resolve_scope_private_field(JSContext *ctx, JSFunctionDef *s,
+@@ -35275,17 +35330,20 @@ static int resolve_scope_private_field(JSContext *ctx, JSFunctionDef *s,
      return 0;
  }
  
@@ -876,7 +1037,7 @@ index 83afccd1f..bf1efa6fe 100644
  }
  
  /* XXX: should handle the argument scope generically */
-@@ -35307,7 +35353,7 @@ static bool is_var_in_arg_scope(const JSVarDef *vd)
+@@ -35299,7 +35357,7 @@ static bool is_var_in_arg_scope(const JSVarDef *vd)
              vd->var_kind == JS_VAR_FUNCTION_NAME);
  }
  
@@ -885,7 +1046,7 @@ index 83afccd1f..bf1efa6fe 100644
  {
      JSFunctionDef *fd;
      JSVarDef *vd;
-@@ -35358,10 +35404,12 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35350,10 +35408,12 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
      /* mark all local variables as captured since eval can access any of them */
      if (!s->is_eval) {
          for (i = 0; i < s->arg_count; i++) {
@@ -900,7 +1061,7 @@ index 83afccd1f..bf1efa6fe 100644
          }
      }
  
-@@ -35397,7 +35445,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35389,7 +35449,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
          scope_idx = fd->scopes[scope_level].first;
          while (scope_idx >= 0) {
              vd = &fd->vars[scope_idx];
@@ -910,7 +1071,7 @@ index 83afccd1f..bf1efa6fe 100644
              get_closure_var(ctx, s, fd, JS_CLOSURE_LOCAL, scope_idx,
                              vd->var_name, vd->is_const, vd->is_lexical, vd->var_kind);
              scope_idx = vd->scope_next;
-@@ -35409,7 +35458,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35401,7 +35462,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
              for(i = 0; i < fd->arg_count; i++) {
                  vd = &fd->args[i];
                  if (vd->var_name != JS_ATOM_NULL) {
@@ -920,7 +1081,7 @@ index 83afccd1f..bf1efa6fe 100644
                      get_closure_var(ctx, s, fd,
                                      JS_CLOSURE_ARG, i, vd->var_name, false,
                                      vd->is_lexical, JS_VAR_NORMAL);
-@@ -35421,7 +35471,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35413,7 +35475,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
                  if (vd->scope_level == 0 &&
                      vd->var_name != JS_ATOM__ret_ &&
                      vd->var_name != JS_ATOM_NULL) {
@@ -930,7 +1091,7 @@ index 83afccd1f..bf1efa6fe 100644
                      get_closure_var(ctx, s, fd,
                                      JS_CLOSURE_LOCAL, i, vd->var_name, false,
                                      vd->is_lexical, JS_VAR_NORMAL);
-@@ -35432,7 +35483,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35424,7 +35487,8 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
                  vd = &fd->vars[i];
                  /* do not close top level last result */
                  if (vd->scope_level == 0 && is_var_in_arg_scope(vd)) {
@@ -940,7 +1101,7 @@ index 83afccd1f..bf1efa6fe 100644
                      get_closure_var(ctx, s, fd,
                                      JS_CLOSURE_LOCAL, i, vd->var_name, false,
                                      vd->is_lexical, JS_VAR_NORMAL);
-@@ -35452,6 +35504,7 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35444,6 +35508,7 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
              }
          }
      }
@@ -948,21 +1109,21 @@ index 83afccd1f..bf1efa6fe 100644
  }
  
  static void set_closure_from_var(JSContext *ctx, JSClosureVar *cv,
-@@ -35483,6 +35536,13 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
+@@ -35475,6 +35540,13 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
      s->closure_var = js_malloc(ctx, sizeof(s->closure_var[0]) * count);
      if (!s->closure_var)
          return -1;
 +    /* OP_eval carries scope.first + 1 as a u16. ARG_SCOPE_END (-2) in a
 +       strict function with an empty destructuring parameter turns that into
 +       0xFFFF, and get_u16()-1 then indexes far past b->vardefs. */
-+    if (scope_idx < -1 || scope_idx >= b->var_count) {
++    if (scope_idx < ARG_SCOPE_END || scope_idx >= b->var_count) {
 +        JS_ThrowSyntaxError(ctx, "invalid eval scope index");
 +        return -1;
 +    }
      /* Add lexical variables in scope at the point of evaluation */
      for (i = scope_idx; i >= 0;) {
          vd = &b->vardefs[b->arg_count + i];
-@@ -35533,6 +35593,18 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
+@@ -35525,6 +35597,18 @@ static __exception int add_closure_variables(JSContext *ctx, JSFunctionDef *s,
          cv->var_idx = i;
          cv->var_name = JS_DupAtom(ctx, cv0->var_name);
      }
@@ -981,7 +1142,7 @@ index 83afccd1f..bf1efa6fe 100644
      return 0;
  }
  
-@@ -35958,7 +36030,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35950,17 +36034,19 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
              {
                  int call_argc = get_u16(bc_buf + pos + 1);
                  scope = get_u16(bc_buf + pos + 1 + 2);
@@ -990,8 +1151,9 @@ index 83afccd1f..bf1efa6fe 100644
 +                    goto fail;
                  dbuf_putc(&bc_out, op);
                  dbuf_put_u16(&bc_out, call_argc);
-                 dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
-@@ -35966,7 +36039,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+-                dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
++                dbuf_put_u16(&bc_out, s->scopes[scope].first - ARG_SCOPE_END);
+             }
              break;
          case OP_apply_eval: /* convert scope index to adjusted variable index */
              scope = get_u16(bc_buf + pos + 1);
@@ -999,9 +1161,12 @@ index 83afccd1f..bf1efa6fe 100644
 +            if (mark_eval_captured_variables(ctx, s, scope))
 +                goto fail;
              dbuf_putc(&bc_out, op);
-             dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
+-            dbuf_put_u16(&bc_out, s->scopes[scope].first + 1);
++            dbuf_put_u16(&bc_out, s->scopes[scope].first - ARG_SCOPE_END);
              break;
-@@ -35980,6 +36054,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+         case OP_scope_get_var_undef:
+         case OP_scope_get_var:
+@@ -35972,6 +36058,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
              scope = get_u16(bc_buf + pos + 5);
              pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                           NULL, NULL, pos_next);
@@ -1010,7 +1175,7 @@ index 83afccd1f..bf1efa6fe 100644
              JS_FreeAtom(ctx, var_name);
              break;
          case OP_scope_make_ref:
-@@ -35993,6 +36069,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
+@@ -35985,6 +36073,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
                  ls->ref_count--;  /* always remove label reference */
                  pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                               bc_buf, ls, pos_next);
@@ -1019,7 +1184,7 @@ index 83afccd1f..bf1efa6fe 100644
                  JS_FreeAtom(ctx, var_name);
              }
              break;
-@@ -36601,7 +36679,8 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
+@@ -36593,7 +36683,8 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
          } else {
              /* mapped arguments need all args to be captured */
              for (i = 0; i < s->arg_count; i++) {
@@ -1029,7 +1194,7 @@ index 83afccd1f..bf1efa6fe 100644
              }
              dbuf_putc(&bc_out, OP_special_object);
              dbuf_putc(&bc_out, OP_SPECIAL_OBJECT_MAPPED_ARGUMENTS);
-@@ -37794,8 +37873,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
+@@ -37786,8 +37877,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
         so it is necessary to create the closure variables before any
         other variable lookup is done. */
  #ifndef QJS_DISABLE_PARSER
@@ -1042,7 +1207,7 @@ index 83afccd1f..bf1efa6fe 100644
  #endif // QJS_DISABLE_PARSER
  
      /* add the module global variables in the closure */
-@@ -37815,7 +37896,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
+@@ -37807,7 +37900,10 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
          if (JS_IsException(func_obj))
              goto fail;
          /* save it in the constant pool */
@@ -1054,7 +1219,7 @@ index 83afccd1f..bf1efa6fe 100644
          fd->cpool[cpool_idx] = func_obj;
      }
  
-@@ -37849,6 +37933,24 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
+@@ -37841,6 +37937,24 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
      if (resolve_labels(ctx, fd))
          goto fail;
  
@@ -1079,7 +1244,16 @@ index 83afccd1f..bf1efa6fe 100644
      if (compute_stack_size(ctx, fd, &stack_size) < 0)
          goto fail;
  
-@@ -38673,6 +38775,8 @@ done:
+@@ -38401,6 +38515,8 @@ static __exception int js_parse_function_decl2(JSParseState *s,
+                 } else {
+                     /* unnamed arg for destructuring */
+                     idx = add_arg(ctx, fd, JS_ATOM_NULL);
++                    if (idx < 0)
++                        goto fail;
+                     emit_op(s, OP_get_arg);
+                     emit_u16(s, idx);
+                 }
+@@ -38665,6 +38781,8 @@ done:
  
          /* the real object will be set at the end of the compilation */
          idx = cpool_add(s, JS_NULL);
@@ -1088,7 +1262,7 @@ index 83afccd1f..bf1efa6fe 100644
          fd->parent_cpool_idx = idx;
  
          if (is_expr) {
-@@ -54626,14 +54730,22 @@ static JSValue js_map_clear(JSContext *ctx, JSValueConst this_val,
+@@ -54618,14 +54736,22 @@ static JSValue js_map_clear(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv, int magic)
  {
      JSMapState *s = JS_GetOpaque2(ctx, this_val, JS_CLASS_MAP + magic);
@@ -1113,7 +1287,7 @@ index 83afccd1f..bf1efa6fe 100644
      }
      return JS_UNDEFINED;
  }
-@@ -64271,19 +64383,29 @@ static JSValue js_finrec_unregister(JSContext *ctx, JSValueConst this_val, int a
+@@ -64263,19 +64389,29 @@ static JSValue js_finrec_unregister(JSContext *ctx, JSValueConst this_val, int a
      if (!is_valid_weakref_target(token))
          return JS_ThrowTypeError(ctx, "invalid unregister token");
  
@@ -1149,7 +1323,7 @@ index 83afccd1f..bf1efa6fe 100644
  }
  
  static const JSCFunctionListEntry js_finrec_proto_funcs[] = {
-@@ -64364,6 +64486,12 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
+@@ -64356,6 +64492,12 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
          case JS_WEAK_REF_KIND_WEAK_REF:
              wrd = wr->u.weak_ref_data;
              wrd->target = JS_UNDEFINED;
@@ -1162,7 +1336,7 @@ index 83afccd1f..bf1efa6fe 100644
              break;
          case JS_WEAK_REF_KIND_FINALIZATION_REGISTRY_ENTRY:
              fre = wr->u.fin_rec_entry;
-@@ -64385,9 +64513,8 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
+@@ -64377,9 +64519,8 @@ static void reset_weak_ref(JSRuntime *rt, JSWeakRefRecord **first_weak_ref)
              js_free_rt(rt, mr);
              break;
          case JS_WEAK_REF_KIND_WEAK_REF:
