@@ -326,11 +326,12 @@ Adds the QuickJS-ng JNI host, per-account script runtimes, grants and sandboxing
 
 **Desktop references:** none (Android-only change).
 
-Hardens fork boundaries that stock Android does not cover: per-account script isolation and approvals, pending-reply ownership, streamer-mode secret windows, last-seen restoration, local-password recovery ownership, and bounded regex, notice and update paths. Android-specific audit work.
+Hardens fork boundaries that stock Android does not cover: per-account script isolation and approvals, pending-reply ownership, streamer-mode secret windows, last-seen restoration, local-password recovery ownership, bounded regex, notice and update paths, and the published QuickJS and widget-engine memory-safety fixes in both vendored engines.
 
 | patch |
 |---|
 | [`0332-security-harden-fork-boundaries.patch`](../patches/android/0332-security-harden-fork-boundaries.patch) |
+| [`0341-fix-close-widget-engine-RCEs.patch`](../patches/android/0341-fix-close-widget-engine-RCEs.patch) — both vendored QuickJS engines and the widget-sandbox pin |
 
 <a id="a014"></a>
 
