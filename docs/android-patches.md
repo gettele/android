@@ -329,6 +329,8 @@ Adds the QuickJS-ng JNI host, per-account script runtimes, grants and sandboxing
 
 Hardens fork boundaries that stock Android does not cover: per-account script isolation and approvals, pending-reply ownership, streamer-mode secret windows, last-seen restoration, local-password recovery ownership, bounded regex, notice and update paths, and the published QuickJS and widget-engine memory-safety fixes in both vendored engines.
 
+Widgets that stop before producing their loaded frame retain their failure state across unloading and show a failure label instead of an unfinished snapshot. Loaded snapshots remain available; sandbox memory limits are unchanged.
+
 | patch |
 |---|
 | [`0332-security-harden-fork-boundaries.patch`](../patches/android/0332-security-harden-fork-boundaries.patch) |
@@ -397,7 +399,7 @@ The ruler maps its full range to 60% of the rail width. An independent, default-
 
 **Desktop references:** compact icon-only folders.
 
-Adds an optional vertical folder bar for tablets and unfolded phones. The native Android view reuses the stock folder controller for selection, locking and swipes, mirrors unread counters, and leaves phone and forwarding layouts unchanged.
+Adds an optional vertical folder bar for tablets and unfolded phones. The native Android view reuses the stock folder controller for selection, locking and swipes, mirrors unread counters, and leaves phone and forwarding layouts unchanged. The bar starts beside the header; in two-pane mode the left pane grows by the bar width, preserving the stock chat-list width while leaving at least 320dp for the right pane.
 
 | patch |
 |---|

@@ -13,7 +13,12 @@ Subject: [PATCH] fix: close widget engine RCEs
  .../WidgetJS/validator-bundle.js              |  16 +-
  .../WidgetJS/validator-bundle.qbc             | Bin 340711 -> 341308 bytes
  .../main/assets/WidgetSandbox/manifest.txt    |  10 +-
- 9 files changed, 285 insertions(+), 115 deletions(-)
+ .../ui/Components/WidgetSandboxPlayer.java    |   5 +-
+ .../utils/twidget/WidgetSandboxMessage.java   |  11 +-
+ .../utils/twidget/WidgetSandboxSession.java   |   2 +-
+ .../utils/twidget/WidgetFailureTest.java      | 157 +++++++++
+ 13 files changed, 456 insertions(+), 119 deletions(-)
+ create mode 100644 TMessagesProj_AppTests/src/androidTest/java/org/telegram/utils/twidget/WidgetFailureTest.java
 
 diff --git a/TMessagesProj/jni/third_party/quickjs-ng/libunicode.c b/TMessagesProj/jni/third_party/quickjs-ng/libunicode.c
 index 6d539331e..5a681bf39 100644
@@ -8669,3 +8674,259 @@ index 4f70cb31c..ab673b36a 100644
 +dfcad18fa2c862c15a9bb019ffd54c35a89da89087c8666707c0ab035f91c644 sandbox-bundle.qbc
 +b9c66a60f11ec10ce1ef0fbd2c6b168355b6607fb504d2de808354d1094db92a validator-bundle.js
 +6c866f931ac8937e907f6a04d11dcc4c14025192ea7b3685115bae4528d11bcb validator-bundle.qbc
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/WidgetSandboxPlayer.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/WidgetSandboxPlayer.java
+index e6bcc100a..5f0747c40 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/WidgetSandboxPlayer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/WidgetSandboxPlayer.java
+@@ -173,7 +173,9 @@ public final class WidgetSandboxPlayer {
+     public boolean draw(Canvas canvas, int width) {
+         drawnWidth = width;
+         WidgetSandboxSession.Frame frame = message == null ? null : message.frame();
+-        if (frame != null && frame.width > 0 && frame.node.canDraw(canvas)) {
++        String failure = message == null ? null : message.failure();
++        if (frame != null && frame.width > 0 && frame.node.canDraw(canvas)
++                && (failure == null || frame.loaded || message.hasLoadedFrame())) {
+             if (!frame.recorded()) message.ensureDisplayList();
+             if (frame != shownFrame) onNewFrame(frame);
+             // A frame of another width (the chat's width changed, the new one is on its way) is scaled to
+@@ -192,7 +194,6 @@ public final class WidgetSandboxPlayer {
+         // A preview has no placeholder: the running layout shows it.
+         if (previewing) return false;
+         if (message != null) message.ensureDisplayList();
+-        String failure = message == null ? null : message.failure();
+         canvas.drawText(
+                 LocaleController.getString(failure == null ? R.string.WidgetLoading : R.string.WidgetLoadFailed),
+                 12 * density,
+diff --git a/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxMessage.java b/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxMessage.java
+index accf97302..f6f3569ba 100644
+--- a/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxMessage.java
++++ b/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxMessage.java
+@@ -72,6 +72,7 @@ public final class WidgetSandboxMessage implements WidgetSandboxSession.Listener
+     private Events events;
+     private WidgetSandboxSession session;
+     private WidgetSandboxSession.Frame snapshot;
++    private String failure;
+     private WidgetSandboxPlayer player;
+     private int heightPx, widthPx;
+     /** The width the last shown frame was laid out at: {@link #heightPx} belongs to it. */
+@@ -184,6 +185,7 @@ public final class WidgetSandboxMessage implements WidgetSandboxSession.Listener
+             session.releaseScripts();
+             return;
+         }
++        failure = null;
+         WidgetSandboxSession created = newSession();
+         created.setListener(this);
+         created.setVisible(visible && !paused);
+@@ -223,6 +225,7 @@ public final class WidgetSandboxMessage implements WidgetSandboxSession.Listener
+     public void reload() {
+         unload();
+         snapshot = null;
++        failure = null;
+     }
+ 
+     /** UI, development: as never shown, without a frame or a height (WidgetMedia#onHeightsCleared). */
+@@ -358,7 +361,7 @@ public final class WidgetSandboxMessage implements WidgetSandboxSession.Listener
+     }
+ 
+     public String failure() {
+-        return session == null ? null : session.failure();
++        return failure != null ? failure : session == null ? null : session.failure();
+     }
+ 
+     // ── session events, UI thread ──
+@@ -429,6 +432,11 @@ public final class WidgetSandboxMessage implements WidgetSandboxSession.Listener
+     @Override
+     public void onDiagnostics(JSONObject diagnostics) {
+         if (events != null) events.onDiagnostics(this, diagnostics);
++        String dead = diagnostics.optString("dead");
++        if (!dead.isEmpty()) {
++            failure = dead;
++            if (player != null) player.onMessageFailure();
++        }
+         // A loaded widget's frame may already be waiting behind the snapshot.
+         if (diagnostics.optBoolean("loaded") && snapshot != null && session != null)
+             onFrame(session);
+@@ -472,6 +480,7 @@ public final class WidgetSandboxMessage implements WidgetSandboxSession.Listener
+ 
+     @Override
+     public void onFailure(String message) {
++        failure = message;
+         if (events != null) events.onFailure(this, message);
+         if (player != null) player.onMessageFailure();
+     }
+diff --git a/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxSession.java b/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxSession.java
+index c4a27aa45..371fad89b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxSession.java
++++ b/TMessagesProj/src/main/java/org/telegram/utils/twidget/WidgetSandboxSession.java
+@@ -876,7 +876,7 @@ public final class WidgetSandboxSession {
+         /** The text the widget made selectable, as this frame lays it out; null for none. */
+         public final WidgetText text;
+         /** Recorded after the renderer applied what the widget built on load (WidgetHost's `rendered`). */
+-        final boolean loaded;
++        public final boolean loaded;
+         /** The widget's resize anchor when this frame was recorded: true for `bottom`, false for `top`. */
+         final boolean anchorBottom;
+ 
+diff --git a/TMessagesProj_AppTests/src/androidTest/java/org/telegram/utils/twidget/WidgetFailureTest.java b/TMessagesProj_AppTests/src/androidTest/java/org/telegram/utils/twidget/WidgetFailureTest.java
+new file mode 100644
+index 000000000..4fd6d0af2
+--- /dev/null
++++ b/TMessagesProj_AppTests/src/androidTest/java/org/telegram/utils/twidget/WidgetFailureTest.java
+@@ -0,0 +1,157 @@
++package org.telegram.utils.twidget;
++
++import android.graphics.Bitmap;
++import android.graphics.Canvas;
++import android.graphics.Color;
++import android.graphics.Paint;
++
++import org.json.JSONObject;
++import org.junit.Test;
++import org.telegram.messenger.AndroidUtilities;
++import org.telegram.messenger.ApplicationLoader;
++import org.telegram.messenger.LocaleController;
++import org.telegram.messenger.R;
++import org.telegram.ui.Components.WidgetSandboxPlayer;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertNull;
++import static org.junit.Assert.assertTrue;
++
++public class WidgetFailureTest {
++    private static final String LIMIT = "Memory limit exceeded (8 MB)";
++
++    private void onUi(Runnable action) {
++        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
++        java.util.concurrent.atomic.AtomicReference<Throwable> error = new java.util.concurrent.atomic.AtomicReference<>();
++        AndroidUtilities.runOnUIThread(() -> {
++            try {
++                action.run();
++            } catch (Throwable e) {
++                error.set(e);
++            } finally {
++                done.countDown();
++            }
++        });
++        try {
++            assertTrue(done.await(30, java.util.concurrent.TimeUnit.SECONDS));
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++            throw new AssertionError(e);
++        }
++        if (error.get() != null) throw new AssertionError(error.get());
++    }
++
++    private WidgetSandboxMessage message() {
++        return new WidgetSandboxMessage(ApplicationLoader.applicationContext, 0, "test", "test", "", false, 1);
++    }
++
++    private JSONObject dead() {
++        try {
++            return new JSONObject().put("dead", LIMIT);
++        } catch (Exception e) {
++            throw new AssertionError(e);
++        }
++    }
++
++    @Test
++    public void sandboxDeathInvalidatesAndSurvivesUnloading() {
++        onUi(() -> {
++            WidgetSandboxMessage message = message();
++            int[] invalidations = {0};
++            WidgetSandboxPlayer player = new WidgetSandboxPlayer(new WidgetSandboxPlayer.Host() {
++                public void onWidgetResized() {}
++                public void invalidateWidget() { invalidations[0]++; }
++                public void disallowParentIntercept(boolean value) {}
++            }, 1);
++            player.bind(message);
++            message.onDiagnostics(dead());
++            assertTrue(invalidations[0] > 0);
++            message.unload();
++            message.dropSnapshot();
++            player.unbind();
++            assertEquals(LIMIT, message.failure());
++            message.reload();
++            assertNull(message.failure());
++        });
++    }
++
++    @Test
++    public void startupFailureSurvivesUnloading() {
++        onUi(() -> {
++            WidgetSandboxMessage message = message();
++            message.onFailure("Widget engine stopped");
++            message.unload();
++            assertEquals("Widget engine stopped", message.failure());
++            message.reload();
++            assertNull(message.failure());
++        });
++    }
++
++    @Test
++    public void deathBeforeFirstFrameShowsFailure() {
++        onUi(() -> assertFailureRendering(false));
++    }
++
++    @Test
++    public void unfinishedSnapshotDoesNotHideFailure() {
++        onUi(() -> assertFailureRendering(true));
++    }
++
++    private void assertFailureRendering(boolean snapshot) {
++        WidgetSandboxMessage message = message();
++        if (snapshot) setSnapshot(message, false);
++        message.onDiagnostics(dead());
++        message.unload();
++        Bitmap actual = draw(message);
++        Bitmap expected = Bitmap.createBitmap(320, 160, Bitmap.Config.ARGB_8888);
++        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
++        paint.setTextSize(14);
++        paint.setColor(0xff808080);
++        new Canvas(expected).drawText(LocaleController.getString(R.string.WidgetLoadFailed), 12, 28, paint);
++        assertTrue("The failed widget must show the failure label", actual.sameAs(expected));
++    }
++
++    @Test
++    public void loadedSnapshotRemainsVisibleAfterDeath() {
++        onUi(() -> {
++            WidgetSandboxMessage message = message();
++            setSnapshot(message, true);
++            message.onDiagnostics(dead());
++            message.unload();
++            assertEquals(Color.GREEN, draw(message).getPixel(100, 80));
++        });
++    }
++
++    private Bitmap draw(WidgetSandboxMessage message) {
++        WidgetSandboxPlayer player = new WidgetSandboxPlayer(new WidgetSandboxPlayer.Host() {
++            public void onWidgetResized() {}
++            public void invalidateWidget() {}
++            public void disallowParentIntercept(boolean value) {}
++        }, 1);
++        player.bind(message);
++        Bitmap bitmap = Bitmap.createBitmap(320, 160, Bitmap.Config.ARGB_8888);
++        player.draw(new Canvas(bitmap), 320);
++        player.unbind();
++        return bitmap;
++    }
++
++    private void setSnapshot(WidgetSandboxMessage message, boolean loaded) {
++        WidgetFrameNode node = new WidgetFrameNode(0, 0, 320, 160) {
++            Canvas beginRecording() { return null; }
++            void endRecording() {}
++            public boolean recorded() { return true; }
++            void discard() {}
++            public boolean canDraw(Canvas canvas) { return true; }
++            public void draw(Canvas canvas, float alpha) { canvas.drawColor(Color.GREEN); }
++        };
++        WidgetSandboxSession.Frame frame = new WidgetSandboxSession.Frame(
++                node, new WidgetSandboxSession.Layer[0], 0, 320, 160, 0, 0, 0, 0, 0, null, loaded, false);
++        try {
++            java.lang.reflect.Field field = WidgetSandboxMessage.class.getDeclaredField("snapshot");
++            field.setAccessible(true);
++            field.set(message, frame);
++        } catch (Exception e) {
++            throw new AssertionError(e);
++        }
++    }
++}
