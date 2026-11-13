@@ -55,6 +55,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A013](#a013) | Cross-cutting fork security boundaries | original | active | 1 |
 | [A014](#a014) | Docked media composer | adaptation | active | 22 |
 | [A015](#a015) | Round video recording controls | original | active | 2 |
+| [A016](#a016) | Wide-screen folder sidebar | adaptation | active | 1 |
 
 <a id="a001"></a>
 
@@ -388,3 +389,16 @@ The ruler maps its full range to 60% of the rail width. An independent, default-
 |---|
 | [`0334-feat-improve-round-video-controls.patch`](../patches/android/0334-feat-improve-round-video-controls.patch) |
 | [`0337-feat-retain-round-pinch-zoom.patch`](../patches/android/0337-feat-retain-round-pinch-zoom.patch) — compact ruler and optional retained pinch zoom |
+
+<a id="a016"></a>
+## A016 — Wide-screen folder sidebar
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** compact icon-only folders.
+
+Adds an optional vertical folder bar for tablets and unfolded phones. The native Android view reuses the stock folder controller for selection, locking and swipes, mirrors unread counters, and leaves phone and forwarding layouts unchanged.
+
+| patch |
+|---|
+| [`0343-feat-add-wide-folder-sidebar.patch`](../patches/android/0343-feat-add-wide-folder-sidebar.patch) |

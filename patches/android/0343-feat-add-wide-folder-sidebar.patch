@@ -1,0 +1,499 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Fri, 13 Nov 2026 13:38:14 +0300
+Subject: [PATCH] [folders] add wide sidebar
+
+---
+ .../java/org/telegram/ui/DialogsActivity.java |  85 ++++++++-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
+ .../src/main/java/tele/helpers/FolderIcons.kt |   3 +
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   2 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   2 +
+ .../main/java/tele/ui/TeleFolderSidebar.kt    | 171 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
+ 8 files changed, 259 insertions(+), 10 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 0650fdadb..78ffceb06 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -525,6 +525,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     private int undoViewIndex;
+     private UndoView[] undoView = new UndoView[2];
+     private FilterTabsView filterTabsView;
++    private tele.ui.TeleFolderSidebar folderSidebar;
++    private boolean folderSidebarEnabled;
+     private boolean askingForPermissions;
+     private int searchViewPagerIndex;
+     @Nullable
+@@ -1169,8 +1171,13 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     int h = View.MeasureSpec.getSize(heightMeasureSpec);
+                     int contentHeightSpec = View.MeasureSpec.makeMeasureSpec(Math.max(dp(10), h + dp(2) - actionBar.getMeasuredHeight()), View.MeasureSpec.EXACTLY);
+                     child.measure(contentWidthSpec, contentHeightSpec);
++                } else if (child == folderSidebar) {
++                    child.measure(
++                            View.MeasureSpec.makeMeasureSpec(getFolderSidebarWidth(), View.MeasureSpec.EXACTLY),
++                            View.MeasureSpec.makeMeasureSpec(Math.max(0, heightSize - getFolderSidebarTop()), View.MeasureSpec.EXACTLY)
++                    );
+                 } else if (child instanceof ViewPage) {
+-                    int contentWidthSpec = View.MeasureSpec.makeMeasureSpec(widthSize, View.MeasureSpec.EXACTLY);
++                    int contentWidthSpec = View.MeasureSpec.makeMeasureSpec(widthSize - getFolderSidebarWidth(), View.MeasureSpec.EXACTLY);
+                     int h = heightSize + dp(2);
+                     if (rightSlidingDialogContainer.hasFragment()) {
+                         if (canShowFilterTabsView) {
+@@ -1314,8 +1321,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     childTop = -dp(ADDITIONAL_LIST_HEIGHT_DP);
+                 } else if (child instanceof DatabaseMigrationHint) {
+                     childTop = actionBar.getMeasuredHeight();
++                } else if (child == folderSidebar) {
++                    childTop = getFolderSidebarTop();
+                 } else if (child instanceof ViewPage) {
+                     childTop = 0;
++                    childLeft += getFolderSidebarWidth();
+                 } else if (child == topPanelLayout || child == topBubblesFadeView || child == filterTabsView) {
+                     childTop += actionBar.getMeasuredHeight();
+                     childTop += dp(SEARCH_FIELD_HEIGHT);
+@@ -1417,7 +1427,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 } else if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN) {
+                     additionalOffset = 0;
+                 }
+-                if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN && !startedTracking && !maybeStartTracking && filterTabsView.getVisibility() == VISIBLE) {
++                if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN && !startedTracking && !maybeStartTracking && (filterTabsView.getVisibility() == VISIBLE || folderSidebar != null && folderSidebar.getVisibility() == VISIBLE)) {
+                     startedTrackingPointerId = ev.getPointerId(0);
+                     maybeStartTracking = true;
+                     startedTrackingX = (int) ev.getX();
+@@ -3149,6 +3159,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         wasDrawn = false;
+         pacmanAnimation = null;
+         filterTabsView = null;
++        folderSidebar = null;
++        folderSidebarEnabled = false;
+         selectedDialogs.clear();
+ 
+         maximumVelocity = ViewConfiguration.get(context).getScaledMaximumFlingVelocity();
+@@ -3580,6 +3592,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     if (!tab.isDefault && (tab.id < 0 || tab.id >= dialogFilters.size())) {
+                         return;
+                     }
++                    if (folderSidebar != null) {
++                        folderSidebar.setSelectedFolder(tab.id);
++                    }
+                     viewPages[1].selectedType = tab.id;
+                     viewPages[1].setVisibility(View.VISIBLE);
+                     viewPages[1].setTranslationX(viewPages[0].getMeasuredWidth());
+@@ -3806,6 +3821,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     showDeleteAlert(getMessagesController().getDialogFilters().get(id));
+                 }
+             });
++            folderSidebar = new tele.ui.TeleFolderSidebar(context, resourceProvider);
++            folderSidebar.setOnFolderClickListener(index -> {
++                FilterTabsView.Tab tab = filterTabsView.getTab(index);
++                if (tab == null) return;
++                if (viewPages[0].selectedType == tab.id) {
++                    scrollToTop(true, false);
++                } else {
++                    filterTabsView.scrollToTab(tab, index);
++                }
++            });
++            folderSidebar.setVisibility(View.GONE);
+         }
+ 
+         if (allowSwitchAccount && UserConfig.getActivatedAccountsCount() > 1) {
+@@ -5117,6 +5143,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             filterTabsView.setBlurredBackground(filterTabsViewBackground);
+             contentView.addView(filterTabsView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 36 + 7 + 7, Gravity.TOP, 4, 0, 4, 0));
+         }
++        if (folderSidebar != null) {
++            contentView.addView(folderSidebar, LayoutHelper.createFrame(tele.ui.TeleFolderSidebar.WIDTH_DP, LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT));
++        }
+ 
+         if (fragmentSearchField != null) {
+             fragmentSearchField.setupBlurredBackground(iBlur3FactoryLiquidGlass.create(fragmentSearchField, BlurredBackgroundProviderImpl.topPanel(resourceProvider)));
+@@ -6823,6 +6852,29 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         }
+     }
+ 
++    private int getFolderSidebarWidth() {
++        return folderSidebarEnabled ? dp(tele.ui.TeleFolderSidebar.WIDTH_DP) : 0;
++    }
++
++    private int getFolderSidebarTop() {
++        return actionBar.getMeasuredHeight() + dp(SEARCH_FIELD_HEIGHT) + (hasStories ? dp(DialogStoriesCell.HEIGHT_IN_DP) : 0);
++    }
++
++    private void updateFolderSidebar() {
++        if (folderSidebar == null || viewPages == null || viewPages.length == 0 || viewPages[0] == null) {
++            return;
++        }
++        final ArrayList<MessagesController.DialogFilter> filters = getMessagesController().getDialogFilters();
++        final boolean enabled = tele.ui.TeleFolderSidebar.enabled() && initialDialogsType == DIALOGS_TYPE_DEFAULT && !onlySelect && filters.size() > 1;
++        final boolean changed = folderSidebarEnabled != enabled;
++        folderSidebarEnabled = enabled;
++        folderSidebar.setFolders(filters, currentAccount, viewPages[0].selectedType);
++        folderSidebar.setVisibility(enabled && !searchIsShowed && (rightSlidingDialogContainer == null || !rightSlidingDialogContainer.hasFragment()) ? View.VISIBLE : View.GONE);
++        if (changed && fragmentView != null) {
++            fragmentView.requestLayout();
++        }
++    }
++
+     private void updateFilterTabs(boolean force, boolean animated) {
+         if (filterTabsView == null || inPreviewMode || searchIsShowed || (rightSlidingDialogContainer != null && rightSlidingDialogContainer.hasFragment())) {
+             return;
+@@ -6832,12 +6884,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             filterOptions = null;
+         }
+         final ArrayList<MessagesController.DialogFilter> filters = getMessagesController().getDialogFilters();
++        updateFolderSidebar();
+         if (filters.size() > 1) {
+-            if (force || filterTabsView.getVisibility() != View.VISIBLE) {
+-                boolean animatedUpdateItems = animated;
+-                if (filterTabsView.getVisibility() != View.VISIBLE) {
+-                    animatedUpdateItems = false;
+-                }
++            if (force || !canShowFilterTabsView) {
++                boolean animatedUpdateItems = animated && canShowFilterTabsView;
+                 canShowFilterTabsView = true;
+                 boolean updateCurrentTab = filterTabsView.isEmpty();
+                 updateFilterTabsVisibility(animated);
+@@ -6889,7 +6939,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 }
+             }
+         } else {
+-            if (filterTabsView.getVisibility() != View.GONE) {
++            if (canShowFilterTabsView) {
+                 filterTabsView.setIsEditing(false);
+                 showDoneItem(false);
+ 
+@@ -7711,7 +7761,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         if (searchIsShowed) {
+             return;
+         }
+-        animatorFilterTabsVisible.setValue(canShowFilterTabsView, animated);
++        animatorFilterTabsVisible.setValue(canShowFilterTabsView && !folderSidebarEnabled, animated);
++        checkUi_filterTabsVisible();
+     }
+ 
+     private void updateSearchActionBarItemsColors() {
+@@ -9770,6 +9821,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         if (hide) {
+             return;
+         }
++        updateFolderSidebar();
+         int count = selectedDialogs.size();
+         long selfUserId = getUserConfig().getClientUserId();
+         SharedPreferences preferences = getNotificationsSettings();
+@@ -10427,6 +10479,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     @Override
+     public void onConfigurationChanged(Configuration newConfig) {
+         super.onConfigurationChanged(newConfig);
++        updateFolderSidebar();
++        updateFilterTabsVisibility(false);
++        if (fragmentView != null) {
++            fragmentView.requestLayout();
++        }
+         if (filterOptions != null) {
+             filterOptions.dismiss();
+         }
+@@ -10552,6 +10609,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE) {
+                 filterTabsView.checkTabsCounter();
+             }
++            updateFolderSidebar();
+             slowedReloadAfterDialogClick = false;
+         } else if (id == NotificationCenter.topicsDidLoaded) {
+             updateVisibleRows(0);
+@@ -10571,6 +10629,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE) {
+                 filterTabsView.notifyTabCounterChanged(filterTabsView.getDefaultTabId());
+             }
++            updateFolderSidebar();
+         } else if (id == NotificationCenter.dialogsUnreadPollVotesCounterChanged) {
+             updateVisibleRows(0);
+         } else if (id == NotificationCenter.dialogsUnreadReactionsCounterChanged) {
+@@ -10604,6 +10663,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && (mask & MessagesController.UPDATE_MASK_READ_DIALOG_MESSAGE) != 0) {
+                 filterTabsView.checkTabsCounter();
+             }
++            if ((mask & MessagesController.UPDATE_MASK_READ_DIALOG_MESSAGE) != 0) {
++                updateFolderSidebar();
++            }
+             if (communityId != 0 ) {
+                 if ((mask & MessagesController.UPDATE_MASK_CHAT) != 0 || (mask & MessagesController.UPDATE_MASK_AVATAR) != 0 || (mask & MessagesController.UPDATE_MASK_CHAT_AVATAR) != 0 || (mask & MessagesController.UPDATE_MASK_CHAT_NAME) != 0) {
+                     community = getMessagesController().getChat(communityId);
+@@ -13770,6 +13832,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 viewPages[0].listView.requestLayout();
+             }
+         }
++        if (folderSidebar != null) {
++            final float sidebarFactor = (1f - animatorSearchVisible.getFloatValue()) * (1f - getRightSlidingProgress());
++            folderSidebar.setAlpha(sidebarFactor);
++            folderSidebar.setVisibility(folderSidebarEnabled && sidebarFactor > 0 ? View.VISIBLE : View.GONE);
++        }
+         updateContextViewPosition();
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 0f7338be5..0c45f316c 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -408,6 +408,8 @@ object TeleConfig {
+     @JvmField
+     val COMPACT_FOLDERS = BoolItem("compact_folders", false)
+     @JvmField
++    val FOLDER_SIDEBAR = BoolItem("folder_sidebar", false)
++    @JvmField
+     val HIDE_COUNTERS = BoolItem("hide_counters", false)
+     @JvmField
+     val HIDE_FOLDER_COUNTERS = BoolItem("hide_folder_counters", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 246514261..1240cc26c 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -120,7 +120,7 @@ object TeleHooks {
+         if (item === TeleConfig.HIDE_ALL_CHATS_FOLDER) {
+             AccountInstance.getInstance(UserConfig.selectedAccount).getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated)
+         }
+-        if (item === TeleConfig.COMPACT_FOLDERS) {
++        if (item === TeleConfig.COMPACT_FOLDERS || item === TeleConfig.FOLDER_SIDEBAR) {
+             AccountInstance.getInstance(UserConfig.selectedAccount).getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated)
+         }
+         if (item === TeleConfig.HIDE_COUNTERS || item === TeleConfig.HIDE_FOLDER_COUNTERS || item === TeleConfig.HIDE_APP_COUNTER || item === TeleConfig.COUNTER_SKIP_ARCHIVE) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt b/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
+index dc51ad0dd..c360f13f8 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/FolderIcons.kt
+@@ -97,6 +97,9 @@ object FolderIcons {
+         }
+     }
+ 
++    @JvmStatic
++    fun emoji(account: Int, filter: MessagesController.DialogFilter): String = emojiOf(account, filter)
++
+     // the tab shows the icon and keeps its title for accessibility
+     @JvmStatic
+     fun apply(tab: FilterTabsView.Tab?, account: Int, filter: MessagesController.DialogFilter?) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 5296ad66d..d74870a27 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -803,6 +803,8 @@ object TeleTextRu {
+         "Filter your sets and the panel search by static, animated or video." to "Фильтровать ваши наборы и поиск по панели по типу: статичные, анимированные или видео.",
+         "Folder tabs" to "Вкладки папок",
+         "Folder tabs show only their icons." to "На вкладках папок показываются только значки.",
++        "Folders on the side" to "Папки сбоку",
++        "On tablets and unfolded phones, folder icons move to a vertical bar on the left." to "На планшетах и раскрытых фолдах значки папок перемещаются в вертикальную панель слева.",
+         "Folders past the limit" to "Папки сверх лимита",
+         "For group admins, without deleting the message." to "Для админов групп, без удаления сообщения.",
+         "Force the wallet" to "Принудительно включать кошелёк",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 2db8b196b..be855c2d8 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -803,6 +803,8 @@ object TeleTextUk {
+         "Filter your sets and the panel search by static, animated or video." to "Фільтрувати свої набори й пошук панелі за статичними, анімованими чи відеоформатом.",
+         "Folder tabs" to "Вкладки папок",
+         "Folder tabs show only their icons." to "Вкладки папок показують лише свої значки.",
++        "Folders on the side" to "Папки збоку",
++        "On tablets and unfolded phones, folder icons move to a vertical bar on the left." to "На планшетах і розкладених фолдах значки папок переміщуються у вертикальну панель ліворуч.",
+         "Folders past the limit" to "Папки понад ліміт",
+         "For group admins, without deleting the message." to "Для адміністраторів груп, без видалення повідомлення.",
+         "Force the wallet" to "Примусово вмикати гаманець",
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt b/TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt
+new file mode 100644
+index 000000000..e135e3dd4
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt
+@@ -0,0 +1,171 @@
++package tele.ui
++
++import android.content.Context
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.ImageView
++import android.widget.TextView
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.Emoji
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.MessagesStorage
++import org.telegram.messenger.R
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Components.LayoutHelper
++import tele.TeleConfig
++import tele.helpers.FolderIcons
++import tele.helpers.LocalFolders
++import tele.helpers.TeleCounters
++
++class TeleFolderSidebar(
++    context: Context,
++    private val resourcesProvider: Theme.ResourcesProvider?
++) : FrameLayout(context) {
++
++    fun interface OnFolderClickListener {
++        fun onFolderClick(index: Int)
++    }
++
++    private data class Item(val filter: MessagesController.DialogFilter, val unread: Int)
++
++    private val items = ArrayList<Item>()
++    private var account = 0
++    private var selectedIndex = 0
++    private var listener: OnFolderClickListener? = null
++
++    private val list = RecyclerView(context)
++    private val adapter = FolderAdapter()
++
++    init {
++        setBackgroundColor(color(Theme.key_windowBackgroundWhite))
++        list.layoutManager = LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false)
++        list.adapter = adapter
++        list.clipToPadding = false
++        list.setPadding(0, AndroidUtilities.dp(4f), 0, AndroidUtilities.dp(4f))
++        addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        val divider = View(context)
++        divider.setBackgroundColor(color(Theme.key_divider))
++        addView(divider, LayoutHelper.createFrame(1f, LayoutHelper.MATCH_PARENT.toFloat(), Gravity.RIGHT))
++    }
++
++    fun setOnFolderClickListener(value: OnFolderClickListener?) {
++        listener = value
++    }
++
++    fun setFolders(filters: List<MessagesController.DialogFilter>, account: Int, selected: Int) {
++        this.account = account
++        val nextSelected = selected.coerceIn(0, (filters.size - 1).coerceAtLeast(0))
++        val structureChanged = items.size != filters.size || items.indices.any { items[it].filter !== filters[it] }
++        val selectionChanged = selectedIndex != nextSelected
++        selectedIndex = nextSelected
++        items.clear()
++        for (filter in filters) {
++            val unread = if (TeleCounters.hideFolders()) 0 else if (filter.isDefault) {
++                MessagesStorage.getInstance(account).mainUnreadCount
++            } else {
++                LocalFolders.unreadOf(account, filter)
++            }
++            items.add(Item(filter, unread.coerceAtLeast(0)))
++        }
++        adapter.notifyDataSetChanged()
++        if (items.isNotEmpty() && (structureChanged || selectionChanged)) list.scrollToPosition(selectedIndex)
++    }
++
++    fun setSelectedFolder(index: Int) {
++        if (index == selectedIndex || index < 0 || index >= items.size) return
++        val previous = selectedIndex
++        selectedIndex = index
++        adapter.notifyItemChanged(previous)
++        adapter.notifyItemChanged(index)
++        list.smoothScrollToPosition(index)
++    }
++
++    private fun color(key: Int) = Theme.getColor(key, resourcesProvider)
++
++    private inner class FolderAdapter : RecyclerView.Adapter<FolderHolder>() {
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): FolderHolder {
++            val row = FrameLayout(context)
++            row.layoutParams = RecyclerView.LayoutParams(
++                ViewGroup.LayoutParams.MATCH_PARENT,
++                AndroidUtilities.dp(58f)
++            ).apply {
++                leftMargin = AndroidUtilities.dp(6f)
++                rightMargin = AndroidUtilities.dp(6f)
++                topMargin = AndroidUtilities.dp(2f)
++                bottomMargin = AndroidUtilities.dp(2f)
++            }
++            val icon = TextView(context)
++            icon.gravity = Gravity.CENTER
++            icon.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 23f)
++            row.addView(icon, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++            val badge = TextView(context)
++            badge.gravity = Gravity.CENTER
++            badge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 10f)
++            badge.typeface = AndroidUtilities.bold()
++            badge.setTextColor(color(Theme.key_featuredStickers_buttonText))
++            badge.minWidth = AndroidUtilities.dp(18f)
++            badge.setPadding(AndroidUtilities.dp(4f), 0, AndroidUtilities.dp(4f), 0)
++            badge.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(9f), color(Theme.key_featuredStickers_unread))
++            row.addView(badge, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, 18f, Gravity.TOP or Gravity.RIGHT, 0f, 3f, 1f, 0f))
++            val lock = ImageView(context)
++            lock.setImageResource(R.drawable.other_lockedfolders)
++            lock.colorFilter = PorterDuffColorFilter(color(Theme.key_windowBackgroundWhiteGrayText), PorterDuff.Mode.SRC_IN)
++            row.addView(lock, LayoutHelper.createFrame(12, 12f, Gravity.BOTTOM or Gravity.RIGHT, 0f, 0f, 5f, 5f))
++            return FolderHolder(row, icon, badge, lock)
++        }
++
++        override fun onBindViewHolder(holder: FolderHolder, position: Int) {
++            val item = items[position]
++            val filter = item.filter
++            val selected = position == selectedIndex
++            val name = if (filter.isDefault) LocaleController.getString(R.string.FilterAllChats) else filter.name
++            val accent = color(Theme.key_windowBackgroundWhiteBlueText)
++            holder.row.isSelected = selected
++            holder.row.background = Theme.createSimpleSelectorRoundRectDrawable(
++                AndroidUtilities.dp(12f),
++                if (selected) Theme.multAlpha(accent, 0.14f) else 0,
++                color(Theme.key_listSelector)
++            )
++            holder.row.contentDescription = if (item.unread > 0) {
++                TextUtils.concat(name, "\n", LocaleController.formatPluralString("AccDescrUnreadCount", item.unread))
++            } else {
++                name
++            }
++            holder.row.setOnClickListener {
++                val index = holder.adapterPosition
++                if (index != RecyclerView.NO_POSITION) listener?.onFolderClick(index)
++            }
++            val folderIcon = if (Emoji.isValidEmoji(filter.name)) filter.name else FolderIcons.emoji(account, filter)
++            holder.icon.text = Emoji.replaceEmoji(folderIcon, holder.icon.paint.fontMetricsInt, false)
++            holder.icon.alpha = if (filter.locked) 0.55f else 1f
++            holder.badge.visibility = if (item.unread > 0) View.VISIBLE else View.GONE
++            holder.badge.text = if (item.unread > 99) "99+" else LocaleController.formatNumber(item.unread.toLong(), ',')
++            holder.lock.visibility = if (filter.locked) View.VISIBLE else View.GONE
++        }
++
++        override fun getItemCount() = items.size
++    }
++
++    private class FolderHolder(
++        val row: FrameLayout,
++        val icon: TextView,
++        val badge: TextView,
++        val lock: ImageView
++    ) : RecyclerView.ViewHolder(row)
++
++    companion object {
++        const val WIDTH_DP = 72
++
++        @JvmStatic
++        fun enabled(): Boolean = TeleConfig.FOLDER_SIDEBAR.value && AndroidUtilities.isTablet()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 354f4ec2d..549dad124 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1075,6 +1075,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "App icon" to "No unread count on the app icon.",
+             "Leave out the archive" to "Archived chats don't add to the app icon count.",
+             "Compact icon folders" to "Folder tabs show only their icons.",
++            "Folders on the side" to "On tablets and unfolded phones, folder icons move to a vertical bar on the left.",
+             "Folders past the limit" to "Go past Telegram's folder limits; extras stay on this device.",
+             "Unsorted folder" to "A folder for chats that aren't in any other folder; archived ones stay out.",
+             "Mute folders" to "Mute every chat in a folder from its menu, only on this device.",
+@@ -1450,6 +1451,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Folders past the limit", TeleConfig.LOCAL_FOLDERS),
+                 toggle("Unsorted folder", TeleConfig.UNSORTED_FOLDER),
+                 toggle("Compact icon folders", TeleConfig.COMPACT_FOLDERS),
++                toggle("Folders on the side", TeleConfig.FOLDER_SIDEBAR),
+                 toggle("Hide similar channels", TeleConfig.HIDE_SIMILAR_CHANNELS),
+                 toggle("Hide communities", TeleConfig.HIDE_COMMUNITIES),
+                 toggle("Jump to the first message", TeleConfig.JUMP_TO_FIRST),

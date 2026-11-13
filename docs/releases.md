@@ -2,10 +2,11 @@
 
 every tele android release, newest first. release notes and the in-app what's new are made from `ci/changelog.json` and the published `tele-changelog.json`; this page keeps the same history readable in the repository. [features](../features.md) groups the same features by settings page. Follow [releasing](releasing.md#before-a-release) when writing the next changelog: new/fix sections keep categories one heading level below, and Telegram news appears only when the base changes from the latest published release.
 
-11 releases, 336 patches at [tele 11](https://github.com/gettele/android/releases/tag/v13.2.1-tele.11). the queue now has 342 patches on telegram 13.2.2. Upcoming changes live in `ci/changelog.json`; only published releases belong in this history.
+12 releases, 342 patches at [tele 12](https://github.com/gettele/android/releases/tag/v13.2.2-tele.12). the queue now has 343 patches on telegram 13.2.2. Upcoming changes live in `ci/changelog.json`; only published releases belong in this history.
 
 | release | base | published | patches |
 |---|---|---|---|
+| [tele 12 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.12) | 13.2.2 | 2026-11-13 | 342 |
 | [tele 11 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.11) | 13.2.1 | 2026-11-11 | 336 |
 | [tele 10 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.10) | 13.2.1 | 2026-11-08 | 309 |
 | [tele 9 · 13.1.1](https://github.com/gettele/android/releases/tag/v13.1.1-tele.9) | 13.1.1 | 2026-11-07 | 300 |
@@ -17,6 +18,37 @@ every tele android release, newest first. release notes and the in-app what's ne
 | [tele 3 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.3) | 13.0.3 | 2026-10-22 | 141 |
 | [tele 2 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.2) | 13.0.3 | 2026-10-21 | 127 |
 | [tele 1 · 13.0.2](https://github.com/gettele/android/releases/tag/v13.0.2-tele.1) | 13.0.2 | 2026-10-19 | 96 |
+
+### [tele 12 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.12)
+
+#### telegram android 13.2.2
+
+- interactive widgets run in an isolated process with no permissions, network or access to app files
+- reply to a channel with a direct message from the reply dialog
+- create a group with a suggested user in one action
+- a redesigned gift resale page
+- camera, screen sharing and video conversion fixes
+
+#### sending
+
+- hide the camera preview in the gallery so the photo picker starts with your photos
+- keep round-video zoom after releasing a pinch and continue from the same zoom with another pinch or the optional zoom buttons
+- compress the round-video zoom ruler so its full range fits one swipe
+
+#### interface
+
+- search only tele settings by their names and descriptions, then open and highlight the matching option
+- use transparent headers and stock glass back buttons throughout tele screens
+- polish gift studio settings, enlarge collection/model/backdrop/symbol pickers and correct collectible Card proportions and export height
+- restore missing Russian and Ukrainian translations in tele settings, menus and dialogs, including zoom controls and labels with counts
+- show one verification checkmark instead of two in forwarded message headers, for both Telegram and tele server verification
+- translate the Shot options sheet into Russian and Ukrainian
+
+#### privacy
+
+- hide login codes in service-chat notifications, including push previews and notification copy buttons, while keeping the code available in the chat
+- close the published widget-engine code-execution bugs: parser scope with correct empty-argument-scope encoding, direct-eval and variable-reference overflows, generator-prologue lifetime, constant-pool bounds and constructor patch writes, Map.clear, FinalizationRegistry.unregister, WeakRef and stale RegExp bytecode
+- redesign the ghost-mode settings preview with native Telegram chat bubbles, ticks, typing and story elements
 
 ### [tele 10 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.10)
 
