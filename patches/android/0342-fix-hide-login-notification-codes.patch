@@ -1,0 +1,264 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Fri, 13 Nov 2026 03:54:40 +0300
+Subject: [PATCH] fix: hide login notification codes
+
+---
+ .../messenger/NotificationsController.java    |  43 +++++-
+ .../messenger/NotificationsLoginCodeTest.java | 137 ++++++++++++++++++
+ 2 files changed, 177 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/NotificationsLoginCodeTest.java
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+index 29b25ee63..97018d96a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+@@ -537,6 +537,7 @@ public class NotificationsController extends BaseController implements Notificat
+         for (int a = 0; a < pushMessages.size(); a++) {
+             MessageObject messageObject = pushMessages.get(a);
+             long dialog_id = messageObject.getDialogId();
++            if (tele_isLoginCode(messageObject)) continue;
+             if (messageObject.isReactionPush ||
+                 messageObject.messageOwner.mentioned && messageObject.messageOwner.action instanceof TLRPC.TL_messageActionPinMessage ||
+                 DialogObject.isEncryptedDialog(dialog_id) ||
+@@ -556,6 +557,7 @@ public class NotificationsController extends BaseController implements Notificat
+             ArrayList<MessageObject> popupArray = new ArrayList<>();
+             for (int a = 0; a < pushMessages.size(); a++) {
+                 MessageObject messageObject = pushMessages.get(a);
++                if (tele_isLoginCode(messageObject)) continue;
+                 long dialog_id = messageObject.getDialogId();
+                 if (messageObject.messageOwner.mentioned && messageObject.messageOwner.action instanceof TLRPC.TL_messageActionPinMessage ||
+                         DialogObject.isEncryptedDialog(dialog_id) || messageObject.messageOwner.peer_id.channel_id != 0 && !messageObject.isSupergroup()) {
+@@ -992,6 +994,7 @@ public class NotificationsController extends BaseController implements Notificat
+ 
+     private int addToPopupMessages(ArrayList<MessageObject> popupArrayAdd, MessageObject messageObject, long dialogId, boolean isChannel, SharedPreferences preferences) {
+         if (messageObject.isStoryReactionPush) return 0;
++        if (tele_isLoginCode(messageObject)) return 0;
+         int popup = 0;
+         if (!DialogObject.isEncryptedDialog(dialogId)) {
+             if (preferences.getBoolean("custom_" + dialogId, false)) {
+@@ -1902,6 +1905,15 @@ public class NotificationsController extends BaseController implements Notificat
+         if (AndroidUtilities.needShowPasscode() || SharedConfig.isWaitingForPasscodeEnter) {
+             return LocaleController.getString(R.string.NotificationHiddenMessage);
+         }
++        if (tele_isLoginCode(messageObject)) {
++            if (preview != null) preview[0] = false;
++            if (userName != null) {
++                TLRPC.User sender = getMessagesController().getUser(messageObject.getDialogId());
++                userName[0] = !TextUtils.isEmpty(messageObject.localName) ? messageObject.localName
++                        : sender != null ? UserObject.getUserName(sender) : LocaleController.getString(R.string.ServiceNotifications);
++            }
++            return LocaleController.getString(R.string.NotificationHiddenMessage);
++        }
+         long dialogId = messageObject.messageOwner.dialog_id;
+         long chat_id = messageObject.messageOwner.peer_id.chat_id != 0 ? messageObject.messageOwner.peer_id.chat_id : messageObject.messageOwner.peer_id.channel_id;
+         long fromId = messageObject.messageOwner.peer_id.user_id;
+@@ -2567,6 +2579,26 @@ public class NotificationsController extends BaseController implements Notificat
+         return null;
+     }
+ 
++    private static final java.util.regex.Pattern tele_loginCodePattern = java.util.regex.Pattern.compile("(?<![0-9-])[0-9][0-9-]{3,6}[0-9](?![0-9-])");
++
++    private static boolean tele_isLoginCode(MessageObject messageObject) {
++        if (messageObject == null || messageObject.messageOwner == null) return false;
++        TLRPC.Message owner = messageObject.messageOwner;
++        long dialogId = messageObject.getDialogId();
++        if (owner.out || owner.from_scheduled || (dialogId != 777000 && dialogId != UserObject.VERIFY)) return false;
++        if (owner.message != null && tele_loginCodePattern.matcher(owner.message).find()) return true;
++        if (messageObject.messageText != null && tele_loginCodePattern.matcher(messageObject.messageText).find()) return true;
++        if (owner.reply_markup instanceof TLRPC.TL_replyInlineMarkup) {
++            for (TL_keyboard.KeyboardInlineButtonRow row : ((TLRPC.TL_replyInlineMarkup) owner.reply_markup).rows) {
++                for (TL_keyboard.KeyboardInlineButton button : row.buttons) {
++                    TL_keyboard.TL_inlineButtonTypeCopy copy = TLKeyboardHelper.getType(button, TL_keyboard.TL_inlineButtonTypeCopy.class);
++                    if (copy != null && copy.copy_text != null && tele_loginCodePattern.matcher(copy.copy_text).find()) return true;
++                }
++            }
++        }
++        return false;
++    }
++
+     char[] spoilerChars = new char[] {
+         '⠌', '⡢', '⢑', '⠨', '⠥', '⠮', '⡑'
+     };
+@@ -2598,6 +2630,11 @@ public class NotificationsController extends BaseController implements Notificat
+         if (AndroidUtilities.needShowPasscode() || SharedConfig.isWaitingForPasscodeEnter) {
+             return LocaleController.getString(R.string.YouHaveNewMessage);
+         }
++        if (tele_isLoginCode(messageObject)) {
++            if (preview != null) preview[0] = false;
++            text[0] = false;
++            return LocaleController.getString(R.string.NotificationHiddenMessage);
++        }
+         if (messageObject.isStoryPush || messageObject.isStoryMentionPush) {
+             return "!" + messageObject.messageOwner.message;
+         }
+@@ -4852,7 +4889,7 @@ public class NotificationsController extends BaseController implements Notificat
+             }
+ 
+             boolean hasCallback = false;
+-            if (!AndroidUtilities.needShowPasscode() && !SharedConfig.isWaitingForPasscodeEnter && lastMessageObject.getDialogId() == 777000) {
++            if (!AndroidUtilities.needShowPasscode() && !SharedConfig.isWaitingForPasscodeEnter && !tele_isLoginCode(lastMessageObject) && lastMessageObject.getDialogId() == 777000) {
+                 if (lastMessageObject.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup) {
+                     final TLRPC.TL_replyInlineMarkup replyInlineMarkup = (TLRPC.TL_replyInlineMarkup) lastMessageObject.messageOwner.reply_markup;
+                     ArrayList<TL_keyboard.KeyboardInlineButtonRow> rows = replyInlineMarkup.rows;
+@@ -5624,7 +5661,7 @@ public class NotificationsController extends BaseController implements Notificat
+                         messagingStyle.addMessage(message, ((long) messageObject.messageOwner.date) * 1000, person);
+                     }
+ 
+-                    if (dialogId == 777000 && messageObject.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup) {
++                    if (!tele_isLoginCode(messageObject) && dialogId == 777000 && messageObject.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup) {
+                         rows = ((TLRPC.TL_replyInlineMarkup) messageObject.messageOwner.reply_markup).rows;
+                         rowsMid = messageObject.getId();
+                     }
+@@ -5753,7 +5790,7 @@ public class NotificationsController extends BaseController implements Notificat
+ 
+             TL_keyboard.KeyboardInlineButton copybutton = null;
+             TL_keyboard.TL_inlineButtonTypeCopy copyButtonType = null;
+-            if (lastMessageObject != null && lastMessageObject.messageOwner != null && lastMessageObject.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup) {
++            if (!tele_isLoginCode(lastMessageObject) && lastMessageObject != null && lastMessageObject.messageOwner != null && lastMessageObject.messageOwner.reply_markup instanceof TLRPC.TL_replyInlineMarkup) {
+                 TLRPC.TL_replyInlineMarkup reply_markup = (TLRPC.TL_replyInlineMarkup) lastMessageObject.messageOwner.reply_markup;
+                 for (int i = 0; i < reply_markup.rows.size(); ++i) {
+                     for (int j = 0; j < reply_markup.rows.get(i).buttons.size(); ++j) {
+diff --git a/TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/NotificationsLoginCodeTest.java b/TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/NotificationsLoginCodeTest.java
+new file mode 100644
+index 000000000..f8caf6617
+--- /dev/null
++++ b/TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/NotificationsLoginCodeTest.java
+@@ -0,0 +1,137 @@
++package org.telegram.messenger;
++
++import org.junit.BeforeClass;
++import org.junit.Test;
++import org.telegram.tgnet.TLRPC;
++import org.telegram.tgnet.tl.TL_keyboard;
++
++import java.lang.reflect.Method;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++public class NotificationsLoginCodeTest {
++    @BeforeClass
++    public static void initializeApplication() throws Exception {
++        CountDownLatch ready = new CountDownLatch(1);
++        AndroidUtilities.runOnUIThread(() -> {
++            try {
++                ApplicationLoader.postInitApplication();
++            } finally {
++                ready.countDown();
++            }
++        });
++        assertTrue(ready.await(30, TimeUnit.SECONDS));
++    }
++
++    private MessageObject message(long dialogId, String body, boolean push) {
++        TLRPC.TL_message owner = new TLRPC.TL_message();
++        owner.id = 1;
++        owner.dialog_id = dialogId;
++        owner.peer_id = new TLRPC.TL_peerUser();
++        owner.peer_id.user_id = dialogId;
++        owner.from_id = owner.peer_id;
++        owner.message = body;
++        owner.date = (int) (System.currentTimeMillis() / 1000);
++        MessageObject message = new MessageObject(0, owner, body, "Telegram", null, false, false, false, false);
++        if (!push) message.localType = 0;
++        return message;
++    }
++
++    private boolean protectedMessage(MessageObject message) throws Exception {
++        Method method = NotificationsController.class.getDeclaredMethod("tele_isLoginCode", MessageObject.class);
++        method.setAccessible(true);
++        return (boolean) method.invoke(null, message);
++    }
++
++    private void assertHidden(MessageObject message) throws Exception {
++        NotificationsController controller = NotificationsController.getInstance(0);
++        String raw = message.messageOwner.message;
++        String hidden = LocaleController.getString(R.string.NotificationHiddenMessage);
++        String[] sender = {"previous sender"};
++        boolean[] preview = {true};
++        assertEquals(hidden, controller.getShortStringForMessage(message, sender, preview));
++        assertFalse(preview[0]);
++        assertEquals("Telegram", sender[0]);
++        Method summary = NotificationsController.class.getDeclaredMethod("getStringForMessage", MessageObject.class, boolean.class, boolean[].class, boolean[].class);
++        summary.setAccessible(true);
++        boolean[] hasText = {true};
++        preview[0] = true;
++        assertEquals(hidden, summary.invoke(controller, message, false, hasText, preview));
++        assertFalse(preview[0]);
++        assertFalse(hasText[0]);
++        assertEquals(raw, message.messageOwner.message);
++    }
++
++    @Test
++    public void serviceCodesAreHiddenWithoutLayoutOrSpoilerEntities() throws Exception {
++        for (long id : new long[]{777000, UserObject.VERIFY}) {
++            for (boolean push : new boolean[]{false, true}) {
++                for (String body : new String[]{"Login code: 86421", "Код входа: 86421", "Code: 864-210", "Code: 12345678"}) {
++                    MessageObject message = message(id, body, push);
++                    assertTrue(protectedMessage(message));
++                    assertHidden(message);
++                }
++            }
++        }
++    }
++
++    @Test
++    public void revealingSpoilersDoesNotRevealNotificationCodes() throws Exception {
++        MessageObject message = message(777000, "Login code: 86421", false);
++        message.spoilLoginCode();
++        message.isSpoilersRevealed = true;
++        assertHidden(message);
++    }
++
++    @Test
++    public void copyButtonCannotBypassHiddenText() throws Exception {
++        MessageObject message = message(777000, "Open the chat to sign in", true);
++        TLRPC.TL_replyInlineMarkup markup = new TLRPC.TL_replyInlineMarkup();
++        TL_keyboard.TL_keyboardInlineButtonRow row = new TL_keyboard.TL_keyboardInlineButtonRow();
++        TL_keyboard.TL_keyboardInlineButton button = new TL_keyboard.TL_keyboardInlineButton();
++        TL_keyboard.TL_inlineButtonTypeCopy copy = new TL_keyboard.TL_inlineButtonTypeCopy();
++        copy.copy_text = "86421";
++        button.text = "Copy 86421";
++        button.type = copy;
++        row.buttons.add(button);
++        markup.rows.add(row);
++        message.messageOwner.reply_markup = markup;
++        assertTrue(protectedMessage(message));
++        assertHidden(message);
++    }
++
++    @Test
++    public void popupPreviewCannotRevealCodes() throws Exception {
++        android.content.SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("login_code_notification_test", 0);
++        preferences.edit().putBoolean("custom_777000", true).putInt("popup_777000", 3).commit();
++        try {
++            java.util.ArrayList<MessageObject> popups = new java.util.ArrayList<>();
++            Method add = NotificationsController.class.getDeclaredMethod("addToPopupMessages", java.util.ArrayList.class, MessageObject.class, long.class, boolean.class, android.content.SharedPreferences.class);
++            add.setAccessible(true);
++            NotificationsController controller = NotificationsController.getInstance(0);
++            assertEquals(0, add.invoke(controller, popups, message(777000, "Login code: 86421", false), 777000L, false, preferences));
++            assertTrue(popups.isEmpty());
++            MessageObject ordinary = message(777000, "A new device signed in", false);
++            assertEquals(3, add.invoke(controller, popups, ordinary, 777000L, false, preferences));
++            assertEquals(ordinary, popups.get(0));
++        } finally {
++            preferences.edit().clear().commit();
++            ApplicationLoader.applicationContext.deleteSharedPreferences("login_code_notification_test");
++        }
++    }
++
++    @Test
++    public void ordinaryMessagesAndOtherChatsAreUnaffected() throws Exception {
++        assertFalse(protectedMessage(message(777000, "A new device signed in", false)));
++        assertFalse(protectedMessage(message(777000, "Telegram 13.2.2 is available", true)));
++        assertFalse(protectedMessage(message(12345, "Login code: 86421", true)));
++        MessageObject outgoing = message(777000, "86421", false);
++        outgoing.messageOwner.out = true;
++        assertFalse(protectedMessage(outgoing));
++        assertEquals("Login code: 86421", NotificationsController.getInstance(0).getShortStringForMessage(message(12345, "Login code: 86421", true), new String[1], new boolean[1]));
++    }
++}

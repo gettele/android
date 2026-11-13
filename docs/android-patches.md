@@ -243,6 +243,7 @@ Adds the on-device notification center and its Android integrations: tgnet flood
 | [`0215-feat-copied-values-in-center.patch`](../patches/android/0215-feat-copied-values-in-center.patch) |
 | [`0216-feat-server-notices.patch`](../patches/android/0216-feat-server-notices.patch) |
 | [`0217-feat-log-tele-toasts.patch`](../patches/android/0217-feat-log-tele-toasts.patch) |
+| [`0342-fix-hide-login-notification-codes.patch`](../patches/android/0342-fix-hide-login-notification-codes.patch) — hide service login codes and copy actions in system notifications and popup previews |
 
 <a id="a010"></a>
 
