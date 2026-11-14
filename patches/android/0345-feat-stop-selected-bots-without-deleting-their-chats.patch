@@ -1,0 +1,154 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 14 Nov 2026 11:53:58 +0300
+Subject: [PATCH] feat: stop selected bots without deleting their chats
+
+---
+ .../java/org/telegram/ui/DialogsActivity.java | 10 ++++
+ .../src/main/java/tele/helpers/StopBots.kt    | 47 +++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  3 ++
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  3 ++
+ .../src/main/res/values/strings_tele.xml      |  3 ++
+ 5 files changed, 66 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/StopBots.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 08f59d4ef..db1d0123e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -600,6 +600,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     @Nullable
+     private ActionBarMenuSubItem blockItem;
+     @Nullable
++    private ActionBarMenuSubItem teleStopBotsItem;
++    @Nullable
+     private ActionBarMenuSubItem teleRemoveMineItem;
+ 
+     private float additionalFloatingTranslation;
+@@ -723,6 +725,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     private final static int add_to_folder = 109;
+     private final static int remove_from_folder = 110;
+     private final static int community_ungroup = 111;
++    private final static int tele_stop_bots = 189;
+     private final static int tele_remove_mine = 190;
+ 
+     private final static int ARCHIVE_ITEM_STATE_PINNED = 0;
+@@ -4030,6 +4033,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                         undoView.showWithAction(did, UndoView.ACTION_REMOVED_FROM_FOLDER, neverShow.size(), filter, null, null);
+                     }
+                     hideActionMode(false);
++                } else if (id == tele_stop_bots) {
++                    tele.helpers.StopBots.confirm(DialogsActivity.this, currentAccount, selectedDialogs, () -> hideActionMode(false));
+                 } else if (id == tele_remove_mine) {
+                     if (selectedDialogs.size() == 1) {
+                         final long teleDialogId = selectedDialogs.get(0);
+@@ -6784,6 +6789,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         readItem = otherItem.addSubItem(read, R.drawable.msg_markread, LocaleController.getString(R.string.MarkAsRead));
+         clearItem = otherItem.addSubItem(clear, R.drawable.msg_clear, LocaleController.getString(R.string.ClearHistory));
+         blockItem = otherItem.addSubItem(block, R.drawable.msg_block, LocaleController.getString(R.string.BlockUser));
++        teleStopBotsItem = otherItem.addSubItem(tele_stop_bots, R.drawable.msg_block, LocaleController.getString(R.string.TeleStopBots));
++        teleStopBotsItem.setColorKeys(Theme.key_text_RedRegular, Theme.key_text_RedRegular);
+         teleRemoveMineItem = otherItem.addSubItem(tele_remove_mine, R.drawable.msg_delete, tele.helpers.RemoveMine.title());
+ 
+         muteItem.setOnLongClickListener(e -> {
+@@ -10051,6 +10058,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 blockItem.setVisibility(View.VISIBLE);
+             }
+         }
++        if (teleStopBotsItem != null) {
++            teleStopBotsItem.setVisibility(tele.helpers.StopBots.count(currentAccount, selectedDialogs) > 0 ? View.VISIBLE : View.GONE);
++        }
+         if (teleRemoveMineItem != null) {
+             teleRemoveMineItem.setVisibility(communitiesCount == 0 && selectedDialogs.size() == 1 && tele.helpers.RemoveMine.available(currentAccount, selectedDialogs.get(0), 0) ? View.VISIBLE : View.GONE);
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/StopBots.kt b/TMessagesProj/src/main/java/tele/helpers/StopBots.kt
+new file mode 100644
+index 000000000..3e84131e1
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/StopBots.kt
+@@ -0,0 +1,47 @@
++package tele.helpers
++
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.Components.AlertsCreator
++
++/** Stops the bots picked in the chat list: blocks the user and keeps the chat. */
++object StopBots {
++
++    @JvmStatic
++    fun canStop(account: Int, dialogId: Long): Boolean = bot(account, dialogId) != null
++
++    @JvmStatic
++    fun count(account: Int, dialogIds: List<Long>): Int = dialogIds.count { canStop(account, it) }
++
++    @JvmStatic
++    fun confirm(fragment: BaseFragment, account: Int, dialogIds: List<Long>, onStopped: Runnable) {
++        val bots = dialogIds.mapNotNull { bot(account, it) }.map { it.id }
++        if (bots.isEmpty()) return
++        AlertsCreator.showSimpleConfirmAlert(
++            fragment,
++            LocaleController.getString(R.string.TeleStopBots),
++            LocaleController.formatPluralString("TeleStopBotsTitle", bots.size),
++            LocaleController.getString(R.string.TeleStopBots),
++            true,
++            Runnable {
++                val controller = MessagesController.getInstance(account)
++                for (id in bots) controller.blockPeer(id)
++                onStopped.run()
++            }
++        )
++    }
++
++    private fun bot(account: Int, dialogId: Long): TLRPC.User? {
++        if (!DialogObject.isUserDialog(dialogId)) return null
++        val controller = MessagesController.getInstance(account)
++        if (controller.blockePeers.indexOfKey(dialogId) >= 0) return null
++        val user = controller.getUser(dialogId) ?: return null
++        if (!user.bot || user.self || UserObject.isDeleted(user) || MessagesController.isSupportUser(user)) return null
++        return user
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 3dd4ba134..d5f003450 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1661,5 +1661,8 @@ object TeleTextRu {
+         "TeleShotSkipped_other" to "Пропущено сообщений: %1\$d",
+         "Turn off the text sending animation" to "Отключить анимацию отправки текста",
+         "Messages appear in place; media keeps its animation." to "Сообщения появляются на месте; анимация медиа остаётся.",
++        "TeleStopBots" to "Остановить ботов",
++        "TeleStopBotsTitle_one" to "Остановить %1\$d бота?",
++        "TeleStopBotsTitle_other" to "Остановить %1\$d ботов?",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index db8eac82a..556ba3fa6 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1661,5 +1661,8 @@ object TeleTextUk {
+         "TeleShotSkipped_other" to "Пропущено повідомлень: %1\$d",
+         "Turn off the text sending animation" to "Вимкнути анімацію надсилання тексту",
+         "Messages appear in place; media keeps its animation." to "Повідомлення з'являються на місці; анімація медіа лишається.",
++        "TeleStopBots" to "Зупинити ботів",
++        "TeleStopBotsTitle_one" to "Зупинити %1\$d бота?",
++        "TeleStopBotsTitle_other" to "Зупинити %1\$d ботів?",
+     )
+ }
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 266204f65..968f5f714 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -350,4 +350,7 @@
+     <string name="TeleGifAsVideoDownload">Download the GIF first.</string>
+     <string name="TeleShotSkipped_one">%1$d message skipped</string>
+     <string name="TeleShotSkipped_other">%1$d messages skipped</string>
++    <string name="TeleStopBots">Stop bots</string>
++    <string name="TeleStopBotsTitle_one">Stop %1$d bot?</string>
++    <string name="TeleStopBotsTitle_other">Stop %1$d bots?</string>
+ </resources>
