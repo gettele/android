@@ -218,7 +218,7 @@ settings → tele → messages.
 | feature | what it does | where | default | android | desktop |
 |---|---|---|---|---|---|
 | wrap a selection in quotes and brackets | typing a quote, bracket, backtick or `**` around a selection wraps it, and the same key takes the markers off again | tele → messages → composer | off | [0348](patches/android/0348-feat-add-optional-composer-editing-helpers.patch) | [332](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0332-feat-add-optional-composer-editing-helpers.patch) |
-| close brackets and quotes as you type | an opening bracket or quote adds its pair, a typed closing one steps over it, and backspace removes an untouched pair in one step | tele → messages → composer | off | [0348](patches/android/0348-feat-add-optional-composer-editing-helpers.patch) | [332](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0332-feat-add-optional-composer-editing-helpers.patch) |
+| close brackets and quotes as you type | an opening bracket or quote adds its pair, a typed closing one steps over it, three backticks open a code block with its closing fence, and backspace removes an untouched pair in one step | tele → messages → composer | off | [0348](patches/android/0348-feat-add-optional-composer-editing-helpers.patch) | [332](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0332-feat-add-optional-composer-editing-helpers.patch) |
 | keep indentation on a new line | a new line starts with the leading spaces or tabs of the line you were on | tele → messages → composer | off | [0348](patches/android/0348-feat-add-optional-composer-editing-helpers.patch) | [332](https://github.com/nitreojs/tele/blob/main/patches/tdesktop/0332-feat-add-optional-composer-editing-helpers.patch) |
 
 ## sending

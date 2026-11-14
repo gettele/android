@@ -6,11 +6,11 @@ Subject: [PATCH] feat: add optional composer editing helpers
 ---
  .../ui/Components/EditTextBoldCursor.java     |   8 +
  .../src/main/java/tele/TeleConfig.kt          |   8 +
- .../main/java/tele/helpers/ComposerEditing.kt | 274 ++++++++++++++++++
+ .../main/java/tele/helpers/ComposerEditing.kt | 315 ++++++++++++++++++
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   7 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   7 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   8 +
- 6 files changed, 312 insertions(+)
+ 6 files changed, 353 insertions(+)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
@@ -40,7 +40,7 @@ index b07777664..4e902cd97 100644
  
      public void useAnimatedTextDrawable() {
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-index 7657449a7..7e48294de 100644
+index 2eab0b935..229784d36 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 @@ -500,7 +500,9 @@ object TeleConfig {
@@ -53,10 +53,10 @@ index 7657449a7..7e48294de 100644
      val MUSIC_VOLUME = IntItem("music_volume", 100)
      @JvmField
      val VIDEO_VOLUME = IntItem("video_volume", 100)
-@@ -508,6 +510,12 @@ object TeleConfig {
-     val VOICE_VOLUME = IntItem("voice_volume", 100)
-     @JvmField
+@@ -510,6 +512,12 @@ object TeleConfig {
      val ROUND_VOLUME = IntItem("round_volume", 100)
+     @JvmField
+     val INLINE_VOLUME_CONTROLS = BoolItem("inline_volume_controls", false)
 +    @JvmField
 +    val COMPOSER_WRAP = BoolItem("composer_wrap", false)
 +    @JvmField
@@ -68,10 +68,10 @@ index 7657449a7..7e48294de 100644
  
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt b/TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt
 new file mode 100644
-index 000000000..cc509973c
+index 000000000..22362bd11
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,315 @@
 +package tele.helpers
 +
 +import android.text.Editable
@@ -94,7 +94,7 @@ index 000000000..cc509973c
 +    '`' to ("`" to "`"),
 +    '*' to ("**" to "**")
 +)
-+private val composerClose = mapOf('(' to ')', '[' to ']', '{' to '}', '"' to '"', '\'' to '\'', '`' to '`')
++private val composerClose = mapOf('(' to ')', '[' to ']', '{' to '}', '"' to '"', '\'' to '\'')
 +private const val COMPOSER_PAIR_LIMIT = 8
 +private const val COMPOSER_CLOSINGS = ")]}"
 +
@@ -213,6 +213,9 @@ index 000000000..cc509973c
 +                    field.setSelection(skipAt)
 +                    return
 +                }
++            }
++            if (typed == '`' && TeleConfig.COMPOSER_AUTOPAIRS.value && completeFence(field, s, start)) {
++                return
 +            }
 +            if (typed != null) {
 +                val closing = composerClose[typed]
@@ -346,57 +349,95 @@ index 000000000..cc509973c
 +    }
 +    return true
 +}
++
++/** The third backtick of a fence at the end of a line opens a code block and its closer. */
++private fun completeFence(field: EditText, s: Editable, start: Int): Boolean {
++    val state = composerStates[field] ?: return false
++    if (start < 2) return false
++    if (s[start - 1] != '`' || s[start - 2] != '`') return false
++    if (start > 2 && (s[start - 3] == '`' || s[start - 3] == '\\')) return false
++    val next = if (start + 1 < s.length) s[start + 1] else null
++    if (next != null && next != '\n') return false
++    if (insideFence(s, start)) return false
++    field.beginBatchEdit()
++    state.internal = true
++    try {
++        s.insert(start + 1, "\n\n```")
++    } finally {
++        state.internal = false
++        field.endBatchEdit()
++    }
++    state.pairs.clear()
++    field.setSelection(start + 2)
++    return true
++}
++
++/** A third backtick inside an unclosed fence is its closer, not an opener. */
++private fun insideFence(s: CharSequence, position: Int): Boolean {
++    var inside = false
++    var i = 0
++    while (i < position - 2) {
++        if (s[i] != '`' || s[i + 1] != '`' || s[i + 2] != '`' || (i > 0 && s[i - 1] == '\\')) {
++            i++
++            continue
++        }
++        inside = !inside
++        while (i + 1 < position - 2 && s[i + 1] == '`') i++
++        i++
++    }
++    return inside
++}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
-index 79ac7b02c..c9583732a 100644
+index 34a9b809a..0af3ed43e 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
-@@ -1306,6 +1306,13 @@ object TeleTextRu {
-         "app folder" to "папка приложения",
-         "Settings, privacy, ids" to "Настройки, приватность, ID",
+@@ -1308,6 +1308,13 @@ object TeleTextRu {
          "log" to "журнал",
+         "Volume controls in the players" to "Регуляторы громкости в плеерах",
+         "Adds a volume button to the video, music and voice players that sets each media type's level directly." to "Добавляет кнопку громкости в плееры видео, музыки и голосовых, чтобы задавать уровень каждого типа медиа напрямую.",
 +        "Composer" to "Поле сообщения",
 +        "Wrap selected text in quotes and brackets" to "Обрамлять выделение кавычками и скобками",
 +        "Typing a quote, bracket, backtick or ** around a selection wraps it, and the same key takes the markers off again." to "Кавычки, скобки, обратная кавычка или ** вокруг выделения обрамляют его, а то же нажатие снимает обрамление.",
 +        "Close brackets and quotes as you type" to "Закрывать скобки и кавычки при вводе",
-+        "An opening bracket or quote adds its pair, a typed closing one steps over it, and backspace removes an untouched pair at once." to "Открывающая скобка или кавычка ставит пару, закрывающая переступает через неё, а Backspace удаляет нетронутую пару сразу.",
++        "An opening bracket or quote adds its pair, a typed closing one steps over it, three backticks open a code block, and backspace removes an untouched pair at once." to "Открывающая скобка или кавычка ставит пару, закрывающая переступает через неё, три обратных апострофа открывают блок кода, а Backspace удаляет нетронутую пару сразу.",
 +        "Keep indentation on a new line" to "Сохранять отступ на новой строке",
 +        "A new line starts with the leading spaces or tabs of the line you were on." to "Новая строка начинается с отступов строки, на которой вы были.",
  )
  
      /** The same texts by android resource name: stock code asks LocaleController for them. */
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
-index 2d5b853f9..ebf86b47d 100644
+index 03c560aac..6f2292142 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
-@@ -1306,6 +1306,13 @@ object TeleTextUk {
-         "app folder" to "папка застосунку",
-         "Settings, privacy, ids" to "Налаштування, приватність, ID",
+@@ -1308,6 +1308,13 @@ object TeleTextUk {
          "log" to "журнал",
+         "Volume controls in the players" to "Регулятори гучності в плеєрах",
+         "Adds a volume button to the video, music and voice players that sets each media type's level directly." to "Додає кнопку гучності в плеєри відео, музики й голосових, щоб задавати рівень кожного типу медіа напряму.",
 +        "Composer" to "Поле повідомлення",
 +        "Wrap selected text in quotes and brackets" to "Обрамляти виділення лапками й дужками",
 +        "Typing a quote, bracket, backtick or ** around a selection wraps it, and the same key takes the markers off again." to "Лапки, дужки, зворотний апостроф або ** навколо виділення обрамляють його, а те саме натискання знімає обрамлення.",
 +        "Close brackets and quotes as you type" to "Закривати дужки й лапки під час введення",
-+        "An opening bracket or quote adds its pair, a typed closing one steps over it, and backspace removes an untouched pair at once." to "Відкривальна дужка чи лапка ставить пару, закривальна переступає через неї, а Backspace видаляє недоторкану пару одразу.",
++        "An opening bracket or quote adds its pair, a typed closing one steps over it, three backticks open a code block, and backspace removes an untouched pair at once." to "Відкривальна дужка чи лапка ставить пару, закривальна переступає через неї, три зворотні апострофи відкривають блок коду, а Backspace видаляє недоторкану пару одразу.",
 +        "Keep indentation on a new line" to "Зберігати відступ у новому рядку",
 +        "A new line starts with the leading spaces or tabs of the line you were on." to "Новий рядок починається з відступів рядка, у якому ви були.",
  )
  
      /** The same texts by android resource name: stock code asks LocaleController for them. */
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index 2882a5c89..ffab3e9b8 100644
+index e4ddd162f..77f286c07 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-@@ -1284,6 +1284,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
-             "Video volume" to "Louder or quieter videos on this device; 100% is the system volume.",
+@@ -1285,6 +1285,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
              "Voice message volume" to "Louder or quieter voice messages on this device; 100% is the system volume.",
              "Round video volume" to "Louder or quieter round videos on this device; 100% is the system volume.",
+             "Volume controls in the players" to "Adds a volume button to the video, music and voice players that sets each media type's level directly.",
 +            "Wrap selected text in quotes and brackets" to "Typing a quote, bracket, backtick or ** around a selection wraps it, and the same key takes the markers off again.",
-+            "Close brackets and quotes as you type" to "An opening bracket or quote adds its pair, a typed closing one steps over it, and backspace removes an untouched pair at once.",
++            "Close brackets and quotes as you type" to "An opening bracket or quote adds its pair, a typed closing one steps over it, three backticks open a code block, and backspace removes an untouched pair at once.",
 +            "Keep indentation on a new line" to "A new line starts with the leading spaces or tabs of the line you were on.",
          )
  
          private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
-@@ -1626,6 +1629,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -1628,6 +1631,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
                  Row(TYPE_SHADOW),
                  Row(TYPE_HEADER, "Maps"),
                  Row(TYPE_VALUE, "Map service", value = tele.helpers.MapService.label(TeleConfig.MAP_SERVICE.value), item = TeleConfig.MAP_SERVICE),
