@@ -1,0 +1,358 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 14 Nov 2026 12:05:33 +0300
+Subject: [PATCH] feat: set separate volumes for each media type
+
+---
+ .../telegram/messenger/MediaController.java   | 16 +++++++
+ .../video/VideoPlayerHolderBase.java          |  1 +
+ .../telegram/ui/Components/VideoPlayer.java   | 13 +++--
+ .../java/org/telegram/ui/PhotoViewer.java     |  1 +
+ .../org/telegram/ui/SecretMediaViewer.java    |  1 +
+ .../org/telegram/ui/SecretVoicePlayer.java    |  1 +
+ .../src/main/java/tele/TeleConfig.kt          |  7 +++
+ .../main/java/tele/helpers/MediaVolumes.kt    | 48 +++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  9 ++++
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  9 ++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 43 +++++++++++++++++
+ 11 files changed, 145 insertions(+), 4 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MediaVolumes.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
+index 494c029e3..80b0d3fbe 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
+@@ -1696,6 +1696,20 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+         return videoPlayer;
+     }
+ 
++    public void tele_refreshVolume() {
++        if (playingMessageObject == null) {
++            return;
++        }
++        final float gain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.forMessage(playingMessageObject));
++        if (audioPlayer != null) {
++            audioPlayer.tele_volumeGain = gain;
++        }
++        if (videoPlayer != null) {
++            videoPlayer.tele_volumeGain = gain;
++        }
++        setPlayerVolume();
++    }
++
+     private void startProgressTimer(final MessageObject currentPlayingMessageObject) {
+         synchronized (progressTimerSync) {
+             if (progressTimer != null) {
+@@ -3832,6 +3846,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+                 clearPlaylist();
+             }
+             videoPlayer = new VideoPlayer();
++            videoPlayer.tele_volumeGain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.forMessage(messageObject));
+             videoPlayer.setLooping(silent);
+             int tag = ++playerNum;
+             videoPlayer.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
+@@ -3985,6 +4000,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
+             }
+             try {
+                 audioPlayer = new VideoPlayer();
++                audioPlayer.tele_volumeGain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.forMessage(messageObject));
+                 int tag = ++playerNum;
+                 audioPlayer.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
+                     @Override
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/video/VideoPlayerHolderBase.java b/TMessagesProj/src/main/java/org/telegram/messenger/video/VideoPlayerHolderBase.java
+index 1ca3bd1aa..9f28e24c8 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/video/VideoPlayerHolderBase.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/video/VideoPlayerHolderBase.java
+@@ -199,6 +199,7 @@ public class VideoPlayerHolderBase {
+             videoPlayer.releasePlayer(true);
+         }
+         videoPlayer = new VideoPlayer(false, audioDisabled);
++        videoPlayer.tele_volumeGain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.VIDEO);
+         videoPlayer.allowMultipleInstances = allowMultipleInstances;
+         videoPlayer.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
+             @Override
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/VideoPlayer.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/VideoPlayer.java
+index 48f421fbc..355f16f88 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/VideoPlayer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/VideoPlayer.java
+@@ -120,6 +120,8 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
+     private DispatchQueue workerQueue;
+     private boolean isStory;
+ 
++    public float tele_volumeGain = 1f;
++
+     public boolean createdWithAudioTrack() {
+         return !audioDisabled;
+     }
+@@ -263,6 +265,7 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
+                 builder.setLooper(looper);
+             }
+             player = builder.build();
++            player.setVolume(tele_volumeGain);
+             player.setAudioAttributes(new AudioAttributes.Builder()
+                 .setUsage(C.USAGE_MEDIA)
+                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+@@ -290,6 +293,7 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
+                     .setUsage(C.USAGE_MEDIA)
+                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                     .build(), false);
++                audioPlayer.setVolume(tele_volumeGain);
+                 audioPlayer.addListener(new Player.Listener() {
+ 
+                     @Override
+@@ -1521,11 +1525,12 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
+     }
+ 
+     public void setMute(boolean value) {
++        final float volume = value ? 0.0f : tele_volumeGain;
+         if (player != null) {
+-            player.setVolume(value ? 0.0f : 1.0f);
++            player.setVolume(volume);
+         }
+         if (audioPlayer != null) {
+-            audioPlayer.setVolume(value ? 0.0f : 1.0f);
++            audioPlayer.setVolume(volume);
+         }
+     }
+ 
+@@ -1536,10 +1541,10 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
+ 
+     public void setVolume(float volume) {
+         if (player != null) {
+-            player.setVolume(volume);
++            player.setVolume(volume * tele_volumeGain);
+         }
+         if (audioPlayer != null) {
+-            audioPlayer.setVolume(volume);
++            audioPlayer.setVolume(volume * tele_volumeGain);
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+index 5bce4cf08..6d2ebeed5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
+@@ -10565,6 +10565,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                 videoPlayer.setOnQualityChangeListener(this::updateQualityItems);
+                 newPlayerCreated = true;
+             }
++            videoPlayer.tele_volumeGain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.forMessage(currentMessageObject));
+             if (videoTextureView != null) {
+                 videoPlayer.setTextureView(videoTextureView);
+             } else if (videoSurfaceView != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
+index fab72c6b3..e32ac9d4a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
+@@ -564,6 +564,7 @@ public class SecretMediaViewer implements NotificationCenter.NotificationCenterD
+                     playButtonDrawable.setPause(false);
+                 }
+             };
++            videoPlayer.tele_volumeGain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.VIDEO);
+             videoPlayer.setTextureView(videoTextureView);
+             videoPlayer.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
+                 @Override
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java b/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
+index 8f351f4bb..80fc11f41 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/SecretVoicePlayer.java
+@@ -564,6 +564,7 @@ public class SecretVoicePlayer extends Dialog {
+                 return;
+             }
+             player = new VideoPlayer();
++            player.tele_volumeGain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.VOICE);
+             player.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
+                 @Override
+                 public void onStateChanged(boolean playWhenReady, int playbackState) {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 5bd29dbfa..7657449a7 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -501,6 +501,13 @@ object TeleConfig {
+     @JvmField
+     val NO_SEND_ANIMATION = BoolItem("no_send_animation", false)
+     val PAD_PHOTO_SHAPES = BoolItem("pad_photo_shapes", false)
++    val MUSIC_VOLUME = IntItem("music_volume", 100)
++    @JvmField
++    val VIDEO_VOLUME = IntItem("video_volume", 100)
++    @JvmField
++    val VOICE_VOLUME = IntItem("voice_volume", 100)
++    @JvmField
++    val ROUND_VOLUME = IntItem("round_volume", 100)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MediaVolumes.kt b/TMessagesProj/src/main/java/tele/helpers/MediaVolumes.kt
+new file mode 100644
+index 000000000..0db8453df
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MediaVolumes.kt
+@@ -0,0 +1,48 @@
++package tele.helpers
++
++import org.telegram.messenger.MediaController
++import org.telegram.messenger.MessageObject
++import tele.IntItem
++import tele.TeleConfig
++
++/** Per-media software gain (desktop 0333): the system stream keeps its level, each media class scales its own. */
++object MediaVolumes {
++    const val MUSIC = 0
++    const val VIDEO = 1
++    const val VOICE = 2
++    const val ROUND = 3
++
++    @JvmStatic
++    fun item(type: Int): IntItem = when (type) {
++        MUSIC -> TeleConfig.MUSIC_VOLUME
++        VIDEO -> TeleConfig.VIDEO_VOLUME
++        VOICE -> TeleConfig.VOICE_VOLUME
++        else -> TeleConfig.ROUND_VOLUME
++    }
++
++    @JvmStatic
++    fun level(type: Int): Int = item(type).value.coerceIn(0, 100)
++
++    /** Stock plays at 100% and the multiplier never raises it. */
++    @JvmStatic
++    fun gain(type: Int): Float = level(type) / 100f
++
++    @JvmStatic
++    fun percent(type: Int): String = "${level(type)}%"
++
++    @JvmStatic
++    fun set(type: Int, value: Int) {
++        TeleConfig.set(item(type), value.coerceIn(0, 100))
++        MediaController.getInstance().tele_refreshVolume()
++    }
++
++    /** The document decides: a round video plays on the video player but has its own level. */
++    @JvmStatic
++    fun forMessage(message: MessageObject?): Int = when {
++        message == null -> VIDEO
++        message.isRoundVideo -> ROUND
++        message.isVoice -> VOICE
++        message.isMusic -> MUSIC
++        else -> VIDEO
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 2c06ac00a..79ac7b02c 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1666,5 +1666,14 @@ object TeleTextRu {
+         "TeleStopBotsTitle_other" to "Остановить %1\$d ботов?",
+         "Pad extreme image shapes" to "Добавлять поля для крайних пропорций",
+         "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Добавляет чёрные поля, чтобы очень узкие или широкие фото отправлялись как фото; исходный файл не меняется.",
++        "Playback" to "Воспроизведение",
++        "Music volume" to "Громкость музыки",
++        "Video volume" to "Громкость видео",
++        "Voice message volume" to "Громкость голосовых сообщений",
++        "Round video volume" to "Громкость кружков",
++        "Louder or quieter music on this device; 100% is the system volume." to "Громче или тише музыка на этом устройстве; 100% — системная громкость.",
++        "Louder or quieter videos on this device; 100% is the system volume." to "Громче или тише видео на этом устройстве; 100% — системная громкость.",
++        "Louder or quieter voice messages on this device; 100% is the system volume." to "Громче или тише голосовые сообщения на этом устройстве; 100% — системная громкость.",
++        "Louder or quieter round videos on this device; 100% is the system volume." to "Громче или тише кружки на этом устройстве; 100% — системная громкость.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index ede853016..2d5b853f9 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1666,5 +1666,14 @@ object TeleTextUk {
+         "TeleStopBotsTitle_other" to "Зупинити %1\$d ботів?",
+         "Pad extreme image shapes" to "Додавати поля для крайніх пропорцій",
+         "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Додає чорні поля, щоб дуже вузькі чи широкі фото надсилалися як фото; вихідний файл не змінюється.",
++        "Playback" to "Відтворення",
++        "Music volume" to "Гучність музики",
++        "Video volume" to "Гучність відео",
++        "Voice message volume" to "Гучність голосових повідомлень",
++        "Round video volume" to "Гучність кружечків",
++        "Louder or quieter music on this device; 100% is the system volume." to "Гучніше або тихіше музика на цьому пристрої; 100% — системна гучність.",
++        "Louder or quieter videos on this device; 100% is the system volume." to "Гучніше або тихіше відео на цьому пристрої; 100% — системна гучність.",
++        "Louder or quieter voice messages on this device; 100% is the system volume." to "Гучніше або тихіше голосові повідомлення на цьому пристрої; 100% — системна гучність.",
++        "Louder or quieter round videos on this device; 100% is the system volume." to "Гучніше або тихіше кружечки на цьому пристрої; 100% — системна гучність.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index e3e2b0220..2882a5c89 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -26,6 +26,7 @@ import org.telegram.ui.Components.UItem
+ import org.telegram.ui.Components.UniversalAdapter
+ import org.telegram.ui.Components.UniversalRecyclerView
+ import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.SeekBarView
+ import tele.Item
+ import tele.TeleHooks
+ import tele.TeleConfig
+@@ -185,6 +186,34 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         showDialog(builder.create())
+     }
+ 
++    private fun chooseVolume(type: Int, title: String) {
++        val activity = parentActivity ?: return
++        val holder = android.widget.LinearLayout(activity)
++        holder.orientation = android.widget.LinearLayout.VERTICAL
++        holder.setPadding(AndroidUtilities.dp(24f), AndroidUtilities.dp(4f), AndroidUtilities.dp(24f), 0)
++        val label = TextView(activity)
++        label.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++        label.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourceProvider))
++        label.gravity = android.view.Gravity.CENTER
++        label.text = tele.helpers.MediaVolumes.percent(type)
++        holder.addView(label, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++        val bar = SeekBarView(activity, resourceProvider)
++        bar.setProgress(tele.helpers.MediaVolumes.level(type) / 100f, false)
++        bar.setDelegate(object : SeekBarView.SeekBarViewDelegate {
++            override fun onSeekBarDrag(stop: Boolean, progress: Float) {
++                val level = Math.round(progress * 100f).coerceIn(0, 100)
++                label.text = "$level%"
++                tele.helpers.MediaVolumes.set(type, level)
++            }
++        })
++        holder.addView(bar, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 44, 0f, 8f, 0f, 0f))
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle(lc(title))
++        builder.setView(holder)
++        builder.setPositiveButton(LocaleController.getString(R.string.Done)) { _, _ -> refresh() }
++        showDialog(builder.create())
++    }
++
+     private fun chooseSilentVideoAs() {
+         val activity = parentActivity ?: return
+         val values = arrayOf("", "video")
+@@ -668,6 +697,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             row.type == TYPE_VALUE && row.item == TeleConfig.INVISIBLE_NAMES_FALLBACK -> chooseInvisibleFallback()
+             row.type == TYPE_VALUE && row.item == TeleConfig.INVISIBLE_NAMES_PHRASE -> chooseInvisiblePhrase()
+             row.type == TYPE_VALUE && row.item == TeleConfig.TITLE_TEMPLATE -> TeleTitleEditor.show(this) { refresh() }
++            row.type == TYPE_VALUE && row.item == TeleConfig.MUSIC_VOLUME -> chooseVolume(tele.helpers.MediaVolumes.MUSIC, "Music volume")
++            row.type == TYPE_VALUE && row.item == TeleConfig.VIDEO_VOLUME -> chooseVolume(tele.helpers.MediaVolumes.VIDEO, "Video volume")
++            row.type == TYPE_VALUE && row.item == TeleConfig.VOICE_VOLUME -> chooseVolume(tele.helpers.MediaVolumes.VOICE, "Voice message volume")
++            row.type == TYPE_VALUE && row.item == TeleConfig.ROUND_VOLUME -> chooseVolume(tele.helpers.MediaVolumes.ROUND, "Round video volume")
+             row.type == TYPE_LINK || row.type == TYPE_LINK_ICON -> when (row.mode) {
+                 TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
+                 TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
+@@ -1247,6 +1280,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Unlock with biometrics" to "Fingerprint or face first; the password stays as the fallback.",
+             "Turn off the text sending animation" to "Messages appear in place; media keeps its animation.",
+             "Pad extreme image shapes" to "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched.",
++            "Music volume" to "Louder or quieter music on this device; 100% is the system volume.",
++            "Video volume" to "Louder or quieter videos on this device; 100% is the system volume.",
++            "Voice message volume" to "Louder or quieter voice messages on this device; 100% is the system volume.",
++            "Round video volume" to "Louder or quieter round videos on this device; 100% is the system volume.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1443,6 +1480,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Lists"),
+                 toggle("Filter lists by date", TeleConfig.LIST_DATES),
+                 toggle("Search and export star transactions", TeleConfig.STAR_TRANSACTIONS),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Playback"),
++                Row(TYPE_VALUE, "Music volume", subtitle = DESCRIPTIONS["Music volume"], value = tele.helpers.MediaVolumes.percent(tele.helpers.MediaVolumes.MUSIC), item = TeleConfig.MUSIC_VOLUME),
++                Row(TYPE_VALUE, "Video volume", subtitle = DESCRIPTIONS["Video volume"], value = tele.helpers.MediaVolumes.percent(tele.helpers.MediaVolumes.VIDEO), item = TeleConfig.VIDEO_VOLUME),
++                Row(TYPE_VALUE, "Voice message volume", subtitle = DESCRIPTIONS["Voice message volume"], value = tele.helpers.MediaVolumes.percent(tele.helpers.MediaVolumes.VOICE), item = TeleConfig.VOICE_VOLUME),
++                Row(TYPE_VALUE, "Round video volume", subtitle = DESCRIPTIONS["Round video volume"], value = tele.helpers.MediaVolumes.percent(tele.helpers.MediaVolumes.ROUND), item = TeleConfig.ROUND_VOLUME),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_CHATS -> listOf(
