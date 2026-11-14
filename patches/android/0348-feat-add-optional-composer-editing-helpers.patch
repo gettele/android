@@ -1,0 +1,410 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 14 Nov 2026 12:06:37 +0300
+Subject: [PATCH] feat: add optional composer editing helpers
+
+---
+ .../ui/Components/EditTextBoldCursor.java     |   8 +
+ .../src/main/java/tele/TeleConfig.kt          |   8 +
+ .../main/java/tele/helpers/ComposerEditing.kt | 274 ++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   7 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   7 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   8 +
+ 6 files changed, 312 insertions(+)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
+index b07777664..4e902cd97 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/EditTextBoldCursor.java
+@@ -55,6 +55,8 @@ import android.view.MotionEvent;
+ import android.view.View;
+ import android.view.ViewTreeObserver;
+ import android.view.accessibility.AccessibilityNodeInfo;
++import android.view.inputmethod.EditorInfo;
++import android.view.inputmethod.InputConnection;
+ import android.widget.TextView;
+ 
+ import org.telegram.messenger.AndroidUtilities;
+@@ -220,6 +222,12 @@ public class EditTextBoldCursor extends EditTextEffects {
+             setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+         }
+         init();
++        tele.helpers.ComposerEditing.attach(this);
++    }
++
++    @Override
++    public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
++        return tele.helpers.ComposerEditing.hook(this, super.onCreateInputConnection(outAttrs));
+     }
+ 
+     public void useAnimatedTextDrawable() {
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 7657449a7..7e48294de 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -500,7 +500,9 @@ object TeleConfig {
+     val SCRIPTING = BoolItem("scripting", false)
+     @JvmField
+     val NO_SEND_ANIMATION = BoolItem("no_send_animation", false)
++    @JvmField
+     val PAD_PHOTO_SHAPES = BoolItem("pad_photo_shapes", false)
++    @JvmField
+     val MUSIC_VOLUME = IntItem("music_volume", 100)
+     @JvmField
+     val VIDEO_VOLUME = IntItem("video_volume", 100)
+@@ -508,6 +510,12 @@ object TeleConfig {
+     val VOICE_VOLUME = IntItem("voice_volume", 100)
+     @JvmField
+     val ROUND_VOLUME = IntItem("round_volume", 100)
++    @JvmField
++    val COMPOSER_WRAP = BoolItem("composer_wrap", false)
++    @JvmField
++    val COMPOSER_AUTOPAIRS = BoolItem("composer_autopairs", false)
++    @JvmField
++    val COMPOSER_AUTOINDENT = BoolItem("composer_autoindent", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt b/TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt
+new file mode 100644
+index 000000000..cc509973c
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ComposerEditing.kt
+@@ -0,0 +1,274 @@
++package tele.helpers
++
++import android.text.Editable
++import android.text.Spannable
++import android.text.TextWatcher
++import android.view.inputmethod.BaseInputConnection
++import android.view.inputmethod.InputConnection
++import android.view.inputmethod.InputConnectionWrapper
++import android.widget.EditText
++import tele.TeleConfig
++import java.lang.ref.WeakReference
++import java.util.WeakHashMap
++
++private val composerWrap = mapOf(
++    '"' to ("\"" to "\""),
++    '\'' to ("'" to "'"),
++    '(' to ("(" to ")"),
++    '[' to ("[" to "]"),
++    '{' to ("{" to "}"),
++    '`' to ("`" to "`"),
++    '*' to ("**" to "**")
++)
++private val composerClose = mapOf('(' to ')', '[' to ']', '{' to '}', '"' to '"', '\'' to '\'', '`' to '`')
++private const val COMPOSER_PAIR_LIMIT = 8
++private const val COMPOSER_CLOSINGS = ")]}"
++
++private class ComposerPair(
++    var open: Int,
++    var close: Int,
++    val opening: Char,
++    val closing: Char,
++    var untouched: Boolean
++)
++
++private class ComposerState(field: EditText) {
++    val field = WeakReference(field)
++    var internal = false
++    val pairs = ArrayList<ComposerPair>()
++}
++
++private val composerStates = WeakHashMap<EditText, ComposerState>()
++
++private fun composerEnabled(): Boolean = TeleConfig.COMPOSER_WRAP.value ||
++    TeleConfig.COMPOSER_AUTOPAIRS.value || TeleConfig.COMPOSER_AUTOINDENT.value
++
++private fun composerComposing(text: CharSequence): Boolean = text is Spannable &&
++    BaseInputConnection.getComposingSpanStart(text) < BaseInputConnection.getComposingSpanEnd(text)
++
++/**
++ * Optional composer helpers: wrapping a selection, closing brackets and quotes, keeping indentation.
++ * Every helper inserts plain text through the editable and is off unless its toggle is on.
++ */
++object ComposerEditing {
++    @JvmStatic
++    fun attach(field: EditText) {
++        if (composerStates.containsKey(field)) return
++        val state = ComposerState(field)
++        composerStates[field] = state
++        field.addTextChangedListener(Watcher(state))
++    }
++
++    @JvmStatic
++    fun hook(field: EditText, connection: InputConnection?): InputConnection? {
++        val state = composerStates[field] ?: return connection
++        if (connection == null) return null
++        return Wrapper(state, connection)
++    }
++
++    private class Watcher(private val state: ComposerState) : TextWatcher {
++        private var changeStart = -1
++        private var changeBefore = 0
++        private var changeCount = 0
++
++        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
++
++        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
++            if (state.internal) return
++            changeStart = start
++            changeBefore = before
++            changeCount = count
++        }
++
++        override fun afterTextChanged(s: Editable?) {
++            if (s == null || state.internal || changeStart < 0) return
++            val start = changeStart
++            val before = changeBefore
++            val count = changeCount
++            changeStart = -1
++            val field = state.field.get() ?: return
++            if (!composerEnabled()) {
++                state.pairs.clear()
++                return
++            }
++            val composing = composerComposing(s)
++            val pairs = state.pairs
++            val deleted = if (!composing && count == 0 && before == 1 && TeleConfig.COMPOSER_AUTOPAIRS.value) {
++                pairs.lastOrNull {
++                    it.untouched && it.close == it.open + 1 && (it.open == start || it.close == start)
++                }
++            } else {
++                null
++            }
++            val typed = if (!composing && count == 1 && before == 0 && start < s.length) s[start] else null
++            val skipped = if (typed != null && TeleConfig.COMPOSER_AUTOPAIRS.value) {
++                pairs.lastOrNull { it.close == start && it.closing == typed }
++            } else {
++                null
++            }
++            val partnerAt = when {
++                deleted == null -> -1
++                deleted.open == start -> start
++                deleted.close == start -> start - 1
++                else -> -1
++            }
++            val partner = when {
++                deleted == null -> null
++                deleted.open == start -> deleted.closing
++                else -> deleted.opening
++            }
++            val skipAt = if (skipped != null) skipped.close + 1 else -1
++            track(start, before, count)
++            pairs.removeAll { !valid(field, s, it) }
++            if (composing) return
++
++            if (deleted != null && partner != null && partnerAt >= 0) {
++                if (partnerAt < s.length && s[partnerAt] == partner) {
++                    pairs.remove(deleted)
++                    edit(s) { it.delete(partnerAt, partnerAt + 1) }
++                    track(partnerAt, 1, 0)
++                    field.setSelection(partnerAt)
++                    return
++                }
++            }
++            if (skipped != null && typed != null) {
++                if (skipAt < s.length && s[skipAt] == typed) {
++                    pairs.remove(skipped)
++                    edit(s) { it.delete(skipAt, skipAt + 1) }
++                    track(skipAt, 1, 0)
++                    field.setSelection(skipAt)
++                    return
++                }
++            }
++            if (typed != null) {
++                val closing = composerClose[typed]
++                if (closing != null && canPair(s, start, typed, closing)) {
++                    edit(s) { it.insert(start + 1, closing.toString()) }
++                    track(start + 1, 0, 1)
++                    field.setSelection(start + 1)
++                    pairs.add(ComposerPair(start, start + 1, typed, closing, true))
++                    while (pairs.size > COMPOSER_PAIR_LIMIT) pairs.removeAt(0)
++                    return
++                }
++            }
++            if (typed == '\n' && TeleConfig.COMPOSER_AUTOINDENT.value) {
++                val indentation = indentation(s, start)
++                if (indentation.isNotEmpty()) {
++                    edit(s) { it.insert(start + 1, indentation) }
++                    track(start + 1, 0, indentation.length)
++                    field.setSelection(start + 1 + indentation.length)
++                }
++            }
++        }
++
++        private fun edit(s: Editable, block: (Editable) -> Unit) {
++            state.internal = true
++            try {
++                block(s)
++            } finally {
++                state.internal = false
++            }
++        }
++
++        private fun valid(field: EditText, s: Editable, pair: ComposerPair): Boolean {
++            if (pair.open < 0 || pair.open >= pair.close || pair.close >= s.length) return false
++            if (s[pair.open] != pair.opening || s[pair.close] != pair.closing) return false
++            val first = field.selectionStart
++            val second = field.selectionEnd
++            if (first < 0 || second < 0) return false
++            return minOf(first, second) > pair.open && maxOf(first, second) <= pair.close + 1
++        }
++
++        private fun track(start: Int, before: Int, count: Int) {
++            val end = start + before
++            val delta = count - before
++            val iterator = state.pairs.iterator()
++            while (iterator.hasNext()) {
++                val pair = iterator.next()
++                if (before > 0 && (pair.open in start until end || pair.close in start until end)) {
++                    iterator.remove()
++                    continue
++                }
++                if (start > pair.open && start <= pair.close) pair.untouched = false
++                if (pair.open >= end) pair.open += delta
++                if (pair.close >= end) pair.close += delta
++            }
++        }
++
++        private fun canPair(s: Editable, position: Int, opening: Char, closing: Char): Boolean {
++            val next = if (position + 1 < s.length) s[position + 1] else null
++            val previous = if (position > 0) s[position - 1] else null
++            val word = previous != null && previous.isLetterOrDigit()
++            return when (opening) {
++                '(', '[', '{' -> next != closing
++                else -> boundary(next) && !word && previous != opening
++            }
++        }
++
++        private fun boundary(next: Char?): Boolean =
++            next == null || next.isWhitespace() || next in COMPOSER_CLOSINGS
++
++        private fun indentation(s: Editable, position: Int): String {
++            var lineStart = position
++            while (lineStart > 0 && s[lineStart - 1] != '\n') lineStart--
++            var end = lineStart
++            while (end < position && (s[end] == ' ' || s[end] == '\t')) end++
++            return s.subSequence(lineStart, end).toString()
++        }
++    }
++
++    /** A typed quote or bracket over a selection must not replace it, so it is taken before the field sees it. */
++    private class Wrapper(private val state: ComposerState, base: InputConnection) : InputConnectionWrapper(base, false) {
++        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
++            val field = state.field.get()
++            if (text == null || field == null || text.length != 1 || !TeleConfig.COMPOSER_WRAP.value) {
++                return super.commitText(text, newCursorPosition)
++            }
++            val editable = field.text ?: return super.commitText(text, newCursorPosition)
++            val markers = composerWrap[text[0]] ?: return super.commitText(text, newCursorPosition)
++            if (composerComposing(editable) || field.selectionStart == field.selectionEnd) {
++                return super.commitText(text, newCursorPosition)
++            }
++            if (wrap(field, editable, markers)) return true
++            return super.commitText(text, newCursorPosition)
++        }
++    }
++}
++
++private fun wrap(field: EditText, editable: Editable, markers: Pair<String, String>): Boolean {
++    val state = composerStates[field] ?: return false
++    val opening = markers.first
++    val closing = markers.second
++    val first = field.selectionStart
++    val second = field.selectionEnd
++    val reverse = first > second
++    val from = minOf(first, second)
++    val till = maxOf(first, second)
++    if (from < 0 || from >= till) return false
++    val unwrapping = from >= opening.length && till + closing.length <= editable.length &&
++        editable.subSequence(from - opening.length, from).toString() == opening &&
++        editable.subSequence(till, till + closing.length).toString() == closing
++    field.beginBatchEdit()
++    state.internal = true
++    try {
++        if (unwrapping) {
++            editable.delete(till, till + closing.length)
++            editable.delete(from - opening.length, from)
++        } else {
++            editable.insert(till, closing)
++            editable.insert(from, opening)
++        }
++    } finally {
++        state.internal = false
++        field.endBatchEdit()
++    }
++    state.pairs.clear()
++    val innerFrom = if (unwrapping) from - opening.length else from + opening.length
++    val innerTill = if (unwrapping) till - opening.length else till + opening.length
++    if (reverse) {
++        field.setSelection(innerTill, innerFrom)
++    } else {
++        field.setSelection(innerFrom, innerTill)
++    }
++    return true
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 79ac7b02c..c9583732a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1306,6 +1306,13 @@ object TeleTextRu {
+         "app folder" to "папка приложения",
+         "Settings, privacy, ids" to "Настройки, приватность, ID",
+         "log" to "журнал",
++        "Composer" to "Поле сообщения",
++        "Wrap selected text in quotes and brackets" to "Обрамлять выделение кавычками и скобками",
++        "Typing a quote, bracket, backtick or ** around a selection wraps it, and the same key takes the markers off again." to "Кавычки, скобки, обратная кавычка или ** вокруг выделения обрамляют его, а то же нажатие снимает обрамление.",
++        "Close brackets and quotes as you type" to "Закрывать скобки и кавычки при вводе",
++        "An opening bracket or quote adds its pair, a typed closing one steps over it, and backspace removes an untouched pair at once." to "Открывающая скобка или кавычка ставит пару, закрывающая переступает через неё, а Backspace удаляет нетронутую пару сразу.",
++        "Keep indentation on a new line" to "Сохранять отступ на новой строке",
++        "A new line starts with the leading spaces or tabs of the line you were on." to "Новая строка начинается с отступов строки, на которой вы были.",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 2d5b853f9..ebf86b47d 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1306,6 +1306,13 @@ object TeleTextUk {
+         "app folder" to "папка застосунку",
+         "Settings, privacy, ids" to "Налаштування, приватність, ID",
+         "log" to "журнал",
++        "Composer" to "Поле повідомлення",
++        "Wrap selected text in quotes and brackets" to "Обрамляти виділення лапками й дужками",
++        "Typing a quote, bracket, backtick or ** around a selection wraps it, and the same key takes the markers off again." to "Лапки, дужки, зворотний апостроф або ** навколо виділення обрамляють його, а те саме натискання знімає обрамлення.",
++        "Close brackets and quotes as you type" to "Закривати дужки й лапки під час введення",
++        "An opening bracket or quote adds its pair, a typed closing one steps over it, and backspace removes an untouched pair at once." to "Відкривальна дужка чи лапка ставить пару, закривальна переступає через неї, а Backspace видаляє недоторкану пару одразу.",
++        "Keep indentation on a new line" to "Зберігати відступ у новому рядку",
++        "A new line starts with the leading spaces or tabs of the line you were on." to "Новий рядок починається з відступів рядка, у якому ви були.",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 2882a5c89..ffab3e9b8 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1284,6 +1284,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Video volume" to "Louder or quieter videos on this device; 100% is the system volume.",
+             "Voice message volume" to "Louder or quieter voice messages on this device; 100% is the system volume.",
+             "Round video volume" to "Louder or quieter round videos on this device; 100% is the system volume.",
++            "Wrap selected text in quotes and brackets" to "Typing a quote, bracket, backtick or ** around a selection wraps it, and the same key takes the markers off again.",
++            "Close brackets and quotes as you type" to "An opening bracket or quote adds its pair, a typed closing one steps over it, and backspace removes an untouched pair at once.",
++            "Keep indentation on a new line" to "A new line starts with the leading spaces or tabs of the line you were on.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1626,6 +1629,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Maps"),
+                 Row(TYPE_VALUE, "Map service", value = tele.helpers.MapService.label(TeleConfig.MAP_SERVICE.value), item = TeleConfig.MAP_SERVICE),
++                Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Composer"),
++                toggle("Wrap selected text in quotes and brackets", TeleConfig.COMPOSER_WRAP),
++                toggle("Close brackets and quotes as you type", TeleConfig.COMPOSER_AUTOPAIRS),
++                toggle("Keep indentation on a new line", TeleConfig.COMPOSER_AUTOINDENT),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_SENDING -> listOf(
