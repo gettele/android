@@ -1,0 +1,221 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 14 Nov 2026 11:59:07 +0300
+Subject: [PATCH] feat: pad extreme image shapes for sending
+
+---
+ .../messenger/SendMessagesHelper.java         |  5 +-
+ .../ChatAttachAlertPhotoLayoutPreview.java    |  5 +-
+ .../src/main/java/tele/TeleConfig.kt          |  1 +
+ .../main/java/tele/helpers/PhotoPadding.kt    | 90 +++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  2 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  2 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 7 files changed, 104 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/PhotoPadding.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+index 606e49cb1..51882d722 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java
+@@ -9553,6 +9553,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+         if (bitmap == null) {
+             bitmap = ImageLoader.loadBitmap(path, imageUri, 800, 800, true);
+         }
++        bitmap = tele.helpers.PhotoPadding.padForSend(bitmap);
+         ArrayList<TLRPC.PhotoSize> sizes = new ArrayList<>();
+         TLRPC.PhotoSize size = ImageLoader.scaleAndSaveImage(bitmap, 90, 90, 55, true);
+         if (size != null) {
+@@ -11137,7 +11138,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                             } else {
+                                 info.forceImage = true;
+                             }
+-                        } else if (ImageLoader.shouldSendImageAsDocument(info.path, info.uri)) {
++                        } else if (ImageLoader.shouldSendImageAsDocument(info.path, info.uri) && !tele.helpers.PhotoPadding.allowAsPhoto()) {
+                             continue;
+                         } else if (tempPath == null && info.uri != null) {
+                             if (MediaController.isGif(info.uri) || (isWebP = MediaController.isWebp(info.uri))) {
+@@ -11753,7 +11754,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
+                                 }
+                             }
+                         }
+-                        if (forceDocument || ImageLoader.shouldSendImageAsDocument(info.path, info.uri)) {
++                        if (forceDocument || (ImageLoader.shouldSendImageAsDocument(info.path, info.uri) && !tele.helpers.PhotoPadding.allowAsPhoto())) {
+                             isDocument = true;
+                             extension = tempPath != null ? FileLoader.getFileExtension(new File(tempPath)) : "";
+                         } else if (!info.forceImage && tempPath != null && (tempPath.endsWith(".gif") || tempPath.endsWith(".webp")) && info.ttl <= 0) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayoutPreview.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayoutPreview.java
+index c548cf4d8..4ae866667 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayoutPreview.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatAttachAlertPhotoLayoutPreview.java
+@@ -423,6 +423,9 @@ public class ChatAttachAlertPhotoLayoutPreview extends ChatAttachAlert.AttachAle
+                     h = wasW;
+                 }
+                 position.aspectRatio = w / (float) h;
++                if (!photo.isVideo) {
++                    position.aspectRatio = tele.helpers.PhotoPadding.paddedAspect(position.aspectRatio);
++                }
+ 
+                 proportionsArray[a] = (
+                     position.aspectRatio > 1.2f ? 'w' : (
+@@ -2347,7 +2350,7 @@ public class ChatAttachAlertPhotoLayoutPreview extends ChatAttachAlert.AttachAle
+                         canvas.translate(-drawingRect.centerX(), -drawingRect.centerY());
+                     }
+                     image.setRoundRadius((int) tl, (int) tr, (int) br, (int) bl);
+-                    image.setImageCoords(drawingRect.left, drawingRect.top, drawingRect.width(), drawingRect.height());
++                    image.setImageCoords(tele.helpers.PhotoPadding.previewImageRect(drawingRect, photoEntry));
+                     image.setAlpha(scale);
+                     image.draw(canvas);
+ 
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 9d19dcfef..5bd29dbfa 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -500,6 +500,7 @@ object TeleConfig {
+     val SCRIPTING = BoolItem("scripting", false)
+     @JvmField
+     val NO_SEND_ANIMATION = BoolItem("no_send_animation", false)
++    val PAD_PHOTO_SHAPES = BoolItem("pad_photo_shapes", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/PhotoPadding.kt b/TMessagesProj/src/main/java/tele/helpers/PhotoPadding.kt
+new file mode 100644
+index 000000000..2065ff2f6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/PhotoPadding.kt
+@@ -0,0 +1,90 @@
++package tele.helpers
++
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.RectF
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.MediaController
++import tele.TeleConfig
++
++// desktop 0331: very wide or narrow photos go out as photos, padded to the widest shape Telegram takes
++object PhotoPadding {
++
++    private const val RATIO = 20
++
++    private val imageRect = RectF()
++
++    private fun minimumSide(longer: Int): Int = (longer + RATIO - 1) / RATIO
++
++    /** The shape the photo is sent with: stock's one unless the toggle has to pad it. */
++    @JvmStatic
++    fun paddedAspect(aspect: Float): Float = when {
++        aspect <= 0f || !TeleConfig.PAD_PHOTO_SHAPES.value -> aspect
++        aspect > RATIO -> RATIO.toFloat()
++        aspect < 1f / RATIO -> 1f / RATIO
++        else -> aspect
++    }
++
++    /** Stock files a still image past 10:1; with the toggle it goes out as a padded photo instead. */
++    @JvmStatic
++    fun allowAsPhoto(): Boolean = TeleConfig.PAD_PHOTO_SHAPES.value
++
++    /** The upload bitmap, padded to the allowed shape; the loaded one is recycled when it pads. */
++    @JvmStatic
++    fun padForSend(bitmap: Bitmap?): Bitmap? {
++        if (bitmap == null || !TeleConfig.PAD_PHOTO_SHAPES.value) {
++            return bitmap
++        }
++        val width = bitmap.width
++        val height = bitmap.height
++        val longer = maxOf(width, height)
++        val shorter = minOf(width, height)
++        if (longer <= 0 || shorter >= minimumSide(longer)) {
++            return bitmap
++        }
++        val minimum = minimumSide(longer)
++        val paddedWidth = maxOf(width, minimum)
++        val paddedHeight = maxOf(height, minimum)
++        val padded = try {
++            Bitmap.createBitmap(paddedWidth, paddedHeight, Bitmap.Config.ARGB_8888)
++        } catch (e: Throwable) {
++            FileLog.e(e)
++            return bitmap
++        }
++        val canvas = Canvas(padded)
++        canvas.drawColor(Color.BLACK)
++        canvas.drawBitmap(bitmap, (paddedWidth - width) / 2f, (paddedHeight - height) / 2f, null)
++        bitmap.recycle()
++        return padded
++    }
++
++    /** Where the photo itself sits in its padded preview cell; the margins stay empty. */
++    @JvmStatic
++    fun previewImageRect(cell: RectF, photo: MediaController.PhotoEntry?): RectF {
++        imageRect.set(cell)
++        if (photo == null || photo.isVideo) {
++            return imageRect
++        }
++        val crop = photo.cropState
++        val width = if (crop != null) crop.width else photo.width
++        val height = if (crop != null) crop.height else photo.height
++        if (width <= 0 || height <= 0 || cell.width() <= 0f || cell.height() <= 0f) {
++            return imageRect
++        }
++        val rotated = photo.orientation == 90 || photo.orientation == 270
++        val aspect = if (rotated) height / width.toFloat() else width / height.toFloat()
++        val padded = paddedAspect(aspect)
++        if (padded == aspect) {
++            return imageRect
++        }
++        if (aspect < padded) {
++            val inset = ((cell.width() - cell.height() * aspect) / 2f).coerceIn(0f, cell.width() / 2f)
++            imageRect.set(cell.left + inset, cell.top, cell.right - inset, cell.bottom)
++        } else {
++            val inset = ((cell.height() - cell.width() / aspect) / 2f).coerceIn(0f, cell.height() / 2f)
++            imageRect.set(cell.left, cell.top + inset, cell.right, cell.bottom - inset)
++        }
++        return imageRect
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index d5f003450..2c06ac00a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1664,5 +1664,7 @@ object TeleTextRu {
+         "TeleStopBots" to "Остановить ботов",
+         "TeleStopBotsTitle_one" to "Остановить %1\$d бота?",
+         "TeleStopBotsTitle_other" to "Остановить %1\$d ботов?",
++        "Pad extreme image shapes" to "Добавлять поля для крайних пропорций",
++        "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Добавляет чёрные поля, чтобы очень узкие или широкие фото отправлялись как фото; исходный файл не меняется.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 556ba3fa6..ede853016 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1664,5 +1664,7 @@ object TeleTextUk {
+         "TeleStopBots" to "Зупинити ботів",
+         "TeleStopBotsTitle_one" to "Зупинити %1\$d бота?",
+         "TeleStopBotsTitle_other" to "Зупинити %1\$d ботів?",
++        "Pad extreme image shapes" to "Додавати поля для крайніх пропорцій",
++        "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Додає чорні поля, щоб дуже вузькі чи широкі фото надсилалися як фото; вихідний файл не змінюється.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 68edf34c7..e3e2b0220 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1246,6 +1246,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Rate-limit toasts and bar" to "Counts down Telegram's waits when you send, react, join, search or pay too fast; a bar shows above the chats from a minute.",
+             "Unlock with biometrics" to "Fingerprint or face first; the password stays as the fallback.",
+             "Turn off the text sending animation" to "Messages appear in place; media keeps its animation.",
++            "Pad extreme image shapes" to "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1596,6 +1597,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 *(if (all || TeleConfig.DOCKED_MEDIA.value) arrayOf(
+                     toggle("Show docked media as an album", TeleConfig.DOCKED_GRID)
+                 ) else emptyArray<Row>()),
++                toggle("Pad extreme image shapes", TeleConfig.PAD_PHOTO_SHAPES),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Round video"),
+                 toggle("Start round video recording manually", TeleConfig.MANUAL_ROUND_START),
