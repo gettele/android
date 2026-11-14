@@ -4,19 +4,24 @@ Date: Sat, 14 Nov 2026 12:05:33 +0300
 Subject: [PATCH] feat: set separate volumes for each media type
 
 ---
- .../telegram/messenger/MediaController.java   | 16 +++++++
- .../video/VideoPlayerHolderBase.java          |  1 +
- .../telegram/ui/Components/VideoPlayer.java   | 13 +++--
- .../java/org/telegram/ui/PhotoViewer.java     |  1 +
- .../org/telegram/ui/SecretMediaViewer.java    |  1 +
- .../org/telegram/ui/SecretVoicePlayer.java    |  1 +
- .../src/main/java/tele/TeleConfig.kt          |  7 +++
- .../main/java/tele/helpers/MediaVolumes.kt    | 48 +++++++++++++++++++
- .../src/main/java/tele/helpers/TeleTextRu.kt  |  9 ++++
- .../src/main/java/tele/helpers/TeleTextUk.kt  |  9 ++++
- .../tele/ui/settings/TeleSettingsActivity.kt  | 43 +++++++++++++++++
- 11 files changed, 145 insertions(+), 4 deletions(-)
+ .../telegram/messenger/MediaController.java   |  16 +++
+ .../video/VideoPlayerHolderBase.java          |   1 +
+ .../ui/Components/AudioPlayerAlert.java       |  12 ++
+ .../ui/Components/FragmentContextView.java    |  52 ++++++++
+ .../telegram/ui/Components/VideoPlayer.java   |  13 +-
+ .../java/org/telegram/ui/PhotoViewer.java     |  29 +++++
+ .../org/telegram/ui/SecretMediaViewer.java    |   1 +
+ .../org/telegram/ui/SecretVoicePlayer.java    |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   9 ++
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/MediaVolumes.kt    |  48 ++++++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  12 ++
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  12 ++
+ .../main/java/tele/helpers/VolumeControl.kt   | 116 ++++++++++++++++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  45 +++++++
+ 15 files changed, 366 insertions(+), 4 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/MediaVolumes.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/VolumeControl.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java
 index 494c029e3..80b0d3fbe 100644
@@ -71,6 +76,148 @@ index 1ca3bd1aa..9f28e24c8 100644
          videoPlayer.allowMultipleInstances = allowMultipleInstances;
          videoPlayer.setDelegate(new VideoPlayer.VideoPlayerDelegate() {
              @Override
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java
+index cfec165e7..b26467d61 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/AudioPlayerAlert.java
+@@ -165,6 +165,7 @@ public class AudioPlayerAlert extends BottomSheet implements NotificationCenter.
+     private SeekBarView seekBarView;
+     private SimpleTextView timeTextView;
+     private ActionBarMenuItem playbackSpeedButton;
++    private ActionBarMenuItem volumeButton;
+     private SpeedIconDrawable speedIcon;
+     private ActionBarMenuSlider.SpeedSlider speedSlider;
+     private boolean slidingSpeed;
+@@ -761,6 +762,13 @@ public class AudioPlayerAlert extends BottomSheet implements NotificationCenter.
+         });
+         updatePlaybackButton(false);
+ 
++        if (tele.helpers.VolumeControl.enabled()) {
++            volumeButton = tele.helpers.VolumeControl.createButton(context, resourcesProvider,
++                getThemedColor(Theme.key_player_time), () -> tele.helpers.MediaVolumes.MUSIC, null);
++            volumeButton.setContentDescription(tele.helpers.TeleLowercase.lc("Volume"));
++            playerLayout.addView(volumeButton, LayoutHelper.createFrame(36, 36, Gravity.TOP | Gravity.RIGHT, 0, 86, 20, 0));
++        }
++
+         FrameLayout bottomView = new FrameLayout(context) {
+             @Override
+             protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+@@ -2323,6 +2331,10 @@ public class AudioPlayerAlert extends BottomSheet implements NotificationCenter.
+             } else {
+                 playbackSpeedButton.setVisibility(View.GONE);
+             }
++            if (volumeButton != null) {
++                int volumeMargin = duration > 60 * 10 ? 56 : 20;
++                volumeButton.setLayoutParams(LayoutHelper.createFrame(36, 36, Gravity.TOP | Gravity.RIGHT, 0, 86, volumeMargin, 0));
++            }
+ 
+             if (!sameMessageObject) {
+                 preloadNeighboringThumbs();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/FragmentContextView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/FragmentContextView.java
+index e8deecadd..b6d1d342e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/FragmentContextView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/FragmentContextView.java
+@@ -146,6 +146,8 @@ public class FragmentContextView extends FrameLayout implements NotificationCent
+     private RLottieDrawable muteDrawable;
+     private ImageView closeButton;
+     private ActionBarMenuItem playbackSpeedButton;
++    private ActionBarMenuItem volumeButton;
++    private Runnable volumeRefresh;
+     private SpeedIconDrawable speedIcon;
+     private ActionBarMenuSlider.SpeedSlider speedSlider;
+     private ActionBarMenuItem.Item[] speedItems = new ActionBarMenuItem.Item[6];
+@@ -934,6 +936,45 @@ public class FragmentContextView extends FrameLayout implements NotificationCent
+         updatePlaybackButton(false);
+     }
+ 
++    private void createVolumeButton() {
++        if (volumeButton != null || !tele.helpers.VolumeControl.enabled()) {
++            return;
++        }
++        volumeButton = tele.helpers.VolumeControl.createButton(getContext(), resourcesProvider,
++            getThemedColor(Theme.key_inappPlayerClose), () -> tele.helpers.VolumeControl.playingType(), null);
++        volumeButton.setBackground(Theme.createSelectorDrawable(getThemedColor(Theme.key_inappPlayerClose) & 0x19ffffff, 1, dp(14)));
++        if (volumeButton.getIconView() != null) {
++            ThemeBind.colorFilter(volumeButton.getIconView(), Theme.key_inappPlayerClose, resourcesProvider, PorterDuff.Mode.MULTIPLY);
++        }
++        volumeButton.setContentDescription(tele.helpers.TeleLowercase.lc("Volume"));
++        addView(volumeButton, LayoutHelper.createFrame(36, 36, Gravity.TOP | Gravity.RIGHT, 0, 0, 40, 0));
++    }
++
++    private void updateVolumeButton() {
++        if (volumeRefresh == null) {
++            volumeRefresh = this::updateVolumeButton;
++            tele.helpers.VolumeControl.track(volumeRefresh);
++        }
++        if (volumeButton == null && tele.helpers.VolumeControl.enabled()) {
++            createVolumeButton();
++        }
++        if (volumeButton == null) {
++            return;
++        }
++        boolean show = currentStyle == STYLE_AUDIO_PLAYER && tele.helpers.VolumeControl.enabled();
++        AndroidUtilities.updateViewShow(volumeButton, show);
++        if (!show) {
++            return;
++        }
++        boolean speedShown = playbackSpeedButton != null
++            && playbackSpeedButton.getVisibility() == VISIBLE && playbackSpeedButton.getAlpha() > 0.5f;
++        int rightMargin = speedShown ? 72 : 40;
++        volumeButton.setLayoutParams(LayoutHelper.createFrame(36, 36, Gravity.TOP | Gravity.RIGHT, 0, 0, rightMargin, 0));
++        // the title view already carries a 36dp right margin, so the padding only has to reach the volume button's inner edge
++        int padding = Math.max(dp(rightMargin) + dp(4), speedShown ? dp(44) : 0);
++        titleTextView.setPadding(0, 0, padding + joinButtonWidth, 0);
++    }
++
+     private HintView2 speedHintView;
+     private ViewGroup speedHintViewParent;
+     private long lastPlaybackClick;
+@@ -1263,6 +1304,9 @@ public class FragmentContextView extends FrameLayout implements NotificationCent
+                 playbackSpeedButton.setVisibility(GONE);
+                 playbackSpeedButton.setTag(null);
+             }
++            if (volumeButton != null) {
++                volumeButton.setVisibility(GONE);
++            }
+             titleTextView.setLayoutParams(LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 36, Gravity.LEFT | Gravity.TOP, 35, 0, (isSideMenued ? 64 : 0) + 36, 0));
+         } else if (style == STYLE_AUDIO_PLAYER || style == STYLE_LIVE_LOCATION) {
+             selector.setBackground(Theme.getSelectorDrawable(false));
+@@ -1300,6 +1344,7 @@ public class FragmentContextView extends FrameLayout implements NotificationCent
+                     playbackSpeedButton.setVisibility(VISIBLE);
+                     playbackSpeedButton.setTag(1);
+                 }
++                createVolumeButton();
+                 closeButton.setContentDescription(getString(R.string.AccDescrClosePlayer));
+             } else {
+                 playButton.setLayoutParams(LayoutHelper.createFrame(36, 36, Gravity.TOP | Gravity.LEFT, 8, 0, 0, 0));
+@@ -1348,6 +1393,9 @@ public class FragmentContextView extends FrameLayout implements NotificationCent
+                 playbackSpeedButton.setVisibility(GONE);
+                 playbackSpeedButton.setTag(null);
+             }
++            if (volumeButton != null) {
++                volumeButton.setVisibility(GONE);
++            }
+         } else if (style == STYLE_CONNECTING_GROUP_CALL || style == STYLE_ACTIVE_GROUP_CALL) {
+             selector.setBackground(null);
+             updateCallTitle();
+@@ -1401,6 +1449,9 @@ public class FragmentContextView extends FrameLayout implements NotificationCent
+                 playbackSpeedButton.setVisibility(GONE);
+                 playbackSpeedButton.setTag(null);
+             }
++            if (volumeButton != null) {
++                volumeButton.setVisibility(GONE);
++            }
+         }
+     }
+ 
+@@ -2033,6 +2084,7 @@ public class FragmentContextView extends FrameLayout implements NotificationCent
+                 stringBuilder.setSpan(span, 0, messageObject.getMusicAuthor().length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+                 titleTextView.setText(stringBuilder, !create && wasVisible && isMusic);
+             }
++            updateVolumeButton();
+         }
+     }
+ 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/VideoPlayer.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/VideoPlayer.java
 index 48f421fbc..355f16f88 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Components/VideoPlayer.java
@@ -129,10 +276,39 @@ index 48f421fbc..355f16f88 100644
      }
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
-index 5bce4cf08..6d2ebeed5 100644
+index 5bce4cf08..11a937a7e 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/PhotoViewer.java
-@@ -10565,6 +10565,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+@@ -943,6 +943,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+     private LinearLayout videoQualityLayout;
+     private final ArrayList<ActionBarMenuSubItem> videoQualityItems = new ArrayList<>();
+     private ActionBarPopupWindow.GapView speedGap;
++    private ActionBarMenuItem volumeItem;
+     private ActionBarMenu menu;
+     private ActionBarMenuItem sendItem;
+     private ActionBarMenuItem editItem;
+@@ -2220,6 +2221,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+     private final static int gallery_menu_chromecast = 24;
+     private final static int gallery_menu_create_sticker = 25;
+     private final static int gallery_menu_delete2 = 26;
++    private final static int gallery_menu_volume = 27;
+ 
+     private final static int ads_sponsor_info = 101;
+     private final static int ads_about = 102;
+@@ -5826,6 +5828,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+         sendItem = menu.addItem(gallery_menu_send, R.drawable.msg_header_share);
+         sendItem.setContentDescription(getString(R.string.Forward));
+ 
++        if (tele.helpers.VolumeControl.enabled()) {
++            volumeItem = menu.addItem(gallery_menu_volume, R.drawable.filled_sound_on);
++            volumeItem.setContentDescription(tele.helpers.TeleLowercase.lc("Volume"));
++            tele.helpers.VolumeControl.attach(volumeItem, resourcesProvider,
++                () -> tele.helpers.MediaVolumes.forMessage(currentMessageObject), type -> tele_refreshVideoVolume());
++        }
+         videoItem = menu.addItem(gallery_menu_quality, videoItemIcon = new ChooseQualityLayout.QualityIcon(activityContext, R.drawable.video_settings, new DarkThemeResourceProvider()));
+         videoItemIcon.setCallback(videoItem.getIconView());
+         videoItem.getPopupLayout().setSwipeBackForegroundColor(0xff222222);
+@@ -10565,6 +10573,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                  videoPlayer.setOnQualityChangeListener(this::updateQualityItems);
                  newPlayerCreated = true;
              }
@@ -140,6 +316,60 @@ index 5bce4cf08..6d2ebeed5 100644
              if (videoTextureView != null) {
                  videoPlayer.setTextureView(videoTextureView);
              } else if (videoSurfaceView != null) {
+@@ -14072,6 +14081,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+         speedItem.setVisibility(View.GONE);
+         speedGap.setVisibility(View.GONE);
+         videoItem.setVisibility(View.GONE);
++        if (volumeItem != null) {
++            volumeItem.setVisibility(View.GONE);
++        }
+         actionBar.setTranslationY(0);
+         dialogPhotos = null;
+ 
+@@ -14708,6 +14720,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+                 } else {
+                     speedItem.setVisibility(View.GONE);
+                     videoItem.setVisibility(View.GONE);
++                    if (volumeItem != null) {
++                        volumeItem.setVisibility(View.GONE);
++                    }
+                     speedGap.setVisibility(View.GONE);
+                     menuItem.hideSubItem(gallery_menu_openin);
+                     menuItem.checkHideMenuItem();
+@@ -15781,12 +15796,18 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+             if (isVideo && !isLivePhoto || isEmbedVideo) {
+                 speedItem.setVisibility(View.VISIBLE);
+                 videoItem.setVisibility(View.VISIBLE);
++                if (volumeItem != null) {
++                    volumeItem.setVisibility(View.VISIBLE);
++                }
+                 menuItem.showSubItem(gallery_menu_speed);
+                 menuItem.setSubItemShown(gallery_menu_create_sticker, false);
+                 speedGap.setVisibility(menuItem.getVisibleSubItemsCount() > 1 ? View.VISIBLE : View.GONE);
+             } else {
+                 speedItem.setVisibility(View.GONE);
+                 videoItem.setVisibility(View.GONE);
++                if (volumeItem != null) {
++                    volumeItem.setVisibility(View.GONE);
++                }
+                 speedGap.setVisibility(View.GONE);
+                 menuItem.setSubItemShown(gallery_menu_create_sticker, !noforwards && currentMessageObject != null && currentMessageObject.isPhoto() && !currentMessageObject.isLivePhoto());
+                 menuItem.checkHideMenuItem();
+@@ -21339,6 +21360,14 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
+         }
+     }
+ 
++    private void tele_refreshVideoVolume() {
++        if (videoPlayer != null) {
++            videoPlayer.tele_volumeGain = tele.helpers.MediaVolumes.gain(tele.helpers.MediaVolumes.forMessage(currentMessageObject));
++            videoPlayer.setVolume(1.0f);
++            videoPlayer.setMute(CastSync.isActive() || muteVideo);
++        }
++    }
++
+     private void didChangedCompressionLevel(boolean request) {
+         SharedPreferences preferences = MessagesController.getGlobalMainSettings();
+         SharedPreferences.Editor editor = preferences.edit();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java b/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
 index fab72c6b3..e32ac9d4a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/SecretMediaViewer.java
@@ -165,10 +395,10 @@ index 8f351f4bb..80fc11f41 100644
                  @Override
                  public void onStateChanged(boolean playWhenReady, int playbackState) {
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-index 5bd29dbfa..7657449a7 100644
+index 5bd29dbfa..2eab0b935 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-@@ -501,6 +501,13 @@ object TeleConfig {
+@@ -501,6 +501,15 @@ object TeleConfig {
      @JvmField
      val NO_SEND_ANIMATION = BoolItem("no_send_animation", false)
      val PAD_PHOTO_SHAPES = BoolItem("pad_photo_shapes", false)
@@ -179,9 +409,25 @@ index 5bd29dbfa..7657449a7 100644
 +    val VOICE_VOLUME = IntItem("voice_volume", 100)
 +    @JvmField
 +    val ROUND_VOLUME = IntItem("round_volume", 100)
++    @JvmField
++    val INLINE_VOLUME_CONTROLS = BoolItem("inline_volume_controls", false)
  
      private var prefs: SharedPreferences? = null
  
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 1240cc26c..f51fb1e0b 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -139,6 +139,9 @@ object TeleHooks {
+         if (item === TeleConfig.DOCKED_MEDIA || item === TeleConfig.DOCKED_GRID) {
+             tele.helpers.DockedMedia.onToggled()
+         }
++        if (item === TeleConfig.INLINE_VOLUME_CONTROLS) {
++            tele.helpers.VolumeControl.onToggled()
++        }
+         if (item === TeleConfig.AUTO_UPDATE) {
+             tele.helpers.TeleUpdater.onAutoUpdateChanged()
+         }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/MediaVolumes.kt b/TMessagesProj/src/main/java/tele/helpers/MediaVolumes.kt
 new file mode 100644
 index 000000000..0db8453df
@@ -237,10 +483,20 @@ index 000000000..0db8453df
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
-index 2c06ac00a..79ac7b02c 100644
+index 2c06ac00a..fe2185f45 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
-@@ -1666,5 +1666,14 @@ object TeleTextRu {
+@@ -1306,6 +1306,9 @@ object TeleTextRu {
+         "app folder" to "папка приложения",
+         "Settings, privacy, ids" to "Настройки, приватность, ID",
+         "log" to "журнал",
++        "Volume" to "Громкость",
++        "Volume controls in the players" to "Регуляторы громкости в плеерах",
++        "Adds a volume button to the video, music and voice players that sets each media type's level directly." to "Добавляет кнопку громкости в плееры видео, музыки и голосовых, чтобы задавать уровень каждого типа медиа напрямую.",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+@@ -1666,5 +1669,14 @@ object TeleTextRu {
          "TeleStopBotsTitle_other" to "Остановить %1\$d ботов?",
          "Pad extreme image shapes" to "Добавлять поля для крайних пропорций",
          "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Добавляет чёрные поля, чтобы очень узкие или широкие фото отправлялись как фото; исходный файл не меняется.",
@@ -256,10 +512,20 @@ index 2c06ac00a..79ac7b02c 100644
      )
  }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
-index ede853016..2d5b853f9 100644
+index ede853016..5fffce621 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
-@@ -1666,5 +1666,14 @@ object TeleTextUk {
+@@ -1306,6 +1306,9 @@ object TeleTextUk {
+         "app folder" to "папка застосунку",
+         "Settings, privacy, ids" to "Налаштування, приватність, ID",
+         "log" to "журнал",
++        "Volume" to "Гучність",
++        "Volume controls in the players" to "Регулятори гучності в плеєрах",
++        "Adds a volume button to the video, music and voice players that sets each media type's level directly." to "Додає кнопку гучності в плеєри відео, музики й голосових, щоб задавати рівень кожного типу медіа напряму.",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+@@ -1666,5 +1669,14 @@ object TeleTextUk {
          "TeleStopBotsTitle_other" to "Зупинити %1\$d ботів?",
          "Pad extreme image shapes" to "Додавати поля для крайніх пропорцій",
          "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Додає чорні поля, щоб дуже вузькі чи широкі фото надсилалися як фото; вихідний файл не змінюється.",
@@ -274,8 +540,130 @@ index ede853016..2d5b853f9 100644
 +        "Louder or quieter round videos on this device; 100% is the system volume." to "Гучніше або тихіше кружечки на цьому пристрої; 100% — системна гучність.",
      )
  }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/VolumeControl.kt b/TMessagesProj/src/main/java/tele/helpers/VolumeControl.kt
+new file mode 100644
+index 000000000..804353d6b
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/VolumeControl.kt
+@@ -0,0 +1,116 @@
++package tele.helpers
++
++import android.content.Context
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.MediaController
++import org.telegram.messenger.R
++import org.telegram.messenger.Utilities
++import java.util.WeakHashMap
++import org.telegram.ui.ActionBar.ActionBarMenuItem
++import org.telegram.ui.ActionBar.ActionBarMenuSlider
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ActionBar.ThemeBind
++
++/** Inline per-media volume control: a speaker button whose popup is a slider scaling that media's software gain. */
++object VolumeControl {
++
++    @JvmStatic
++    fun enabled(): Boolean = tele.TeleConfig.INLINE_VOLUME_CONTROLS.value
++
++    /**
++     * Builds a ready-to-place volume button. [typeSupplier] resolves the media class when the popup
++     * opens or the value changes; [onApplied] runs after each change for hosts with their own player
++     * (MediaController-driven surfaces can leave it null, since [MediaVolumes.set] already refreshes).
++     */
++    @JvmStatic
++    fun createButton(
++        context: Context,
++        resourcesProvider: Theme.ResourcesProvider?,
++        iconColor: Int,
++        typeSupplier: IntSupplier,
++        onApplied: Utilities.Callback<Int>?
++    ): ActionBarMenuItem {
++        val button = ActionBarMenuItem(context, null, 0, iconColor, false, resourcesProvider)
++        button.setIcon(R.drawable.filled_sound_on)
++        attach(button, resourcesProvider, typeSupplier, onApplied)
++        return button
++    }
++
++    /** Wires the volume popup onto a button the host already created and themed itself. */
++    @JvmStatic
++    fun attach(
++        button: ActionBarMenuItem,
++        resourcesProvider: Theme.ResourcesProvider?,
++        typeSupplier: IntSupplier,
++        onApplied: Utilities.Callback<Int>?
++    ) {
++        val slider = VolumeSlider(button.context, resourcesProvider, typeSupplier, onApplied)
++        slider.setRoundRadiusDp(6f)
++        slider.setDrawShadow(true)
++        button.setLongClickEnabled(false)
++        button.setShowSubmenuByMove(false)
++        button.setAdditionalXOffset(AndroidUtilities.dp(8f))
++        button.setShowedFromBottom(true)
++        val open = Runnable {
++            slider.sync()
++            ThemeBind.backgroundColor(slider, Theme.key_actionBarDefaultSubmenuBackground, resourcesProvider)
++            slider.invalidateBlur(true)
++            button.redrawPopup(Theme.getColor(Theme.key_actionBarDefaultSubmenuBackground, resourcesProvider))
++            button.updateColor()
++            button.setDimMenu(.15f)
++            button.toggleSubMenu(slider, null)
++        }
++        button.setOnClickListener { open.run() }
++        button.setOnLongClickListener { open.run(); true }
++    }
++
++    /** The media class of whatever MediaController is playing, for shared mini/full players. */
++    @JvmStatic
++    fun playingType(): Int = MediaVolumes.forMessage(MediaController.getInstance().playingMessageObject)
++
++    /** Java-friendly supplier so call sites can pass a plain lambda. */
++    fun interface IntSupplier {
++        fun get(): Int
++    }
++
++    /**
++     * Mini-players outlive the settings page the toggle is flipped on, so they register here and
++     * re-read it at once instead of waiting for the next playback event.
++     */
++    private val liveRefreshers = java.util.Collections.newSetFromMap(WeakHashMap<Runnable, Boolean>())
++
++    @JvmStatic
++    fun track(refresh: Runnable) {
++        liveRefreshers.add(refresh)
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        AndroidUtilities.runOnUIThread {
++            for (refresh in ArrayList(liveRefreshers)) refresh.run()
++        }
++    }
++
++    class VolumeSlider(
++        context: Context,
++        resourcesProvider: Theme.ResourcesProvider?,
++        private val typeSupplier: IntSupplier,
++        private val onApplied: Utilities.Callback<Int>?
++    ) : ActionBarMenuSlider(context, resourcesProvider) {
++
++        init {
++            minimumWidth = AndroidUtilities.dp(196f)
++            setOnValueChange { value, _ ->
++                val type = typeSupplier.get()
++                MediaVolumes.set(type, Math.round(value * 100f))
++                onApplied?.run(type)
++            }
++        }
++
++        fun sync() {
++            setValue(MediaVolumes.level(typeSupplier.get()) / 100f, false)
++        }
++
++        override fun getLeftStringValue(value: Float): String = "${Math.round(value * 100f)}%"
++    }
++}
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index e3e2b0220..2882a5c89 100644
+index e3e2b0220..e4ddd162f 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 @@ -26,6 +26,7 @@ import org.telegram.ui.Components.UItem
@@ -332,7 +720,7 @@ index e3e2b0220..2882a5c89 100644
              row.type == TYPE_LINK || row.type == TYPE_LINK_ICON -> when (row.mode) {
                  TeleNamesActivity.MODE_LOCAL -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_LOCAL))
                  TeleNamesActivity.MODE_ALIAS -> presentFragment(TeleNamesActivity(TeleNamesActivity.MODE_ALIAS))
-@@ -1247,6 +1280,10 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -1247,6 +1280,11 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
              "Unlock with biometrics" to "Fingerprint or face first; the password stays as the fallback.",
              "Turn off the text sending animation" to "Messages appear in place; media keeps its animation.",
              "Pad extreme image shapes" to "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched.",
@@ -340,10 +728,11 @@ index e3e2b0220..2882a5c89 100644
 +            "Video volume" to "Louder or quieter videos on this device; 100% is the system volume.",
 +            "Voice message volume" to "Louder or quieter voice messages on this device; 100% is the system volume.",
 +            "Round video volume" to "Louder or quieter round videos on this device; 100% is the system volume.",
++            "Volume controls in the players" to "Adds a volume button to the video, music and voice players that sets each media type's level directly.",
          )
  
          private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
-@@ -1443,6 +1480,12 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+@@ -1443,6 +1481,13 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
                  Row(TYPE_HEADER, "Lists"),
                  toggle("Filter lists by date", TeleConfig.LIST_DATES),
                  toggle("Search and export star transactions", TeleConfig.STAR_TRANSACTIONS),
@@ -353,6 +742,7 @@ index e3e2b0220..2882a5c89 100644
 +                Row(TYPE_VALUE, "Video volume", subtitle = DESCRIPTIONS["Video volume"], value = tele.helpers.MediaVolumes.percent(tele.helpers.MediaVolumes.VIDEO), item = TeleConfig.VIDEO_VOLUME),
 +                Row(TYPE_VALUE, "Voice message volume", subtitle = DESCRIPTIONS["Voice message volume"], value = tele.helpers.MediaVolumes.percent(tele.helpers.MediaVolumes.VOICE), item = TeleConfig.VOICE_VOLUME),
 +                Row(TYPE_VALUE, "Round video volume", subtitle = DESCRIPTIONS["Round video volume"], value = tele.helpers.MediaVolumes.percent(tele.helpers.MediaVolumes.ROUND), item = TeleConfig.ROUND_VOLUME),
++                toggle("Volume controls in the players", TeleConfig.INLINE_VOLUME_CONTROLS),
                  Row(TYPE_SHADOW)
              )
              MODE_CHATS -> listOf(
