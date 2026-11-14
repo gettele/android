@@ -399,7 +399,7 @@ The ruler maps its full range to 60% of the rail width. An independent, default-
 
 **Desktop references:** compact icon-only folders.
 
-Adds an optional vertical folder bar for tablets and unfolded phones. The native Android view reuses the stock folder controller for selection, locking and swipes, mirrors unread counters, and leaves phone and forwarding layouts unchanged. The bar starts beside the header; in two-pane mode the left pane grows by the bar width, preserving the stock chat-list width while leaving at least 320dp for the right pane.
+Adds an optional vertical folder bar for tablets and unfolded phones. The native Android view reuses the stock folder controller for selection, locking and swipes, mirrors unread counters, and leaves phone and forwarding layouts unchanged. The bar remains available during search and in forum topics; selecting a folder closes that context. In two-pane mode the left pane grows by the bar width and keeps that width on every main tab (contacts, calls, settings, profile), preserving the stock chat-list width while leaving at least 320dp for the right pane. Message layout uses the remaining chat width so wide bubbles stay inside the pane. The bar recolors on theme switches and its separator uses the standard divider color.
 
 | patch |
 |---|

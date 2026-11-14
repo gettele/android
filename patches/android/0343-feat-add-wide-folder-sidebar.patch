@@ -4,33 +4,81 @@ Date: Fri, 13 Nov 2026 13:38:14 +0300
 Subject: [PATCH] [folders] add wide sidebar
 
 ---
- .../java/org/telegram/ui/DialogsActivity.java | 126 +++++++++++--
- .../java/org/telegram/ui/LaunchActivity.java  |  27 ++-
+ .../telegram/messenger/AndroidUtilities.java  |   4 +-
+ .../org/telegram/messenger/MessageObject.java |   4 +-
+ .../java/org/telegram/ui/DialogsActivity.java | 152 ++++++++++++--
+ .../java/org/telegram/ui/LaunchActivity.java  |  29 ++-
  .../org/telegram/ui/MainTabsActivity.java     |   3 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
  .../src/main/java/tele/helpers/FolderIcons.kt |   3 +
+ .../main/java/tele/helpers/TabletChatWidth.kt |  16 ++
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   2 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   2 +
- .../main/java/tele/ui/TeleFolderSidebar.kt    | 178 ++++++++++++++++++
+ .../main/java/tele/ui/TeleFolderSidebar.kt    | 198 ++++++++++++++++++
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
- 10 files changed, 333 insertions(+), 14 deletions(-)
+ .../messenger/TabletChatWidthTest.java        |  52 +++++
+ 14 files changed, 452 insertions(+), 19 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/TabletChatWidth.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt
+ create mode 100644 TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/TabletChatWidthTest.java
 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+index d59b29a66..3f3c9e4cb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java
+@@ -3117,12 +3117,12 @@ public class AndroidUtilities {
+         if (!isSmallTablet()) {
+             final int smallSide = Math.min(displaySize.x, displaySize.y);
+             final int leftSide = getTabletLeftFragmentSize(smallSide, 0, 0);
+-            return smallSide - leftSide;
++            return tele.helpers.TabletChatWidth.clamp(smallSide - leftSide);
+         } else {
+             final int smallSide = Math.min(displaySize.x, displaySize.y);
+             final int maxSide = Math.max(displaySize.x, displaySize.y);
+             final int leftSide = getTabletLeftFragmentSize(maxSide, 0, 0);
+-            return Math.min(smallSide, maxSide - leftSide);
++            return tele.helpers.TabletChatWidth.clamp(Math.min(smallSide, maxSide - leftSide));
+         }
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+index dd401cf88..c53d18927 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+@@ -7066,7 +7066,7 @@ public class MessageObject {
+             float newFontSize = Theme.chat_msgTextPaint != null ? Theme.chat_msgTextPaint.getTextSize() : 0;
+             // A rich message fills its max width, so any change of it must regenerate the layout
+             // (e.g. a Fold's inner tablet chat pane is only ~18dp wider than its cover screen).
+-            final int tolerance = type == TYPE_ARTICLE ? 0 : dp(52);
++            final int tolerance = type == TYPE_ARTICLE || tele.ui.TeleFolderSidebar.enabled() ? 0 : dp(52);
+             if (Math.abs(generatedWithMinSize - newMinSize) > tolerance || generatedWithDensity != AndroidUtilities.density || generatedWithFontSize != newFontSize || generatedWithCompactMode != isCompactMode() || hasCode && tele_codeLinesRevision != tele.helpers.CodeLines.revision() || tele_hiddenRevision != tele.helpers.InvisibleNames.revision()) {
+                 layoutCreated = false;
+             }
+@@ -8745,7 +8745,7 @@ public class MessageObject {
+     public static int getTabletChatWidth() {
+         final int width = AndroidUtilities.displaySize.x;
+         if (!AndroidUtilities.isInMultiwindow && (!AndroidUtilities.isSmallTablet() || width > AndroidUtilities.displaySize.y)) {
+-            return width - AndroidUtilities.getTabletLeftFragmentSize(width, 0, 0);
++            return tele.helpers.TabletChatWidth.clamp(width - AndroidUtilities.getTabletLeftFragmentSize(width, 0, 0));
+         }
+         return width;
+     }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-index 0650fdadb..aca28fde0 100644
+index 0650fdadb..08f59d4ef 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-@@ -525,6 +525,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -525,6 +525,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
      private int undoViewIndex;
      private UndoView[] undoView = new UndoView[2];
      private FilterTabsView filterTabsView;
 +    private tele.ui.TeleFolderSidebar folderSidebar;
 +    private boolean folderSidebarEnabled;
++    private boolean folderSidebarConfigEnabled;
      private boolean askingForPermissions;
      private int searchViewPagerIndex;
      @Nullable
-@@ -1154,7 +1156,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -1154,7 +1157,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                  layoutParams.height = ActionBar.getCurrentActionBarHeight();
              }
  
@@ -42,7 +90,7 @@ index 0650fdadb..aca28fde0 100644
  
              int keyboardSize = measureKeyboardHeight();
              int childCount = getChildCount();
-@@ -1169,8 +1174,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -1169,8 +1175,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                      int h = View.MeasureSpec.getSize(heightMeasureSpec);
                      int contentHeightSpec = View.MeasureSpec.makeMeasureSpec(Math.max(dp(10), h + dp(2) - actionBar.getMeasuredHeight()), View.MeasureSpec.EXACTLY);
                      child.measure(contentWidthSpec, contentHeightSpec);
@@ -58,7 +106,7 @@ index 0650fdadb..aca28fde0 100644
                      int h = heightSize + dp(2);
                      if (rightSlidingDialogContainer.hasFragment()) {
                          if (canShowFilterTabsView) {
-@@ -1193,7 +1204,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -1193,7 +1205,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                  } else if (child == searchViewPager) {
                      searchViewPager.setTranslationY(searchViewPagerTranslationY);
                      searchViewPager.postsSearchContainer.setKeyboardHeight(keyboardSize);
@@ -67,27 +115,32 @@ index 0650fdadb..aca28fde0 100644
                      final int h = MeasureSpec.getSize(heightMeasureSpec) + dp(ADDITIONAL_LIST_HEIGHT_DP);
                      final int contentHeightSpec = MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY);
                      checkUi_searchPagesPaddings(true);
-@@ -1216,6 +1227,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -1215,7 +1227,12 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     int transitionPadding = ((isSlideBackTransition) ? (int) (h * 0.05f) : 0);
                      h += transitionPadding;
                      rightSlidingDialogContainer.setTransitionPaddingBottom(transitionPadding);
-                     child.measure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(Math.max(dp(10), h), View.MeasureSpec.EXACTLY));
+-                    child.measure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(Math.max(dp(10), h), View.MeasureSpec.EXACTLY));
++                    final int containerWidthSpec = getFolderSidebarWidth() > 0
++                            ? View.MeasureSpec.makeMeasureSpec(applyFolderSidebarWidth(widthSize), View.MeasureSpec.EXACTLY)
++                            : widthMeasureSpec;
++                    child.measure(containerWidthSpec, View.MeasureSpec.makeMeasureSpec(Math.max(dp(10), h), View.MeasureSpec.EXACTLY));
 +                } else if (child != actionBar && isFolderSidebarOffsetChild(child) && getFolderSidebarWidth() > 0) {
 +                    measureChildWithMargins(child, View.MeasureSpec.makeMeasureSpec(applyFolderSidebarWidth(widthSize), View.MeasureSpec.EXACTLY), 0, heightMeasureSpec, 0);
                  } else {
                      measureChildWithMargins(child, widthMeasureSpec, 0, heightMeasureSpec, 0);
                  }
-@@ -1290,6 +1303,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -1290,6 +1307,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                          childTop = lp.topMargin;
                  }
  
-+                if (child != folderSidebar && (child == actionBar || isFolderSidebarOffsetChild(child))) {
++                if (child != folderSidebar && (child == actionBar || child == rightSlidingDialogContainer || isFolderSidebarOffsetChild(child))) {
 +                    childLeft += getFolderSidebarWidth();
 +                }
 +
                  if (child == fragmentSearchField || child == searchTabsAndFiltersLayout || child == dialogStoriesCell) {
                      childTop = actionBar.getMeasuredHeight();
                      if (child != fragmentSearchField && child != dialogStoriesCell && child != searchTabsAndFiltersLayout) {
-@@ -1314,8 +1331,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -1314,8 +1335,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                      childTop = -dp(ADDITIONAL_LIST_HEIGHT_DP);
                  } else if (child instanceof DatabaseMigrationHint) {
                      childTop = actionBar.getMeasuredHeight();
@@ -99,25 +152,26 @@ index 0650fdadb..aca28fde0 100644
                  } else if (child == topPanelLayout || child == topBubblesFadeView || child == filterTabsView) {
                      childTop += actionBar.getMeasuredHeight();
                      childTop += dp(SEARCH_FIELD_HEIGHT);
-@@ -1417,7 +1437,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -1417,7 +1441,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                  } else if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN) {
                      additionalOffset = 0;
                  }
 -                if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN && !startedTracking && !maybeStartTracking && filterTabsView.getVisibility() == VISIBLE) {
-+                if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN && !startedTracking && !maybeStartTracking && (filterTabsView.getVisibility() == VISIBLE || folderSidebar != null && folderSidebar.getVisibility() == VISIBLE)) {
++                if (ev != null && ev.getAction() == MotionEvent.ACTION_DOWN && !startedTracking && !maybeStartTracking && !searching && (rightSlidingDialogContainer == null || !rightSlidingDialogContainer.hasFragment()) && (filterTabsView.getVisibility() == VISIBLE || folderSidebar != null && folderSidebar.getVisibility() == VISIBLE)) {
                      startedTrackingPointerId = ev.getPointerId(0);
                      maybeStartTracking = true;
                      startedTrackingX = (int) ev.getX();
-@@ -3149,6 +3169,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -3149,6 +3173,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
          wasDrawn = false;
          pacmanAnimation = null;
          filterTabsView = null;
 +        folderSidebar = null;
 +        folderSidebarEnabled = false;
++        folderSidebarConfigEnabled = false;
          selectedDialogs.clear();
  
          maximumVelocity = ViewConfiguration.get(context).getScaledMaximumFlingVelocity();
-@@ -3580,6 +3602,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -3580,6 +3607,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                      if (!tab.isDefault && (tab.id < 0 || tab.id >= dialogFilters.size())) {
                          return;
                      }
@@ -127,7 +181,17 @@ index 0650fdadb..aca28fde0 100644
                      viewPages[1].selectedType = tab.id;
                      viewPages[1].setVisibility(View.VISIBLE);
                      viewPages[1].setTranslationX(viewPages[0].getMeasuredWidth());
-@@ -3806,6 +3831,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -3616,6 +3646,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                         checkListLoad(viewPages[0]);
+                         viewPages[0].dialogsAdapter.resume();
+                         viewPages[1].dialogsAdapter.pause();
++                        if (folderSidebar != null) {
++                            folderSidebar.setSelectedFolder(viewPages[0].selectedType);
++                        }
+                     }
+                 }
+ 
+@@ -3806,6 +3839,31 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                      showDeleteAlert(getMessagesController().getDialogFilters().get(id));
                  }
              });
@@ -135,6 +199,20 @@ index 0650fdadb..aca28fde0 100644
 +            folderSidebar.setOnFolderClickListener(index -> {
 +                FilterTabsView.Tab tab = filterTabsView.getTab(index);
 +                if (tab == null) return;
++                if (fragmentSearchField != null && fragmentSearchFieldWatcher != null && fragmentSearchFieldWatcher.isSearchExpanded()) {
++                    fragmentSearchField.editText.getText().clear();
++                    AndroidUtilities.hideKeyboard(fragmentSearchField.editText);
++                    fragmentSearchField.editText.clearFocus();
++                    if (fragmentSearchFieldWatcher.isSearchExpanded() && !fragmentSearchFieldWatcher.toggleSearch(false)) {
++                        return;
++                    }
++                }
++                if (rightSlidingDialogContainer != null && rightSlidingDialogContainer.hasFragment()) {
++                    if (!rightSlidingDialogContainer.isOpenned) {
++                        return;
++                    }
++                    rightSlidingDialogContainer.finishPreview();
++                }
 +                if (viewPages[0].selectedType == tab.id) {
 +                    scrollToTop(true, false);
 +                } else {
@@ -145,7 +223,7 @@ index 0650fdadb..aca28fde0 100644
          }
  
          if (allowSwitchAccount && UserConfig.getActivatedAccountsCount() > 1) {
-@@ -5117,6 +5153,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -5117,6 +5175,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
              filterTabsView.setBlurredBackground(filterTabsViewBackground);
              contentView.addView(filterTabsView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 36 + 7 + 7, Gravity.TOP, 4, 0, 4, 0));
          }
@@ -155,7 +233,7 @@ index 0650fdadb..aca28fde0 100644
  
          if (fragmentSearchField != null) {
              fragmentSearchField.setupBlurredBackground(iBlur3FactoryLiquidGlass.create(fragmentSearchField, BlurredBackgroundProviderImpl.topPanel(resourceProvider)));
-@@ -6823,6 +6862,56 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -6823,6 +6884,57 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
          }
      }
  
@@ -198,11 +276,12 @@ index 0650fdadb..aca28fde0 100644
 +            return;
 +        }
 +        final ArrayList<MessagesController.DialogFilter> filters = getMessagesController().getDialogFilters();
-+        final boolean enabled = tele.ui.TeleFolderSidebar.enabled() && initialDialogsType == DIALOGS_TYPE_DEFAULT && !onlySelect && filters.size() > 1;
++        folderSidebarConfigEnabled = tele.ui.TeleFolderSidebar.enabled();
++        final boolean enabled = folderSidebarConfigEnabled && initialDialogsType == DIALOGS_TYPE_DEFAULT && !onlySelect && filters.size() > 1;
 +        final boolean changed = folderSidebarEnabled != enabled;
 +        folderSidebarEnabled = enabled;
 +        folderSidebar.setFolders(filters, currentAccount, viewPages[0].selectedType);
-+        folderSidebar.setVisibility(enabled && !searchIsShowed && (rightSlidingDialogContainer == null || !rightSlidingDialogContainer.hasFragment()) ? View.VISIBLE : View.GONE);
++        folderSidebar.setVisibility(enabled ? View.VISIBLE : View.GONE);
 +        if (changed && fragmentView != null) {
 +            fragmentView.requestLayout();
 +            requestFolderSidebarRemeasure();
@@ -212,7 +291,7 @@ index 0650fdadb..aca28fde0 100644
      private void updateFilterTabs(boolean force, boolean animated) {
          if (filterTabsView == null || inPreviewMode || searchIsShowed || (rightSlidingDialogContainer != null && rightSlidingDialogContainer.hasFragment())) {
              return;
-@@ -6832,12 +6921,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -6832,12 +6944,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
              filterOptions = null;
          }
          final ArrayList<MessagesController.DialogFilter> filters = getMessagesController().getDialogFilters();
@@ -228,7 +307,7 @@ index 0650fdadb..aca28fde0 100644
                  canShowFilterTabsView = true;
                  boolean updateCurrentTab = filterTabsView.isEmpty();
                  updateFilterTabsVisibility(animated);
-@@ -6889,7 +6976,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -6889,7 +6999,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                  }
              }
          } else {
@@ -237,7 +316,7 @@ index 0650fdadb..aca28fde0 100644
                  filterTabsView.setIsEditing(false);
                  showDoneItem(false);
  
-@@ -7711,7 +7798,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -7711,7 +7821,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
          if (searchIsShowed) {
              return;
          }
@@ -247,7 +326,7 @@ index 0650fdadb..aca28fde0 100644
      }
  
      private void updateSearchActionBarItemsColors() {
-@@ -9770,6 +9858,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -9770,6 +9881,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
          if (hide) {
              return;
          }
@@ -255,7 +334,7 @@ index 0650fdadb..aca28fde0 100644
          int count = selectedDialogs.size();
          long selfUserId = getUserConfig().getClientUserId();
          SharedPreferences preferences = getNotificationsSettings();
-@@ -10427,6 +10516,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -10427,6 +10539,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
      @Override
      public void onConfigurationChanged(Configuration newConfig) {
          super.onConfigurationChanged(newConfig);
@@ -267,7 +346,7 @@ index 0650fdadb..aca28fde0 100644
          if (filterOptions != null) {
              filterOptions.dismiss();
          }
-@@ -10552,6 +10646,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -10552,6 +10669,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
              if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE) {
                  filterTabsView.checkTabsCounter();
              }
@@ -275,7 +354,7 @@ index 0650fdadb..aca28fde0 100644
              slowedReloadAfterDialogClick = false;
          } else if (id == NotificationCenter.topicsDidLoaded) {
              updateVisibleRows(0);
-@@ -10571,6 +10666,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -10571,6 +10689,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
              if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE) {
                  filterTabsView.notifyTabCounterChanged(filterTabsView.getDefaultTabId());
              }
@@ -283,7 +362,7 @@ index 0650fdadb..aca28fde0 100644
          } else if (id == NotificationCenter.dialogsUnreadPollVotesCounterChanged) {
              updateVisibleRows(0);
          } else if (id == NotificationCenter.dialogsUnreadReactionsCounterChanged) {
-@@ -10604,6 +10700,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -10604,6 +10723,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
              if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && (mask & MessagesController.UPDATE_MASK_READ_DIALOG_MESSAGE) != 0) {
                  filterTabsView.checkTabsCounter();
              }
@@ -293,32 +372,45 @@ index 0650fdadb..aca28fde0 100644
              if (communityId != 0 ) {
                  if ((mask & MessagesController.UPDATE_MASK_CHAT) != 0 || (mask & MessagesController.UPDATE_MASK_AVATAR) != 0 || (mask & MessagesController.UPDATE_MASK_CHAT_AVATAR) != 0 || (mask & MessagesController.UPDATE_MASK_CHAT_NAME) != 0) {
                      community = getMessagesController().getChat(communityId);
-@@ -13770,6 +13869,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -13770,6 +13892,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                  viewPages[0].listView.requestLayout();
              }
          }
 +        if (folderSidebar != null) {
-+            final float sidebarFactor = (1f - animatorSearchVisible.getFloatValue()) * (1f - getRightSlidingProgress());
-+            folderSidebar.setAlpha(sidebarFactor);
-+            folderSidebar.setVisibility(folderSidebarEnabled && sidebarFactor > 0 ? View.VISIBLE : View.GONE);
++            folderSidebar.setVisibility(folderSidebarEnabled ? View.VISIBLE : View.GONE);
 +        }
          updateContextViewPosition();
      }
  
+@@ -14181,6 +14306,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     public void onThemeColorsChanged() {
+         try {
+             super.onThemeColorsChanged();
++            if (folderSidebar != null) {
++                folderSidebar.onThemeChanged();
++            }
+             actionBarDefaultPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+             cellDelegateThemeColors();
+             updateExtraThemeColors();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-index e8ff8472e..e9833f87a 100644
+index e8ff8472e..8d7a7be70 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-@@ -967,7 +967,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+@@ -967,10 +967,12 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                          });
                      }
                      if (!tabletFullSize) {
 -                        final int leftWidth = AndroidUtilities.getTabletLeftFragmentSize(width, insets.left, insets.right);
 +                        final int leftWidth = getTabletLeftWidthWithFolderSidebar(width, insets.left, insets.right);
++                        tele.helpers.TabletChatWidth.update(leftWidth > AndroidUtilities.getTabletLeftFragmentSize(width, insets.left, insets.right) ? width - leftWidth : 0);
                          actionBarLayout.getView().measure(MeasureSpec.makeMeasureSpec(leftWidth, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
                          rightActionBarLayout.getView().measure(MeasureSpec.makeMeasureSpec(width - leftWidth, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
                      } else {
-@@ -988,7 +988,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
++                        tele.helpers.TabletChatWidth.update(0);
+                         actionBarLayout.getView().measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+                     }
+                     backgroundTablet.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+@@ -988,7 +990,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                      final int width = getMeasuredWidth();
                      final int height = getMeasuredHeight();
                      if (!tabletFullSize) {
@@ -327,7 +419,7 @@ index e8ff8472e..e9833f87a 100644
                          actionBarLayout.getView().layout(0, 0, actionBarLayout.getView().getMeasuredWidth(), actionBarLayout.getView().getMeasuredHeight());
                          rightActionBarLayout.getView().layout(leftWidth, 0, leftWidth + rightActionBarLayout.getView().getMeasuredWidth(), rightActionBarLayout.getView().getMeasuredHeight());
                      } else {
-@@ -1362,6 +1362,29 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+@@ -1362,6 +1364,29 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
              .add(NotificationCenter.guardBotDecisionResult);
      }
  
@@ -342,7 +434,7 @@ index e8ff8472e..e9833f87a 100644
 +        }
 +        BaseFragment fragment = stack.get(0);
 +        if (fragment instanceof MainTabsActivity) {
-+            fragment = ((MainTabsActivity) fragment).getCurrentVisibleFragment();
++            fragment = ((MainTabsActivity) fragment).getDialogsActivity();
 +        }
 +        if (!(fragment instanceof DialogsActivity)) {
 +            return leftWidth;
@@ -411,6 +503,28 @@ index dc51ad0dd..c360f13f8 100644
      // the tab shows the icon and keeps its title for accessibility
      @JvmStatic
      fun apply(tab: FilterTabsView.Tab?, account: Int, filter: MessagesController.DialogFilter?) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TabletChatWidth.kt b/TMessagesProj/src/main/java/tele/helpers/TabletChatWidth.kt
+new file mode 100644
+index 000000000..dca9b4f15
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/TabletChatWidth.kt
+@@ -0,0 +1,16 @@
++package tele.helpers
++
++object TabletChatWidth {
++    @Volatile private var availableWidth = 0
++
++    @JvmStatic
++    fun update(width: Int) {
++        availableWidth = width
++    }
++
++    @JvmStatic
++    fun clamp(stockWidth: Int): Int {
++        val width = availableWidth
++        return if (width > 0 && tele.ui.TeleFolderSidebar.enabled()) minOf(stockWidth, width) else stockWidth
++    }
++}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 index 5296ad66d..d74870a27 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
@@ -439,10 +553,10 @@ index 2db8b196b..be855c2d8 100644
          "Force the wallet" to "Примусово вмикати гаманець",
 diff --git a/TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt b/TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt
 new file mode 100644
-index 000000000..099001f3b
+index 000000000..00d12190e
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/ui/TeleFolderSidebar.kt
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,198 @@
 +package tele.ui
 +
 +import android.content.Context
@@ -491,16 +605,29 @@ index 000000000..099001f3b
 +    private val list = RecyclerView(context)
 +    private val adapter = FolderAdapter()
 +
++    private val dividerPaint = android.graphics.Paint()
++
 +    init {
 +        setBackgroundColor(color(Theme.key_windowBackgroundWhite))
++        dividerPaint.color = color(Theme.key_divider)
++        dividerPaint.strokeWidth = AndroidUtilities.dp(0.5f).toFloat()
 +        list.layoutManager = LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false)
 +        list.adapter = adapter
 +        list.clipToPadding = false
 +        list.setPadding(0, AndroidUtilities.dp(4f), 0, AndroidUtilities.dp(4f))
 +        addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
-+        val divider = View(context)
-+        divider.setBackgroundColor(color(Theme.key_divider))
-+        addView(divider, LayoutHelper.createFrame(1f, LayoutHelper.MATCH_PARENT.toFloat(), Gravity.RIGHT))
++    }
++
++    override fun onDraw(canvas: android.graphics.Canvas) {
++        val x = width - dividerPaint.strokeWidth
++        canvas.drawLine(x, 0f, x, height.toFloat(), dividerPaint)
++    }
++
++    fun onThemeChanged() {
++        setBackgroundColor(color(Theme.key_windowBackgroundWhite))
++        dividerPaint.color = color(Theme.key_divider)
++        adapter.notifyDataSetChanged()
++        invalidate()
 +    }
 +
 +    fun setOnFolderClickListener(value: OnFolderClickListener?) {
@@ -576,17 +703,12 @@ index 000000000..099001f3b
 +        }
 +
 +        override fun onBindViewHolder(holder: FolderHolder, position: Int) {
++            val selected = position == selectedIndex
++            bindColors(holder, selected)
 +            val item = items[position]
 +            val filter = item.filter
-+            val selected = position == selectedIndex
 +            val name = if (filter.isDefault) LocaleController.getString(R.string.FilterAllChats) else filter.name
-+            val accent = color(Theme.key_windowBackgroundWhiteBlueText)
 +            holder.row.isSelected = selected
-+            holder.row.background = Theme.createSimpleSelectorRoundRectDrawable(
-+                AndroidUtilities.dp(12f),
-+                if (selected) Theme.multAlpha(accent, 0.14f) else 0,
-+                color(Theme.key_listSelector)
-+            )
 +            holder.row.contentDescription = if (item.unread > 0) {
 +                TextUtils.concat(name, "\n", LocaleController.formatPluralString("AccDescrUnreadCount", item.unread))
 +            } else {
@@ -602,6 +724,18 @@ index 000000000..099001f3b
 +            holder.badge.visibility = if (item.unread > 0) View.VISIBLE else View.GONE
 +            holder.badge.text = if (item.unread > 99) "99+" else LocaleController.formatNumber(item.unread.toLong(), ',')
 +            holder.lock.visibility = if (filter.locked) View.VISIBLE else View.GONE
++        }
++
++        private fun bindColors(holder: FolderHolder, selected: Boolean) {
++            val accent = color(Theme.key_windowBackgroundWhiteBlueText)
++            holder.row.background = Theme.createSimpleSelectorRoundRectDrawable(
++                AndroidUtilities.dp(12f),
++                if (selected) Theme.multAlpha(accent, 0.14f) else 0,
++                color(Theme.key_listSelector)
++            )
++            holder.badge.setTextColor(color(Theme.key_featuredStickers_buttonText))
++            holder.badge.background = Theme.createRoundRectDrawable(AndroidUtilities.dp(9f), color(Theme.key_featuredStickers_unread))
++            holder.lock.colorFilter = PorterDuffColorFilter(color(Theme.key_windowBackgroundWhiteGrayText), PorterDuff.Mode.SRC_IN)
 +        }
 +
 +        override fun getItemCount() = items.size
@@ -641,3 +775,61 @@ index 354f4ec2d..549dad124 100644
                  toggle("Hide similar channels", TeleConfig.HIDE_SIMILAR_CHANNELS),
                  toggle("Hide communities", TeleConfig.HIDE_COMMUNITIES),
                  toggle("Jump to the first message", TeleConfig.JUMP_TO_FIRST),
+diff --git a/TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/TabletChatWidthTest.java b/TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/TabletChatWidthTest.java
+new file mode 100644
+index 000000000..84e732f31
+--- /dev/null
++++ b/TMessagesProj_AppTests/src/androidTest/java/org/telegram/messenger/TabletChatWidthTest.java
+@@ -0,0 +1,52 @@
++package org.telegram.messenger;
++
++import android.graphics.Point;
++import org.junit.Test;
++import org.telegram.tgnet.TLRPC;
++import tele.TeleConfig;
++import tele.helpers.TabletChatWidth;
++
++import static org.junit.Assert.assertTrue;
++
++public class TabletChatWidthTest {
++    @Test
++    public void existingMessageReflowsWhenSidebarNarrowsChatPane() throws Exception {
++        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
++        java.util.concurrent.atomic.AtomicReference<Throwable> error = new java.util.concurrent.atomic.AtomicReference<>();
++        AndroidUtilities.runOnUIThread(() -> {
++            Point display = new Point(AndroidUtilities.displaySize);
++            float density = AndroidUtilities.density;
++            boolean sidebar = TeleConfig.FOLDER_SIDEBAR.getValue();
++            try {
++                AndroidUtilities.density = 2f;
++                AndroidUtilities.displaySize.set(1600, 2560);
++                TeleConfig.INSTANCE.set(TeleConfig.FOLDER_SIDEBAR, true);
++                TLRPC.TL_message owner = new TLRPC.TL_message();
++                owner.id = 1;
++                owner.peer_id = new TLRPC.TL_peerUser();
++                owner.peer_id.user_id = 12345;
++                owner.from_id = new TLRPC.TL_peerUser();
++                owner.from_id.user_id = 12345;
++                owner.message = "A wide message that must reflow when the chat pane becomes narrower. ".repeat(40);
++                TabletChatWidth.update(960);
++                MessageObject message = new MessageObject(0, owner, false, true);
++                int wider = message.getMaxMessageTextWidth();
++                TabletChatWidth.update(816);
++                assertTrue(message.checkLayout());
++                assertTrue(message.getMaxMessageTextWidth() < wider);
++                assertTrue(message.textWidth <= 816);
++                assertTrue(MessageObject.getTabletChatWidth() <= 816);
++            } catch (Throwable e) {
++                error.set(e);
++            } finally {
++                TabletChatWidth.update(0);
++                TeleConfig.INSTANCE.set(TeleConfig.FOLDER_SIDEBAR, sidebar);
++                AndroidUtilities.displaySize.set(display.x, display.y);
++                AndroidUtilities.density = density;
++                done.countDown();
++            }
++        });
++        assertTrue(done.await(30, java.util.concurrent.TimeUnit.SECONDS));
++        if (error.get() != null) throw new AssertionError(error.get());
++    }
++}
