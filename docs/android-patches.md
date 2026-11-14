@@ -432,7 +432,7 @@ Stock Android turns a photo whose aspect ratio is wider than 10:1 into a file. T
 
 **Desktop references:** separate music, video, voice and round video volumes.
 
-Android has a single system volume stream, so the desktop's four saved volumes become four software gain levels (music, video, voice messages, round videos) applied inside the players. A value never raises stock's own volume, so system volume keys, mute, ducking and cast keep working, and 100% is exactly stock. Levels live in TeleConfig, are exported with settings and apply to the live player immediately.
+Android has a single system volume stream, so the desktop's four saved volumes become four software gain levels (music, video, voice messages, round videos) applied inside the players. A value never raises stock's own volume, so system volume keys, mute, ducking and cast keep working, and 100% is exactly stock. Levels live in TeleConfig, are exported with settings and apply to the live player immediately. An optional switch also puts a volume button in the three players that carries the level: the video viewer's title bar next to its quality and speed controls, the full music player next to its speed control, and the chat mini-player (beside the close button for music, beside the speed control for voice and round videos). Each button opens the same kind of slider popup the stock speed control uses and writes the level of the media type it is currently playing.
 
 | patch |
 |---|
@@ -446,7 +446,7 @@ Android has a single system volume stream, so the desktop's four saved volumes b
 
 **Desktop references:** optional composer editing helpers.
 
-Three independent field helpers behind off-by-default switches: wrapping a selection in quotes, brackets, bold markers or backticks (and unwrapping it), auto-closing bracket and quote pairs with step-over and one-step pair deletion, and keeping a line's indentation on a new line. Implemented once in EditTextBoldCursor, so chats, topics, replies, edits and captions share it; every operation is one undo step and inserts plain text only.
+Three independent field helpers behind off-by-default switches: wrapping a selection in quotes, brackets, bold markers or backticks (and unwrapping it), auto-closing bracket and quote pairs with step-over and one-step pair deletion, and keeping a line's indentation on a new line. Auto-closing also completes a code block: three backticks at the end of a line add the blank body and the closing fence, with the cursor placed inside, unless the cursor is already inside an open fence. A single backtick never pairs on its own, matching the desktop, where it only wraps a selection. Implemented once in EditTextBoldCursor, so chats, topics, replies, edits and captions share it; every operation is one undo step and inserts plain text only.
 
 | patch |
 |---|
