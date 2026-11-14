@@ -50,12 +50,15 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A008](#a008) | Message shots and render pipeline | adaptation | active | 6 |
 | [A009](#a009) | Notification center, presence and service notices | adaptation | active | 9 |
 | [A010](#a010) | Diagnostics, MTProto tools and memory reports | adaptation | active | 6 |
-| [A011](#a011) | Wallet engine Android integration | adaptation | active | 5 |
+| [A011](#a011) | Wallet engine Android integration | adaptation | active | 6 |
 | [A012](#a012) | Android scripting host and native scripting UIs | adaptation | active | 23 |
-| [A013](#a013) | Cross-cutting fork security boundaries | original | active | 1 |
+| [A013](#a013) | Cross-cutting fork security boundaries | original | active | 3 |
 | [A014](#a014) | Docked media composer | adaptation | active | 22 |
 | [A015](#a015) | Round video recording controls | original | active | 2 |
 | [A016](#a016) | Wide-screen folder sidebar | adaptation | active | 1 |
+| [A017](#a017) | Photo shape padding | adaptation | active | 1 |
+| [A018](#a018) | Per-media software volumes | adaptation | active | 1 |
+| [A019](#a019) | Composer editing helpers | adaptation | active | 1 |
 
 <a id="a001"></a>
 
@@ -282,6 +285,7 @@ Builds the Android wallet engine with private-key support, key rotation and back
 | [`0247-fix-spread-pasted-wallet-words.patch`](../patches/android/0247-fix-spread-pasted-wallet-words.patch) |
 | [`0248-fix-scroll-the-wallet-phrase-sheet.patch`](../patches/android/0248-fix-scroll-the-wallet-phrase-sheet.patch) |
 | [`0278-feat-recover-wallets-from-an-address-and-12-words.patch`](../patches/android/0278-feat-recover-wallets-from-an-address-and-12-words.patch) |
+| [`0349-fix-bound-wallet-data-parsing.patch`](../patches/android/0349-fix-bound-wallet-data-parsing.patch) |
 
 <a id="a012"></a>
 
@@ -334,7 +338,8 @@ Widgets that stop before producing their loaded frame retain their failure state
 | patch |
 |---|
 | [`0332-security-harden-fork-boundaries.patch`](../patches/android/0332-security-harden-fork-boundaries.patch) |
-| [`0341-fix-close-widget-engine-RCEs.patch`](../patches/android/0341-fix-close-widget-engine-RCEs.patch) — both vendored QuickJS engines and the widget-sandbox pin |
+| [`0341-fix-close-widget-engine-RCEs.patch`](../patches/android/0341-fix-close-widget-engine-RCEs.patch) — both vendored QuickJS engines, the widget-sandbox and twidget pins, and PNG bit-depth validation |
+| [`0349-fix-bound-wallet-data-parsing.patch`](../patches/android/0349-fix-bound-wallet-data-parsing.patch) — bounded dictionary parsing and the 16-library limit in the wallet engine |
 
 <a id="a014"></a>
 
@@ -404,3 +409,45 @@ Adds an optional vertical folder bar for tablets and unfolded phones. The native
 | patch |
 |---|
 | [`0343-feat-add-wide-folder-sidebar.patch`](../patches/android/0343-feat-add-wide-folder-sidebar.patch) |
+
+<a id="a017"></a>
+
+## A017 — Photo shape padding
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** pad extreme image shapes for photo sending.
+
+Stock Android turns a photo whose aspect ratio is wider than 10:1 into a file. The option instead pads the upload bitmap with the smallest black margins that reach Telegram's accepted shape, after stock's own EXIF rotation, HD sizing and JPEG quality. The original file on disk is untouched and sending as a file stays an unpadded file; the composer preview shows the padded shape.
+
+| patch |
+|---|
+| [`0346-feat-pad-extreme-image-shapes-for-sending.patch`](../patches/android/0346-feat-pad-extreme-image-shapes-for-sending.patch) |
+
+<a id="a018"></a>
+
+## A018 — Per-media software volumes
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** separate music, video, voice and round video volumes.
+
+Android has a single system volume stream, so the desktop's four saved volumes become four software gain levels (music, video, voice messages, round videos) applied inside the players. A value never raises stock's own volume, so system volume keys, mute, ducking and cast keep working, and 100% is exactly stock. Levels live in TeleConfig, are exported with settings and apply to the live player immediately.
+
+| patch |
+|---|
+| [`0347-feat-set-separate-volumes-for-each-media-type.patch`](../patches/android/0347-feat-set-separate-volumes-for-each-media-type.patch) |
+
+<a id="a019"></a>
+
+## A019 — Composer editing helpers
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** optional composer editing helpers.
+
+Three independent field helpers behind off-by-default switches: wrapping a selection in quotes, brackets, bold markers or backticks (and unwrapping it), auto-closing bracket and quote pairs with step-over and one-step pair deletion, and keeping a line's indentation on a new line. Implemented once in EditTextBoldCursor, so chats, topics, replies, edits and captions share it; every operation is one undo step and inserts plain text only.
+
+| patch |
+|---|
+| [`0348-feat-add-optional-composer-editing-helpers.patch`](../patches/android/0348-feat-add-optional-composer-editing-helpers.patch) |

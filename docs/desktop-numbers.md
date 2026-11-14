@@ -1,6 +1,6 @@
 # Номера патчей десктопа: старые → текущие
 
-`docs/internal/PATCHLIST.md` (локально, не в git) и [docs/portability.md](portability.md) ведут патчи по **текущей** нумерации очереди [nitreojs/tele](https://github.com/nitreojs/tele) (`patches/tdesktop/NNNN-*.patch`, ветка `main`, tele 24 / tdesktop 7.4.0: патчи 0001–0333; отдельные очереди `lib_ui` — 0001–0008 и `lib_rpl` — 1008). Очередь десктопа была перенумерована дважды: исходный разбор (v7.2.9, патчи 0001–0127) шёл по старым номерам, а номера 0303+ в наших документах (разбор 0303–0322) устарели после слияний — см. вторую таблицу. Ниже — полная карта старый → новый.
+`docs/internal/PATCHLIST.md` (локально, не в git) и [docs/portability.md](portability.md) ведут патчи по **текущей** нумерации очереди [nitreojs/tele](https://github.com/nitreojs/tele) (`patches/tdesktop/NNNN-*.patch`, ветка `main`, tele 27 / tdesktop 7.4.4: патчи 0001–0338; отдельные очереди `lib_ui` — 0001–0008 и `lib_rpl` — 1008). Очередь десктопа была перенумерована дважды: исходный разбор (v7.2.9, патчи 0001–0127) шёл по старым номерам, а номера 0303+ в наших документах (разбор 0303–0322) устарели после слияний — см. вторую таблицу. Ниже — полная карта старый → новый.
 
 обозначения: `=` без изменений, `~` косметика (портировать нечего), `Δ` поведение изменилось, `⇢` влит в другой патч (отдельного номера в новой очереди нет). Влитые: старый 0043 → 0017, старый 0079 → 0077, старый 0118 → 0107.
 
@@ -200,3 +200,41 @@
 | 0336 | 0329 | fix picking files on macos no longer freezes tele |
 
 таблицы выше — снимок tele 22/23; к их колонке «новый/текущий» применяй эту дельту.
+
+## tele 25–27 (tdesktop 7.4.4)
+
+текущая очередь — 338 патчей `patches/tdesktop/` (было 333 в tele 24), `lib_ui` — 0001–0007, `lib_rpl` — 0001, `widget-sandbox` — 0001. сдвиг: `0036`-подобных удалений в этом окне нет, поэтому 0312–0327 идут на −2, а дальше перестановки из-за удалённых html-карточек и macOS-пикеров.
+
+| было (tele 23/24) | стало (tele 27) | патч |
+|---|---|---|
+| 0312 | 0310 | fix: confirm stickers sent from sticker set boxes |
+| 0313 | 0311 | feat: recover deleted channel posts from forwards |
+| 0314 | 0312 | feat: filter stickers and emoji by format |
+| 0317 | 0313 | fix: gifts in money look like gift cards |
+| 0318 | 0314 | feat: close the media viewer with mouse back |
+| 0319 | 0315 | feat: show skipped messages in shots |
+| 0320 | 0316 | feat: restrict members from message menus |
+| 0323 | 0317 | feat: open json/code/csv files in tele |
+| 0324 | 0318 | fix: deleted chats with people and bots stay writable |
+| 0325 | 0319 | feat: show the last activity next to a hidden last seen |
+| 0326 | 0320 | feat: update buttons open tele's updates |
+| 0327 | 0321 | fix: quote rich messages |
+| 0329 | 0322 | feat: typing in the chat list with a hidden last seen |
+| 0330 | 0323 | fix: deleted messages lists only messages deleted one by one |
+| 0331 | 0324 | feat: bigger video messages while playing |
+| 0332 | 0325 | feat: seek anywhere on video messages |
+| 0334 | 0326 | fix: file pickers on macOS no longer crash |
+| 0336 | 0327 | fix: picking files on macOS no longer freezes tele |
+| — | 0328 | feat: translate tele into russian and ukrainian (наш `0307`) |
+| — | 0329 | feat: turn off bot widgets (наш `0308`) |
+| — | 0330 | feat: turn off text sending animation |
+| — | 0331 | feat: pad extreme image shapes for photo sending |
+| — | 0332 | feat: add optional composer editing helpers |
+| — | 0333 | feat: separate music video voice and round video volumes |
+| — | 0334 | fix: put off first in the auto-delete picker |
+| — | 0335 | feat: stop selected bots without deleting their chats |
+| — | 0336 | fix: keep pending sends stable on confirmation |
+| — | 0337 | feat: indent selected composer lines |
+| — | 0338 | chore: refresh bundled release history |
+
+удалены в этом окне: `0310`/`0311` (html-карточки), `0315` (macOS dock icon), `0316` (script accounts listing), `0321` (script menu icons), `0322` (code block indent), `0328` (enter с докнутым медиа), `0333` (smooth scrolling), `0335` (логотип сервисного чата) — по номерам tele 24.
