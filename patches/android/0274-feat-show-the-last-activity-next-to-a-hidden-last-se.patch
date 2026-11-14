@@ -5,14 +5,16 @@ Subject: [PATCH] feat: show the last activity next to a hidden last seen
 
 ---
  .../telegram/messenger/LocaleController.java  |  12 ++
- .../messenger/MessagesController.java         |  20 +++
+ .../messenger/MessagesController.java         |  21 +++
+ .../ui/Components/ReactedHeaderView.java      |   5 +
+ .../java/org/telegram/ui/MessageSeenView.java |   1 +
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   6 +-
- .../java/tele/helpers/ObservedActivity.kt     | 156 ++++++++++++++++++
+ .../java/tele/helpers/ObservedActivity.kt     | 166 ++++++++++++++++++
  .../java/tele/helpers/TeleSettingsLinks.kt    |   1 +
  .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
- 8 files changed, 201 insertions(+), 1 deletion(-)
+ 10 files changed, 218 insertions(+), 1 deletion(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java b/TMessagesProj/src/main/java/org/telegram/messenger/LocaleController.java
@@ -39,7 +41,7 @@ index 26bb0d175..e4d9c7761 100644
              if (user.status instanceof TLRPC.TL_userStatusRecently) {
                  user.status.expires = user.status.by_me ? -1000 : -100;
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 4ccf54d1c..85a5a0758 100644
+index 4ccf54d1c..4099006cc 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 @@ -18118,6 +18118,9 @@ public class MessagesController extends BaseController implements NotificationCe
@@ -62,17 +64,18 @@ index 4ccf54d1c..85a5a0758 100644
                              if (!message.out && a == 1 && user.status != null && user.status.expires <= 0 && Math.abs(getConnectionsManager().getCurrentTime() - message.date) < 30) {
                                  onlinePrivacy.put(userId, message.date);
                                  interfaceUpdateMask |= UPDATE_MASK_STATUS;
-@@ -18975,6 +18981,9 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -18975,6 +18981,10 @@ public class MessagesController extends BaseController implements NotificationCe
                      markAsReadMessagesOutbox.put(update.peer.user_id, update.max_id);
                      dialogId = update.peer.user_id;
                      TLRPC.User user = getUser(update.peer.user_id);
-+                    if (user != null) {
-+                        tele.helpers.ObservedActivity.note(currentAccount, update.peer.user_id, date);
++                    if (user != null && !fromGetDifference) {
++                        // a receipt from the difference request has no moment of its own
++                        tele.helpers.ObservedActivity.note(currentAccount, update.peer.user_id, date > 0 ? date : getConnectionsManager().getCurrentTime());
 +                    }
                      if (user != null && user.status != null && user.status.expires <= 0 && Math.abs(getConnectionsManager().getCurrentTime() - date) < 30) {
                          onlinePrivacy.put(update.peer.user_id, date);
                          interfaceUpdateMask |= UPDATE_MASK_STATUS;
-@@ -19163,6 +19172,9 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -19163,6 +19173,9 @@ public class MessagesController extends BaseController implements NotificationCe
                              }
                          }
                      }
@@ -82,7 +85,7 @@ index 4ccf54d1c..85a5a0758 100644
                      if (Math.abs(getConnectionsManager().getCurrentTime() - date) < 30) {
                          onlinePrivacy.put(userId, date);
                      }
-@@ -19754,6 +19766,14 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -19754,6 +19767,14 @@ public class MessagesController extends BaseController implements NotificationCe
                  TL_update.TL_updateMessageReactions update = (TL_update.TL_updateMessageReactions) baseUpdate;
                  long dialogId = MessageObject.getPeerId(update.peer);
  
@@ -97,6 +100,34 @@ index 4ccf54d1c..85a5a0758 100644
                  getMessagesStorage().updateMessageReactions(dialogId, update.msg_id, update.reactions);
  
                  if (update.updateUnreadState) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactedHeaderView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactedHeaderView.java
+index 1cab39461..a6b4323e2 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactedHeaderView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ReactedHeaderView.java
+@@ -158,6 +158,11 @@ public class ReactedHeaderView extends FrameLayout {
+ 
+                         List<UserSeen> usersRes = new ArrayList<>();
+                         Runnable callback = () -> {
++                            for (UserSeen p : usersRes) {
++                                if (p.date > 0 && p.user instanceof TLRPC.User) {
++                                    tele.helpers.ObservedActivity.note(currentAccount, ((TLRPC.User) p.user).id, p.date);
++                                }
++                            }
+                             seenUsers.addAll(usersRes);
+                             for (UserSeen p : usersRes) {
+                                 boolean hasSame = false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MessageSeenView.java b/TMessagesProj/src/main/java/org/telegram/ui/MessageSeenView.java
+index 57e30de48..5f23ff726 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MessageSeenView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MessageSeenView.java
+@@ -252,6 +252,7 @@ public class MessageSeenView extends FrameLayout implements Theme.Colorable {
+     }
+ 
+     private void updateView() {
++        tele.helpers.ObservedActivity.noteReadInfo(currentAccount, peerIds, dates);
+         setEnabled(users.size() > 0);
+         for (int i = 0; i < 3; i++) {
+             if (i < users.size()) {
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 index 932cdab0b..851e6d024 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
@@ -136,10 +167,10 @@ index 7ec168bc5..7a87509f2 100644
                      .postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_STATUS)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt b/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
 new file mode 100644
-index 000000000..006bc1764
+index 000000000..f4b8716f2
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ObservedActivity.kt
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,166 @@
 +package tele.helpers
 +
 +import org.telegram.messenger.AndroidUtilities
@@ -187,14 +218,14 @@ index 000000000..006bc1764
 +    private fun load(account: Int) {
 +        if (!loaded.add(account)) return
 +        val raw = TeleDatabaseHelper.get(key(account)) ?: return
-+        val map = times.getOrPut(account) { ConcurrentHashMap() }
++        val map = times.computeIfAbsent(account) { ConcurrentHashMap() }
 +        for (part in raw.split(';')) {
 +            val pair = part.split(':')
 +            if (pair.size != 2) continue
 +            val id = pair[0].toLongOrNull() ?: continue
 +            val whenTime = pair[1].toIntOrNull() ?: continue
-+            if (id > 0 && whenTime > 0 && whenTime > (map[id] ?: 0)) {
-+                map[id] = whenTime
++            if (id > 0 && whenTime > 0) {
++                map.merge(id, whenTime) { old, value -> maxOf(old, value) }
 +            }
 +        }
 +    }
@@ -209,12 +240,22 @@ index 000000000..006bc1764
 +        if (user.status == null || user.status.expires > 0) return
 +        val now = (System.currentTimeMillis() / 1000L).toInt()
 +        val stamp = minOf(whenTime, now)
-+        val map = times.getOrPut(account) { ConcurrentHashMap() }
++        val map = times.computeIfAbsent(account) { ConcurrentHashMap() }
 +        if (stamp <= (map[userId] ?: 0)) return
-+        map[userId] = stamp
++        // concurrent receipts: the older one must not win the race
++        map.merge(userId, stamp) { old, value -> maxOf(old, value) }
 +        trim(map)
 +        scheduleSave(account)
 +        notifyUi(account)
++    }
++
++    /** Receipts of an opened read info; [ids] and [stamps] are parallel lists of the response. */
++    @JvmStatic
++    fun noteReadInfo(account: Int, ids: List<Long>, stamps: List<Int>) {
++        if (!TeleConfig.OBSERVED_ACTIVITY.value) return
++        for (i in ids.indices) {
++            note(account, ids[i], if (i < stamps.size) stamps[i] else 0)
++        }
 +    }
 +
 +    @JvmStatic
