@@ -4,20 +4,20 @@ Date: Sun, 15 Nov 2026 17:09:50 +0300
 Subject: [PATCH] feat: pin saved messages on top
 
 ---
- .../telegram/ui/Adapters/DialogsAdapter.java  | 75 +++++++++++++++-
- .../java/org/telegram/ui/DialogsActivity.java |  5 +-
+ .../telegram/ui/Adapters/DialogsAdapter.java  | 75 +++++++++++++++++-
+ .../java/org/telegram/ui/DialogsActivity.java | 22 +++++-
  .../src/main/java/tele/TeleConfig.kt          |  2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |  3 +
- .../src/main/java/tele/helpers/SavedRow.kt    | 87 +++++++++++++++++++
+ .../src/main/java/tele/helpers/SavedRow.kt    | 79 +++++++++++++++++++
  .../src/main/java/tele/helpers/TeleTextRu.kt  |  2 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |  2 +
  .../main/java/tele/ui/settings/TeleSearch.kt  |  4 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
- 9 files changed, 179 insertions(+), 3 deletions(-)
+ 9 files changed, 188 insertions(+), 3 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/SavedRow.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
-index 11c579eec..163712447 100644
+index 11c579eec..4d64eb9d4 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
 @@ -113,6 +113,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
@@ -81,7 +81,7 @@ index 11c579eec..163712447 100644
 +                break;
 +            }
 +        }
-+        if (!tele.helpers.SavedRow.pinned(currentAccount)) {
++        if (!tele.helpers.SavedRow.isPinned(currentAccount)) {
 +            if (from < 0) {
 +                itemInternals.add(tele_savedDateIndex(saved), new ItemInternal(VIEW_TYPE_DIALOG, saved));
 +            }
@@ -131,7 +131,7 @@ index 11c579eec..163712447 100644
                  return tele.helpers.TeleCompactRows.height(dialogsType, AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 86 : 91)) + 1;
              } else {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-index db1d0123e..255f01ed2 100644
+index db1d0123e..e7915f96f 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 @@ -2455,7 +2455,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
@@ -153,6 +153,30 @@ index db1d0123e..255f01ed2 100644
  
          if (!actionBar.isActionModeShowed() && !AndroidUtilities.isTablet() && !onlySelect && view instanceof DialogCell && !getMessagesController().isForum(((DialogCell) view).getDialogId()) && !rightSlidingDialogContainer.hasFragment()) {
              DialogCell cell = (DialogCell) view;
+@@ -9752,6 +9755,23 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         }
+     }
+ 
++    public void tele_toggleSavedPin() {
++        if (viewPages == null || viewPages.length == 0 || getParentActivity() == null) {
++            return;
++        }
++        final long dialogId = getUserConfig().getClientUserId();
++        if (getMessagesController().dialogs_dict.get(dialogId) == null) {
++            return;
++        }
++        final ArrayList<Long> saved = new ArrayList<>();
++        saved.add(dialogId);
++        selectedDialogs.clear();
++        selectedDialogs.add(dialogId);
++        updateCounters(false);
++        performSelectedDialogsAction(saved, pin, true, false);
++        updateCounters(true);
++    }
++
+     private void pinDialog(long selectedDialog, boolean pin, MessagesController.DialogFilter filter, int minPinnedNum, boolean animated) {
+         tele_lastPinLocal = false;
+         if (filter != null && tele.helpers.LocalFolders.isUnsorted(filter.id)) {
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 index da339cba6..5bc547a37 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
@@ -182,10 +206,10 @@ index f51fb1e0b..f3b4795c4 100644
          }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/SavedRow.kt b/TMessagesProj/src/main/java/tele/helpers/SavedRow.kt
 new file mode 100644
-index 000000000..add72e092
+index 000000000..8ea997acf
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/SavedRow.kt
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,79 @@
 +package tele.helpers
 +
 +import org.telegram.messenger.AccountInstance
@@ -198,16 +222,13 @@ index 000000000..add72e092
 +import org.telegram.tgnet.TLRPC
 +import org.telegram.ui.ActionBar.AlertDialog
 +import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.DialogsActivity
 +import tele.TeleConfig
 +import tele.TeleHooks
-+import tele.db.TeleDatabaseHelper
 +
 +// the stock self dialog kept in the chat list while the toggle is on: retyped and moved under the
-+// archive row when pinned, left to the date sort when not
++// archive row while Telegram has it pinned, left to the date sort when not
 +object SavedRow {
-+    private val pinState = HashMap<Int, Boolean>()
-+
-+    private fun key(account: Int) = "saved_row_pinned:$account"
 +
 +    @JvmStatic
 +    fun enabled(): Boolean = TeleConfig.SAVED_MESSAGES_ROW.value
@@ -226,13 +247,9 @@ index 000000000..add72e092
 +    }
 +
 +    @JvmStatic
-+    fun pinned(account: Int): Boolean = pinState.getOrPut(account) { TeleDatabaseHelper.get(key(account)) != "0" }
-+
-+    @JvmStatic
-+    fun setPinned(account: Int, value: Boolean) {
-+        pinState[account] = value
-+        TeleDatabaseHelper.put(key(account), if (value) "1" else "0")
-+        AndroidUtilities.runOnUIThread { reload(account) }
++    fun isPinned(account: Int): Boolean {
++        val self = UserConfig.getInstance(account).clientUserId
++        return self != 0L && MessagesController.getInstance(account).dialogs_dict.get(self)?.pinned == true
 +    }
 +
 +    @JvmStatic
@@ -241,9 +258,7 @@ index 000000000..add72e092
 +
 +    @JvmStatic
 +    fun onToggled() {
-+        pinState.clear()
 +        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
-+            TeleDatabaseHelper.put(key(account), null)
 +            AndroidUtilities.runOnUIThread { reload(account) }
 +        }
 +    }
@@ -252,18 +267,19 @@ index 000000000..add72e092
 +    fun showMenu(fragment: BaseFragment): Boolean {
 +        val activity = fragment.parentActivity ?: return false
 +        val account = fragment.currentAccount
-+        val isPinned = pinned(account)
-+        val items = arrayListOf<CharSequence>(
-+            LocaleController.getString(if (isPinned) R.string.DialogUnpin else R.string.DialogPin),
-+            LocaleController.getString(R.string.HideAboveTheList)
-+        )
++        val self = UserConfig.getInstance(account).clientUserId
++        val pinnable = self != 0L && MessagesController.getInstance(account).dialogs_dict.get(self) != null
++        val items = arrayListOf<CharSequence>()
++        if (pinnable) {
++            items.add(LocaleController.getString(if (isPinned(account)) R.string.DialogUnpin else R.string.DialogPin))
++        }
++        items.add(LocaleController.getString(R.string.HideAboveTheList))
 +        fragment.showDialog(AlertDialog.Builder(activity).setItems(items.toTypedArray()) { _, which ->
-+            when (which) {
-+                0 -> setPinned(account, !isPinned)
-+                1 -> {
-+                    TeleConfig.set(TeleConfig.SAVED_MESSAGES_ROW, false)
-+                    TeleHooks.onConfigChanged(TeleConfig.SAVED_MESSAGES_ROW)
-+                }
++            if (pinnable && which == 0) {
++                (fragment as? DialogsActivity)?.tele_toggleSavedPin()
++            } else {
++                TeleConfig.set(TeleConfig.SAVED_MESSAGES_ROW, false)
++                TeleHooks.onConfigChanged(TeleConfig.SAVED_MESSAGES_ROW)
 +            }
 +        }.create())
 +        return true

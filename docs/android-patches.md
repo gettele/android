@@ -476,7 +476,7 @@ After a system screenshot of a chat (Android 14+ screen capture callback, or the
 
 **Desktop references:** none (Android-only change).
 
-Keeps the Saved Messages dialog in the main chat list while the switch is on, even when it is empty or missing from the loaded dialogs, and never shows it twice. Pinned (the default), it sits right under the archive row above the pinned chats; unpinned, it stays at its usual date-sorted place as a regular row. The pinned row is the stock dialog cell rebound to the self chat, so opening it and its badges stay unchanged. Its long-press menu unpins or pins it, or hides it from the chat list by turning the switch off.
+Keeps the Saved Messages dialog in the main chat list while the switch is on, even when it is empty or missing from the loaded dialogs, and never shows it twice. Its position follows Telegram's own pin of the chat: pinned, it is shown right under the archive row above the other pinned chats (display only, the server pin order is untouched); unpinned, it stays at its usual date-sorted place as a regular row. The pinned row is the stock dialog cell rebound to the self chat, so opening it and its badges stay unchanged. Its long-press menu pins or unpins it through the stock pin action (limit alert, server sync), or hides it from the chat list by turning the switch off.
 
-The pinned state is per account and persists across restarts; turning the switch on starts pinned. Only the main chat list in its default folder and default filter gets the row: archived chats, community lists and selection lists keep stock order.
+The switch itself never changes the pin. Only the main chat list in its default folder and default filter gets the row: archived chats, community lists and selection lists keep stock order.
 
