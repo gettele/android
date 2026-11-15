@@ -59,6 +59,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A017](#a017) | Photo shape padding | adaptation | active | 1 |
 | [A018](#a018) | Per-media software volumes | adaptation | active | 1 |
 | [A019](#a019) | Composer editing helpers | adaptation | active | 1 |
+| [A020](#a020) | Chat screenshot editor | original | active | 1 |
 
 <a id="a001"></a>
 
@@ -451,3 +452,17 @@ Three independent field helpers behind off-by-default switches: wrapping a selec
 | patch |
 |---|
 | [`0348-feat-add-optional-composer-editing-helpers.patch`](../patches/android/0348-feat-add-optional-composer-editing-helpers.patch) |
+
+<a id="a020"></a>
+
+## A020 — Chat screenshot editor
+
+**Type:** `original` · **Status:** `active`
+
+**Desktop references:** none (Android-only change, after the Telegram-iOS "Customize Screenshot" proposal).
+
+After a system screenshot of a chat (Android 14+ screen capture callback, or the gallery observer on older versions when photo access is already granted), offers a sheet that rebuilds the visible messages with the Shot renderer at screen width: messages are hidden by swiping left, text is cut under spoiler dust through the stock text selection, the chat theme and day/night are previewed through the chat's own theme delegate and restored on close, and an optional tele footer is drawn. The result is split into screen-tall images that go through the stock share sheet as an album with a comment, or are copied, saved, shared or sent to the open chat. View-once, paid and protected messages are left out.
+
+| patch |
+|---|
+| [`0350-feat-customize-chat-screenshots-before-sharing.patch`](../patches/android/0350-feat-customize-chat-screenshots-before-sharing.patch) |

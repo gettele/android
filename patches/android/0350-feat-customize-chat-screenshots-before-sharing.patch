@@ -1,0 +1,1769 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sun, 15 Nov 2026 14:34:27 +0300
+Subject: [PATCH] feat: customize chat screenshots before sharing
+
+---
+ TMessagesProj/src/main/AndroidManifest.xml    |    1 +
+ .../org/telegram/messenger/MessageObject.java |    2 +-
+ .../ui/Cells/TextSelectionHelper.java         |    7 +-
+ .../java/org/telegram/ui/ChatActivity.java    |    2 +
+ .../telegram/ui/Components/ShareAlert.java    |    2 +-
+ .../src/main/java/tele/TeleConfig.kt          |    4 +
+ .../main/java/tele/helpers/ScreenshotWatch.kt |  161 +++
+ .../main/java/tele/helpers/ShotMessages.kt    |   15 +-
+ .../src/main/java/tele/helpers/TeleBackup.kt  |    2 +-
+ .../src/main/java/tele/helpers/TeleShot.kt    |    6 +-
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   22 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   22 +
+ .../src/main/java/tele/ui/ShotCell.kt         |    5 +
+ .../src/main/java/tele/ui/ShotColumn.kt       |   48 +-
+ .../src/main/java/tele/ui/ShotFrame.kt        |   22 +-
+ .../main/java/tele/ui/TeleScreenshotSheet.kt  | 1026 +++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |    5 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |    2 +
+ .../src/main/res/values/strings_tele.xml      |    8 +
+ 19 files changed, 1333 insertions(+), 29 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt
+
+diff --git a/TMessagesProj/src/main/AndroidManifest.xml b/TMessagesProj/src/main/AndroidManifest.xml
+index 92309e0d2..f95f56869 100644
+--- a/TMessagesProj/src/main/AndroidManifest.xml
++++ b/TMessagesProj/src/main/AndroidManifest.xml
+@@ -62,6 +62,7 @@
+     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
++    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE"/>
+ 
+     <uses-permission android:name="com.sec.android.provider.badge.permission.READ"/>
+     <uses-permission android:name="com.sec.android.provider.badge.permission.WRITE"/>
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+index c53d18927..1cff1132d 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
+@@ -8425,7 +8425,7 @@ public class MessageObject {
+             newRun.start = entity.offset;
+             newRun.end = newRun.start + entity.length;
+             TLRPC.MessageEntity urlEntity = null;
+-            if (entity instanceof TLRPC.TL_messageEntitySpoiler && !TeleConfig.REVEAL_SPOILERS.getValue()) {
++            if (entity instanceof TLRPC.TL_messageEntitySpoiler && (!TeleConfig.REVEAL_SPOILERS.getValue() || entity instanceof tele.helpers.ScreenshotCut)) {
+                 newRun.flags = TextStyleSpan.FLAG_STYLE_SPOILER;
+             } else if (entity instanceof TLRPC.TL_messageEntityStrike) {
+                 newRun.flags = TextStyleSpan.FLAG_STYLE_STRIKE;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
+index 47a9dfa46..734f39efd 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
+@@ -1588,7 +1588,11 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+                 tele.helpers.CopyMarkup.addSelectionItems(menu, TELE_COPY_MARKDOWN, TELE_COPY_HTML);
+                 menu.add(Menu.NONE, R.id.menu_quote, 1, LocaleController.getString(R.string.Quote));
+                 menu.add(Menu.NONE, TRANSLATE, 2, LocaleController.getString(R.string.TranslateMessage));
+-                menu.add(Menu.NONE, android.R.id.cut, 3, android.R.string.cut);
++                if (tele_cutTitle() != null) {
++                    menu.add(Menu.NONE, android.R.id.cut, 3, tele_cutTitle());
++                } else {
++                    menu.add(Menu.NONE, android.R.id.cut, 3, android.R.string.cut);
++                }
+                 menu.add(Menu.NONE, android.R.id.paste, 4, android.R.string.paste);
+                 menu.add(Menu.NONE, android.R.id.selectAll, 5, android.R.string.selectAll);
+                 return true;
+@@ -1796,6 +1800,7 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+     }
+ 
+     protected boolean canCut() { return false; }
++    protected CharSequence tele_cutTitle() { return null; }
+     protected boolean canPaste() { return false; }
+     protected boolean onCopyOverride() { return false; }
+     protected boolean tele_canCopyMarkup() { return false; }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index e03e4c9b0..be32612da 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -31665,6 +31665,7 @@ public class ChatActivity extends BaseFragment implements
+     @Override
+     public void onResume() {
+         super.onResume();
++        tele.helpers.ScreenshotWatch.resume(this);
+         checkShowBlur(false);
+         activityResumeTime = System.currentTimeMillis();
+ 
+@@ -31896,6 +31897,7 @@ public class ChatActivity extends BaseFragment implements
+     @Override
+     public void onPause() {
+         super.onPause();
++        tele.helpers.ScreenshotWatch.pause(this);
+         scrolling = false;
+         if (scrimPopupWindow != null) {
+             scrimPopupWindow.setPauseNotifications(false);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ShareAlert.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ShareAlert.java
+index ce58490e4..c886d866f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ShareAlert.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ShareAlert.java
+@@ -145,7 +145,7 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
+ 
+     private FrameLayout frameLayout;
+     private FrameLayout frameLayout2;
+-    private EditTextEmoji commentTextView;
++    public EditTextEmoji commentTextView;
+     private ChatActivityEnterView.SendButton writeButton;
+     private FrameLayout writeButtonContainer;
+     private FrameLayout pickerBottom;
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 229784d36..da339cba6 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -378,6 +378,10 @@ object TeleConfig {
+     @JvmField
+     val SHOT_VIEW = StringItem("shot_view", "")
+     @JvmField
++    val SCREENSHOT_EDITOR = BoolItem("screenshot_editor", false)
++    @JvmField
++    val SCREENSHOT_FOOTER = BoolItem("screenshot_footer", true)
++    @JvmField
+     val HIDE_GIFT_BUTTON = BoolItem("hide_gift_button", false)
+     @JvmField
+     val RECENT_TYPED_EMOJI = BoolItem("recent_typed_emoji", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt b/TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt
+new file mode 100644
+index 000000000..361a661f6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt
+@@ -0,0 +1,161 @@
++package tele.helpers
++
++import android.Manifest
++import android.app.Activity
++import android.content.pm.PackageManager
++import android.database.ContentObserver
++import android.net.Uri
++import android.os.Build
++import android.os.Handler
++import android.os.Looper
++import android.os.SystemClock
++import android.provider.MediaStore
++import androidx.annotation.RequiresApi
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.R
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.Cells.ChatMessageCell
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.BulletinFactory
++import tele.TeleConfig
++import tele.ui.TeleScreenshotSheet
++import java.lang.ref.WeakReference
++
++// a spoiler that stays dust even with "reveal spoilers": what the screenshot editor cut out
++class ScreenshotCut : TLRPC.TL_messageEntitySpoiler()
++
++object ScreenshotWatch {
++
++    private const val NOTICE_MS = 5000
++    private const val REPEAT_MS = 1500L
++
++    private var chatRef: WeakReference<ChatActivity>? = null
++    private var activityRef: WeakReference<Activity>? = null
++    private var captureCallback: Any? = null
++    private var observer: ContentObserver? = null
++    private var sinceSeconds = 0L
++    private var lastMediaId = -1L
++    private var lastNoticeAt = 0L
++
++    @JvmStatic
++    fun resume(chat: ChatActivity) {
++        stop()
++        if (!TeleConfig.SCREENSHOT_EDITOR.value || chat.isSecretChat) return
++        val activity = chat.parentActivity ?: return
++        chatRef = WeakReference(chat)
++        sinceSeconds = System.currentTimeMillis() / 1000 - 1
++        if (Build.VERSION.SDK_INT >= 34) watchCapture(activity) else watchGallery()
++    }
++
++    @JvmStatic
++    fun pause(chat: ChatActivity) {
++        if (chatRef?.get() === chat) stop()
++    }
++
++    private fun stop() {
++        if (Build.VERSION.SDK_INT >= 34) unwatchCapture()
++        observer?.let { runCatching { ApplicationLoader.applicationContext.contentResolver.unregisterContentObserver(it) } }
++        observer = null
++        chatRef = null
++    }
++
++    @RequiresApi(34)
++    private fun watchCapture(activity: Activity) {
++        val callback = Activity.ScreenCaptureCallback { AndroidUtilities.runOnUIThread { captured() } }
++        runCatching { activity.registerScreenCaptureCallback(activity.mainExecutor, callback) }.onSuccess {
++            captureCallback = callback
++            activityRef = WeakReference(activity)
++        }
++    }
++
++    @RequiresApi(34)
++    private fun unwatchCapture() {
++        val callback = captureCallback as? Activity.ScreenCaptureCallback
++        val activity = activityRef?.get()
++        if (callback != null && activity != null) runCatching { activity.unregisterScreenCaptureCallback(callback) }
++        captureCallback = null
++        activityRef = null
++    }
++
++    // without the system callback the screenshot shows up in the gallery; only when photo access is already given
++    private fun watchGallery() {
++        val context = ApplicationLoader.applicationContext
++        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
++        if (context.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) return
++        val watcher = object : ContentObserver(Handler(Looper.getMainLooper())) {
++            override fun onChange(selfChange: Boolean, uri: Uri?) {
++                Utilities.globalQueue.postRunnable { checkGallery() }
++            }
++        }
++        runCatching {
++            context.contentResolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, watcher)
++            observer = watcher
++        }
++    }
++
++    private fun checkGallery() {
++        val since = sinceSeconds
++        val location = if (Build.VERSION.SDK_INT >= 29) MediaStore.Images.Media.RELATIVE_PATH else MediaStore.Images.Media.DATA
++        val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, location)
++        val found = runCatching {
++            ApplicationLoader.applicationContext.contentResolver.query(
++                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
++                projection,
++                MediaStore.Images.Media.DATE_ADDED + " >= ?",
++                arrayOf(since.toString()),
++                MediaStore.Images.Media.DATE_ADDED + " DESC"
++            )?.use { cursor ->
++                if (!cursor.moveToFirst()) return@use null
++                val id = cursor.getLong(0)
++                val text = ((cursor.getString(1) ?: "") + " " + (cursor.getString(2) ?: "")).lowercase()
++                if (text.contains("screenshot")) id else null
++            }
++        }.getOrNull() ?: return
++        AndroidUtilities.runOnUIThread {
++            if (found == lastMediaId) return@runOnUIThread
++            lastMediaId = found
++            captured()
++        }
++    }
++
++    private fun captured() {
++        val chat = chatRef?.get() ?: return
++        if (chat.parentActivity == null || chat.isPaused() || TeleScreenshotSheet.isOpen) return
++        val now = SystemClock.elapsedRealtime()
++        if (now - lastNoticeAt < REPEAT_MS) return
++        val messages = visibleMessages(chat)
++        if (messages.isEmpty()) return
++        lastNoticeAt = now
++        BulletinFactory.of(chat).createSimpleBulletin(
++            R.raw.ic_save_to_gallery,
++            TeleLowercase.lc("Screenshot taken"),
++            TeleLowercase.lc("Hide messages or cut text"),
++            TeleLowercase.lc("Customize")
++        ) { TeleScreenshotSheet.open(chat, messages) }.setDuration(NOTICE_MS).show()
++    }
++
++    private fun visibleMessages(chat: ChatActivity): List<MessageObject> {
++        val list = chat.chatListView ?: return emptyList()
++        val top = chat.chatListViewPaddingTop
++        val bottom = list.measuredHeight - chat.blurredViewBottomOffset
++        val found = ArrayList<MessageObject>()
++        for (i in 0 until list.childCount) {
++            val cell = list.getChildAt(i) as? ChatMessageCell ?: continue
++            if (cell.bottom <= top || cell.top >= bottom) continue
++            val message = cell.messageObject ?: continue
++            if (message.isDateObject || !usable(chat, message)) continue
++            found.add(message)
++        }
++        return TeleShot.expand(chat, found, null).filter { usable(chat, it) }
++    }
++
++    // what stock keeps off screenshots (view-once, paid media) never goes into a picture
++    private fun usable(chat: ChatActivity, message: MessageObject): Boolean =
++        TeleShot.allowed(chat, listOf(message)) &&
++            message.type != MessageObject.TYPE_PAID_MEDIA &&
++            !message.isVoiceOnce && !message.isRoundOnce &&
++            !message.needDrawBluredPreview() && !message.hasRevealedExtendedMedia()
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt b/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt
+index 099834df5..9a2b510f7 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ShotMessages.kt
+@@ -39,7 +39,13 @@ object ShotMessages {
+     // renders deep copies so hidden parts are removed without touching the real chat messages
+     @JvmStatic
+     @JvmOverloads
+-    fun build(account: Int, source: List<MessageObject>, options: ShotOptions, skipped: Map<Int, Int> = emptyMap()): List<ShotEntry> {
++    fun build(
++        account: Int,
++        source: List<MessageObject>,
++        options: ShotOptions,
++        skipped: Map<Int, Int> = emptyMap(),
++        transform: ((MessageObject, TLRPC.Message) -> Unit)? = null
++    ): List<ShotEntry> {
+         val groups = HashMap<Long, MessageObject.GroupedMessages>()
+         val result = ArrayList<ShotEntry>()
+         var lastDay = -1
+@@ -50,6 +56,11 @@ object ShotMessages {
+                 if (count > 0) result.add(ShotEntry(skippedObject(account, count), null))
+             }
+             val copy = copyOf(original, options, account)
++            if (transform != null) {
++                // a cut on the real message would change the chat itself
++                if (copy === original.messageOwner) continue
++                transform(original, copy)
++            }
+             val replyTo = if (options.shows(ShotPart.REPLIES)) original.replyMessageObject else null
+             val message = ShotMessageObject.create(account, copy, replyTo, options.incoming)
+             if (options.hidden and ShotPart.INFO.bit != 0) message.notime = true
+@@ -151,7 +162,7 @@ object ShotMessages {
+     }
+ 
+     // same shape as ChatActivity.putFilteredDate
+-    private fun dateObject(account: Int, date: Int): MessageObject {
++    fun dateObject(account: Int, date: Int): MessageObject {
+         val message = TLRPC.TL_message()
+         message.message = LocaleController.formatDateChat(date.toLong())
+         message.id = 0
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt b/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
+index 1408c90cd..e43304427 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleBackup.kt
+@@ -13,7 +13,7 @@ object TeleBackup {
+ 
+     // the internal values and the server url stay on the device; an import must neither carry nor switch off the local password
+     private val SKIPPED = setOf(
+-        "known_settings", "changelog_accounts", "shot_view", "tele_server_url", "diag_last_exit",
++        "known_settings", "changelog_accounts", "shot_view", "screenshot_footer", "tele_server_url", "diag_last_exit",
+         "local_password_hash", "local_password_owner", "local_password_biometric", "local_password_transfer", "local_password_convert",
+         "local_password_sell", "local_password_upgrade", "local_password_buy", "local_password_send",
+         "local_password_reactions", "local_password_paid_media", "local_password_paid_messages",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt b/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt
+index ddb4df39d..0db69f13c 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleShot.kt
+@@ -90,7 +90,7 @@ object TeleShot {
+     }
+ 
+     // an album always travels whole, even when only one of its photos was selected
+-    private fun expand(chat: ChatActivity, selected: List<MessageObject>, group: MessageObject.GroupedMessages?): List<MessageObject> {
++    fun expand(chat: ChatActivity, selected: List<MessageObject>, group: MessageObject.GroupedMessages?): List<MessageObject> {
+         val all = ArrayList<MessageObject>(selected)
+         if (group != null) all.addAll(group.messages)
+         selected.forEach { message -> chat.getValidGroupedMessage(message)?.let { all.addAll(it.messages) } }
+@@ -102,7 +102,7 @@ object TeleShot {
+     }
+ 
+     // stock predicates on purpose: the "Forward protected messages as copies" toggle must not unlock shots
+-    private fun allowed(chat: ChatActivity, messages: List<MessageObject>): Boolean {
++    fun allowed(chat: ChatActivity, messages: List<MessageObject>): Boolean {
+         if (messages.isEmpty()) return false
+         val mode = chat.chatMode
+         if (mode != ChatActivity.MODE_DEFAULT && mode != ChatActivity.MODE_SAVED) return false
+@@ -115,7 +115,7 @@ object TeleShot {
+     }
+ 
+     // a cell picks its download state at bind time, so photos must be on disk before the screen builds them
+-    private fun preload(chat: ChatActivity, messages: List<MessageObject>, context: android.content.Context, done: () -> Unit) {
++    fun preload(chat: ChatActivity, messages: List<MessageObject>, context: android.content.Context, done: () -> Unit) {
+         val account = chat.currentAccount
+         val loader = FileLoader.getInstance(account)
+         val pending = HashSet<String>()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index a0ef1c5aa..680fe4a07 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1316,6 +1316,20 @@ object TeleTextRu {
+         "An opening bracket or quote adds its pair, a typed closing one steps over it, three backticks open a code block, and backspace removes an untouched pair at once." to "Открывающая скобка или кавычка ставит пару, закрывающая переступает через неё, три обратных апострофа открывают блок кода, а Backspace удаляет нетронутую пару сразу.",
+         "Keep indentation on a new line" to "Сохранять отступ на новой строке",
+         "A new line starts with the leading spaces or tabs of the line you were on." to "Новая строка начинается с отступов строки, на которой вы были.",
++        "Screenshot taken" to "Сделан скриншот",
++        "Hide messages or cut text" to "Скройте сообщения или вырежьте текст",
++        "Customize" to "Настроить",
++        "Share it beautifully" to "Поделиться красиво",
++        "Swipe a message to the left to hide it" to "Смахните сообщение влево, чтобы скрыть его",
++        "Cut from screenshot" to "Вырезать из скриншота",
++        "Screenshot sent to **%s**" to "Скриншот отправлен: **%s**",
++        "Screenshots sent to **%s**" to "Скриншоты отправлены: **%s**",
++        "Send to this chat" to "Отправить в этот чат",
++        "tele footer" to "Подпись tele",
++        "Customize chat screenshots" to "Настраивать скриншоты чатов",
++        "After a screenshot of a chat, offer to hide messages or cut text and share clean images." to "После скриншота чата предлагать скрыть сообщения или вырезать текст и поделиться чистыми изображениями.",
++        "Hide messages in a screenshot" to "Скрыть сообщения на скриншоте",
++        "Cut text from a screenshot" to "Вырезать текст со скриншота",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+@@ -1674,6 +1688,14 @@ object TeleTextRu {
+         "TeleStopBots" to "Остановить ботов",
+         "TeleStopBotsTitle_one" to "Остановить %1\$d бота?",
+         "TeleStopBotsTitle_other" to "Остановить %1\$d ботов?",
++        "TeleScreenshotImages_one" to "%1\$d скриншот",
++        "TeleScreenshotImages_other" to "скриншотов: %1\$d",
++        "TeleScreenshotMessages_one" to "%1\$d сообщение",
++        "TeleScreenshotMessages_other" to "сообщений: %1\$d",
++        "TeleScreenshotShare_one" to "Поделиться скриншотом",
++        "TeleScreenshotShare_other" to "Поделиться скриншотами (%1\$d)",
++        "TeleScreenshotSentChats_one" to "Скриншоты отправлены в %1\$d чат",
++        "TeleScreenshotSentChats_other" to "Скриншоты отправлены, чатов: %1\$d",
+         "Pad extreme image shapes" to "Добавлять поля для крайних пропорций",
+         "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Добавляет чёрные поля, чтобы очень узкие или широкие фото отправлялись как фото; исходный файл не меняется.",
+         "Playback" to "Воспроизведение",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 8f18003fc..257fb0411 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1316,6 +1316,20 @@ object TeleTextUk {
+         "An opening bracket or quote adds its pair, a typed closing one steps over it, three backticks open a code block, and backspace removes an untouched pair at once." to "Відкривальна дужка чи лапка ставить пару, закривальна переступає через неї, три зворотні апострофи відкривають блок коду, а Backspace видаляє недоторкану пару одразу.",
+         "Keep indentation on a new line" to "Зберігати відступ у новому рядку",
+         "A new line starts with the leading spaces or tabs of the line you were on." to "Новий рядок починається з відступів рядка, у якому ви були.",
++        "Screenshot taken" to "Зроблено скриншот",
++        "Hide messages or cut text" to "Приховайте повідомлення або виріжте текст",
++        "Customize" to "Налаштувати",
++        "Share it beautifully" to "Поділитися гарно",
++        "Swipe a message to the left to hide it" to "Змахніть повідомлення вліво, щоб приховати його",
++        "Cut from screenshot" to "Вирізати зі скриншота",
++        "Screenshot sent to **%s**" to "Скриншот надіслано: **%s**",
++        "Screenshots sent to **%s**" to "Скриншоти надіслано: **%s**",
++        "Send to this chat" to "Надіслати в цей чат",
++        "tele footer" to "Підпис tele",
++        "Customize chat screenshots" to "Налаштовувати скриншоти чатів",
++        "After a screenshot of a chat, offer to hide messages or cut text and share clean images." to "Після скриншота чату пропонувати приховати повідомлення або вирізати текст і поділитися чистими зображеннями.",
++        "Hide messages in a screenshot" to "Приховати повідомлення на скриншоті",
++        "Cut text from a screenshot" to "Вирізати текст зі скриншота",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+@@ -1674,6 +1688,14 @@ object TeleTextUk {
+         "TeleStopBots" to "Зупинити ботів",
+         "TeleStopBotsTitle_one" to "Зупинити %1\$d бота?",
+         "TeleStopBotsTitle_other" to "Зупинити %1\$d ботів?",
++        "TeleScreenshotImages_one" to "%1\$d скриншот",
++        "TeleScreenshotImages_other" to "скриншотів: %1\$d",
++        "TeleScreenshotMessages_one" to "%1\$d повідомлення",
++        "TeleScreenshotMessages_other" to "повідомлень: %1\$d",
++        "TeleScreenshotShare_one" to "Поділитися скриншотом",
++        "TeleScreenshotShare_other" to "Поділитися скриншотами (%1\$d)",
++        "TeleScreenshotSentChats_one" to "Скриншоти надіслано в %1\$d чат",
++        "TeleScreenshotSentChats_other" to "Скриншоти надіслано, чатів: %1\$d",
+         "Pad extreme image shapes" to "Додавати поля для крайніх пропорцій",
+         "Adds black bars so very narrow or wide photos can be sent as photos; the original file is untouched." to "Додає чорні поля, щоб дуже вузькі чи широкі фото надсилалися як фото; вихідний файл не змінюється.",
+         "Playback" to "Відтворення",
+diff --git a/TMessagesProj/src/main/java/tele/ui/ShotCell.kt b/TMessagesProj/src/main/java/tele/ui/ShotCell.kt
+index 084611429..7a5988d2e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/ShotCell.kt
++++ b/TMessagesProj/src/main/java/tele/ui/ShotCell.kt
+@@ -24,12 +24,17 @@ class ShotCell(
+     @JvmField
+     var hideInfo = false
+ 
++    var editor = false
++
+     override fun isNeedAuthorName(): Boolean = !hideNames && super.isNeedAuthorName()
+ 
+     override fun needDrawAvatar(): Boolean = !hideUserpics && super.needDrawAvatar()
+ 
+     override fun checkNeedDrawShareButton(messageObject: MessageObject?): Boolean = false
+ 
++    // a cut must stay hidden: a tap would reveal the dust
++    override fun checkSpoilersMotionEvent(event: android.view.MotionEvent?, n: Int): Boolean = !editor && super.checkSpoilersMotionEvent(event, n)
++
+     // notime empties the text, but media bubbles still paint an empty time pill
+     override fun drawTime(canvas: Canvas, alpha: Float, fromParent: Boolean) {
+         if (!hideInfo) super.drawTime(canvas, alpha, fromParent)
+diff --git a/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt b/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt
+index 724247eee..436b0802e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt
++++ b/TMessagesProj/src/main/java/tele/ui/ShotColumn.kt
+@@ -91,6 +91,11 @@ class ShotColumn(
+ 
+     val cropWidth: Int get() = cropRight - cropLeft
+ 
++    var fullWidth = false
++    var interactive = false
++    var editor = false
++    var cellDelegate: ChatMessageCell.ChatMessageCellDelegate? = null
++
+     private val delegate = object : ChatMessageCell.ChatMessageCellDelegate {
+         override fun canPerformActions(): Boolean = false
+         override fun isAdmin(uid: Long): Boolean = true
+@@ -116,8 +121,7 @@ class ShotColumn(
+         applyPending()
+     }
+ 
+-    // touches go to the scroll view: the picture is not interactive
+-    override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean = false
++    override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean = interactive && super.dispatchTouchEvent(ev)
+ 
+     fun setDrawingToBitmap(value: Boolean) {
+         messageCells.forEach { it.drawingToBitmap = value }
+@@ -152,7 +156,9 @@ class ShotColumn(
+                 cell.setMessageObject(message)
+             } else {
+                 val cell = ShotCell(context, account, shared, resources)
+-                cell.setDelegate(delegate)
++                cell.setDelegate(cellDelegate ?: delegate)
++                cell.editor = editor
++                if (editor) cell.setDrawSelectionBackground(entry.group == null)
+                 cell.isChat = flags.isChat
+                 cell.isBot = flags.isBot
+                 cell.isBotForum = flags.isBotForum
+@@ -219,11 +225,28 @@ class ShotColumn(
+     fun prepare(width: Int, scale: Int) {
+         for (i in 0 until childCount) getChildAt(i).visibility = View.VISIBLE
+         measureAndLayout(width)
+-        computeCrop(width)
+-        truncate(width, scale)
++        if (fullWidth) {
++            cropLeft = 0
++            cropRight = width
++        } else {
++            computeCrop(width)
++            truncate(width, scale)
++        }
+         shown = if (childCount == 0) 0 else visibleEntryCount()
+     }
+ 
++    // [first entry, end entry, top, bottom] per unit; an album is one unit
++    fun unitBounds(): List<IntArray> = units.map { unit ->
++        var top = Int.MAX_VALUE
++        var bottom = 0
++        for (i in unit[0] until unit[1]) {
++            val child = getChildAt(i) ?: continue
++            top = min(top, child.top)
++            bottom = max(bottom, child.bottom)
++        }
++        intArrayOf(unit[0], unit[1], if (top == Int.MAX_VALUE) 0 else top, bottom)
++    }
++
+     private fun measureAndLayout(width: Int) {
+         measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+         layout(0, 0, measuredWidth, measuredHeight)
+@@ -380,8 +403,8 @@ class ShotColumn(
+                 var memberBottom = member.top + member.paddingTop + member.backgroundDrawableBottom
+                 if (position.flags and MessageObject.POSITION_FLAG_TOP == 0) memberTop -= AndroidUtilities.dp(10f)
+                 if (position.flags and MessageObject.POSITION_FLAG_BOTTOM == 0) memberBottom += AndroidUtilities.dp(10f)
+-                val memberLeft = member.left + member.backgroundDrawableLeft
+-                val memberRight = member.left + member.backgroundDrawableRight
++                val memberLeft = member.x.toInt() + member.backgroundDrawableLeft
++                val memberRight = member.x.toInt() + member.backgroundDrawableRight
+                 if (top == null) {
+                     top = member
+                     l = memberLeft
+@@ -436,13 +459,13 @@ class ShotColumn(
+     private fun drawAfter(canvas: Canvas) {
+         for (cell in afterTime) {
+             canvas.save()
+-            canvas.translate(cell.left.toFloat(), cell.y)
++            canvas.translate(cell.x, cell.y)
+             cell.drawTime(canvas, 1f, true)
+             canvas.restore()
+         }
+         for (cell in afterNames) {
+             canvas.save()
+-            canvas.translate(cell.left.toFloat(), cell.y)
++            canvas.translate(cell.x, cell.y)
+             cell.setInvalidatesParent(true)
+             cell.drawNamesLayout(canvas, 1f)
+             cell.setInvalidatesParent(false)
+@@ -452,7 +475,7 @@ class ShotColumn(
+             if (!cell.transitionParams.wasDraw) continue
+             val selectionOnly = cell.currentPosition != null && cell.currentPosition.flags and MessageObject.POSITION_FLAG_LEFT == 0
+             canvas.save()
+-            canvas.translate(cell.left.toFloat(), cell.y)
++            canvas.translate(cell.x, cell.y)
+             cell.setInvalidatesParent(true)
+             cell.drawCaptionLayout(canvas, selectionOnly, 1f)
+             cell.setInvalidatesParent(false)
+@@ -461,7 +484,7 @@ class ShotColumn(
+         for (cell in afterReactions) {
+             if (!cell.transitionParams.wasDraw) continue
+             canvas.save()
+-            canvas.translate(cell.left.toFloat(), cell.y)
++            canvas.translate(cell.x, cell.y)
+             cell.setInvalidatesParent(true)
+             cell.drawReactionsLayout(canvas, 1f, null)
+             cell.drawCommentLayout(canvas, 1f)
+@@ -496,7 +519,10 @@ class ShotColumn(
+         avatar.setImageY((y - AndroidUtilities.dp(44f)).toFloat())
+         avatar.setAlpha(1f)
+         avatar.setVisible(true, false)
++        canvas.save()
++        canvas.translate(cell.translationX, 0f)
+         avatar.draw(canvas)
++        canvas.restore()
+     }
+ 
+     companion object {
+diff --git a/TMessagesProj/src/main/java/tele/ui/ShotFrame.kt b/TMessagesProj/src/main/java/tele/ui/ShotFrame.kt
+index 8a9492ddd..798584134 100644
+--- a/TMessagesProj/src/main/java/tele/ui/ShotFrame.kt
++++ b/TMessagesProj/src/main/java/tele/ui/ShotFrame.kt
+@@ -13,7 +13,7 @@ import tele.helpers.ShotOptions
+ import kotlin.math.min
+ 
+ // crops the column to the picture area, paints the background and renders the export bitmap
+-class ShotFrame(
++open class ShotFrame(
+     context: Context,
+     val column: ShotColumn,
+     private val wall: View,
+@@ -34,8 +34,11 @@ class ShotFrame(
+             }
+         }
+ 
++    var footerHeight = 0
++    var footer: ((Canvas, Int, Int) -> Unit)? = null
++
+     private var exporting = false
+-    private var exportScale = 1
++    private var exportScale = 1f
+     private var chunk: Bitmap? = null
+     private var chunkScale = 0
+     private val tilePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+@@ -50,7 +53,7 @@ class ShotFrame(
+     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+         val available = MeasureSpec.getSize(widthMeasureSpec)
+         column.prepare(available, scale)
+-        setMeasuredDimension(min(column.cropWidth, available), column.measuredHeight)
++        setMeasuredDimension(min(column.cropWidth, available), column.measuredHeight + footerHeight)
+     }
+ 
+     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+@@ -79,9 +82,10 @@ class ShotFrame(
+ 
+     override fun dispatchDraw(canvas: Canvas) {
+         canvas.save()
+-        canvas.clipRect(0, 0, width, height)
++        canvas.clipRect(0, 0, width, height - footerHeight)
+         super.dispatchDraw(canvas)
+         canvas.restore()
++        if (footerHeight > 0) footer?.invoke(canvas, width, height - footerHeight)
+     }
+ 
+     private fun paintChecker(canvas: Canvas) {
+@@ -124,7 +128,7 @@ class ShotFrame(
+     }
+ 
+     private fun paintWall(canvas: Canvas) {
+-        val bitmap = wallChunk(if (exporting) min(exportScale, 2) else 1)
++        val bitmap = wallChunk(if (exporting) min(kotlin.math.ceil(exportScale).toInt(), 2) else 1)
+         if (bitmap == null) {
+             canvas.drawColor(Theme.getColor(Theme.key_windowBackgroundWhite, resources))
+             return
+@@ -149,10 +153,12 @@ class ShotFrame(
+     }
+ 
+     // null when the bitmap does not fit in memory; the caller drops the scale
+-    fun render(scale: Int): Bitmap? {
++    fun render(scale: Int): Bitmap? = render(scale.toFloat())
++
++    fun render(scale: Float): Bitmap? {
+         if (width <= 0 || height <= 0) return null
+         val bitmap = try {
+-            Bitmap.createBitmap(width * scale, height * scale, Bitmap.Config.ARGB_8888)
++            Bitmap.createBitmap(Math.round(width * scale), Math.round(height * scale), Bitmap.Config.ARGB_8888)
+         } catch (e: OutOfMemoryError) {
+             return null
+         }
+@@ -161,7 +167,7 @@ class ShotFrame(
+         column.setDrawingToBitmap(true)
+         try {
+             val canvas = Canvas(bitmap)
+-            canvas.scale(scale.toFloat(), scale.toFloat())
++            canvas.scale(scale, scale)
+             draw(canvas)
+         } finally {
+             column.setDrawingToBitmap(false)
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt b/TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt
+new file mode 100644
+index 000000000..978930309
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt
+@@ -0,0 +1,1026 @@
++package tele.ui
++
++import android.content.ClipData
++import android.content.ClipboardManager
++import android.content.Context
++import android.content.Intent
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Outline
++import android.graphics.Paint
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.graphics.drawable.Drawable
++import android.graphics.drawable.GradientDrawable
++import android.net.Uri
++import android.os.SystemClock
++import android.text.TextPaint
++import android.text.TextUtils
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.HapticFeedbackConstants
++import android.view.MotionEvent
++import android.view.View
++import android.view.ViewConfiguration
++import android.view.ViewGroup
++import android.view.ViewOutlineProvider
++import android.widget.FrameLayout
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.core.content.FileProvider
++import androidx.core.widget.NestedScrollView
++import androidx.recyclerview.widget.LinearLayoutManager
++import org.telegram.messenger.AccountInstance
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
++import org.telegram.messenger.ChatObject
++import org.telegram.messenger.ChatThemeController
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLoader
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MediaController
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.SendMessagesHelper
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.Utilities
++import org.telegram.tgnet.ResultCallback
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.BottomSheet
++import org.telegram.ui.ActionBar.EmojiThemes
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ActionBar.theme.ThemeKey
++import org.telegram.ui.Cells.ChatMessageCell
++import org.telegram.ui.Cells.TextSelectionHelper
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.Components.AlertsCreator
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.ChatThemeBottomSheet
++import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RLottieDrawable
++import org.telegram.ui.Components.RLottieImageView
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.ShareAlert
++import org.telegram.ui.Components.SizeNotifierFrameLayout
++import org.telegram.ui.Components.ThemeSmallPreviewView
++import org.telegram.ui.Stories.recorder.ButtonWithCounterView
++import tele.TeleConfig
++import tele.helpers.ScreenshotCut
++import tele.helpers.ShotEntry
++import tele.helpers.ShotMessages
++import tele.helpers.ShotOptions
++import tele.helpers.TeleLowercase
++import tele.helpers.TeleShot
++import java.io.File
++import java.io.FileOutputStream
++import kotlin.math.abs
++import kotlin.math.max
++import kotlin.math.min
++
++// the screenshot editor: the messages that were on screen, with hidden messages, cut text and a chat theme
++class TeleScreenshotSheet private constructor(
++    private val chat: ChatActivity,
++    private val source: List<MessageObject>
++) : BottomSheet(chat.parentActivity, false, chat.themeDelegate) {
++
++    private class Cut(val start: Int, val end: Int, val translated: Boolean)
++
++    private val account = chat.currentAccount
++    private val themeDelegate = chat.themeDelegate
++    private val originalTheme: EmojiThemes? = themeDelegate?.currentTheme
++    private val originalWallpaper: TLRPC.WallPaper? = themeDelegate?.currentWallpaper
++    private val originalAppTheme: Theme.ThemeInfo = Theme.getActiveTheme()
++    private val originalDark = originalAppTheme.isDark
++    private var forceDark = originalDark
++    private var selectedTheme: EmojiThemes? = originalTheme
++
++    private val hidden = HashSet<Int>()
++    private val cuts = HashMap<Int, ArrayList<Cut>>()
++    private var entries: List<ShotEntry> = emptyList()
++    private var busy = false
++    private var restored = false
++
++    private val root = FrameLayout(context)
++    private val subtitle = TextView(context)
++    private val title = TextView(context)
++    private val close = ImageView(context)
++    private val more = ImageView(context)
++    private val wall: SizeNotifierFrameLayout
++    private val column: ShotColumn
++    private val frame: EditorFrame
++    private val scroll: NestedScrollView
++    private val selectionOverlay: TextSelectionHelper<ChatMessageCell>.TextSelectionOverlay
++    private val box: PreviewBox
++    private val cover = ImageView(context)
++    private val topFade = View(context)
++    private val bottomFade = View(context)
++    private val button: ButtonWithCounterView
++    private val themes: RecyclerListView
++    private val themesAdapter = ChatThemeBottomSheet.Adapter(account, chat.themeDelegate, ThemeSmallPreviewView.TYPE_DEFAULT)
++    private val darkDrawable: RLottieDrawable
++    private val darkView: RLottieImageView
++
++    private val selection = object : TextSelectionHelper.ChatListTextSelectionHelper() {
++        init {
++            resourcesProvider = this@TeleScreenshotSheet.themeDelegate
++        }
++
++        override fun getResourcesProvider(): Theme.ResourcesProvider? = themeDelegate
++
++        override fun canCopy(): Boolean = false
++
++        override fun canShowQuote(): Boolean = false
++
++        override fun isMenuEmpty(): Boolean = false
++
++        override fun canCut(): Boolean = !isDescription && !isFactCheck && !isRich
++
++        override fun tele_cutTitle(): CharSequence = TeleLowercase.lc("Cut from screenshot")
++
++        override fun onCutAction() {
++            cutSelection()
++        }
++
++        override fun invalidate() {
++            super.invalidate()
++            column.invalidate()
++        }
++    }
++
++    private var footerTint = 0
++    private var footerTintDirty = true
++
++    // the selection menu stays hidden while the helper believes the list is still scrolling
++    private val scrollIdle = Runnable { if (!restored) selection.stopScrolling() }
++
++    init {
++        isOpen = true
++        fixNavigationBar()
++        setCanDismissWithSwipe(false)
++        val content = LinearLayout(context)
++        content.orientation = LinearLayout.VERTICAL
++        root.addView(content, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat()))
++
++        val header = FrameLayout(context)
++        close.setImageResource(R.drawable.ic_layer_close)
++        close.scaleType = ImageView.ScaleType.CENTER
++        close.setOnClickListener { dismiss() }
++        header.addView(close, LayoutHelper.createFrame(44, 44f, Gravity.START or Gravity.CENTER_VERTICAL, 8f, 0f, 0f, 0f))
++
++        val titles = LinearLayout(context)
++        titles.orientation = LinearLayout.VERTICAL
++        titles.gravity = Gravity.CENTER_HORIZONTAL
++        title.text = TeleLowercase.lc("Share it beautifully")
++        title.typeface = AndroidUtilities.bold()
++        title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17f)
++        title.isSingleLine = true
++        title.ellipsize = TextUtils.TruncateAt.END
++        titles.addView(title, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
++        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12f)
++        subtitle.isSingleLine = true
++        subtitle.ellipsize = TextUtils.TruncateAt.END
++        titles.addView(subtitle, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, 0f, 1f, 0f, 0f))
++        header.addView(titles, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT.toFloat(), Gravity.CENTER, 92f, 0f, 92f, 0f))
++
++        more.setImageResource(R.drawable.ic_ab_other)
++        more.scaleType = ImageView.ScaleType.CENTER
++        more.setOnClickListener { showMore(it) }
++        header.addView(more, LayoutHelper.createFrame(44, 44f, Gravity.END or Gravity.CENTER_VERTICAL, 0f, 0f, 8f, 0f))
++
++        val drawableSize = AndroidUtilities.dp(28f)
++        darkDrawable = RLottieDrawable(R.raw.sun_outline, drawableSize, drawableSize, false, null)
++        darkDrawable.setAllowDecodeSingleFrame(true)
++        darkDrawable.setPlayInDirectionOfCustomEndFrame(true)
++        val frameIndex = if (forceDark) darkDrawable.framesCount - 1 else 0
++        darkDrawable.setCurrentFrame(frameIndex, false, true)
++        darkDrawable.setCustomEndFrame(frameIndex)
++        darkView = RLottieImageView(context)
++        darkView.setAnimation(darkDrawable)
++        darkView.scaleType = ImageView.ScaleType.CENTER
++        darkView.setOnClickListener { toggleDark() }
++        header.addView(darkView, LayoutHelper.createFrame(44, 44f, Gravity.END or Gravity.CENTER_VERTICAL, 0f, 0f, 52f, 0f))
++        content.addView(header, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 56))
++
++        wall = object : SizeNotifierFrameLayout(context) {
++            override fun getNewDrawable(): Drawable? = themeDelegate?.wallpaperDrawable ?: super.getNewDrawable()
++            override fun getNewDrawableMotion(): Boolean = false
++            override fun isActionBarVisible(): Boolean = false
++            override fun isStatusBarVisible(): Boolean = false
++        }
++        wall.setBackgroundImage(themeDelegate?.wallpaperDrawable ?: Theme.getCachedWallpaperNonBlocking(), false)
++        wall.visibility = View.INVISIBLE
++
++        column = ShotColumn(context, account, themeDelegate, ShotFlags.of(chat))
++        column.fullWidth = true
++        column.interactive = true
++        column.editor = true
++        column.cellDelegate = object : ChatMessageCell.ChatMessageCellDelegate {
++            override fun canPerformActions(): Boolean = false
++            override fun isAdmin(uid: Long): Boolean = true
++            override fun getTextSelectionHelper(): TextSelectionHelper.ChatListTextSelectionHelper = selection
++            override fun hasSelectedMessages(): Boolean = true
++        }
++        frame = EditorFrame(context)
++        frame.options = OPTIONS
++        frame.footerHeight = if (TeleConfig.SCREENSHOT_FOOTER.value) AndroidUtilities.dp(FOOTER_DP) else 0
++        frame.footer = { canvas, width, top -> drawFooter(canvas, width, top) }
++
++        val holder = FrameLayout(context)
++        holder.addView(frame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        selectionOverlay = selection.getOverlayView(context)
++        holder.addView(selectionOverlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
++        scroll = NestedScrollView(context)
++        scroll.isVerticalScrollBarEnabled = false
++        scroll.addView(holder, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++        scroll.setOnScrollChangeListener(NestedScrollView.OnScrollChangeListener { _, _, _, _, _ ->
++            selection.onParentScrolled()
++            AndroidUtilities.cancelRunOnUIThread(scrollIdle)
++            AndroidUtilities.runOnUIThread(scrollIdle, 150)
++            updateFades()
++        })
++        selection.setParentView(column)
++        selection.setScrollingParent(scroll)
++
++        topFade.visibility = View.GONE
++        bottomFade.visibility = View.GONE
++        cover.visibility = View.GONE
++        cover.scaleType = ImageView.ScaleType.FIT_XY
++
++        box = PreviewBox(context)
++        box.outlineProvider = object : ViewOutlineProvider() {
++            override fun getOutline(view: View, outline: Outline) {
++                outline.setRoundRect(0, 0, view.width, view.height, AndroidUtilities.dp(16f).toFloat())
++            }
++        }
++        box.clipToOutline = true
++        content.addView(box, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, 12f, 4f, 12f, 0f))
++
++        themes = RecyclerListView(context)
++        themes.adapter = themesAdapter
++        themes.setDrawSelection(false)
++        themes.clipChildren = false
++        themes.clipToPadding = false
++        themes.setHasFixedSize(true)
++        themes.itemAnimator = null
++        themes.isNestedScrollingEnabled = false
++        themes.layoutManager = LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false)
++        themes.setPadding(AndroidUtilities.dp(12f), 0, AndroidUtilities.dp(12f), 0)
++        themes.setOnItemClickListener { view, position -> pickTheme(view, position) }
++        content.addView(themes, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 104, 0f, 8f, 0f, 0f))
++
++        button = ButtonWithCounterView(context, chat.themeDelegate)
++        button.setText(TeleLowercase.lc("Share"), false)
++        button.setOnClickListener { share() }
++        content.addView(button, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, 16f, 8f, 16f, 12f))
++
++        setCustomView(root)
++        frame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateSummary() }
++        rebuild()
++        loadThemes()
++        applyChromeColors()
++    }
++
++    // the chat theme previewed behind the sheet also switches the app theme for a theme-less chat, so the sheet follows the same colors
++    private fun color(key: Int): Int = Theme.getColor(key, themeDelegate)
++
++    private fun applyChromeColors() {
++        setBackgroundColor(color(Theme.key_dialogBackground))
++        fixNavigationBar(color(Theme.key_dialogBackground))
++        val text = color(Theme.key_dialogTextBlack)
++        title.setTextColor(text)
++        subtitle.setTextColor(color(Theme.key_dialogTextGray3))
++        val selector = color(Theme.key_listSelector)
++        for (icon in listOf(close, more)) {
++            icon.colorFilter = PorterDuffColorFilter(text, PorterDuff.Mode.SRC_IN)
++            icon.background = Theme.createSelectorDrawable(selector, Theme.RIPPLE_MASK_CIRCLE_20DP)
++        }
++        darkView.background = Theme.createSelectorDrawable(selector, Theme.RIPPLE_MASK_CIRCLE_20DP)
++        darkDrawable.colorFilter = PorterDuffColorFilter(color(Theme.key_featuredStickers_addButton), PorterDuff.Mode.MULTIPLY)
++        darkView.invalidate()
++        val fade = color(Theme.key_dialogBackground)
++        topFade.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(fade, fade and 0x00FFFFFF))
++        bottomFade.background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(fade, fade and 0x00FFFFFF))
++        button.updateColors()
++        themesAdapter.notifyDataSetChanged()
++        containerView?.invalidate()
++    }
++
++    private inner class PreviewBox(context: Context) : ViewGroup(context) {
++        init {
++            addView(wall)
++            addView(scroll)
++            addView(topFade)
++            addView(bottomFade)
++            addView(cover)
++        }
++
++        private fun maxHeight(): Int = max(AndroidUtilities.dp(180f), AndroidUtilities.displaySize.y - AndroidUtilities.statusBarHeight - AndroidUtilities.dp(330f))
++
++        // the page is the width of the screen, as behind a real chat, and only its picture is scaled down
++        private fun scale(width: Int): Float = min(1f, width / pageWidth().toFloat())
++
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            val width = MeasureSpec.getSize(widthMeasureSpec)
++            val page = pageWidth()
++            val factor = scale(width)
++            wall.measure(MeasureSpec.makeMeasureSpec(page, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(wallHeight(), MeasureSpec.EXACTLY))
++            scroll.measure(MeasureSpec.makeMeasureSpec(page, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec((maxHeight() / factor).toInt(), MeasureSpec.AT_MOST))
++            scroll.pivotX = 0f
++            scroll.pivotY = 0f
++            scroll.scaleX = factor
++            scroll.scaleY = factor
++            val height = (scroll.measuredHeight * factor).toInt()
++            val fade = AndroidUtilities.dp(FADE_DP)
++            topFade.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(fade, MeasureSpec.EXACTLY))
++            bottomFade.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(fade, MeasureSpec.EXACTLY))
++            cover.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
++            setMeasuredDimension(width, height)
++        }
++
++        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
++            val width = r - l
++            val height = b - t
++            wall.layout(0, 0, wall.measuredWidth, wall.measuredHeight)
++            scroll.layout(0, 0, scroll.measuredWidth, scroll.measuredHeight)
++            topFade.layout(0, 0, width, topFade.measuredHeight)
++            bottomFade.layout(0, height - bottomFade.measuredHeight, width, height)
++            cover.layout(0, 0, width, height)
++            updateFades()
++        }
++    }
++
++    private fun pageWidth(): Int = AndroidUtilities.displaySize.x
++
++    // the wallpaper behind a page is always one screen tall; a page only crops it
++    private fun wallHeight(): Int = AndroidUtilities.displaySize.y
++
++    private inner class EditorFrame(context: Context) : ShotFrame(context, column, wall, themeDelegate) {
++        private val slop = ViewConfiguration.get(context).scaledTouchSlop
++        private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG)
++        private val icon: Drawable? = context.resources.getDrawable(R.drawable.menu_hide_gift).mutate()
++        private var downX = 0f
++        private var downY = 0f
++        private var target: List<View>? = null
++        private var swiping = false
++        private var slide = 0f
++        private var armed = false
++
++        private fun threshold(): Float = AndroidUtilities.dp(SWIPE_DP).toFloat()
++
++        private fun unitAt(y: Float): List<View>? {
++            for (unit in column.unitBounds()) {
++                if (y < unit[2] || y >= unit[3]) continue
++                val views = (unit[0] until unit[1]).mapNotNull { column.getChildAt(it) as? ChatMessageCell }
++                return views.ifEmpty { null }
++            }
++            return null
++        }
++
++        private fun canSwipe(): Boolean = !busy && !selection.isInSelectionMode
++
++        private fun startsSwipe(ev: MotionEvent): Boolean {
++            val dx = ev.x - downX
++            val dy = ev.y - downY
++            return target != null && canSwipe() && dx < -slop && abs(dx) > abs(dy) * 1.5f
++        }
++
++        // the selection overlay lives beside the frame, so the handles and the tap-away only work when it is fed the same touches
++        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
++            selection.checkSelectionCancel(ev)
++            if (selection.isInSelectionMode && selectionOverlay.onTouchEvent(ev)) return true
++            if (selectionOverlay.checkOnTap(ev)) ev.action = MotionEvent.ACTION_CANCEL
++            return super.dispatchTouchEvent(ev)
++        }
++
++        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
++            when (ev.actionMasked) {
++                MotionEvent.ACTION_DOWN -> {
++                    downX = ev.x
++                    downY = ev.y
++                    target = unitAt(ev.y)
++                    swiping = false
++                }
++                MotionEvent.ACTION_MOVE -> if (!swiping && startsSwipe(ev)) {
++                    swiping = true
++                    parent?.requestDisallowInterceptTouchEvent(true)
++                    return true
++                }
++            }
++            return false
++        }
++
++        override fun onTouchEvent(ev: MotionEvent): Boolean {
++            when (ev.actionMasked) {
++                MotionEvent.ACTION_DOWN -> return target != null
++                MotionEvent.ACTION_MOVE -> {
++                    if (!swiping && startsSwipe(ev)) {
++                        swiping = true
++                        parent?.requestDisallowInterceptTouchEvent(true)
++                    }
++                    if (swiping) setSlide(min(0f, ev.x - downX))
++                }
++                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
++                    if (swiping) finishSwipe(ev.actionMasked == MotionEvent.ACTION_UP && -slide >= threshold())
++                    swiping = false
++                }
++            }
++            return true
++        }
++
++        private fun setSlide(value: Float) {
++            slide = value
++            target?.forEach { it.translationX = value }
++            val reached = -value >= threshold()
++            if (reached && !armed) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING)
++            armed = reached
++            invalidate()
++            column.invalidate()
++        }
++
++        private fun finishSwipe(hide: Boolean) {
++            val views = target ?: return
++            val from = slide
++            val to = if (hide) -width.toFloat() else 0f
++            val animator = android.animation.ValueAnimator.ofFloat(from, to)
++            animator.duration = 180
++            animator.addUpdateListener { setSlide(it.animatedValue as Float) }
++            animator.addListener(object : android.animation.AnimatorListenerAdapter() {
++                override fun onAnimationEnd(animation: android.animation.Animator) {
++                    slide = 0f
++                    armed = false
++                    views.forEach { it.translationX = 0f }
++                    if (hide) hideUnit(views)
++                    invalidate()
++                }
++            })
++            animator.start()
++        }
++
++        override fun dispatchDraw(canvas: Canvas) {
++            super.dispatchDraw(canvas)
++            val views = target ?: return
++            if (slide >= 0f || views.isEmpty()) return
++            val top = views.minOf { it.top }
++            val bottom = views.maxOf { it.bottom }
++            val progress = min(1f, -slide / threshold())
++            val size = AndroidUtilities.dp(32f)
++            val cx = width - AndroidUtilities.dp(16f) - size / 2f + max(0f, threshold() + slide) * 0.5f
++            val cy = (top + bottom) / 2f
++            iconPaint.color = Theme.getColor(Theme.key_chat_serviceBackground, themeDelegate)
++            iconPaint.alpha = (255 * progress).toInt()
++            canvas.drawCircle(cx, cy, size / 2f * (0.6f + 0.4f * progress), iconPaint)
++            icon?.let {
++                val half = AndroidUtilities.dp(10f)
++                it.setBounds((cx - half).toInt(), (cy - half).toInt(), (cx + half).toInt(), (cy + half).toInt())
++                it.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_chat_serviceText, themeDelegate), PorterDuff.Mode.SRC_IN)
++                it.alpha = (255 * progress).toInt()
++                it.draw(canvas)
++            }
++        }
++    }
++
++    private fun hideUnit(views: List<View>) {
++        views.forEach { view -> (view as? ChatMessageCell)?.messageObject?.let { hidden.add(it.id) } }
++        rebuild()
++    }
++
++    private fun cutSelection() {
++        val cell = selection.selectedCell ?: return
++        val message = cell.messageObject ?: return
++        val start = selection.selectionStart
++        val end = selection.selectionEnd
++        selection.clear(true)
++        if (end <= start) return
++        val list = cuts.getOrPut(message.id) { ArrayList() }
++        val translated = message.translated
++        val overlapping = list.filter { it.translated == translated && it.start < end && it.end > start }
++        val covered = (start until end).all { offset -> overlapping.any { offset >= it.start && offset < it.end } }
++        list.removeAll(overlapping)
++        if (!covered) {
++            val from = min(start, overlapping.minOfOrNull { it.start } ?: start)
++            val to = max(end, overlapping.maxOfOrNull { it.end } ?: end)
++            list.add(Cut(from, to, translated))
++        }
++        rebuild()
++    }
++
++    private fun applyCuts(original: MessageObject, copy: TLRPC.Message) {
++        val list = cuts[original.id] ?: return
++        for (cut in list) {
++            val entity = ScreenshotCut()
++            entity.offset = cut.start
++            entity.length = cut.end - cut.start
++            val translatedText = copy.translatedText
++            if (cut.translated && translatedText != null) {
++                val text = TLRPC.TL_textWithEntities()
++                text.text = translatedText.text
++                text.entities = ArrayList(translatedText.entities ?: ArrayList())
++                text.entities.add(entity)
++                copy.translatedText = text
++            } else {
++                copy.entities = ArrayList(copy.entities ?: ArrayList())
++                copy.entities.add(entity)
++                copy.flags = copy.flags or TLRPC.MESSAGE_FLAG_HAS_ENTITIES
++            }
++        }
++    }
++
++    private fun rebuild() {
++        selection.clear(true)
++        val visible = source.filter { it.id !in hidden }
++        entries = ShotMessages.build(account, visible, OPTIONS, emptyMap(), ::applyCuts)
++        column.bind(entries, OPTIONS)
++        frame.requestLayout()
++    }
++
++    private fun messageCount(): Int {
++        val groups = HashSet<Long>()
++        var count = 0
++        for (entry in entries) {
++            val message = entry.message
++            if (message.isDateObject || message.contentType == 1) continue
++            if (message.groupId != 0L && !groups.add(message.groupId)) continue
++            count++
++        }
++        return count
++    }
++
++    // greedy split by whole units: a page is at most one screen tall with its date, padding and footer
++    private fun pages(): List<List<ShotEntry>> {
++        val units = column.unitBounds()
++        if (units.isEmpty() || entries.isEmpty()) return emptyList()
++        val limit = wallHeight()
++        val padding = column.paddingTop + column.paddingBottom + frame.footerHeight
++        val dateHeight = units.firstOrNull { isDate(entries[it[0]]) }?.let { it[3] - it[2] } ?: AndroidUtilities.dp(38f)
++        val result = ArrayList<List<ShotEntry>>()
++        var page = ArrayList<IntArray>()
++        var pageTop = 0
++        fun flush() {
++            while (page.isNotEmpty() && isDate(entries[page.last()[0]])) page.removeAt(page.size - 1)
++            if (page.isEmpty()) return
++            val list = ArrayList<ShotEntry>()
++            val first = entries[page.first()[0]]
++            if (!isDate(first)) list.add(ShotEntry(ShotMessages.dateObject(account, first.message.messageOwner.date), null))
++            page.forEach { unit -> for (i in unit[0] until unit[1]) list.add(entries[i]) }
++            result.add(list)
++            page = ArrayList()
++        }
++        for (unit in units) {
++            if (page.isEmpty()) pageTop = unit[2]
++            val header = if (page.isEmpty() && !isDate(entries[unit[0]]) || page.isNotEmpty() && !isDate(entries[page.first()[0]])) dateHeight else 0
++            val needed = unit[3] - pageTop + padding + header
++            if (page.isNotEmpty() && needed > limit) {
++                val carried = if (isDate(entries[page.last()[0]])) page.last() else null
++                flush()
++                pageTop = carried?.get(2) ?: unit[2]
++                if (carried != null) page.add(carried)
++            }
++            page.add(unit)
++        }
++        flush()
++        return result
++    }
++
++    private fun isDate(entry: ShotEntry): Boolean = entry.message.isDateObject
++
++    private fun updateSummary() {
++        if (busy) return
++        val messages = messageCount()
++        val count = if (messages == 0) 0 else max(1, pages().size)
++        subtitle.text = if (messages == 0) {
++            TeleLowercase.lc("Swipe a message to the left to hide it")
++        } else {
++            TeleLowercase.lc("%1\$s · %2\$s").format(
++                LocaleController.formatPluralString("TeleScreenshotImages", count),
++                LocaleController.formatPluralString("TeleScreenshotMessages", messages)
++            )
++        }
++        button.setText(LocaleController.formatPluralString("TeleScreenshotShare", max(1, count)), true)
++        button.isEnabled = messages > 0
++        button.alpha = if (messages > 0) 1f else 0.5f
++        updateFades()
++    }
++
++    private fun updateFades() {
++        if (busy) return
++        topFade.visibility = if (scroll.canScrollVertically(-1)) View.VISIBLE else View.GONE
++        bottomFade.visibility = if (scroll.canScrollVertically(1)) View.VISIBLE else View.GONE
++    }
++
++    private val footerText = TextPaint(Paint.ANTI_ALIAS_FLAG)
++    private val footerIcon: Drawable? by lazy { context.resources.getDrawable(R.drawable.tele_stat_notification).mutate() }
++
++    private fun drawFooter(canvas: Canvas, width: Int, top: Int) {
++        if (footerTintDirty && wall.width > 0 && wall.height > 0) updateFooterTint()
++        val tint = footerTint
++        val height = frame.footerHeight
++        val side = AndroidUtilities.dp(14f)
++        footerText.color = tint
++        footerText.typeface = AndroidUtilities.bold()
++        footerText.textSize = AndroidUtilities.dp(16f).toFloat()
++        val baseline = top + height / 2f - (footerText.descent() + footerText.ascent()) / 2f
++        canvas.drawText("tele", side.toFloat(), baseline, footerText)
++        footerIcon?.let {
++            val size = AndroidUtilities.dp(20f)
++            val left = width - side - size
++            val iconTop = top + (height - size) / 2
++            it.setBounds(left, iconTop, left + size, iconTop + size)
++            it.colorFilter = PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN)
++            it.draw(canvas)
++        }
++    }
++
++    private fun setFooter(shown: Boolean) {
++        TeleConfig.set(TeleConfig.SCREENSHOT_FOOTER, shown)
++        frame.footerHeight = if (shown) AndroidUtilities.dp(FOOTER_DP) else 0
++        frame.requestLayout()
++        frame.invalidate()
++    }
++
++    private fun loadThemes() {
++        val controller = ChatThemeController.getInstance(account)
++        val flags = ChatThemeController.THEME_LIST_WITH_DEFAULT or ChatThemeController.THEME_LIST_WITH_EMOJI
++        controller.requestAllChatThemes(object : ResultCallback<List<EmojiThemes>> {
++            override fun onComplete(result: List<EmojiThemes>?) {
++                AndroidUtilities.runOnUIThread { onThemes(controller.getEmojiThemes(flags)) }
++            }
++        }, true)
++    }
++
++    private fun onThemes(result: List<EmojiThemes>?) {
++        if (result.isNullOrEmpty() || restored) return
++        val items = ArrayList<ChatThemeBottomSheet.ChatThemeItem>()
++        val stub = ChatThemeBottomSheet.ChatThemeItem(result[0])
++        stub.themeIndex = if (forceDark) 1 else 0
++        items.add(stub)
++        val currentKey = originalTheme?.themeKey
++        var hasCurrent = false
++        for (i in 1 until result.size) {
++            val theme = result[i]
++            theme.loadPreviewColors(account)
++            val item = ChatThemeBottomSheet.ChatThemeItem(theme)
++            item.themeIndex = if (forceDark) 1 else 0
++            if (currentKey != null && ThemeKey.equals(theme.themeKey, currentKey)) {
++                hasCurrent = true
++                items.add(1, item)
++            } else {
++                items.add(item)
++            }
++        }
++        if (originalTheme != null && !hasCurrent) {
++            originalTheme.loadPreviewColors(account)
++            val item = ChatThemeBottomSheet.ChatThemeItem(originalTheme)
++            item.themeIndex = if (forceDark) 1 else 0
++            items.add(1, item)
++        }
++        themesAdapter.setItems(items)
++        themesAdapter.setSelectedItem(if (originalTheme != null) 1 else 0)
++    }
++
++    private fun pickTheme(view: View, position: Int) {
++        if (busy) return
++        val item = themesAdapter.items?.getOrNull(position) ?: return
++        val theme = if (item.chatTheme.showAsDefaultStub) null else item.chatTheme
++        selectedTheme = theme
++        themesAdapter.setSelectedItem(position)
++        if (theme != null) (view as? ThemeSmallPreviewView)?.playEmojiAnimation()
++        applyTheme()
++    }
++
++    private fun toggleDark() {
++        if (busy) return
++        forceDark = !forceDark
++        darkDrawable.setCustomEndFrame(if (forceDark) darkDrawable.framesCount else 0)
++        darkView.playAnimation()
++        themesAdapter.items?.forEach { it.themeIndex = if (forceDark) 1 else 0 }
++        themesAdapter.notifyDataSetChanged()
++        applyTheme()
++    }
++
++    private fun applyTheme() {
++        val delegate = themeDelegate ?: return
++        val sameAsChat = ThemeKey.equals(selectedTheme?.themeKey, originalTheme?.themeKey)
++        // switching back picks the last saved day or night theme, which need not be the one the user had
++        val backHome = forceDark == originalDark && reapplyAppTheme()
++        delegate.setCurrentTheme(selectedTheme, if (sameAsChat) originalWallpaper else null, false, forceDark, backHome)
++        refreshWall()
++        applyChromeColors()
++        rebuild()
++        // pattern wallpapers finish loading after the switch
++        AndroidUtilities.runOnUIThread({ refreshWall() }, 400)
++    }
++
++    private fun refreshWall() {
++        if (restored) return
++        wall.setBackgroundImage(themeDelegate?.wallpaperDrawable ?: Theme.getCachedWallpaperNonBlocking(), false)
++        footerTintDirty = true
++        frame.invalidateWall()
++        column.invalidate()
++    }
++
++    // the incoming bubble color reads on a pattern wallpaper, not on a plain one of the same lightness
++    private fun updateFooterTint() {
++        footerTintDirty = false
++        val bubble = Theme.getColor(Theme.key_chat_inBubble, themeDelegate)
++        val wallLight = AndroidUtilities.computePerceivedBrightness(averageWall())
++        footerTint = when {
++            abs(wallLight - AndroidUtilities.computePerceivedBrightness(bubble)) > 0.25f -> bubble
++            wallLight > 0.5f -> 0x99000000.toInt()
++            else -> 0xCCFFFFFF.toInt()
++        }
++    }
++
++    private fun averageWall(): Int {
++        val side = 12
++        val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(bitmap)
++        canvas.drawColor(Theme.getColor(Theme.key_windowBackgroundWhite))
++        canvas.scale(side / wall.width.toFloat(), side / wall.height.toFloat())
++        wall.draw(canvas)
++        var red = 0
++        var green = 0
++        var blue = 0
++        for (y in 0 until side) for (x in 0 until side) {
++            val pixel = bitmap.getPixel(x, y)
++            red += android.graphics.Color.red(pixel)
++            green += android.graphics.Color.green(pixel)
++            blue += android.graphics.Color.blue(pixel)
++        }
++        bitmap.recycle()
++        val count = side * side
++        return android.graphics.Color.rgb(red / count, green / count, blue / count)
++    }
++
++    private fun showMore(anchor: View) {
++        val options = ItemOptions.makeOptions(getContainer(), themeDelegate, anchor)
++        options.add(R.drawable.msg_copy, TeleLowercase.lc("Copy")) { copy() }
++        options.add(R.drawable.msg_download, TeleLowercase.lc("Save to gallery")) { save() }
++        options.add(R.drawable.msg_shareout, TeleLowercase.lc("Share")) { shareExternally() }
++        if (canSendHere()) options.add(R.drawable.msg_send, TeleLowercase.lc("Send to this chat")) { sendHere() }
++        options.addGap()
++        options.addChecked(TeleConfig.SCREENSHOT_FOOTER.value, TeleLowercase.lc("tele footer")) { setFooter(!TeleConfig.SCREENSHOT_FOOTER.value) }
++        options.show()
++    }
++
++    private fun directory(): File = File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE), "tele_screenshots").also { it.mkdirs() }
++
++    private fun imagesReady(): Boolean {
++        for (i in 0 until column.childCount) {
++            val cell = column.getChildAt(i) as? ShotCell ?: continue
++            if (cell.messageObject?.isPhoto != true) continue
++            if (cell.photoImage?.hasImageLoaded() != true) return false
++        }
++        return true
++    }
++
++    private fun afterImages(done: () -> Unit) {
++        val deadline = SystemClock.elapsedRealtime() + IMAGE_WAIT_MS
++        fun check() {
++            if (restored) return
++            if (imagesReady() || SystemClock.elapsedRealtime() >= deadline) done() else AndroidUtilities.runOnUIThread({ check() }, 120)
++        }
++        AndroidUtilities.runOnUIThread({ check() }, 60)
++    }
++
++    // every page is laid out alone at full width and drawn; a still copy covers the preview meanwhile
++    private fun render(done: (List<File>) -> Unit) {
++        if (busy || messageCount() == 0) return
++        val pages = pages()
++        if (pages.isEmpty()) return
++        busy = true
++        selection.clear(true)
++        cover.setImageBitmap(snapshot(box))
++        cover.visibility = View.VISIBLE
++        topFade.visibility = View.GONE
++        bottomFade.visibility = View.GONE
++        button.setLoading(true)
++        frame.invalidateWall()
++        val stamp = System.currentTimeMillis()
++        val files = ArrayList<File>()
++        var failed = false
++        fun finish() {
++            busy = false
++            button.setLoading(false)
++            rebuild()
++            cover.visibility = View.GONE
++            cover.setImageBitmap(null)
++            if (failed || files.size != pages.size) {
++                BulletinFactory.of(root, null).createErrorBulletin(TeleLowercase.lc("Not enough memory for the picture.")).show()
++            } else {
++                done(files)
++            }
++        }
++        fun step(index: Int) {
++            if (restored) return
++            if (index >= pages.size || failed) {
++                finish()
++                return
++            }
++            column.bind(pages[index], OPTIONS)
++            val width = frame.width
++            frame.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
++            frame.layout(frame.left, frame.top, frame.left + width, frame.top + frame.measuredHeight)
++            afterImages {
++                frame.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
++                frame.layout(frame.left, frame.top, frame.left + width, frame.top + frame.measuredHeight)
++                val scale = min(MAX_SCALE, MAX_SIDE / max(frame.width, frame.height).toFloat())
++                val bitmap = frame.render(scale)
++                if (bitmap == null) {
++                    failed = true
++                    finish()
++                    return@afterImages
++                }
++                val file = File(directory(), "screenshot_${stamp}_${index + 1}.png")
++                Utilities.globalQueue.postRunnable {
++                    val ok = runCatching { FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }.getOrDefault(false)
++                    bitmap.recycle()
++                    AndroidUtilities.runOnUIThread {
++                        if (ok) files.add(file) else failed = true
++                        step(index + 1)
++                    }
++                }
++            }
++        }
++        step(0)
++    }
++
++    private fun snapshot(view: View): Bitmap? = runCatching {
++        val bitmap = Bitmap.createBitmap(max(1, view.width), max(1, view.height), Bitmap.Config.ARGB_8888)
++        view.draw(Canvas(bitmap))
++        bitmap
++    }.getOrNull()
++
++    private fun uriOf(file: File): Uri = FileProvider.getUriForFile(context, ApplicationLoader.getApplicationId() + ".provider", file)
++
++    private fun copy() {
++        render { files ->
++            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
++            val clip = ClipData.newUri(context.contentResolver, "screenshot", uriOf(files[0]))
++            for (i in 1 until files.size) clip.addItem(ClipData.Item(uriOf(files[i])))
++            clipboard.setPrimaryClip(clip)
++            BulletinFactory.of(root, null).createCopyBulletin(TeleLowercase.lc("Shot copied to clipboard.")).show()
++        }
++    }
++
++    private fun save() {
++        render { files ->
++            var left = files.size
++            for (file in files) {
++                MediaController.saveFile(file.absolutePath, context, 0, file.name, "image/png", Utilities.Callback<Uri> {
++                    left--
++                    if (left == 0) BulletinFactory.of(root, null).createDownloadBulletin(if (files.size > 1) BulletinFactory.FileType.PHOTOS else BulletinFactory.FileType.PHOTO).show()
++                })
++            }
++        }
++    }
++
++    private fun shareExternally() {
++        render { files ->
++            val uris = ArrayList(files.map { uriOf(it) })
++            val intent = if (uris.size == 1) {
++                Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
++            } else {
++                Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
++            }
++            intent.type = "image/png"
++            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++            context.startActivity(Intent.createChooser(intent, TeleLowercase.lc("Share")))
++        }
++    }
++
++    private fun canSendHere(): Boolean {
++        if (chat.chatMode != ChatActivity.MODE_DEFAULT || !chat.canSendMessage()) return false
++        val target = chat.currentChat
++        return target == null || ChatObject.canSendPhoto(target)
++    }
++
++    private class Target(val dialogId: Long, val topMessage: MessageObject?, val monoForumPeer: Long)
++
++    private fun sendHere() {
++        if (!canSendHere()) return
++        render { files -> send(listOf(Target(chat.dialogId, chat.threadMessage, 0)), files, null, true) }
++    }
++
++    private fun share() {
++        render { files ->
++            val alert = object : ShareAlert(context, null, null, false, null, false, null) {
++                override fun sendInternal(withSound: Boolean) {
++                    val comment = commentTextView?.text
++                    val targets = ArrayList<Target>()
++                    for (i in 0 until selectedDialogs.size()) {
++                        val key = selectedDialogs.keyAt(i)
++                        if (AlertsCreator.checkSlowMode(context, currentAccount, key, !comment.isNullOrEmpty())) return
++                        val mono = MessagesController.getInstance(currentAccount).isMonoForum(key)
++                        val topic = selectedDialogTopics[selectedDialogs.get(key)]
++                        val top = if (topic != null && !mono) MessageObject(currentAccount, topic.topicStartMessage, false, false) else null
++                        val peer = if (topic != null && mono) DialogObject.getPeerDialogId(topic.from_id) else 0L
++                        targets.add(Target(key, top, peer))
++                    }
++                    if (targets.isEmpty()) return
++                    send(targets, files, comment, withSound) { dismiss() }
++                }
++            }
++            alert.show()
++        }
++    }
++
++    private fun send(targets: List<Target>, files: List<File>, comment: CharSequence?, withSound: Boolean, sent: (() -> Unit)? = null) {
++        val controller = MessagesController.getInstance(account)
++        val paid = ArrayList<Long>()
++        var count = 0
++        for (target in targets) {
++            var price = controller.getSendPaidMessagesStars(target.dialogId)
++            if (price <= 0) price = DialogObject.getMessagesStarsPrice(controller.isUserContactBlocked(target.dialogId))
++            if (price > 0) {
++                count += files.size
++                if (!paid.contains(target.dialogId)) paid.add(target.dialogId)
++            }
++        }
++        val entities = if (comment.isNullOrEmpty()) null else MediaDataController.getInstance(account).getEntities(arrayOf(comment), true)
++        AlertsCreator.ensurePaidMessagesMultiConfirmation(account, paid, count) { prices ->
++            for (target in targets) {
++                val infos = ArrayList<SendMessagesHelper.SendingMediaInfo>()
++                files.forEachIndexed { index, file ->
++                    val info = SendMessagesHelper.SendingMediaInfo()
++                    info.path = file.absolutePath
++                    if (index == 0 && !comment.isNullOrEmpty()) {
++                        info.caption = comment.toString()
++                        info.entities = entities
++                    }
++                    infos.add(info)
++                }
++                val price = prices?.get(target.dialogId) ?: 0L
++                SendMessagesHelper.prepareSendingMedia(
++                    AccountInstance.getInstance(account), infos, target.dialogId, target.topMessage, target.topMessage,
++                    null, null, false, true, null, withSound, 0, 0, 0, false, null, null, 0, false, price, target.monoForumPeer, null
++                )
++            }
++            sent?.invoke()
++            dismiss()
++            sentNotice(targets.map { it.dialogId }, files.size)
++        }
++    }
++
++    private fun sentNotice(dialogs: List<Long>, images: Int) {
++        val text = if (dialogs.size == 1) {
++            val did = dialogs[0]
++            val name = if (did == UserConfig.getInstance(account).getClientUserId()) {
++                LocaleController.getString(R.string.SavedMessages)
++            } else {
++                DialogObject.getDialogTitle(MessagesController.getInstance(account).getUserOrChat(did))
++            }
++            TeleLowercase.lc(if (images > 1) "Screenshots sent to **%s**" else "Screenshot sent to **%s**").format(name)
++        } else {
++            LocaleController.formatPluralString("TeleScreenshotSentChats", dialogs.size)
++        }
++        BulletinFactory.of(chat).createSimpleBulletin(R.raw.forward, AndroidUtilities.replaceTags(text)).show()
++    }
++
++    override fun dismiss() {
++        restore()
++        super.dismiss()
++    }
++
++    private fun restore() {
++        if (restored) return
++        restored = true
++        isOpen = false
++        selection.clear(true)
++        val backHome = reapplyAppTheme()
++        themeDelegate?.setCurrentTheme(originalTheme, originalWallpaper, false, originalDark, backHome)
++        frame.release()
++    }
++
++    private fun reapplyAppTheme(): Boolean {
++        if (Theme.getActiveTheme() === originalAppTheme) return false
++        Theme.applyTheme(originalAppTheme, false, originalDark)
++        return true
++    }
++
++    companion object {
++        private val OPTIONS = ShotOptions(background = true, dates = true, hidden = 0)
++        private const val FOOTER_DP = 36f
++        private const val FADE_DP = 28f
++        private const val SWIPE_DP = 72f
++        private const val IMAGE_WAIT_MS = 3000L
++        private const val MAX_SCALE = 2f
++        private const val MAX_SIDE = 2560f
++
++        @JvmStatic
++        var isOpen = false
++            private set
++
++        @JvmStatic
++        fun open(chat: ChatActivity, messages: List<MessageObject>) {
++            val context = chat.parentActivity ?: return
++            if (isOpen || messages.isEmpty() || !TeleShot.allowed(chat, messages)) return
++            TeleShot.preload(chat, messages, context) {
++                if (chat.parentActivity != null && !isOpen) chat.showDialog(TeleScreenshotSheet(chat, messages))
++            }
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 0764cc3ab..12812575f 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -480,7 +480,10 @@ object TeleSearch {
+             section(1566, "album", "sending", TeleSettingsActivity.MODE_SENDING, "Show docked media as an album"),
+             section(1567, "grid", "sending", TeleSettingsActivity.MODE_SENDING, "Show docked media as an album"),
+             section(1568, "flying", "sending", TeleSettingsActivity.MODE_SENDING, "Turn off the text sending animation"),
+-            section(1569, "appear instantly", "sending", TeleSettingsActivity.MODE_SENDING, "Turn off the text sending animation")
++            section(1569, "appear instantly", "sending", TeleSettingsActivity.MODE_SENDING, "Turn off the text sending animation"),
++            section(1570, "Share it beautifully", "menus", TeleSettingsActivity.MODE_MENUS, "Customize chat screenshots"),
++            section(1571, "Hide messages in a screenshot", "menus", TeleSettingsActivity.MODE_MENUS, "Customize chat screenshots"),
++            section(1572, "Cut text from a screenshot", "menus", TeleSettingsActivity.MODE_MENUS, "Customize chat screenshots")
+         ))
+         // a page button and the screen it opens are the same result: the one with the page path wins
+         val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 987fbebc7..c7016157c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1129,6 +1129,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Collectible prices at the purchase date" to "The USD price as of the purchase date.",
+             "View messages as TL" to "Open the current Telegram object as TL.",
+             "Save messages as a picture" to "Export a message or selection as an image.",
++            "Customize chat screenshots" to "After a screenshot of a chat, offer to hide messages or cut text and share clean images.",
+             "Hide similar channels" to "Don't load or show similar channels.",
+             "Hide the collectible status hint" to "No collectible hint over the profile name.",
+             "Reduce motion" to "Still stickers and emoji, no particles, no video or GIF autoplay.",
+@@ -1744,6 +1745,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_HEADER, "Message tools"),
+                 toggle("View messages as TL", TeleConfig.VIEW_AS_TL),
+                 toggle("Save messages as a picture", TeleConfig.SHOT),
++                toggle("Customize chat screenshots", TeleConfig.SCREENSHOT_EDITOR),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Menu editor"),
+                 sectionLink("Message menu", MODE_MENU, R.drawable.msg2_permissions, "tele-message-menu"),
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 968f5f714..7f3064a9e 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -353,4 +353,12 @@
+     <string name="TeleStopBots">Stop bots</string>
+     <string name="TeleStopBotsTitle_one">Stop %1$d bot?</string>
+     <string name="TeleStopBotsTitle_other">Stop %1$d bots?</string>
++    <string name="TeleScreenshotImages_one">%1$d screenshot</string>
++    <string name="TeleScreenshotImages_other">%1$d screenshots</string>
++    <string name="TeleScreenshotMessages_one">%1$d message</string>
++    <string name="TeleScreenshotMessages_other">%1$d messages</string>
++    <string name="TeleScreenshotShare_one">Share screen</string>
++    <string name="TeleScreenshotShare_other">Share %1$d screens</string>
++    <string name="TeleScreenshotSentChats_one">Screenshots sent to %1$d chat</string>
++    <string name="TeleScreenshotSentChats_other">Screenshots sent to %1$d chats</string>
+ </resources>

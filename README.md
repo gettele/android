@@ -81,6 +81,7 @@ changes to tele go through the patch queue. read these first:
 - [Telegram for Android](https://github.com/DrKLO/Telegram) by DrKLO, which every tele build is made from.
 - [tele](https://github.com/nitreojs/tele) by nitreojs, the desktop fork whose features this ports. its docs are the model for ours.
 - [inugram](https://github.com/teidesu/inugram) by teidesu, a patch queue over telegram android. its layout and conventions informed ours: the config, the hooks bus and the database rules. through it, prior art also comes from [Nekogram](https://github.com/Nekogram/Nekogram) and [NagramX](https://github.com/risin42/NagramX).
+- [Telegram-Customize-Screenshot](https://github.com/patsoooo/Telegram-Customize-Screenshot) by patsoooo, the telegram-ios proposal the screenshot editor follows.
 
 all fork code here is written from scratch.
 
