@@ -6,7 +6,7 @@ Subject: [PATCH] feat: customize chat screenshots before sharing
 ---
  TMessagesProj/src/main/AndroidManifest.xml    |    1 +
  .../org/telegram/messenger/MessageObject.java |    2 +-
- .../ui/Cells/TextSelectionHelper.java         |    7 +-
+ .../ui/Cells/TextSelectionHelper.java         |   10 +-
  .../java/org/telegram/ui/ChatActivity.java    |    2 +
  .../telegram/ui/Components/ShareAlert.java    |    2 +-
  .../src/main/java/tele/TeleConfig.kt          |    4 +
@@ -19,11 +19,11 @@ Subject: [PATCH] feat: customize chat screenshots before sharing
  .../src/main/java/tele/ui/ShotCell.kt         |    5 +
  .../src/main/java/tele/ui/ShotColumn.kt       |   48 +-
  .../src/main/java/tele/ui/ShotFrame.kt        |   22 +-
- .../main/java/tele/ui/TeleScreenshotSheet.kt  | 1026 +++++++++++++++++
+ .../main/java/tele/ui/TeleScreenshotSheet.kt  | 1015 +++++++++++++++++
  .../main/java/tele/ui/settings/TeleSearch.kt  |    5 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |    2 +
  .../src/main/res/values/strings_tele.xml      |    8 +
- 19 files changed, 1333 insertions(+), 29 deletions(-)
+ 19 files changed, 1324 insertions(+), 30 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt
  create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt
 
@@ -53,9 +53,18 @@ index c53d18927..1cff1132d 100644
              } else if (entity instanceof TLRPC.TL_messageEntityStrike) {
                  newRun.flags = TextStyleSpan.FLAG_STYLE_STRIKE;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
-index 47a9dfa46..734f39efd 100644
+index 47a9dfa46..55bec9f8e 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/TextSelectionHelper.java
+@@ -486,7 +486,7 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+             }
+ 
+             magnifier.show(
+-                magnifierXanimated, magnifierYanimated + lineHeight * 1.5f + dp(8)
++                magnifierXanimated * tele_magnifierScale(), (magnifierYanimated + lineHeight * 1.5f + dp(8)) * tele_magnifierScale()
+             );
+             magnifier.update();
+         }
 @@ -1588,7 +1588,11 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
                  tele.helpers.CopyMarkup.addSelectionItems(menu, TELE_COPY_MARKDOWN, TELE_COPY_HTML);
                  menu.add(Menu.NONE, R.id.menu_quote, 1, LocaleController.getString(R.string.Quote));
@@ -69,11 +78,12 @@ index 47a9dfa46..734f39efd 100644
                  menu.add(Menu.NONE, android.R.id.paste, 4, android.R.string.paste);
                  menu.add(Menu.NONE, android.R.id.selectAll, 5, android.R.string.selectAll);
                  return true;
-@@ -1796,6 +1800,7 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
+@@ -1796,6 +1800,8 @@ public abstract class TextSelectionHelper<Cell extends TextSelectionHelper.Selec
      }
  
      protected boolean canCut() { return false; }
 +    protected CharSequence tele_cutTitle() { return null; }
++    protected float tele_magnifierScale() { return 1f; }
      protected boolean canPaste() { return false; }
      protected boolean onCopyOverride() { return false; }
      protected boolean tele_canCopyMarkup() { return false; }
@@ -127,7 +137,7 @@ index 229784d36..da339cba6 100644
      val RECENT_TYPED_EMOJI = BoolItem("recent_typed_emoji", false)
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt b/TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt
 new file mode 100644
-index 000000000..361a661f6
+index 000000000..3f2ea25ca
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ScreenshotWatch.kt
 @@ -0,0 +1,161 @@
@@ -267,7 +277,7 @@ index 000000000..361a661f6
 +            TeleLowercase.lc("Screenshot taken"),
 +            TeleLowercase.lc("Hide messages or cut text"),
 +            TeleLowercase.lc("Customize")
-+        ) { TeleScreenshotSheet.open(chat, messages) }.setDuration(NOTICE_MS).show()
++        ) { TeleScreenshotSheet.open(chat, messages) }.setDuration(NOTICE_MS).show(true)
 +    }
 +
 +    private fun visibleMessages(chat: ChatActivity): List<MessageObject> {
@@ -684,10 +694,10 @@ index 8a9492ddd..798584134 100644
              column.setDrawingToBitmap(false)
 diff --git a/TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt b/TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt
 new file mode 100644
-index 000000000..978930309
+index 000000000..af0638006
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/ui/TeleScreenshotSheet.kt
-@@ -0,0 +1,1026 @@
+@@ -0,0 +1,1015 @@
 +package tele.ui
 +
 +import android.content.ClipData
@@ -774,17 +784,15 @@ index 000000000..978930309
 +// the screenshot editor: the messages that were on screen, with hidden messages, cut text and a chat theme
 +class TeleScreenshotSheet private constructor(
 +    private val chat: ChatActivity,
-+    private val source: List<MessageObject>
-+) : BottomSheet(chat.parentActivity, false, chat.themeDelegate) {
++    private val source: List<MessageObject>,
++    private val look: ScreenshotTheme
++) : BottomSheet(chat.parentActivity, false, look) {
 +
 +    private class Cut(val start: Int, val end: Int, val translated: Boolean)
 +
 +    private val account = chat.currentAccount
-+    private val themeDelegate = chat.themeDelegate
-+    private val originalTheme: EmojiThemes? = themeDelegate?.currentTheme
-+    private val originalWallpaper: TLRPC.WallPaper? = themeDelegate?.currentWallpaper
-+    private val originalAppTheme: Theme.ThemeInfo = Theme.getActiveTheme()
-+    private val originalDark = originalAppTheme.isDark
++    private val originalTheme: EmojiThemes? = chat.themeDelegate?.currentTheme
++    private val originalDark = look.isDark
 +    private var forceDark = originalDark
 +    private var selectedTheme: EmojiThemes? = originalTheme
 +
@@ -810,16 +818,19 @@ index 000000000..978930309
 +    private val bottomFade = View(context)
 +    private val button: ButtonWithCounterView
 +    private val themes: RecyclerListView
-+    private val themesAdapter = ChatThemeBottomSheet.Adapter(account, chat.themeDelegate, ThemeSmallPreviewView.TYPE_DEFAULT)
++    private val themesAdapter = ChatThemeBottomSheet.Adapter(account, look, ThemeSmallPreviewView.TYPE_DEFAULT)
 +    private val darkDrawable: RLottieDrawable
 +    private val darkView: RLottieImageView
 +
 +    private val selection = object : TextSelectionHelper.ChatListTextSelectionHelper() {
 +        init {
-+            resourcesProvider = this@TeleScreenshotSheet.themeDelegate
++            resourcesProvider = this@TeleScreenshotSheet.look
 +        }
 +
-+        override fun getResourcesProvider(): Theme.ResourcesProvider? = themeDelegate
++        override fun getResourcesProvider(): Theme.ResourcesProvider? = look
++
++        // the preview is scaled down, the magnifier works in unscaled surface pixels
++        override fun tele_magnifierScale(): Float = scroll.scaleX
 +
 +        override fun canCopy(): Boolean = false
 +
@@ -896,15 +907,15 @@ index 000000000..978930309
 +        content.addView(header, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 56))
 +
 +        wall = object : SizeNotifierFrameLayout(context) {
-+            override fun getNewDrawable(): Drawable? = themeDelegate?.wallpaperDrawable ?: super.getNewDrawable()
++            override fun getNewDrawable(): Drawable? = look.wallpaper ?: super.getNewDrawable()
 +            override fun getNewDrawableMotion(): Boolean = false
 +            override fun isActionBarVisible(): Boolean = false
 +            override fun isStatusBarVisible(): Boolean = false
 +        }
-+        wall.setBackgroundImage(themeDelegate?.wallpaperDrawable ?: Theme.getCachedWallpaperNonBlocking(), false)
++        wall.setBackgroundImage(look.wallpaper, false)
 +        wall.visibility = View.INVISIBLE
 +
-+        column = ShotColumn(context, account, themeDelegate, ShotFlags.of(chat))
++        column = ShotColumn(context, account, look, ShotFlags.of(chat))
 +        column.fullWidth = true
 +        column.interactive = true
 +        column.editor = true
@@ -962,7 +973,7 @@ index 000000000..978930309
 +        themes.setOnItemClickListener { view, position -> pickTheme(view, position) }
 +        content.addView(themes, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 104, 0f, 8f, 0f, 0f))
 +
-+        button = ButtonWithCounterView(context, chat.themeDelegate)
++        button = ButtonWithCounterView(context, look)
 +        button.setText(TeleLowercase.lc("Share"), false)
 +        button.setOnClickListener { share() }
 +        content.addView(button, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 48, 16f, 8f, 16f, 12f))
@@ -974,8 +985,7 @@ index 000000000..978930309
 +        applyChromeColors()
 +    }
 +
-+    // the chat theme previewed behind the sheet also switches the app theme for a theme-less chat, so the sheet follows the same colors
-+    private fun color(key: Int): Int = Theme.getColor(key, themeDelegate)
++    private fun color(key: Int): Int = Theme.getColor(key, look)
 +
 +    private fun applyChromeColors() {
 +        setBackgroundColor(color(Theme.key_dialogBackground))
@@ -1048,7 +1058,7 @@ index 000000000..978930309
 +    // the wallpaper behind a page is always one screen tall; a page only crops it
 +    private fun wallHeight(): Int = AndroidUtilities.displaySize.y
 +
-+    private inner class EditorFrame(context: Context) : ShotFrame(context, column, wall, themeDelegate) {
++    private inner class EditorFrame(context: Context) : ShotFrame(context, column, wall, look) {
 +        private val slop = ViewConfiguration.get(context).scaledTouchSlop
 +        private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 +        private val icon: Drawable? = context.resources.getDrawable(R.drawable.menu_hide_gift).mutate()
@@ -1160,13 +1170,13 @@ index 000000000..978930309
 +            val size = AndroidUtilities.dp(32f)
 +            val cx = width - AndroidUtilities.dp(16f) - size / 2f + max(0f, threshold() + slide) * 0.5f
 +            val cy = (top + bottom) / 2f
-+            iconPaint.color = Theme.getColor(Theme.key_chat_serviceBackground, themeDelegate)
++            iconPaint.color = Theme.getColor(Theme.key_chat_serviceBackground, look)
 +            iconPaint.alpha = (255 * progress).toInt()
 +            canvas.drawCircle(cx, cy, size / 2f * (0.6f + 0.4f * progress), iconPaint)
 +            icon?.let {
 +                val half = AndroidUtilities.dp(10f)
 +                it.setBounds((cx - half).toInt(), (cy - half).toInt(), (cx + half).toInt(), (cy + half).toInt())
-+                it.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_chat_serviceText, themeDelegate), PorterDuff.Mode.SRC_IN)
++                it.colorFilter = PorterDuffColorFilter(Theme.getColor(Theme.key_chat_serviceText, look), PorterDuff.Mode.SRC_IN)
 +                it.alpha = (255 * progress).toInt()
 +                it.draw(canvas)
 +            }
@@ -1392,11 +1402,8 @@ index 000000000..978930309
 +    }
 +
 +    private fun applyTheme() {
-+        val delegate = themeDelegate ?: return
-+        val sameAsChat = ThemeKey.equals(selectedTheme?.themeKey, originalTheme?.themeKey)
-+        // switching back picks the last saved day or night theme, which need not be the one the user had
-+        val backHome = forceDark == originalDark && reapplyAppTheme()
-+        delegate.setCurrentTheme(selectedTheme, if (sameAsChat) originalWallpaper else null, false, forceDark, backHome)
++        val ownLook = ThemeKey.equals(selectedTheme?.themeKey, originalTheme?.themeKey) && forceDark == originalDark
++        if (ownLook) look.showChat() else look.show(selectedTheme, forceDark)
 +        refreshWall()
 +        applyChromeColors()
 +        rebuild()
@@ -1406,7 +1413,7 @@ index 000000000..978930309
 +
 +    private fun refreshWall() {
 +        if (restored) return
-+        wall.setBackgroundImage(themeDelegate?.wallpaperDrawable ?: Theme.getCachedWallpaperNonBlocking(), false)
++        wall.setBackgroundImage(look.wallpaper, false)
 +        footerTintDirty = true
 +        frame.invalidateWall()
 +        column.invalidate()
@@ -1415,7 +1422,7 @@ index 000000000..978930309
 +    // the incoming bubble color reads on a pattern wallpaper, not on a plain one of the same lightness
 +    private fun updateFooterTint() {
 +        footerTintDirty = false
-+        val bubble = Theme.getColor(Theme.key_chat_inBubble, themeDelegate)
++        val bubble = Theme.getColor(Theme.key_chat_inBubble, look)
 +        val wallLight = AndroidUtilities.computePerceivedBrightness(averageWall())
 +        footerTint = when {
 +            abs(wallLight - AndroidUtilities.computePerceivedBrightness(bubble)) > 0.25f -> bubble
@@ -1446,7 +1453,7 @@ index 000000000..978930309
 +    }
 +
 +    private fun showMore(anchor: View) {
-+        val options = ItemOptions.makeOptions(getContainer(), themeDelegate, anchor)
++        val options = ItemOptions.makeOptions(getContainer(), look, anchor)
 +        options.add(R.drawable.msg_copy, TeleLowercase.lc("Copy")) { copy() }
 +        options.add(R.drawable.msg_download, TeleLowercase.lc("Save to gallery")) { save() }
 +        options.add(R.drawable.msg_shareout, TeleLowercase.lc("Share")) { shareExternally() }
@@ -1680,15 +1687,7 @@ index 000000000..978930309
 +        restored = true
 +        isOpen = false
 +        selection.clear(true)
-+        val backHome = reapplyAppTheme()
-+        themeDelegate?.setCurrentTheme(originalTheme, originalWallpaper, false, originalDark, backHome)
 +        frame.release()
-+    }
-+
-+    private fun reapplyAppTheme(): Boolean {
-+        if (Theme.getActiveTheme() === originalAppTheme) return false
-+        Theme.applyTheme(originalAppTheme, false, originalDark)
-+        return true
 +    }
 +
 +    companion object {
@@ -1709,7 +1708,7 @@ index 000000000..978930309
 +            val context = chat.parentActivity ?: return
 +            if (isOpen || messages.isEmpty() || !TeleShot.allowed(chat, messages)) return
 +            TeleShot.preload(chat, messages, context) {
-+                if (chat.parentActivity != null && !isOpen) chat.showDialog(TeleScreenshotSheet(chat, messages))
++                if (chat.parentActivity != null && !isOpen) chat.showDialog(TeleScreenshotSheet(chat, messages, ScreenshotTheme(chat.currentAccount, chat.themeDelegate)))
 +            }
 +        }
 +    }
