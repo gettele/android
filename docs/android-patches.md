@@ -480,3 +480,5 @@ Keeps the Saved Messages dialog in the main chat list while the switch is on, ev
 
 The switch itself never changes the pin. Only the main chat list in its default folder and default filter gets the row: archived chats, community lists and selection lists keep stock order.
 
+Independently of the switch, Saved Messages can always be pinned in the main list past the pinned-chats limit: the limit alert is skipped for it alone, Telegram gets the pin when there is room, and otherwise it becomes a local pin through the existing local-pins storage even when that feature's own switch is off. A later server pin replaces the local one; other chats keep stock limits.
+
