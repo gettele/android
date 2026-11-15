@@ -60,6 +60,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A018](#a018) | Per-media software volumes | adaptation | active | 1 |
 | [A019](#a019) | Composer editing helpers | adaptation | active | 1 |
 | [A020](#a020) | Chat screenshot editor | original | active | 1 |
+| [A021](#a021) | Saved Messages row in the chat list | original | active | 1 |
 
 <a id="a001"></a>
 
@@ -466,3 +467,16 @@ After a system screenshot of a chat (Android 14+ screen capture callback, or the
 | patch |
 |---|
 | [`0350-feat-customize-chat-screenshots-before-sharing.patch`](../patches/android/0350-feat-customize-chat-screenshots-before-sharing.patch) |
+
+<a id="a021"></a>
+
+## A021 — Saved Messages row in the chat list
+
+**Type:** `original` · **Status:** `active`
+
+**Desktop references:** none (Android-only change).
+
+Moves the stock Saved Messages dialog to a row above the pinned chats in the main chat list, right under the archive row, and stops it from appearing again at its pinned position. The row is the stock dialog cell rebound to the self chat, so opening it, its badges and the rest of the stock list behavior stay unchanged. Its long-press menu pins the row in the list, hides it above the list until a pull down of about 88dp, or hides it from the chat list and turns the switch off.
+
+The hidden-above state is per account and persists across restarts; changing the switch clears it. Only the main chat list in its default folder and default filter gets the row: archived chats, community lists and selection lists keep stock order.
+
