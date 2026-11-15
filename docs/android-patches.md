@@ -476,7 +476,7 @@ After a system screenshot of a chat (Android 14+ screen capture callback, or the
 
 **Desktop references:** none (Android-only change).
 
-Moves the stock Saved Messages dialog to a row above the pinned chats in the main chat list, right under the archive row, and stops it from appearing again at its pinned position. The row is the stock dialog cell rebound to the self chat, so opening it, its badges and the rest of the stock list behavior stay unchanged. Its long-press menu pins the row in the list, hides it above the list until a pull down of about 88dp, or hides it from the chat list and turns the switch off.
+Keeps the Saved Messages dialog in the main chat list while the switch is on, even when it is empty or missing from the loaded dialogs, and never shows it twice. Pinned (the default), it sits right under the archive row above the pinned chats; unpinned, it stays at its usual date-sorted place as a regular row. The pinned row is the stock dialog cell rebound to the self chat, so opening it and its badges stay unchanged. Its long-press menu unpins or pins it, or hides it from the chat list by turning the switch off.
 
-The hidden-above state is per account and persists across restarts; changing the switch clears it. Only the main chat list in its default folder and default filter gets the row: archived chats, community lists and selection lists keep stock order.
+The pinned state is per account and persists across restarts; turning the switch on starts pinned. Only the main chat list in its default folder and default filter gets the row: archived chats, community lists and selection lists keep stock order.
 

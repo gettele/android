@@ -4,20 +4,20 @@ Date: Sun, 15 Nov 2026 17:09:50 +0300
 Subject: [PATCH] feat: pin saved messages on top
 
 ---
- .../telegram/ui/Adapters/DialogsAdapter.java  | 51 +++++++++-
- .../java/org/telegram/ui/DialogsActivity.java |  9 +-
+ .../telegram/ui/Adapters/DialogsAdapter.java  | 75 +++++++++++++++-
+ .../java/org/telegram/ui/DialogsActivity.java |  5 +-
  .../src/main/java/tele/TeleConfig.kt          |  2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |  3 +
- .../src/main/java/tele/helpers/SavedRow.kt    | 96 +++++++++++++++++++
- .../src/main/java/tele/helpers/TeleTextRu.kt  |  3 +
- .../src/main/java/tele/helpers/TeleTextUk.kt  |  3 +
+ .../src/main/java/tele/helpers/SavedRow.kt    | 87 +++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  2 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  2 +
  .../main/java/tele/ui/settings/TeleSearch.kt  |  4 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
- 9 files changed, 170 insertions(+), 3 deletions(-)
+ 9 files changed, 179 insertions(+), 3 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/SavedRow.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
-index 11c579eec..5b3d389d8 100644
+index 11c579eec..163712447 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Adapters/DialogsAdapter.java
 @@ -113,6 +113,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
@@ -36,23 +36,28 @@ index 11c579eec..5b3d389d8 100644
              case VIEW_TYPE_FORWARD_TO_STORIES_CELL:
              case VIEW_TYPE_DIALOG:
                  if (dialogsType == DialogsActivity.DIALOGS_TYPE_ADD_USERS_TO ||
-@@ -1073,6 +1075,15 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+@@ -1073,6 +1075,20 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
              case tele_VIEW_TYPE_CHAT:
                  tele.helpers.TeleChat.bind((DialogCell) holder.itemView, currentAccount);
                  break;
 +            case tele_VIEW_TYPE_SAVED: {
 +                DialogCell cell = (DialogCell) holder.itemView;
++                final TLRPC.Dialog dialog = (TLRPC.Dialog) getItem(i);
 +                cell.useSeparator = false;
 +                cell.fullSeparator = false;
 +                cell.setCustomMessage(null);
-+                cell.setDialog((TLRPC.Dialog) getItem(i), dialogsType, folderId);
++                if (MessagesController.getInstance(currentAccount).dialogs_dict.get(dialog.id) != null) {
++                    cell.setDialog(dialog, dialogsType, folderId);
++                } else {
++                    cell.setDialog(dialog.id, null, 0, false, false);
++                }
 +                cell.checkHeight();
 +                break;
 +            }
              case VIEW_TYPE_EMPTY: {
                  DialogsEmptyCell cell = (DialogsEmptyCell) holder.itemView;
                  int fromDialogsEmptyType = lastDialogsEmptyType;
-@@ -1862,6 +1873,44 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+@@ -1862,6 +1878,63 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
                  }
              }
          }
@@ -65,6 +70,9 @@ index 11c579eec..5b3d389d8 100644
 +        if (saved == null || isOnlySelect || communityId != 0 || parentFragment != null && parentFragment.isArchive()) {
 +            return;
 +        }
++        if (MessagesController.getInstance(currentAccount).isHiddenByUndo(saved.id)) {
++            return;
++        }
 +        int from = -1;
 +        for (int i = 0; i < itemInternals.size(); i++) {
 +            final ItemInternal item = itemInternals.get(i);
@@ -73,31 +81,47 @@ index 11c579eec..5b3d389d8 100644
 +                break;
 +            }
 +        }
-+        if (from < 0) {
++        if (!tele.helpers.SavedRow.pinned(currentAccount)) {
++            if (from < 0) {
++                itemInternals.add(tele_savedDateIndex(saved), new ItemInternal(VIEW_TYPE_DIALOG, saved));
++            }
 +            return;
 +        }
-+        if (tele.helpers.SavedRow.hiddenAbove(currentAccount)) {
-+            itemInternals.remove(from);
-+            return;
-+        }
-+        int to = from;
++        final ItemInternal item = from >= 0 ? itemInternals.remove(from) : new ItemInternal(tele_VIEW_TYPE_SAVED, saved);
++        item.viewType = tele_VIEW_TYPE_SAVED;
++        itemInternals.add(Math.min(tele_savedTopIndex(), itemInternals.size()), item);
++    }
++
++    private int tele_savedTopIndex() {
 +        for (int i = 0; i < itemInternals.size(); i++) {
 +            final ItemInternal item = itemInternals.get(i);
 +            if (item.viewType == VIEW_TYPE_DIALOG) {
-+                to = item.dialog instanceof TLRPC.TL_dialogFolder ? i + 1 : i;
-+                break;
++                return item.dialog instanceof TLRPC.TL_dialogFolder ? i + 1 : i;
++            }
++            if (item.viewType == VIEW_TYPE_EMPTY || item.viewType == VIEW_TYPE_LAST_EMPTY || item.viewType == VIEW_TYPE_NEW_CHAT_HINT || item.viewType == VIEW_TYPE_FLICKER) {
++                return i;
 +            }
 +        }
-+        final ItemInternal item = itemInternals.remove(from);
-+        item.viewType = tele_VIEW_TYPE_SAVED;
-+        if (from < to) {
-+            to--;
++        return itemInternals.size();
++    }
++
++    private int tele_savedDateIndex(TLRPC.Dialog saved) {
++        int last = -1;
++        for (int i = 0; i < itemInternals.size(); i++) {
++            final ItemInternal item = itemInternals.get(i);
++            if (item.viewType != VIEW_TYPE_DIALOG || item.dialog == null) {
++                continue;
++            }
++            last = i;
++            if (!item.pinned && !(item.dialog instanceof TLRPC.TL_dialogFolder) && item.dialog.last_message_date <= saved.last_message_date) {
++                return i;
++            }
 +        }
-+        itemInternals.add(Math.min(to, itemInternals.size()), item);
++        return last >= 0 ? last + 1 : tele_savedTopIndex();
      }
  
      private void tele_addChat() {
-@@ -1886,7 +1935,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
+@@ -1886,7 +1959,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
      }
  
      public int getItemHeight(int position) {
@@ -107,7 +131,7 @@ index 11c579eec..5b3d389d8 100644
                  return tele.helpers.TeleCompactRows.height(dialogsType, AndroidUtilities.dp(SharedConfig.useThreeLinesLayout ? 86 : 91)) + 1;
              } else {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-index db1d0123e..c67a2408e 100644
+index db1d0123e..255f01ed2 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 @@ -2455,7 +2455,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
@@ -119,27 +143,12 @@ index db1d0123e..c67a2408e 100644
                      return 0;
                  }
                  DialogCell dialogCell = (DialogCell) viewHolder.itemView;
-@@ -4360,10 +4360,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
-                             float newOverScroll = storiesOverscroll - dy * AndroidUtilities.lerp( 0.2f, 0.5f, dialogStoriesCell.overscrollProgress());
-                             setStoriesOvercroll(viewPage, newOverScroll);
-                         }
-+                        if (viewPage.archivePullViewState == ARCHIVE_ITEM_STATE_SHOWED && usedDy == 0 && dy < 0 && isDragging) {
-+                            tele.helpers.SavedRow.pulled(currentAccount, viewPage.dialogsType, dy, 0, true);
-+                        }
-                         return usedDy;
-                     }
- 
-                     int scrolled = super.scrollVerticallyBy(measuredDy, recycler, state);
-+                    tele.helpers.SavedRow.pulled(currentAccount, viewPage.dialogsType, dy, scrolled, isDragging);
-                     if (scrolled == 0 && dy < 0 && isDragging && !rightSlidingDialogContainer.hasFragment() && hasStories && progressToActionMode == 0) {
-                         float newOverScroll = storiesOverscroll - dy * dialogStoriesCell.getOverScrollCoef();
-                         setStoriesOvercroll(viewPage, newOverScroll);
-@@ -8399,6 +8403,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -8399,6 +8399,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
          if (adapter.getItemViewType(position) == DialogsAdapter.tele_VIEW_TYPE_CHAT) {
              return !actionBar.isActionModeShowed() && tele.helpers.TeleChat.showMenu(this);
          }
-+        if (adapter.getItemViewType(position) == DialogsAdapter.tele_VIEW_TYPE_SAVED) {
-+            return !actionBar.isActionModeShowed() && tele.helpers.SavedRow.showMenu(this);
++        if (!actionBar.isActionModeShowed() && !onlySelect && dialogsType == DIALOGS_TYPE_DEFAULT && view instanceof DialogCell && tele.helpers.SavedRow.isSelf(currentAccount, ((DialogCell) view).getDialogId())) {
++            return tele.helpers.SavedRow.showMenu(this);
 +        }
  
          if (!actionBar.isActionModeShowed() && !AndroidUtilities.isTablet() && !onlySelect && view instanceof DialogCell && !getMessagesController().isForum(((DialogCell) view).getDialogId()) && !rightSlidingDialogContainer.hasFragment()) {
@@ -173,10 +182,10 @@ index f51fb1e0b..f3b4795c4 100644
          }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/SavedRow.kt b/TMessagesProj/src/main/java/tele/helpers/SavedRow.kt
 new file mode 100644
-index 000000000..2ef00c913
+index 000000000..add72e092
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/SavedRow.kt
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,87 @@
 +package tele.helpers
 +
 +import org.telegram.messenger.AccountInstance
@@ -193,14 +202,12 @@ index 000000000..2ef00c913
 +import tele.TeleHooks
 +import tele.db.TeleDatabaseHelper
 +
-+// the stock self dialog, retyped and moved above the pinned chats; it must stay after the archive
-+// row, whose hidden-above-the-list pull assumes that row is still position 0
++// the stock self dialog kept in the chat list while the toggle is on: retyped and moved under the
++// archive row when pinned, left to the date sort when not
 +object SavedRow {
-+    private const val PULL_DP = 88f
-+    private val above = HashMap<Int, Boolean>()
-+    private val pull = HashMap<Int, Int>()
++    private val pinState = HashMap<Int, Boolean>()
 +
-+    private fun key(account: Int) = "saved_row_above:$account"
++    private fun key(account: Int) = "saved_row_pinned:$account"
 +
 +    @JvmStatic
 +    fun enabled(): Boolean = TeleConfig.SAVED_MESSAGES_ROW.value
@@ -210,23 +217,31 @@ index 000000000..2ef00c913
 +        if (!enabled() || dialogsType != 0 || folderId != 0 || filter != null && !filter.isDefault) return null
 +        val self = UserConfig.getInstance(account).clientUserId
 +        if (self == 0L) return null
-+        return MessagesController.getInstance(account).dialogs_dict.get(self)
++        val known = MessagesController.getInstance(account).dialogs_dict.get(self)
++        if (known != null) return known
++        return TLRPC.TL_dialog().apply {
++            id = self
++            peer = TLRPC.TL_peerUser().apply { user_id = self }
++        }
 +    }
 +
 +    @JvmStatic
-+    fun hiddenAbove(account: Int): Boolean = above.getOrPut(account) { TeleDatabaseHelper.get(key(account)) == "1" }
++    fun pinned(account: Int): Boolean = pinState.getOrPut(account) { TeleDatabaseHelper.get(key(account)) != "0" }
 +
 +    @JvmStatic
-+    fun setHiddenAbove(account: Int, value: Boolean) {
-+        above[account] = value
-+        TeleDatabaseHelper.put(key(account), if (value) "1" else null)
++    fun setPinned(account: Int, value: Boolean) {
++        pinState[account] = value
++        TeleDatabaseHelper.put(key(account), if (value) "1" else "0")
 +        AndroidUtilities.runOnUIThread { reload(account) }
 +    }
 +
 +    @JvmStatic
++    fun isSelf(account: Int, dialogId: Long): Boolean =
++        enabled() && dialogId != 0L && dialogId == UserConfig.getInstance(account).clientUserId
++
++    @JvmStatic
 +    fun onToggled() {
-+        above.clear()
-+        pull.clear()
++        pinState.clear()
 +        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
 +            TeleDatabaseHelper.put(key(account), null)
 +            AndroidUtilities.runOnUIThread { reload(account) }
@@ -234,32 +249,17 @@ index 000000000..2ef00c913
 +    }
 +
 +    @JvmStatic
-+    fun pulled(account: Int, dialogsType: Int, dy: Int, scrolled: Int, dragging: Boolean) {
-+        if (!enabled() || dialogsType != 0 || !dragging || dy >= 0 || scrolled != 0 || !hiddenAbove(account)) {
-+            pull.remove(account)
-+            return
-+        }
-+        val total = (pull[account] ?: 0) - dy
-+        if (total < AndroidUtilities.dp(PULL_DP)) {
-+            pull[account] = total
-+            return
-+        }
-+        pull.remove(account)
-+        setHiddenAbove(account, false)
-+    }
-+
-+    @JvmStatic
 +    fun showMenu(fragment: BaseFragment): Boolean {
 +        val activity = fragment.parentActivity ?: return false
 +        val account = fragment.currentAccount
-+        val hidden = hiddenAbove(account)
++        val isPinned = pinned(account)
 +        val items = arrayListOf<CharSequence>(
-+            LocaleController.getString(if (hidden) R.string.PinInTheList else R.string.HideAboveTheList),
-+            TeleLowercase.lc("Hide from chat list")
++            LocaleController.getString(if (isPinned) R.string.DialogUnpin else R.string.DialogPin),
++            LocaleController.getString(R.string.HideAboveTheList)
 +        )
 +        fragment.showDialog(AlertDialog.Builder(activity).setItems(items.toTypedArray()) { _, which ->
 +            when (which) {
-+                0 -> setHiddenAbove(account, !hidden)
++                0 -> setPinned(account, !isPinned)
 +                1 -> {
 +                    TeleConfig.set(TeleConfig.SAVED_MESSAGES_ROW, false)
 +                    TeleHooks.onConfigChanged(TeleConfig.SAVED_MESSAGES_ROW)
@@ -274,29 +274,27 @@ index 000000000..2ef00c913
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
-index 680fe4a07..80f6e34c7 100644
+index 680fe4a07..d6905aa81 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
-@@ -1707,5 +1707,8 @@ object TeleTextRu {
+@@ -1707,5 +1707,7 @@ object TeleTextRu {
          "Louder or quieter videos on this device; 100% is the system volume." to "Громче или тише видео на этом устройстве; 100% — системная громкость.",
          "Louder or quieter voice messages on this device; 100% is the system volume." to "Громче или тише голосовые сообщения на этом устройстве; 100% — системная громкость.",
          "Louder or quieter round videos on this device; 100% is the system volume." to "Громче или тише кружки на этом устройстве; 100% — системная громкость.",
 +        "Saved messages row in the chat list" to "Строка «Избранное» в списке чатов",
-+        "Long-press the row to hide it above the list or remove it; pull down to bring it back." to "Удерживайте строку, чтобы скрыть её над списком или убрать; потяните вниз, чтобы вернуть.",
-+        "Hide from chat list" to "Убрать из списка чатов",
++        "Shows the Saved Messages chat in the list even when it is empty; long-press it to unpin or remove it." to "Показывает «Избранное» в списке чатов, даже если оно пустое; удерживайте строку, чтобы открепить или убрать её.",
      )
  }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
-index 257fb0411..902fb1396 100644
+index 257fb0411..dbdb2279d 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
-@@ -1707,5 +1707,8 @@ object TeleTextUk {
+@@ -1707,5 +1707,7 @@ object TeleTextUk {
          "Louder or quieter videos on this device; 100% is the system volume." to "Гучніше або тихіше відео на цьому пристрої; 100% — системна гучність.",
          "Louder or quieter voice messages on this device; 100% is the system volume." to "Гучніше або тихіше голосові повідомлення на цьому пристрої; 100% — системна гучність.",
          "Louder or quieter round videos on this device; 100% is the system volume." to "Гучніше або тихіше кружечки на цьому пристрої; 100% — системна гучність.",
 +        "Saved messages row in the chat list" to "Рядок «Збережене» у списку чатів",
-+        "Long-press the row to hide it above the list or remove it; pull down to bring it back." to "Утримуйте рядок, щоб сховати його над списком або прибрати; потягніть униз, щоб повернути.",
-+        "Hide from chat list" to "Прибрати зі списку чатів",
++        "Shows the Saved Messages chat in the list even when it is empty; long-press it to unpin or remove it." to "Показує «Збережене» у списку чатів, навіть коли воно порожнє; утримуйте рядок, щоб відкріпити або прибрати його.",
      )
  }
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
@@ -315,14 +313,14 @@ index 12812575f..9b95350a8 100644
          // a page button and the screen it opens are the same result: the one with the page path wins
          val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index c7016157c..6e5c5fbe3 100644
+index c7016157c..090d3b2ea 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 @@ -1103,6 +1103,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
              "Backgrounds only for you" to "Adds it to chat menus: pick a background only you see.",
              "Hide communities" to "Their chats show up as regular chats.",
              "Hide the all chats folder" to "The chat list opens on your first folder.",
-+            "Saved messages row in the chat list" to "Long-press the row to hide it above the list or remove it; pull down to bring it back.",
++            "Saved messages row in the chat list" to "Shows the Saved Messages chat in the list even when it is empty; long-press it to unpin or remove it.",
              "Hide unread counters" to "Numbers only; chats stay unread. Long-press an account to leave it out.",
              "Folder tabs" to "No counters on folder tabs and the Chats tab.",
              "App icon" to "No unread count on the app icon.",
