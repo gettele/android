@@ -60,7 +60,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A018](#a018) | Per-media software volumes | adaptation | active | 1 |
 | [A019](#a019) | Composer editing helpers | adaptation | active | 1 |
 | [A020](#a020) | Chat screenshot editor | original | active | 1 |
-| [A021](#a021) | Saved Messages row in the chat list | original | active | 1 |
+| [A021](#a021) | Pin Saved Messages past the limit | original | active | 1 |
 
 <a id="a001"></a>
 
@@ -470,15 +470,11 @@ After a system screenshot of a chat (Android 14+ screen capture callback, or the
 
 <a id="a021"></a>
 
-## A021 — Saved Messages row in the chat list
+## A021 — Pin Saved Messages past the limit
 
 **Type:** `original` · **Status:** `active`
 
 **Desktop references:** none (Android-only change).
 
-Keeps the Saved Messages dialog in the main chat list while the switch is on, even when it is empty or missing from the loaded dialogs, and never shows it twice. Its position follows Telegram's own pin of the chat: pinned, it is shown right under the archive row above the other pinned chats (display only, the server pin order is untouched); unpinned, it stays at its usual date-sorted place as a regular row. The pinned row is the stock dialog cell rebound to the self chat, so opening it and its badges stay unchanged. Its long-press menu pins or unpins it through the stock pin action (limit alert, server sync), or hides it from the chat list by turning the switch off.
-
-The switch itself never changes the pin. Only the main chat list in its default folder and default filter gets the row: archived chats, community lists and selection lists keep stock order.
-
-Independently of the switch, Saved Messages can always be pinned in the main list past the pinned-chats limit: the limit alert is skipped for it alone, Telegram gets the pin when there is room, and otherwise it becomes a local pin through the existing local-pins storage even when that feature's own switch is off. A later server pin replaces the local one; other chats keep stock limits.
+Always on: Saved Messages can be pinned in the main chat list even when the pinned-chats limit is full. The limit alert is skipped when Saved Messages is pinned on its own and the avatar preview keeps its Pin item; Telegram gets the pin when there is room, otherwise it becomes a local pin through the existing local-pins storage even when that feature's own switch is off. A local pin survives restarts, a later server pin replaces it, and unpinning removes whichever pin is active. Other chats and folder-tab pins keep stock limits.
 

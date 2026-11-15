@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sun, 15 Nov 2026 17:09:50 +0300
+Subject: [PATCH] feat: pin saved messages past the limit
+
+---
+ .../java/org/telegram/ui/DialogsActivity.java |  4 +-
+ .../src/main/java/tele/helpers/LocalPins.kt   | 62 +++++++++++++++----
+ 2 files changed, 52 insertions(+), 14 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index db1d0123e..c23ab0814 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -8825,7 +8825,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                     maxPinnedCount = getMessagesController().maxPinnedDialogsCountDefault;
+                 }
+             }
+-            hasPinAction[0] = tele.helpers.LocalPins.enabled() || !(newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount);
++            hasPinAction[0] = tele.helpers.LocalPins.enabled() || tele.helpers.LocalPins.forced(currentAccount, dialogId) || !(newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount);
+         }
+ 
+         if (hasPinAction[0]) {
+@@ -9360,7 +9360,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             } else {
+                 maxPinnedCount = getUserConfig().isPremium() ? getMessagesController().dialogFiltersPinnedLimitPremium : getMessagesController().dialogFiltersPinnedLimitDefault;
+             }
+-            if (!tele.helpers.LocalPins.enabled() && (newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount)) {
++            if (!tele.helpers.LocalPins.enabled() && !tele.helpers.LocalPins.forcedAlone(currentAccount, selectedDialogs) && (newPinnedSecretCount + pinnedSecretCount > maxPinnedCount || newPinnedCount + pinnedCount - alreadyAdded > maxPinnedCount)) {
+                 if (folderId != 0 || filter != null) {
+                     AlertsCreator.showSimpleAlert(DialogsActivity.this, LocaleController.formatString("PinFolderLimitReached", R.string.PinFolderLimitReached, LocaleController.formatPluralString("Chats", maxPinnedCount)));
+                 } else {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt b/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
+index ca0a6cedc..1430d16e5 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/LocalPins.kt
+@@ -46,6 +46,16 @@ object LocalPins {
+     @JvmStatic
+     fun enabled(): Boolean = TeleConfig.LOCAL_PINS.value
+ 
++    /** Saved Messages pins past the limit even with the toggle off. */
++    @JvmStatic
++    fun forced(account: Int, dialogId: Long): Boolean =
++        dialogId != 0L && dialogId == UserConfig.getInstance(account).clientUserId
++
++    /** A selection of exactly Saved Messages skips the stock pin limit alert. */
++    @JvmStatic
++    fun forcedAlone(account: Int, dialogs: ArrayList<Long>): Boolean =
++        dialogs.size == 1 && forced(account, dialogs.get(0))
++
+     @Synchronized
+     private fun state(account: Int): State {
+         var s = states[account]
+@@ -140,7 +150,6 @@ object LocalPins {
+ 
+     @JvmStatic
+     fun preload(account: Int) {
+-        if (!enabled()) return
+         val s = state(account)
+         synchronized(s) {
+             if (s.loaded || s.loading) return
+@@ -299,7 +308,11 @@ object LocalPins {
+     fun reconcileDialogs(account: Int) {
+         val s = states[account]
+         if (!enabled()) {
+-            if (s != null && s.hasFakes) unfakeAll(account, s)
++            if (s == null || !s.loaded) {
++                preload(account)
++                return
++            }
++            reconcileForced(account, s)
+             return
+         }
+         val state = s ?: state(account)
+@@ -361,16 +374,39 @@ object LocalPins {
+         if (changed) commit(account, state)
+     }
+ 
+-    private fun unfakeAll(account: Int, s: State) {
++    // with the toggle off only the saved messages pin stays on this device
++    private fun reconcileForced(account: Int, s: State) {
++        if (!s.hasFakes && s.lists.isEmpty()) return
+         val dict = MessagesController.getInstance(account).dialogs_dict
++        val self = UserConfig.getInstance(account).clientUserId
+         for (i in 0 until dict.size()) {
+             val d = dict.valueAt(i)
+-            if (isLocal(d)) {
+-                d.pinned = false
+-                d.pinnedNum = 0
+-            }
++            if (!isLocal(d)) continue
++            if (d is TLRPC.TL_dialog && d.id == self) continue
++            d.pinned = false
++            d.pinnedNum = 0
++        }
++        val dialog = if (self == 0L) null else dict.get(self) as? TLRPC.TL_dialog
++        if (dialog == null) {
++            s.hasFakes = false
++            return
++        }
++        val items = s.lists["d${dialog.folder_id}"]
++        val index = items?.indexOfFirst { it.local && it.id == self } ?: -1
++        if (index < 0) {
++            s.hasFakes = false
++            return
+         }
+-        s.hasFakes = false
++        if (dialog.pinned && dialog.pinnedNum >= 0) {
++            items?.firstOrNull { it.id == self }?.let { it.local = false }
++            s.hasFakes = false
++            return
++        }
++        if (!dialog.pinned) {
++            dialog.pinned = true
++            dialog.pinnedNum = -(index + 1)
++        }
++        s.hasFakes = true
+     }
+ 
+     private fun mainFull(account: Int, mc: MessagesController, dialog: TLRPC.Dialog): Boolean {
+@@ -400,7 +436,7 @@ object LocalPins {
+      */
+     @JvmStatic
+     fun pin(account: Int, dialogId: Long, pin: Boolean, filter: MessagesController.DialogFilter?): Boolean {
+-        if (!enabled()) return false
++        if (!enabled() && !forced(account, dialogId)) return false
+         val s = state(account)
+         if (!s.loaded) {
+             preload(account)
+@@ -408,6 +444,7 @@ object LocalPins {
+         }
+         val mc = MessagesController.getInstance(account)
+         if (filter != null) {
++            if (!enabled()) return false
+             val scope = "f${filter.id}"
+             val inMap = filter.pinnedDialogs.indexOfKey(dialogId) >= 0
+             if (pin) {
+@@ -443,7 +480,7 @@ object LocalPins {
+     fun onServerPin(account: Int, dialog: TLRPC.Dialog?, pin: Boolean): Boolean {
+         if (dialog == null) return false
+         if (!isLocal(dialog)) {
+-            if (pin && !dialog.pinned && enabled()) {
++            if (pin && !dialog.pinned && (enabled() || forced(account, dialog.id))) {
+                 state(account).lastPin[dialog.folder_id] = dialog.id to SystemClock.elapsedRealtime()
+             }
+             return false
+@@ -461,13 +498,14 @@ object LocalPins {
+     /** The server refused the pin order of a folder: the pin made a moment ago stays on this device. */
+     @JvmStatic
+     fun onReorderError(account: Int, folderId: Int, error: String?) {
+-        if (error == null || !enabled() || !error.startsWith("PINNED_")) return
++        if (error == null || !error.startsWith("PINNED_")) return
+         AndroidUtilities.runOnUIThread {
+             val s = states[account] ?: return@runOnUIThread
+             val last = s.lastPin.remove(folderId) ?: return@runOnUIThread
+-            if (!s.loaded || SystemClock.elapsedRealtime() - last.second > 30_000) return@runOnUIThread
++            if (enabled() && !s.loaded || SystemClock.elapsedRealtime() - last.second > 30_000) return@runOnUIThread
+             val mc = MessagesController.getInstance(account)
+             val dialog = mc.dialogs_dict.get(last.first) as? TLRPC.TL_dialog ?: return@runOnUIThread
++            if (!enabled() && !forced(account, dialog.id)) return@runOnUIThread
+             if (!dialog.pinned || dialog.pinnedNum < 0 || dialog.folder_id != folderId) return@runOnUIThread
+             dialog.pinned = false
+             dialog.pinnedNum = 0
