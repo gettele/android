@@ -61,6 +61,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A019](#a019) | Composer editing helpers | adaptation | active | 1 |
 | [A020](#a020) | Chat picture editor | original | active | 1 |
 | [A021](#a021) | Pin Saved Messages past the limit | original | active | 1 |
+| [A022](#a022) | Material You themes and custom palettes | original | active | 1 |
 
 <a id="a001"></a>
 
@@ -477,4 +478,22 @@ One sheet turns chat messages into pictures. It opens from a system screenshot o
 **Desktop references:** none (Android-only change).
 
 Always on: Saved Messages can be pinned in the main chat list even when the pinned-chats limit is full. The limit alert is skipped when Saved Messages is pinned on its own and the avatar preview keeps its Pin item; Telegram gets the pin when there is room, otherwise it becomes a local pin through the existing local-pins storage even when that feature's own switch is off. A local pin survives restarts, a later server pin replaces it, and unpinning removes whichever pin is active. Other chats and folder-tab pins keep stock limits.
+
+| patch |
+|---|
+| [`0351-feat-pin-saved-messages-past-the-limit.patch`](../patches/android/0351-feat-pin-saved-messages-past-the-limit.patch) |
+
+<a id="a022"></a>
+
+## A022 — Material You themes and custom palettes
+
+**Type:** `original` · **Status:** `active`
+
+**Desktop references:** none (Android-only change, after Material 3 and the platform's dynamic color).
+
+Adds three Material 3 themes to the stock theme engine as bundled at-theme assets (Material Light, Material Dark, Material AMOLED) whose color tokens are resolved locally from a seed. The seed comes from the Android 12+ system wallpaper palette, a color picked in the stock color picker, or a photo quantized on the device with Material's `QuantizerCelebi` and `Score`; only the resulting seed is stored, nothing of the photo is kept and nothing is uploaded. The switch saves the previous day and night themes, the auto-night rule and the wallpaper, then puts Material into the stock day and night slots so Telegram's own day/night and auto-night setting keeps driving; switching it off restores all of it. The palette is re-read and re-applied when the app resumes. AMOLED black makes the dark theme true black while the light theme is unchanged, per-chat themes keep their priority, and the Material themes stay hidden in the stock theme pickers while the switch is off.
+
+| patch |
+|---|
+| [`0358-feat-add-material-you-themes.patch`](../patches/android/0358-feat-add-material-you-themes.patch) |
 
