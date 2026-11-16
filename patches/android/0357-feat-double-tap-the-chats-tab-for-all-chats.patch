@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Mon, 16 Nov 2026 02:50:50 +0300
+Subject: [PATCH] feat: double tap the chats tab for all chats
+
+---
+ .../java/org/telegram/ui/DialogsActivity.java | 70 +++++++++++++------
+ .../org/telegram/ui/MainTabsActivity.java     |  4 ++
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../java/tele/helpers/ChatsTabDoubleTap.kt    | 20 ++++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  2 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  2 +
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  5 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  2 +
+ 8 files changed, 83 insertions(+), 24 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ChatsTabDoubleTap.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index e00a8a577..1ab673094 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -3846,29 +3846,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 }
+             });
+             folderSidebar = new tele.ui.TeleFolderSidebar(context, resourceProvider);
+-            folderSidebar.setOnFolderClickListener(index -> {
+-                FilterTabsView.Tab tab = filterTabsView.getTab(index);
+-                if (tab == null) return;
+-                if (fragmentSearchField != null && fragmentSearchFieldWatcher != null && fragmentSearchFieldWatcher.isSearchExpanded()) {
+-                    fragmentSearchField.editText.getText().clear();
+-                    AndroidUtilities.hideKeyboard(fragmentSearchField.editText);
+-                    fragmentSearchField.editText.clearFocus();
+-                    if (fragmentSearchFieldWatcher.isSearchExpanded() && !fragmentSearchFieldWatcher.toggleSearch(false)) {
+-                        return;
+-                    }
+-                }
+-                if (rightSlidingDialogContainer != null && rightSlidingDialogContainer.hasFragment()) {
+-                    if (!rightSlidingDialogContainer.isOpenned) {
+-                        return;
+-                    }
+-                    rightSlidingDialogContainer.finishPreview();
+-                }
+-                if (viewPages[0].selectedType == tab.id) {
+-                    scrollToTop(true, false);
+-                } else {
+-                    filterTabsView.scrollToTab(tab, index);
+-                }
+-            });
++            folderSidebar.setOnFolderClickListener(this::tele_selectFolder);
+             folderSidebar.setVisibility(View.GONE);
+         }
+ 
+@@ -6845,6 +6823,52 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+         }
+     }
+ 
++    public void tele_selectFolder(int index) {
++        FilterTabsView.Tab tab = filterTabsView.getTab(index);
++        if (tab == null) return;
++        if (fragmentSearchField != null && fragmentSearchFieldWatcher != null && fragmentSearchFieldWatcher.isSearchExpanded()) {
++            fragmentSearchField.editText.getText().clear();
++            AndroidUtilities.hideKeyboard(fragmentSearchField.editText);
++            fragmentSearchField.editText.clearFocus();
++            if (fragmentSearchFieldWatcher.isSearchExpanded() && !fragmentSearchFieldWatcher.toggleSearch(false)) {
++                return;
++            }
++        }
++        if (rightSlidingDialogContainer != null && rightSlidingDialogContainer.hasFragment()) {
++            if (!rightSlidingDialogContainer.isOpenned) {
++                return;
++            }
++            rightSlidingDialogContainer.finishPreview();
++        }
++        if (viewPages[0].selectedType == tab.id) {
++            scrollToTop(true, false);
++        } else {
++            filterTabsView.scrollToTab(tab, index);
++        }
++    }
++
++    public boolean tele_switchToAllChatsFolder() {
++        if (filterTabsView == null || !canShowFilterTabsView || searchIsShowed || inPreviewMode) {
++            return false;
++        }
++        int index = 0;
++        if (!tele.TeleConfig.HIDE_ALL_CHATS_FOLDER.getValue()) {
++            ArrayList<MessagesController.DialogFilter> filters = getMessagesController().getDialogFilters();
++            for (int i = 0; i < filters.size(); i++) {
++                if (filters.get(i).isDefault()) {
++                    index = i;
++                    break;
++                }
++            }
++        }
++        FilterTabsView.Tab tab = filterTabsView.getTab(index);
++        if (tab == null || viewPages[0].selectedType == tab.id) {
++            return false;
++        }
++        tele_selectFolder(index);
++        return true;
++    }
++
+     public void switchToCurrentSelectedMode(boolean animated) {
+         for (int a = 0; a < viewPages.length; a++) {
+             viewPages[a].listView.stopScroll();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index 5bbbc9a00..9538dd2a8 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -353,6 +353,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+ 
+                 if (viewPager.getCurrentPosition() == position) {
+                     final BaseFragment fragment = getCurrentVisibleFragment();
++                    if (position == POSITION_CHATS && fragment instanceof DialogsActivity && tele.TeleConfig.CHATS_TAB_DOUBLE_TAP_ALL.getValue()
++                            && tele.helpers.ChatsTabDoubleTap.onReselect((DialogsActivity) fragment)) {
++                        return;
++                    }
+                     if (fragment instanceof MainTabsActivity.TabFragmentDelegate) {
+                         ((MainTabsActivity.TabFragmentDelegate) fragment).onParentScrollToTop();
+                     }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 90755c1ff..1e12d532e 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -530,6 +530,8 @@ object TeleConfig {
+     val NO_SWIPE_TO_UNARCHIVE = BoolItem("no_swipe_to_unarchive", false)
+     @JvmField
+     val ATTACH_BUTTON_LEFT = BoolItem("attach_button_left", false)
++    @JvmField
++    val CHATS_TAB_DOUBLE_TAP_ALL = BoolItem("chats_tab_double_tap_all", false)
+ 
+     private var prefs: SharedPreferences? = null
+ 
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ChatsTabDoubleTap.kt b/TMessagesProj/src/main/java/tele/helpers/ChatsTabDoubleTap.kt
+new file mode 100644
+index 000000000..bdcadecd7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ChatsTabDoubleTap.kt
+@@ -0,0 +1,20 @@
++package tele.helpers
++
++import android.os.SystemClock
++import android.view.ViewConfiguration
++import org.telegram.ui.DialogsActivity
++import java.lang.ref.WeakReference
++
++object ChatsTabDoubleTap {
++    private var lastTapAt = 0L
++    private var lastDialogs: WeakReference<DialogsActivity>? = null
++
++    @JvmStatic
++    fun onReselect(dialogs: DialogsActivity): Boolean {
++        val now = SystemClock.uptimeMillis()
++        val doubleTap = lastDialogs?.get() === dialogs && now - lastTapAt <= ViewConfiguration.getDoubleTapTimeout()
++        lastDialogs = WeakReference(dialogs)
++        lastTapAt = if (doubleTap) 0L else now
++        return doubleTap && dialogs.tele_switchToAllChatsFolder()
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 6eb33cfc0..8b7633da6 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1727,5 +1727,7 @@ object TeleTextRu {
+         "Turn off swipe to unarchive" to "Отключить смахивание для разархивации",
+         "Volume keys don't unmute videos" to "Кнопки громкости не включают звук видео",
+         "Attach button on the left" to "Кнопка вложения слева",
++        "Double tap the chats tab for all chats" to "Двойное нажатие на вкладку чатов открывает все чаты",
++        "When the all chats folder is hidden, opens your first folder instead." to "Если папка «Все чаты» скрыта, открывает первую папку.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index bd895962e..09818e696 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1727,5 +1727,7 @@ object TeleTextUk {
+         "Turn off swipe to unarchive" to "Вимкнути змахування для розархівування",
+         "Volume keys don't unmute videos" to "Кнопки гучності не вмикають звук відео",
+         "Attach button on the left" to "Кнопка вкладення ліворуч",
++        "Double tap the chats tab for all chats" to "Подвійне натискання на вкладку чатів відкриває всі чати",
++        "When the all chats folder is hidden, opens your first folder instead." to "Якщо папку «Усі чати» приховано, відкриває першу папку.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 5191de335..573dae3db 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -493,7 +493,10 @@ object TeleSearch {
+             section(1644, "Message menu blur", "menus", TeleSettingsActivity.MODE_MENUS, "Frosted glass message menu"),
+             section(1637, "paperclip", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left"),
+             section(1638, "attachment", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left"),
+-            section(1639, "left side", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left")
++            section(1639, "left side", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left"),
++            section(1640, "open all chats by double tap", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
++            section(1641, "switch folder by double tap", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
++            section(1642, "chats tab shortcut", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats")
+         ))
+         // a page button and the screen it opens are the same result: the one with the page path wins
+         val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index a124b23ca..78e95b133 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1103,6 +1103,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Backgrounds only for you" to "Adds it to chat menus: pick a background only you see.",
+             "Hide communities" to "Their chats show up as regular chats.",
+             "Hide the all chats folder" to "The chat list opens on your first folder.",
++            "Double tap the chats tab for all chats" to "When the all chats folder is hidden, opens your first folder instead.",
+             "Hide unread counters" to "Numbers only; chats stay unread. Long-press an account to leave it out.",
+             "Folder tabs" to "No counters on folder tabs and the Chats tab.",
+             "App icon" to "No unread count on the app icon.",
+@@ -1511,6 +1512,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Move chats instantly", TeleConfig.INSTANT_CHAT_MOVE),
+                 toggle("Hide message previews", TeleConfig.HIDE_LIST_PREVIEWS),
+                 toggle("Turn off swipe to unarchive", TeleConfig.NO_SWIPE_TO_UNARCHIVE),
++                toggle("Double tap the chats tab for all chats", TeleConfig.CHATS_TAB_DOUBLE_TAP_ALL),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Chats and profiles"),
+                 toggle("Show names instead of phone numbers in chat headers", TeleConfig.NAME_INSTEAD_OF_PHONE),
