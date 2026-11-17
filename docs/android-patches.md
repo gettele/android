@@ -62,6 +62,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A020](#a020) | Chat picture editor | original | active | 1 |
 | [A021](#a021) | Pin Saved Messages past the limit | original | active | 1 |
 | [A022](#a022) | Material You themes and custom palettes | original | active | 1 |
+| [A023](#a023) | Customizable bottom navigation bar | original | active | 2 |
 
 <a id="a001"></a>
 
@@ -498,4 +499,21 @@ The switch saves the previous day and night themes, the auto-night rule and the 
 | patch |
 |---|
 | [`0358-feat-add-material-you-themes.patch`](../patches/android/0358-feat-add-material-you-themes.patch) |
+
+<a id="a023"></a>
+
+## A023 — Customizable bottom navigation bar
+
+**Type:** `original` · **Status:** `active`
+
+**Desktop references:** none (Android-only change; the desktop has windows, not a bottom bar).
+
+Turns the main tab bar into a configurable list of up to six slots. The stock pages (Chats, Contacts, Calls, Settings, Profile) can be reordered and hidden, Chats is always the first page, and Calls and Settings are separate pages rather than one slot. Saved Messages or any chat can be added as a shortcut: the tab shows that chat's avatar, tapping it opens the chat fullscreen, and the tab carries the chat's unread count, with muted chats staying silent. Any non-chat slot can use any of the stock animated tab icons, which keep their fill animation.
+
+The Edit tabs screen opens from a row under the settings toggle and from the long-press menus of the bar. It drags to reorder, adds and removes slots, picks icons, chooses which tabs show labels (all, the selected tab only, or none) and resets to the defaults. Every change rebuilds the bar immediately and keeps the selected tab. With the switch off the bar is exactly stock.
+
+| patch |
+|---|
+| [`0362-feat-make-the-bottom-tabs-customizable.patch`](../patches/android/0362-feat-make-the-bottom-tabs-customizable.patch) |
+| [`0363-feat-add-the-bottom-tabs-editor.patch`](../patches/android/0363-feat-add-the-bottom-tabs-editor.patch) |
 

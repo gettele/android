@@ -1,0 +1,1153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Wed, 18 Nov 2026 02:26:38 +0300
+Subject: [PATCH] feat: add the bottom tabs editor
+
+---
+ .../ui/Components/glass/GlassTabView.java     |  40 ++
+ .../org/telegram/ui/MainTabsActivity.java     |  85 ++-
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
+ .../main/java/tele/helpers/MainTabsConfig.kt  |  30 +
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  44 +-
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  44 +-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   8 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   5 +
+ .../java/tele/ui/settings/TeleTabsActivity.kt | 647 ++++++++++++++++++
+ 10 files changed, 884 insertions(+), 23 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+index 83524aa4e..097ec0116 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+@@ -547,6 +547,9 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+ 
+     @Override
+     public float measureTextWidth() {
++        if (!teleLabelShown()) {
++            return dp(24);
++        }
+         return defaultTextPaint.measureText(textView.getText().toString());
+     }
+ 
+@@ -554,6 +557,9 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+ 
+     @Override
+     public float measureTextWidth(float textSizeDp) {
++        if (!teleLabelShown()) {
++            return dp(24);
++        }
+         if (scaledTextPaint == null) {
+             scaledTextPaint = new TextPaint(defaultTextPaint);
+         }
+@@ -561,6 +567,40 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+         return scaledTextPaint.measureText(textView.getText().toString());
+     }
+ 
++    private int teleLabelsMode;
++
++    /** tele: the labels of the custom bar - 0 every tab, 1 the selected tab only, 2 no tab. */
++    public void tele_setLabelsMode(int mode) {
++        if (teleLabelsMode == mode) {
++            return;
++        }
++        teleLabelsMode = mode;
++        teleApplyLabels();
++        requestLayout();
++    }
++
++    /** tele: the label of the selected-only mode follows the selection. */
++    public void tele_onSelectionChangedForLabels() {
++        if (teleLabelsMode != 1) {
++            return;
++        }
++        teleApplyLabels();
++    }
++
++    private boolean teleLabelShown() {
++        return teleLabelsMode == 0 || (teleLabelsMode == 1 && isTabSelected());
++    }
++
++    private void teleApplyLabels() {
++        final boolean shown = teleLabelShown();
++        textView.setVisibility(shown ? VISIBLE : INVISIBLE);
++        final float offset = shown ? 0 : dp(4);
++        imageView.setTranslationY(offset);
++        if (backupImageView != null) {
++            backupImageView.setTranslationY(offset);
++        }
++    }
++
+     @Override
+     public void setTextSizeDp(float textSizeDp) {
+         final float px = dp(textSizeDp);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index 1a82f83cb..7c5dd3204 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -462,6 +462,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             args.putBoolean("needFinishFragment", false);
+             presentFragment(new CallLogActivity(args));
+         });
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            o.addGap();
++            o.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Edit tabs"), () -> presentFragment(new tele.ui.settings.TeleTabsActivity()));
++        }
+         o.setBlur(true);
+         o.translate(0, -dp(4));
+         o.setGravity(Gravity.LEFT);
+@@ -489,6 +493,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+                 NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.callTabsVisibleToggled);
+             });
+         }
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            o.addGap();
++            o.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Edit tabs"), () -> presentFragment(new tele.ui.settings.TeleTabsActivity()));
++        }
+         o.setBlur(true);
+         o.translate(0, -dp(4));
+         final ShapeDrawable bg = Theme.createRoundRectDrawable(dp(28), getThemedColor(Theme.key_windowBackgroundWhite));
+@@ -503,10 +511,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     private boolean openFoldersSelector(View anchor) {
+         if (getContext() == null || getParentActivity() == null) return false;
+         final ArrayList<MessagesController.DialogFilter> filters = getMessagesController().getDialogFilters();
+-        if (filters == null || filters.size() <= 1) return false;
++        if (!tele.TeleConfig.CUSTOM_MAIN_TABS.getValue() && (filters == null || filters.size() <= 1)) return false;
+ 
+         final ItemOptions o = ItemOptions.makeOptions(this, anchor);
+-        for (int i = 0; i < filters.size(); i++) {
++        for (int i = 0; filters != null && i < filters.size(); i++) {
+             final MessagesController.DialogFilter folder = filters.get(i);
+             final ActionBarMenuSubItem folderItem = new ActionBarMenuSubItem(getParentActivity(), 2, false, false, getResourceProvider());
+             folderItem.setPadding(dp(18), 0, dp(18), 0);
+@@ -548,6 +556,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             });
+             o.addView(folderItem, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+         }
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            o.addGapIf(o.getItemsCount() > 0);
++            o.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Edit tabs"), () -> presentFragment(new tele.ui.settings.TeleTabsActivity()));
++        }
+ //        o.setBlur(true);
+         o.translate(-dp(8), -dp(4));
+         o.setMaxHeight(dp(400));
+@@ -709,6 +721,11 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             }
+         }
+ 
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            o.addGapIf(o.getItemsCount() > 0);
++            o.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Edit tabs"), () -> presentFragment(new tele.ui.settings.TeleTabsActivity()));
++        }
++
+         o.setBlur(true);
+         o.translate(0, -dp(4));
+         final ShapeDrawable bg = Theme.createRoundRectDrawable(dp(28), getThemedColor(Theme.key_windowBackgroundWhite));
+@@ -1465,7 +1482,7 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+                 final tele.helpers.MainTabsConfig.Slot slot = slots.get(a);
+                 final GlassTabView tab;
+                 if (slot.isPage()) {
+-                    tab = teleBuildPageTab(slot.getKind(), page);
++                    tab = teleBuildPageTab(slot, page);
+                     teleTabPagePositions.add(page);
+                     teleTabDialogIds.add(0L);
+                     page++;
+@@ -1515,6 +1532,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             tabsView.setViewVisible(tabs[INDEX_SETTINGS], !calls, false);
+             tabsView.setViewVisible(tabs[INDEX_CALLS], calls, false);
+         }
++        final int labelsMode = custom ? tele.helpers.MainTabsConfig.labelsMode() : tele.helpers.MainTabsConfig.LABELS_ALL;
++        for (int a = 0; a < tabs.length; a++) {
++            tabs[a].tele_setLabelsMode(labelsMode);
++        }
+ 
+         int newPosition = selectedKey != null ? newKeys.indexOf(selectedKey) : -1;
+         if (newPosition < 0) {
+@@ -1571,28 +1592,52 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         }
+     }
+ 
+-    private GlassTabView teleBuildPageTab(String kind, int position) {
++    private GlassTabView teleBuildPageTab(tele.helpers.MainTabsConfig.Slot slot, int position) {
++        final String kind = slot.getKind();
+         final GlassTabView tab;
+-        if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind)) {
+-            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CONTACTS, R.string.MainTabsContacts);
+-            tab.setOnLongClickListener(this::openContactsSelector);
+-        } else if (tele.helpers.MainTabsConfig.KIND_CALLS.equals(kind)) {
+-            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CALLS, R.string.MainTabsCalls);
+-            tab.setOnLongClickListener(this::teleOpenCallsSelector);
+-        } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS.equals(kind)) {
+-            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.SETTINGS, R.string.Settings);
+-        } else if (tele.helpers.MainTabsConfig.KIND_PROFILE.equals(kind)) {
++        if (tele.helpers.MainTabsConfig.KIND_PROFILE.equals(kind)) {
+             tab = GlassTabView.createAvatar(getContext(), resourceProvider, currentAccount, R.string.MainTabsProfile);
+             tab.setOnLongClickListener(this::openAccountSelector);
+         } else {
+-            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CHATS, R.string.MainTabsChats);
+-            tab.setOnLongClickListener(this::openFoldersSelector);
++            final GlassTabView.TabAnimation animation = teleAnimationOf(slot);
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, animation, teleTitleRes(kind));
++            if (tele.helpers.MainTabsConfig.KIND_CHATS.equals(kind)) {
++                tab.setOnLongClickListener(this::openFoldersSelector);
++            } else if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind)) {
++                tab.setOnLongClickListener(this::openContactsSelector);
++            } else if (tele.helpers.MainTabsConfig.KIND_CALLS.equals(kind)) {
++                tab.setOnLongClickListener(this::teleOpenCallsSelector);
++            }
+         }
+         final int page = position;
+         tab.setOnClickListener(v -> teleOnPageTabClicked(page));
+         return tab;
+     }
+ 
++    private GlassTabView.TabAnimation teleAnimationOf(tele.helpers.MainTabsConfig.Slot slot) {
++        final String name = tele.helpers.MainTabsConfig.iconNameOf(slot);
++        if (name.isEmpty()) {
++            return GlassTabView.TabAnimation.CHATS;
++        }
++        try {
++            return GlassTabView.TabAnimation.valueOf(name);
++        } catch (IllegalArgumentException e) {
++            FileLog.e(e);
++            return GlassTabView.TabAnimation.CHATS;
++        }
++    }
++
++    private int teleTitleRes(String kind) {
++        if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind)) {
++            return R.string.MainTabsContacts;
++        } else if (tele.helpers.MainTabsConfig.KIND_CALLS.equals(kind)) {
++            return R.string.MainTabsCalls;
++        } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS.equals(kind)) {
++            return R.string.Settings;
++        }
++        return R.string.MainTabsChats;
++    }
++
+     private GlassTabView teleBuildStockTab(int index, int position) {
+         final GlassTabView tab;
+         if (index == INDEX_CHATS) {
+@@ -1665,6 +1710,12 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             final int page = a < teleTabPagePositions.size() ? teleTabPagePositions.get(a) : -1;
+             tabs[a].setSelected(page >= 0 && page == position, animated);
+         }
++        if (tele.helpers.MainTabsConfig.labelsMode() != tele.helpers.MainTabsConfig.LABELS_ALL && tabsView != null) {
++            for (int a = 0; a < tabs.length; a++) {
++                tabs[a].tele_onSelectionChangedForLabels();
++            }
++            tabsView.requestLayout();
++        }
+     }
+ 
+     private void teleSetGestureSelectedOverride(float animatedPosition, boolean allow) {
+@@ -1826,6 +1877,8 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             tele.helpers.MainTabsConfig.remove(currentAccount, slot.getKey());
+             teleRefreshBar();
+         });
++        o.addGapIf(o.getItemsCount() > 0);
++        o.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Edit tabs"), () -> presentFragment(new tele.ui.settings.TeleTabsActivity()));
+         o.setBlur(true);
+         o.translate(0, -dp(4));
+         o.setGravity(Gravity.LEFT);
+@@ -1846,6 +1899,8 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             tele.helpers.MainTabsConfig.remove(currentAccount, tele.helpers.MainTabsConfig.KIND_CALLS);
+             teleRefreshBar();
+         });
++        o.addGapIf(o.getItemsCount() > 0);
++        o.add(R.drawable.msg_edit, tele.helpers.TeleLowercase.lc("Edit tabs"), () -> presentFragment(new tele.ui.settings.TeleTabsActivity()));
+         o.setBlur(true);
+         o.translate(0, -dp(4));
+         final ShapeDrawable bg = Theme.createRoundRectDrawable(dp(28), getThemedColor(Theme.key_windowBackgroundWhite));
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 5200797d3..4c1732391 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -537,6 +537,8 @@ object TeleConfig {
+     @JvmField
+     val MAIN_TABS_CONFIG = StringItem("main_tabs_config", "")
+     @JvmField
++    val MAIN_TABS_LABELS = StringItem("main_tabs_labels", "all")
++    @JvmField
+     val MATERIAL_SOURCE = StringItem("material_source", "system")
+     @JvmField
+     val MATERIAL_SEED = IntItem("material_seed", 0xFF2AABEE.toInt())
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 79e6bb2e3..ee39a67cc 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -124,7 +124,7 @@ object TeleHooks {
+             LocaleController.getInstance().recreateFormatters()
+             bumpUiRevision()
+         }
+-        if (item === TeleConfig.CUSTOM_MAIN_TABS || item === TeleConfig.MAIN_TABS_CONFIG) {
++        if (item === TeleConfig.CUSTOM_MAIN_TABS || item === TeleConfig.MAIN_TABS_CONFIG || item === TeleConfig.MAIN_TABS_LABELS) {
+             tele.helpers.MainTabsConfig.onChanged()
+         }
+         if (item === TeleConfig.HIDE_ALL_CHATS_FOLDER) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+index f60942460..1ece08a6a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+@@ -17,6 +17,36 @@ object MainTabsConfig {
+     const val KIND_SAVED = "saved"
+     private const val KIND_CHAT_PREFIX = "chat:"
+     const val MAX_SLOTS = 6
++    const val LABELS_ALL = 0
++    const val LABELS_SELECTED = 1
++    const val LABELS_ICONS = 2
++    private val DEFAULT_ICONS = mapOf(
++        KIND_CHATS to "CHATS",
++        KIND_CONTACTS to "CONTACTS",
++        KIND_CALLS to "CALLS",
++        KIND_SETTINGS to "SETTINGS"
++    )
++
++    @JvmStatic
++    fun labelsMode(): Int = when (TeleConfig.MAIN_TABS_LABELS.value) {
++        "selected" -> LABELS_SELECTED
++        "icons" -> LABELS_ICONS
++        else -> LABELS_ALL
++    }
++
++    /** The icon a page slot shows: its own choice, or the one its kind starts with. */
++    @JvmStatic
++    fun iconNameOf(slot: Slot): String =
++        if (slot.iconName.isNotEmpty()) slot.iconName else DEFAULT_ICONS[slot.kind].orEmpty()
++
++    /** The stock order and pages of the account; the toggle stays as it is. */
++    @JvmStatic
++    fun reset(account: Int) {
++        save(defaults(account))
++    }
++
++    @JvmStatic
++    fun chatKey(dialogId: Long): String = KIND_CHAT_PREFIX + dialogId
+ 
+     @JvmField
+     val PAGE_KINDS = listOf(KIND_CHATS, KIND_CONTACTS, KIND_CALLS, KIND_SETTINGS, KIND_PROFILE)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index a22c6eafb..9fccc8564 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1343,6 +1343,47 @@ object TeleTextRu {
+         "After a screenshot of a chat, offer to hide messages or cut text and share clean images." to "После скриншота чата предлагать скрыть сообщения или вырезать текст и поделиться чистыми изображениями.",
+         "Hide messages in a screenshot" to "Скрыть сообщения на скриншоте",
+         "Cut text from a screenshot" to "Вырезать текст со скриншота",
++        "Bottom bar" to "Нижняя панель",
++        "Customize the bottom tabs" to "Настроить нижние вкладки",
++        "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts." to "Порядок и видимость страниц, а также «Избранное» и любой чат кнопками с непрочитанными.",
++        "Edit tabs" to "Изменить вкладки",
++        "The order, the icons and the shortcuts of the bar; every change applies at once." to "Порядок, иконки и ярлыки панели; каждое изменение применяется сразу.",
++        "Tabs" to "Вкладки",
++        "Add tab" to "Добавить вкладку",
++        "Saved messages" to "Сохранённые сообщения",
++        "Contacts" to "Контакты",
++        "Calls" to "Звонки",
++        "Profile" to "Профиль",
++        "Chat…" to "Чат…",
++        "The bar holds six tabs." to "На панели помещается шесть вкладок.",
++        "This chat is already on the bar." to "Этот чат уже на панели.",
++        "Change icon" to "Сменить иконку",
++        "Reset to default" to "Сбросить по умолчанию",
++        "The default tabs are back." to "Вкладки по умолчанию вернулись.",
++        "Page" to "Страница",
++        "Chat button" to "Кнопка чата",
++        "Labels" to "Подписи",
++        "Selected" to "Выбранная",
++        "Icons only" to "Только иконки",
++        "Tab icon" to "Иконка вкладки",
++        "Tap a tab to change its icon or remove it; drag the handle to reorder." to "Коснитесь вкладки, чтобы сменить иконку или убрать её; тяните ручку, чтобы менять порядок.",
++        "Checklist" to "Чек-лист",
++        "Colors" to "Цвета",
++        "Emoji" to "Эмодзи",
++        "Files" to "Файлы",
++        "Gallery" to "Галерея",
++        "Location" to "Локация",
++        "Models" to "Модели",
++        "Music" to "Музыка",
++        "Poll" to "Опрос",
++        "Replies" to "Ответы",
++        "Symbols" to "Символы",
++        "Article" to "Статья",
++        "Gram" to "Грам",
++        "Boosts" to "Бусты",
++        "Monetization" to "Монетизация",
++        "Stories saved" to "Сохранённые истории",
++        "Stories archive" to "Архив историй",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+@@ -1742,8 +1783,5 @@ object TeleTextRu {
+         "AMOLED black" to "Чёрный AMOLED",
+         "True black in dark mode; light mode is unchanged." to "Настоящий чёрный в тёмной теме; светлая не меняется.",
+         "Couldn't read that photo." to "Не удалось прочитать это фото.",
+-        "Bottom bar" to "Нижняя панель",
+-        "Customize the bottom tabs" to "Настроить нижние вкладки",
+-        "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts." to "Порядок и видимость страниц, а также «Избранное» и любой чат кнопками с непрочитанными.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 5a0445c67..c2bb52931 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1343,6 +1343,47 @@ object TeleTextUk {
+         "After a screenshot of a chat, offer to hide messages or cut text and share clean images." to "Після скриншота чату пропонувати приховати повідомлення або вирізати текст і поділитися чистими зображеннями.",
+         "Hide messages in a screenshot" to "Приховати повідомлення на скриншоті",
+         "Cut text from a screenshot" to "Вирізати текст зі скриншота",
++        "Bottom bar" to "Нижня панель",
++        "Customize the bottom tabs" to "Налаштувати нижні вкладки",
++        "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts." to "Порядок і видимість сторінок, а також «Збережене» і будь-який чат кнопками з непрочитаними.",
++        "Edit tabs" to "Змінити вкладки",
++        "The order, the icons and the shortcuts of the bar; every change applies at once." to "Порядок, іконки та ярлики панелі; кожна зміна застосовується одразу.",
++        "Tabs" to "Вкладки",
++        "Add tab" to "Додати вкладку",
++        "Saved messages" to "Збережені повідомлення",
++        "Contacts" to "Контакти",
++        "Calls" to "Дзвінки",
++        "Profile" to "Профіль",
++        "Chat…" to "Чат…",
++        "The bar holds six tabs." to "На панелі вміщується шість вкладок.",
++        "This chat is already on the bar." to "Цей чат уже на панелі.",
++        "Change icon" to "Змінити іконку",
++        "Reset to default" to "Скинути до типових",
++        "The default tabs are back." to "Типові вкладки повернулися.",
++        "Page" to "Сторінка",
++        "Chat button" to "Кнопка чату",
++        "Labels" to "Підписи",
++        "Selected" to "Вибрана",
++        "Icons only" to "Тільки іконки",
++        "Tab icon" to "Іконка вкладки",
++        "Tap a tab to change its icon or remove it; drag the handle to reorder." to "Торкніться вкладки, щоб змінити іконку або прибрати її; тягніть ручку, щоб міняти порядок.",
++        "Checklist" to "Чек-лист",
++        "Colors" to "Кольори",
++        "Emoji" to "Емодзі",
++        "Files" to "Файли",
++        "Gallery" to "Галерея",
++        "Location" to "Локація",
++        "Models" to "Моделі",
++        "Music" to "Музика",
++        "Poll" to "Опитування",
++        "Replies" to "Відповіді",
++        "Symbols" to "Символи",
++        "Article" to "Стаття",
++        "Gram" to "Грам",
++        "Boosts" to "Бусти",
++        "Monetization" to "Монетизація",
++        "Stories saved" to "Збережені історії",
++        "Stories archive" to "Архів історій",
+ )
+ 
+     /** The same texts by android resource name: stock code asks LocaleController for them. */
+@@ -1742,8 +1783,5 @@ object TeleTextUk {
+         "AMOLED black" to "Чорний AMOLED",
+         "True black in dark mode; light mode is unchanged." to "Справжній чорний у темній темі; світла не змінюється.",
+         "Couldn't read that photo." to "Не вдалося прочитати це фото.",
+-        "Bottom bar" to "Нижня панель",
+-        "Customize the bottom tabs" to "Налаштувати нижні вкладки",
+-        "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts." to "Порядок і видимість сторінок, а також «Збережене» і будь-який чат кнопками з непрочитаними.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 043d90f25..0e524efed 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -510,7 +510,13 @@ object TeleSearch {
+             section(1642, "chats tab shortcut", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
+             section(1656, "bottom bar", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
+             section(1657, "navigation bar", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
+-            section(1658, "main tabs", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs")
++            section(1658, "main tabs", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1659, "tabs editor", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1660, "reorder tabs", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1661, "saved messages tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1662, "tab icons", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1663, "hide tab labels", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1664, "chat as a tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs")
+         ))
+         // a page button and the screen it opens are the same result: the one with the page path wins
+         val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index d760c33f1..5959f8ea9 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -806,6 +806,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 MODE_RULES -> presentFragment(TeleRulesActivity())
+                 "backup_export" -> exportSettings()
+                 "local_password" -> tele.ui.StarsLockUi.openSetup(parentActivity ?: return, resourceProvider)
++                "main_tabs_editor" -> presentFragment(TeleTabsActivity())
+                 "backup_import" -> importSettings()
+                 "server_refresh" -> tele.helpers.TeleServer.refresh(::showServerResult)
+                 "server_clear" -> tele.helpers.TeleServer.clearCachedData(::showServerResult)
+@@ -1397,6 +1398,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Pick a photo" to "The photo is read on this device and not kept.",
+             "AMOLED black" to "True black in dark mode; light mode is unchanged.",
+             "Customize the bottom tabs" to "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts.",
++            "Edit tabs" to "The order, the icons and the shortcuts of the bar; every change applies at once.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1613,6 +1615,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Bottom bar"),
+                 toggle("Customize the bottom tabs", TeleConfig.CUSTOM_MAIN_TABS),
++                *(if (TeleConfig.CUSTOM_MAIN_TABS.value) arrayOf(
++                    Row(TYPE_LINK, title = "Edit tabs", subtitle = DESCRIPTIONS["Edit tabs"], mode = "main_tabs_editor", id = "main_tabs_editor", value = tele.helpers.MainTabsConfig.slots(UserConfig.selectedAccount).size.toString() + "/" + tele.helpers.MainTabsConfig.MAX_SLOTS)
++                ) else emptyArray()),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Playback"),
+                 toggle("Volume controls in the players", TeleConfig.INLINE_VOLUME_CONTROLS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+new file mode 100644
+index 000000000..b4f73c2a4
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -0,0 +1,647 @@
++package tele.ui.settings
++
++import android.content.Context
++import android.graphics.PorterDuff
++import android.graphics.PorterDuffColorFilter
++import android.os.Bundle
++import android.util.TypedValue
++import android.view.Gravity
++import android.view.MotionEvent
++import android.view.View
++import android.view.ViewGroup
++import android.widget.FrameLayout
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.ScrollView
++import android.widget.TextView
++import androidx.recyclerview.widget.ItemTouchHelper
++import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.TLObject
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.BottomSheet
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.Cells.HeaderCell
++import org.telegram.ui.Cells.TextCell
++import org.telegram.ui.Cells.TextInfoPrivacyCell
++import org.telegram.ui.Cells.TextSettingsCell
++import org.telegram.ui.DialogsActivity
++import org.telegram.ui.Components.AvatarDrawable
++import org.telegram.ui.Components.BackupImageView
++import org.telegram.ui.Components.BulletinFactory
++import org.telegram.ui.Components.ItemOptions
++import org.telegram.ui.Components.LayoutHelper
++import org.telegram.ui.Components.RLottieImageView
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Components.glass.GlassTabView
++import tele.TeleConfig
++import tele.TeleHooks
++import tele.helpers.MainTabsConfig
++import tele.helpers.TeleLowercase
++
++/** The editor of the bottom bar: the order of the tabs, the shortcuts, the icons and the labels. */
++class TeleTabsActivity : BaseFragment() {
++
++    private var listView: RecyclerListView? = null
++    private var adapter: Adapter? = null
++    private var touchHelper: ItemTouchHelper? = null
++    private val account = UserConfig.selectedAccount
++    private var slots = mutableListOf<MainTabsConfig.Slot>()
++    private var suppressNextEntryClick = false
++
++    override fun getListViewForSimpleGlass(): RecyclerListView? = listView
++
++    override fun isSupportEdgeToEdge(): Boolean = true
++
++    override fun onResume() {
++        super.onResume()
++        if (!TeleConfig.CUSTOM_MAIN_TABS.value) {
++            finishFragment()
++            return
++        }
++        reload()
++        adapter?.notifyDataSetChanged()
++    }
++
++    override fun createView(context: Context): View {
++        actionBar.setBackButtonImage(R.drawable.ic_ab_back)
++        actionBar.setAllowOverlayTitle(true)
++        actionBar.setTitle(lc("Edit tabs"))
++        actionBar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                when (id) {
++                    -1 -> finishFragment()
++                    ID_RESET -> resetToDefault()
++                }
++            }
++        })
++        val more = actionBar.createMenu().addItem(ID_MORE, R.drawable.ic_ab_other)
++        more.addSubItem(ID_RESET, 0, lc("Reset to default"))
++
++        reload()
++
++        val frameLayout = FrameLayout(context)
++        frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray, resourceProvider))
++        fragmentView = frameLayout
++
++        val list = RecyclerListView(context)
++        list.setLayoutManager(LinearLayoutManager(context))
++        list.setVerticalScrollBarEnabled(false)
++        list.setClipToPadding(false)
++        listView = list
++        adapter = Adapter(context)
++        list.setAdapter(adapter)
++
++        touchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
++            override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
++                val position = viewHolder.adapterPosition
++                if (position < 1 || position > slots.size || position == 1) {
++                    return 0
++                }
++                return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
++            }
++
++            override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
++                val from = viewHolder.adapterPosition - 1
++                val to = target.adapterPosition - 1
++                if (from < 1 || to < 1 || from >= slots.size || to >= slots.size) {
++                    return false
++                }
++                val slot = slots.removeAt(from)
++                slots.add(to, slot)
++                adapter?.notifyItemMoved(from + 1, to + 1)
++                return true
++            }
++
++            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
++            }
++
++            override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
++                super.clearView(recyclerView, viewHolder)
++                save()
++                listView?.postDelayed({ suppressNextEntryClick = false }, 300)
++            }
++        })
++        touchHelper?.attachToRecyclerView(list)
++
++        list.setOnItemClickListener { view, position ->
++            if (suppressNextEntryClick) {
++                suppressNextEntryClick = false
++                return@setOnItemClickListener
++            }
++            if (position in 1..slots.size) {
++                showSlotMenu(view, position - 1)
++            } else if (position == slots.size + 1) {
++                showAddMenu(view)
++            } else if (position == slots.size + 2) {
++                showLabelsDialog()
++            }
++        }
++
++        frameLayout.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
++        return fragmentView ?: frameLayout
++    }
++
++    private fun reload() {
++        slots = MainTabsConfig.slots(account).toMutableList()
++    }
++
++    /** Every change goes into the config at once; the bar rebuilds itself from the version bump. */
++    private fun save() {
++        MainTabsConfig.save(slots)
++    }
++
++    // the actions of a slot
++
++    private fun showSlotMenu(anchor: View, index: Int) {
++        val slot = slots.getOrNull(index) ?: return
++        val options = ItemOptions.makeOptions(this, anchor)
++        if (slot.isPage && slot.kind != MainTabsConfig.KIND_PROFILE) {
++            options.add(R.drawable.msg_edit, lc("Change icon")) { showIconSheet(slot) }
++        }
++        if (slot.kind != MainTabsConfig.KIND_CHATS) {
++            options.add(R.drawable.msg_delete, lc("Remove"), true) {
++                slots.removeAt(index)
++                save()
++                adapter?.notifyDataSetChanged()
++            }
++        }
++        options.setBlur(true)
++        options.translate(0f, -AndroidUtilities.dp(4f).toFloat())
++        options.setGravity(Gravity.LEFT)
++        val bg = Theme.createRoundRectDrawable(AndroidUtilities.dp(28f), Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        bg.paint.setShadowLayer(AndroidUtilities.dp(6f).toFloat(), 0f, AndroidUtilities.dp(1f).toFloat(), Theme.multAlpha(0xFF000000.toInt(), 0.15f))
++        options.setScrimViewBackground(bg)
++        options.show()
++    }
++
++    private fun showAddMenu(anchor: View) {
++        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++            bulletin(lc("The bar holds six tabs."))
++            return
++        }
++        val options = ItemOptions.makeOptions(this, anchor)
++        if (slots.none { it.kind == MainTabsConfig.KIND_SAVED }) {
++            options.add(R.drawable.msg_saved, lc("Saved messages")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_SAVED)) }
++        }
++        if (slots.none { it.kind == MainTabsConfig.KIND_CONTACTS }) {
++            options.add(R.drawable.msg_contacts, lc("Contacts")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CONTACTS)) }
++        }
++        if (slots.none { it.kind == MainTabsConfig.KIND_CALLS }) {
++            options.add(R.drawable.msg_calls, lc("Calls")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CALLS)) }
++        }
++        if (slots.none { it.kind == MainTabsConfig.KIND_SETTINGS }) {
++            options.add(R.drawable.msg_settings, lc("Settings")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_SETTINGS)) }
++        }
++        if (slots.none { it.kind == MainTabsConfig.KIND_PROFILE }) {
++            options.add(R.drawable.msg_openprofile, lc("Profile")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_PROFILE)) }
++        }
++        options.addGapIf(options.getItemsCount() > 0)
++        options.add(R.drawable.msg_add, lc("Chat…")) { pickChat() }
++        options.setBlur(true)
++        options.translate(0f, -AndroidUtilities.dp(4f).toFloat())
++        val bg = Theme.createRoundRectDrawable(AndroidUtilities.dp(28f), Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        bg.paint.setShadowLayer(AndroidUtilities.dp(6f).toFloat(), 0f, AndroidUtilities.dp(1f).toFloat(), Theme.multAlpha(0xFF000000.toInt(), 0.15f))
++        options.setScrimViewBackground(bg)
++        options.show()
++    }
++
++    private fun addSlot(slot: MainTabsConfig.Slot) {
++        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++            bulletin(lc("The bar holds six tabs."))
++            return
++        }
++        if (slots.any { it.key == slot.key }) {
++            return
++        }
++        slots.add(slot)
++        save()
++        adapter?.notifyDataSetChanged()
++        listView?.layoutManager?.scrollToPosition(slots.size + 1)
++    }
++
++    private fun addChat(dialogId: Long) {
++        if (dialogId == 0L) {
++            return
++        }
++        val slot = MainTabsConfig.Slot(MainTabsConfig.chatKey(dialogId))
++        if (slots.any { it.key == slot.key }) {
++            bulletin(lc("This chat is already on the bar."))
++            return
++        }
++        addSlot(slot)
++    }
++
++    /** The stock choose-a-chat screen, as the draft picker opens it. */
++    private fun pickChat() {
++        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++            bulletin(lc("The bar holds six tabs."))
++            return
++        }
++        val args = Bundle()
++        args.putBoolean("onlySelect", true)
++        val picker = DialogsActivity(args)
++        picker.setDelegate { fragment, dids, _, _, _, _, _, topicsFragment ->
++            val dialogId = dids.firstOrNull()?.dialogId ?: return@setDelegate false
++            fragment.finishFragment()
++            topicsFragment?.removeSelfFromStack()
++            // the picker is still leaving the stack, the editor gets the result on top
++            AndroidUtilities.runOnUIThread({ addChat(dialogId) }, 250)
++            true
++        }
++        presentFragment(picker)
++    }
++
++    private fun setIcon(slot: MainTabsConfig.Slot, name: String) {
++        val index = slots.indexOfFirst { it.key == slot.key }
++        if (index < 0) {
++            return
++        }
++        slots[index] = MainTabsConfig.Slot(slot.kind, name)
++        save()
++        adapter?.notifyDataSetChanged()
++    }
++
++    private fun showIconSheet(slot: MainTabsConfig.Slot) {
++        val context = parentActivity ?: return
++        IconSheet(context, resourceProvider, MainTabsConfig.iconNameOf(slot)) { name ->
++            setIcon(slot, name)
++        }.show()
++    }
++
++    private fun showLabelsDialog() {
++        val labels = arrayOf(lc("All"), lc("Selected"), lc("Icons only"))
++        val builder = AlertDialog.Builder(parentActivity, resourceProvider)
++        builder.setTitle(lc("Labels"))
++        builder.setItems(labels) { _, which ->
++            val value = when (which) {
++                1 -> "selected"
++                2 -> "icons"
++                else -> "all"
++            }
++            TeleConfig.set(TeleConfig.MAIN_TABS_LABELS, value)
++            TeleHooks.onConfigChanged(TeleConfig.MAIN_TABS_LABELS)
++            adapter?.notifyDataSetChanged()
++        }
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        showDialog(builder.create())
++    }
++
++    private fun resetToDefault() {
++        MainTabsConfig.reset(account)
++        reload()
++        adapter?.notifyDataSetChanged()
++        BulletinFactory.of(this).createSimpleBulletin(R.raw.info, lc("The default tabs are back.")).show()
++    }
++
++    private fun bulletin(text: String) {
++        BulletinFactory.of(this).createSimpleBulletin(R.raw.error, text).show()
++    }
++
++    // the look of the slots
++
++    private fun titleOf(slot: MainTabsConfig.Slot): CharSequence = when (slot.kind) {
++        MainTabsConfig.KIND_CHATS -> LocaleController.getString(R.string.MainTabsChats)
++        MainTabsConfig.KIND_CONTACTS -> LocaleController.getString(R.string.MainTabsContacts)
++        MainTabsConfig.KIND_CALLS -> LocaleController.getString(R.string.MainTabsCalls)
++        MainTabsConfig.KIND_SETTINGS -> LocaleController.getString(R.string.Settings)
++        MainTabsConfig.KIND_PROFILE -> LocaleController.getString(R.string.MainTabsProfile)
++        MainTabsConfig.KIND_SAVED -> LocaleController.getString(R.string.SavedMessages)
++        else -> chatTitle(slot.dialogId)
++    }
++
++    private fun chatTitle(dialogId: Long): CharSequence {
++        if (dialogId == UserConfig.getInstance(account).clientUserId) {
++            return LocaleController.getString(R.string.SavedMessages)
++        }
++        if (DialogObject.isEncryptedDialog(dialogId)) {
++            val encryptedChat = MessagesController.getInstance(account).getEncryptedChat(DialogObject.getEncryptedChatId(dialogId))
++            if (encryptedChat != null) {
++                val user = MessagesController.getInstance(account).getUser(encryptedChat.user_id)
++                if (user != null) {
++                    return UserObject.getUserName(user)
++                }
++            }
++            return ""
++        }
++        return DialogObject.getName(account, dialogId)
++    }
++
++    private fun subtitleOf(slot: MainTabsConfig.Slot): CharSequence {
++        if (slot.isShortcut) {
++            return lc("Chat button")
++        }
++        val animation = animationByName(slot.iconName)
++        if (animation != null) {
++            return iconLabel(animation)
++        }
++        return lc("Page")
++    }
++
++    private fun pageAnimationOf(slot: MainTabsConfig.Slot): GlassTabView.TabAnimation? {
++        if (!slot.isPage || slot.kind == MainTabsConfig.KIND_PROFILE) {
++            return null
++        }
++        return animationByName(MainTabsConfig.iconNameOf(slot))
++    }
++
++    private fun animationByName(name: String): GlassTabView.TabAnimation? {
++        if (name.isEmpty()) {
++            return null
++        }
++        return try {
++            GlassTabView.TabAnimation.valueOf(name)
++        } catch (e: IllegalArgumentException) {
++            FileLog.e(e)
++            null
++        }
++    }
++
++    private fun iconLabel(animation: GlassTabView.TabAnimation): String {
++        val pretty = animation.name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
++        return lc(pretty)
++    }
++
++    /** The filled frame of a tab animation, the way a selected tab shows it. */
++    private fun bindAnimationPreview(view: RLottieImageView, animation: GlassTabView.TabAnimation, selected: Boolean) {
++        val color = Theme.getColor(if (selected) Theme.key_glass_tabSelected else Theme.key_glass_tabUnselected, resourceProvider)
++        view.setColorFilter(PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN))
++        if (animation.iconStatic != -1) {
++            view.setImageResource(animation.iconStatic)
++            return
++        }
++        view.setAnimation(animation.iconToFilled, 24, 24)
++        val drawable = view.animatedDrawable ?: return
++        if (animation.endFrameMid != -1) {
++            drawable.setCurrentFrame(animation.endFrameMid, false)
++        } else {
++            drawable.setProgress(0.99f)
++        }
++    }
++
++    private fun setAvatar(image: BackupImageView, dialogId: Long) {
++        val drawable = AvatarDrawable()
++        if (dialogId == UserConfig.getInstance(account).clientUserId) {
++            drawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED)
++            image.setImage(null, null, drawable, null)
++            return
++        }
++        var tlObject: TLObject? = null
++        if (DialogObject.isEncryptedDialog(dialogId)) {
++            val encryptedChat = MessagesController.getInstance(account).getEncryptedChat(DialogObject.getEncryptedChatId(dialogId))
++            if (encryptedChat != null) {
++                tlObject = MessagesController.getInstance(account).getUser(encryptedChat.user_id)
++            }
++        } else {
++            tlObject = MessagesController.getInstance(account).getUserOrChat(dialogId)
++        }
++        if (tlObject == null) {
++            drawable.setInfo(dialogId, "", "", null)
++            image.setImage(null, null, drawable, null)
++            return
++        }
++        drawable.setInfo(account, tlObject)
++        image.setForUserOrChat(tlObject, drawable)
++    }
++
++    private fun dialogIdOf(slot: MainTabsConfig.Slot): Long =
++        if (slot.kind == MainTabsConfig.KIND_SAVED) UserConfig.getInstance(account).clientUserId else slot.dialogId
++
++    private fun labelsValue(): String = when (MainTabsConfig.labelsMode()) {
++        MainTabsConfig.LABELS_SELECTED -> lc("Selected")
++        MainTabsConfig.LABELS_ICONS -> lc("Icons only")
++        else -> lc("All")
++    }
++
++    private inner class SlotCell(context: Context) : FrameLayout(context) {
++
++        val handle: ImageView
++        val icon = RLottieImageView(context)
++        val avatar = BackupImageView(context)
++        val title = TextView(context)
++        val subtitle = TextView(context)
++
++        init {
++            background = Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector, resourceProvider), Theme.RIPPLE_MASK_ALL)
++
++            handle = ImageView(context)
++            handle.scaleType = ImageView.ScaleType.CENTER
++            handle.setImageResource(R.drawable.list_reorder)
++            handle.setColorFilter(PorterDuffColorFilter(Theme.getColor(Theme.key_stickers_menu, resourceProvider), PorterDuff.Mode.MULTIPLY))
++            handle.setOnTouchListener { _, event ->
++                when (event.actionMasked) {
++                    MotionEvent.ACTION_DOWN -> {
++                        suppressNextEntryClick = true
++                        listView?.findContainingViewHolder(this)?.let { touchHelper?.startDrag(it) }
++                        true
++                    }
++                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
++                        listView?.postDelayed({ suppressNextEntryClick = false }, 250)
++                        true
++                    }
++                    else -> false
++                }
++            }
++            addView(handle, FrameLayout.LayoutParams(AndroidUtilities.dp(48f), LayoutHelper.MATCH_PARENT, Gravity.LEFT or Gravity.CENTER_VERTICAL))
++
++            icon.scaleType = ImageView.ScaleType.FIT_CENTER
++            avatar.setRoundRadius(AndroidUtilities.dp(14f))
++            val preview = FrameLayout(context)
++            preview.addView(icon, FrameLayout.LayoutParams(AndroidUtilities.dp(28f), AndroidUtilities.dp(28f), Gravity.CENTER))
++            preview.addView(avatar, FrameLayout.LayoutParams(AndroidUtilities.dp(28f), AndroidUtilities.dp(28f), Gravity.CENTER))
++
++            title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16f)
++            title.setSingleLine(true)
++            title.ellipsize = android.text.TextUtils.TruncateAt.END
++            subtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13f)
++            subtitle.setSingleLine(true)
++            subtitle.ellipsize = android.text.TextUtils.TruncateAt.END
++
++            val texts = LinearLayout(context)
++            texts.orientation = LinearLayout.VERTICAL
++            texts.gravity = Gravity.CENTER_VERTICAL
++            texts.addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++            texts.addView(subtitle, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++
++            val body = LinearLayout(context)
++            body.orientation = LinearLayout.HORIZONTAL
++            body.gravity = Gravity.CENTER_VERTICAL
++            body.addView(preview, LinearLayout.LayoutParams(AndroidUtilities.dp(44f), AndroidUtilities.dp(44f)))
++            body.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
++            addView(body, FrameLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.CENTER_VERTICAL).apply {
++                leftMargin = AndroidUtilities.dp(44f)
++                rightMargin = AndroidUtilities.dp(16f)
++            })
++
++            layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, AndroidUtilities.dp(56f))
++        }
++
++        fun bind(slot: MainTabsConfig.Slot) {
++            title.text = titleOf(slot)
++            title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourceProvider))
++            subtitle.text = subtitleOf(slot)
++            subtitle.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2, resourceProvider))
++            val animation = pageAnimationOf(slot)
++            if (animation != null) {
++                avatar.visibility = GONE
++                icon.visibility = VISIBLE
++                bindAnimationPreview(icon, animation, false)
++            } else {
++                icon.visibility = GONE
++                avatar.visibility = VISIBLE
++                setAvatar(avatar, dialogIdOf(slot))
++            }
++        }
++    }
++
++    private inner class Adapter(private val context: Context) : RecyclerListView.SelectionAdapter() {
++
++        override fun getItemCount(): Int = slots.size + 4
++
++        override fun isEnabled(holder: RecyclerView.ViewHolder): Boolean =
++            holder.adapterPosition in 1..slots.size + 2
++
++        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
++            val view: View = when (viewType) {
++                TYPE_HEADER -> HeaderCell(context)
++                TYPE_ADD -> TextCell(context)
++                TYPE_LABELS -> TextSettingsCell(context)
++                TYPE_SHADOW -> TextInfoPrivacyCell(context)
++                else -> SlotCell(context)
++            }
++            if (view.layoutParams == null) {
++                view.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
++            }
++            return RecyclerListView.Holder(view)
++        }
++
++        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
++            when (holder.itemViewType) {
++                TYPE_HEADER -> (holder.itemView as HeaderCell).setText(lc("Tabs"))
++                TYPE_ADD -> (holder.itemView as TextCell).setTextAndIcon(lc("Add tab"), R.drawable.msg_add, false)
++                TYPE_LABELS -> (holder.itemView as TextSettingsCell).setTextAndValue(lc("Labels"), labelsValue(), true)
++                TYPE_SHADOW -> (holder.itemView as TextInfoPrivacyCell).setText(
++                    lc("Tap a tab to change its icon or remove it; drag the handle to reorder.")
++                )
++                else -> (holder.itemView as SlotCell).bind(slots[position - 1])
++            }
++        }
++
++        override fun getItemViewType(position: Int): Int = when (position) {
++            0 -> TYPE_HEADER
++            slots.size + 1 -> TYPE_ADD
++            slots.size + 2 -> TYPE_LABELS
++            slots.size + 3 -> TYPE_SHADOW
++            else -> TYPE_SLOT
++        }
++    }
++
++    /** The stock tab animations as a grid of filled previews. */
++    private inner class IconSheet(
++        context: Context,
++        private val provider: Theme.ResourcesProvider?,
++        current: String,
++        private val onPick: (String) -> Unit
++    ) : BottomSheet(context, true, provider) {
++
++        init {
++            fixNavigationBar()
++            setCanDismissWithSwipe(false)
++            val root = LinearLayout(context)
++            root.orientation = LinearLayout.VERTICAL
++
++            val handle = View(context)
++            handle.background = Theme.createRoundRectDrawable(
++                AndroidUtilities.dp(2f),
++                Theme.multAlpha(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText4, provider), 0.6f)
++            )
++            root.addView(handle, LayoutHelper.createLinear(36, 4, Gravity.CENTER_HORIZONTAL, 0, 8, 0, 0))
++
++            val titleView = TextView(context)
++            titleView.text = lc("Tab icon")
++            titleView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 20f)
++            titleView.typeface = AndroidUtilities.bold()
++            titleView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, provider))
++            root.addView(titleView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START, 20, 10, 20, 6))
++
++            val grid = LinearLayout(context)
++            grid.orientation = LinearLayout.VERTICAL
++            val animations = GlassTabView.TabAnimation.values()
++            val columns = 4
++            var row: LinearLayout? = null
++            val selectedBackground = Theme.createRoundRectDrawable(
++                AndroidUtilities.dp(10f),
++                Theme.multAlpha(Theme.getColor(Theme.key_glass_tabSelected, provider), 0.13f)
++            )
++            for (animation in animations) {
++                if (row == null || row.childCount == columns) {
++                    row = LinearLayout(context)
++                    row.orientation = LinearLayout.HORIZONTAL
++                    grid.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++                }
++                val picked = animation.name == current
++                val cell = LinearLayout(context)
++                cell.orientation = LinearLayout.VERTICAL
++                cell.gravity = Gravity.CENTER
++                cell.setPadding(AndroidUtilities.dp(4f), AndroidUtilities.dp(8f), AndroidUtilities.dp(4f), AndroidUtilities.dp(8f))
++                if (picked) {
++                    cell.background = selectedBackground
++                }
++                val preview = RLottieImageView(context)
++                bindAnimationPreview(preview, animation, picked)
++                cell.addView(preview, LinearLayout.LayoutParams(AndroidUtilities.dp(30f), AndroidUtilities.dp(30f)))
++                val name = TextView(context)
++                name.text = iconLabel(animation)
++                name.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11f)
++                name.setGravity(Gravity.CENTER)
++                name.setSingleLine(true)
++                name.setTextColor(Theme.getColor(
++                    if (picked) Theme.key_glass_tabSelectedText else Theme.key_windowBackgroundWhiteGrayText2, provider
++                ))
++                cell.addView(name, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++                cell.setOnClickListener {
++                    dismiss()
++                    onPick(animation.name)
++                }
++                row?.addView(cell, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
++            }
++
++            root.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
++            val maxHeight = (AndroidUtilities.displaySize.y * 0.72f).toInt()
++            setCustomView(BoundedScrollView(context, maxHeight).also { scroll ->
++                scroll.addView(root, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
++            })
++        }
++
++    }
++
++    /** A scroll view that never grows past the height of the screen, so its content scrolls. */
++    private class BoundedScrollView(context: Context, private val maxHeight: Int) : ScrollView(context) {
++        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST))
++        }
++    }
++
++    private fun lc(text: String): String = TeleLowercase.lc(text)
++
++    companion object {
++        private const val TYPE_HEADER = 0
++        private const val TYPE_SLOT = 1
++        private const val TYPE_ADD = 2
++        private const val TYPE_LABELS = 3
++        private const val TYPE_SHADOW = 4
++
++        private const val ID_MORE = 7301
++        private const val ID_RESET = 7302
++    }
++}

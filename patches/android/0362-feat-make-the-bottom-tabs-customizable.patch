@@ -1,0 +1,1106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Wed, 18 Nov 2026 02:03:52 +0300
+Subject: [PATCH] feat: make the bottom tabs customizable
+
+---
+ .../ui/Components/glass/GlassTabView.java     |  16 +
+ .../org/telegram/ui/MainTabsActivity.java     | 617 +++++++++++++++++-
+ .../java/org/telegram/ui/MainTabsLayout.java  |   3 +
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
+ .../main/java/tele/helpers/MainTabsBadges.kt  |  16 +
+ .../main/java/tele/helpers/MainTabsConfig.kt  | 165 +++++
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   3 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   3 +
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ 11 files changed, 836 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MainTabsBadges.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+index 83cbe6cbe..83524aa4e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+@@ -455,6 +455,22 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+         backupImageView.setForUserOrChat(user, avatarDrawable);
+     }
+ 
++    /** A tab with the avatar of a chat: the caller fills the image and the colours like {@link #createAvatar} does. */
++    public static GlassTabView tele_createDialogAvatar(Context context, Theme.ResourcesProvider resourcesProvider, CharSequence title) {
++        GlassTabView tab = new GlassTabView(context);
++        tab.resourcesProvider = resourcesProvider;
++        tab.textView.setText(title);
++        tab.imageView.setVisibility(GONE);
++        tab.backupImageView = new BackupImageView(context);
++        tab.backupImageView.setRoundRadius(dp(11));
++        tab.addView(tab.backupImageView, LayoutHelper.createFrame(22, 22, Gravity.CENTER_HORIZONTAL | Gravity.TOP, 0, 5, 0, 0));
++        tab.colorDefault = Theme.getColor(Theme.key_glass_tabUnselected, resourcesProvider);
++        tab.colorSelected = Theme.getColor(Theme.key_glass_tabSelected, resourcesProvider);
++        tab.colorSelectedText = Theme.getColor(Theme.key_glass_tabSelectedText, resourcesProvider);
++        tab.applyColors();
++        return tab;
++    }
++
+     public static GlassTabView createAttachTab(Context context, Theme.ResourcesProvider resourcesProvider) {
+         GlassTabView tab = new GlassTabView(context);
+         tab.resourcesProvider = resourcesProvider;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index 9538dd2a8..1a82f83cb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -20,6 +20,7 @@ import android.text.Spanned;
+ import android.text.TextUtils;
+ import android.text.TextPaint;
+ import android.text.style.ReplacementSpan;
++import android.util.SparseArray;
+ import android.util.TypedValue;
+ import android.view.Gravity;
+ import android.view.MotionEvent;
+@@ -54,6 +55,7 @@ import org.telegram.messenger.R;
+ import org.telegram.messenger.SharedConfig;
+ import org.telegram.messenger.UserConfig;
+ import org.telegram.messenger.UserObject;
++import org.telegram.tgnet.TLObject;
+ import org.telegram.tgnet.TLRPC;
+ import org.telegram.ui.ActionBar.ActionBarMenuSubItem;
+ import org.telegram.ui.ActionBar.BaseFragment;
+@@ -287,6 +289,8 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     @Override
+     public void onResume() {
+         super.onResume();
++        teleRefreshBar();
++        teleRefreshShortcuts();
+         blur3_updateColors();
+         checkContactsTabBadge();
+         checkUnreadCount(true);
+@@ -295,6 +299,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     }
+ 
+     private void checkContactsTabBadge() {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            teleUpdateContactsBadge();
++            return;
++        }
+         if (tabsView != null && tabs[INDEX_CONTACTS] != null) {
+             final boolean hasPermission = Build.VERSION.SDK_INT >= 23 && ContactsController.hasContactsPermission();
+             if (hasPermission) {
+@@ -374,6 +382,12 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+ 
+         selectTab(viewPager.getCurrentPosition(), false);
+ 
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            teleRebuildBar(true);
++        } else {
++            teleBuiltVersion = tele.helpers.MainTabsConfig.version();
++        }
++
+         iBlur3SourceColor.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+ 
+         final ViewPositionWatcher viewPositionWatcher = new ViewPositionWatcher(contentView);
+@@ -420,6 +434,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     }
+ 
+     private void checkUnreadCount(boolean animated) {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            teleUpdateUnreadBadges(animated);
++            return;
++        }
+         if (tabsView == null) {
+             return;
+         }
+@@ -611,6 +629,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     }
+ 
+     private void openFolder(int folderId) {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            teleOpenFolder(folderId);
++            return;
++        }
+         if (viewPager.getCurrentPosition() == POSITION_CHATS && dialogsActivity != null) {
+             dialogsActivity.scrollToFolder(folderId);
+         } else {
+@@ -747,6 +769,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+ 
+     @Override
+     protected void onViewPagerScrollEnd() {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            teleOnScrollEnd();
++            return;
++        }
+         if (tabsView != null) {
+             selectTab(viewPager.getCurrentPosition(), true);
+             setGestureSelectedOverride(0, false);
+@@ -793,11 +819,20 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+ 
+     @Override
+     protected int getFragmentsCount() {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            return Math.max(1, tele.helpers.MainTabsConfig.pageCount(currentAccount));
++        }
+         return TABS_COUNT;
+     }
+ 
+     @Override
+     protected int getStartPosition() {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            final int position = tele.helpers.MainTabsConfig.chatsPosition(currentAccount);
++            if (position >= 0) {
++                return position;
++            }
++        }
+         return POSITION_CHATS;
+     }
+ 
+@@ -819,6 +854,9 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     }
+ 
+     public DialogsActivity prepareDialogsActivity(Bundle bundle) {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            return telePrepareDialogsActivity(bundle);
++        }
+         if (bundle == null) {
+             bundle = new Bundle();
+         }
+@@ -832,6 +870,9 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+ 
+     @Override
+     protected BaseFragment createBaseFragmentAt(int position) {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            return teleCreatePageAt(position);
++        }
+         if (position == POSITION_CONTACTS) {
+             Bundle args = new Bundle();
+             args.putBoolean("needPhonebook", true);
+@@ -874,6 +915,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     public GlassTabView[] tabs;
+ 
+     public void selectTab(int position, boolean animated) {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            teleSelectTab(position, animated);
++            return;
++        }
+         for (int a = 0; a < tabs.length; a++) {
+             GlassTabView tab = tabs[a];
+             tab.setSelected(indexToPosition(a) == position, animated);
+@@ -881,6 +926,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     }
+ 
+     public void setGestureSelectedOverride(float animatedPosition, boolean allow) {
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            teleSetGestureSelectedOverride(animatedPosition, allow);
++            return;
++        }
+         for (int index = 0; index < tabs.length; index++) {
+             final int position = indexToPosition(index);
+             final float visibility = Math.max(0, 1f - Math.abs(position - animatedPosition));
+@@ -988,7 +1037,12 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     @Override
+     public void didReceivedNotification(int id, int account, Object... args) {
+         if (id == NotificationCenter.notificationsCountUpdated || id == NotificationCenter.updateInterfaces) {
++            teleRefreshBar();
+             checkUnreadCount(fragmentView != null && fragmentView.isAttachedToWindow());
++            if (id == NotificationCenter.updateInterfaces && args.length > 0 && args[0] instanceof Integer
++                    && (((Integer) args[0]) & (MessagesController.UPDATE_MASK_AVATAR | MessagesController.UPDATE_MASK_NAME)) != 0) {
++                teleRefreshShortcuts();
++            }
+         } else if (id == NotificationCenter.appUpdateLoading) {
+             if (updateLayout != null) {
+                 updateLayout.updateFileProgress(null);
+@@ -1021,6 +1075,9 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         } else if (id == NotificationCenter.needSetDayNightTheme) {
+             clearAllHiddenFragments();
+         } else if (id == NotificationCenter.callTabsVisibleToggled) {
++            if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++                return;
++            }
+             final boolean callTabsVisible = getUserConfig().showCallsTab;
+             checkUi_callTabVisible(callTabsVisible, true);
+             if (viewPager != null && viewPager.getCurrentPosition() == POSITION_CALLS_OR_SETTINGS) {
+@@ -1031,6 +1088,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+                 dropFragmentAtPosition(POSITION_CALLS_OR_SETTINGS);
+             }
+         } else if (id == NotificationCenter.mainUserInfoChanged) {
++            if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++                teleUpdateProfileTab();
++                return;
++            }
+             if (tabs != null && tabs[INDEX_PROFILE] != null) {
+                 tabs[INDEX_PROFILE].updateUserAvatar(currentAccount);
+             }
+@@ -1087,7 +1148,7 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         }
+ 
+         final float animatedPosition = viewPager.getPositionAnimated();
+-        final float isProfile = 1f - MathUtils.clamp(Math.abs(POSITION_PROFILE - animatedPosition), 0, 1);
++        final float isProfile = 1f - MathUtils.clamp(Math.abs(teleProfilePagePosition() - animatedPosition), 0, 1);
+         final float hide = 1f - AndroidUtilities.getNavigationBarThirdButtonsFactor(0, 1f, navigationBarHeight);
+         float alpha = (1f - isProfile * hide) * animatorTabsVisible.getFloatValue();
+         if (tabletLayout) {
+@@ -1191,7 +1252,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             AndroidUtilities.runOnUIThread(() -> {
+                 if (getContext() == null || tabs == null) return;
+ 
+-                final View v = tabs[INDEX_PROFILE];
++                final View v = tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()
++                    ? teleTabForKind(tele.helpers.MainTabsConfig.KIND_PROFILE)
++                    : tabs[INDEX_PROFILE];
++                if (v == null) return;
+                 final float translate = (contentView.getWidth() - ((tabsView.getX() + v.getX()) + v.getWidth()) + v.getWidth() / 2f) / AndroidUtilities.density;
+ 
+                 accountSwitchHint = new HintView2(getContext(), HintView2.DIRECTION_BOTTOM);
+@@ -1331,4 +1395,553 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         keys.add(Theme.key_dialogBackground);
+         keys.add(Theme.key_windowBackgroundWhite);
+     }
++
++
++    /* tele: the custom main tabs */
++
++    private final ArrayList<String> telePageKeys = new ArrayList<>();
++    private final ArrayList<String> teleTabKinds = new ArrayList<>();
++    private final ArrayList<Integer> teleTabPagePositions = new ArrayList<>();
++    private final ArrayList<Long> teleTabDialogIds = new ArrayList<>();
++    private boolean teleBuiltCustom;
++    private int teleBuiltVersion = -1;
++    private int teleProfilePage = POSITION_PROFILE;
++
++    private void teleRefreshBar() {
++        if (tabsView == null || viewPager == null || getContext() == null) {
++            return;
++        }
++        if (viewPager.isManualScrolling() || viewPager.isTouch()) {
++            viewPager.postDelayed(this::teleRefreshBar, 400);
++            return;
++        }
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue() == teleBuiltCustom
++                && tele.helpers.MainTabsConfig.version() == teleBuiltVersion) {
++            return;
++        }
++        teleRebuildBar(false);
++    }
++
++    private void teleRebuildBar(boolean initial) {
++        final boolean custom = tele.TeleConfig.CUSTOM_MAIN_TABS.getValue();
++        final ArrayList<tele.helpers.MainTabsConfig.Slot> slots = new ArrayList<>();
++        final ArrayList<String> newKeys = new ArrayList<>();
++        if (custom) {
++            slots.addAll(tele.helpers.MainTabsConfig.slots(currentAccount));
++            for (int a = 0; a < slots.size(); a++) {
++                final tele.helpers.MainTabsConfig.Slot slot = slots.get(a);
++                if (slot.isPage()) {
++                    newKeys.add(slot.getKind());
++                }
++            }
++        } else {
++            newKeys.add(tele.helpers.MainTabsConfig.KIND_CHATS);
++            newKeys.add(tele.helpers.MainTabsConfig.KIND_CONTACTS);
++            newKeys.add(getUserConfig().showCallsTab ? tele.helpers.MainTabsConfig.KIND_CALLS : tele.helpers.MainTabsConfig.KIND_SETTINGS);
++            newKeys.add(tele.helpers.MainTabsConfig.KIND_PROFILE);
++        }
++
++        final int currentPosition = viewPager != null ? viewPager.getCurrentPosition() : -1;
++        final String selectedKey = !initial && currentPosition >= 0 && currentPosition < telePageKeys.size()
++            ? telePageKeys.get(currentPosition) : null;
++
++        if (!initial) {
++            teleRemapFragments(telePageKeys, newKeys);
++        }
++        telePageKeys.clear();
++        telePageKeys.addAll(newKeys);
++        teleProfilePage = newKeys.indexOf(tele.helpers.MainTabsConfig.KIND_PROFILE);
++
++        tabsView.tele_clearIgnoreClickTabs();
++        tabsView.removeAllViews();
++        teleTabKinds.clear();
++        teleTabPagePositions.clear();
++        teleTabDialogIds.clear();
++
++        final ArrayList<GlassTabView> built = new ArrayList<>();
++        if (custom) {
++            int page = 0;
++            for (int a = 0; a < slots.size(); a++) {
++                final tele.helpers.MainTabsConfig.Slot slot = slots.get(a);
++                final GlassTabView tab;
++                if (slot.isPage()) {
++                    tab = teleBuildPageTab(slot.getKind(), page);
++                    teleTabPagePositions.add(page);
++                    teleTabDialogIds.add(0L);
++                    page++;
++                } else {
++                    tab = teleBuildShortcutTab(slot);
++                    teleTabPagePositions.add(-1);
++                    teleTabDialogIds.add(teleDialogIdOf(slot));
++                }
++                teleTabKinds.add(slot.getKind());
++                built.add(tab);
++                tabsView.addTabToIgnoreClick(tab);
++            }
++        } else {
++            built.add(teleBuildStockTab(INDEX_CHATS, POSITION_CHATS));
++            built.add(teleBuildStockTab(INDEX_CONTACTS, POSITION_CONTACTS));
++            built.add(teleBuildStockTab(INDEX_SETTINGS, POSITION_CALLS_OR_SETTINGS));
++            built.add(teleBuildStockTab(INDEX_CALLS, POSITION_CALLS_OR_SETTINGS));
++            built.add(teleBuildStockTab(INDEX_PROFILE, POSITION_PROFILE));
++            teleTabPagePositions.add(POSITION_CHATS);
++            teleTabPagePositions.add(POSITION_CONTACTS);
++            teleTabPagePositions.add(POSITION_CALLS_OR_SETTINGS);
++            teleTabPagePositions.add(POSITION_CALLS_OR_SETTINGS);
++            teleTabPagePositions.add(POSITION_PROFILE);
++            teleTabKinds.add(tele.helpers.MainTabsConfig.KIND_CHATS);
++            teleTabKinds.add(tele.helpers.MainTabsConfig.KIND_CONTACTS);
++            teleTabKinds.add(tele.helpers.MainTabsConfig.KIND_SETTINGS);
++            teleTabKinds.add(tele.helpers.MainTabsConfig.KIND_CALLS);
++            teleTabKinds.add(tele.helpers.MainTabsConfig.KIND_PROFILE);
++            teleTabDialogIds.add(0L);
++            teleTabDialogIds.add(0L);
++            teleTabDialogIds.add(0L);
++            teleTabDialogIds.add(0L);
++            teleTabDialogIds.add(0L);
++            tabsView.addTabToIgnoreClick(built.get(INDEX_CHATS));
++            tabsView.addTabToIgnoreClick(built.get(INDEX_CONTACTS));
++            tabsView.addTabToIgnoreClick(built.get(INDEX_CALLS));
++            tabsView.addTabToIgnoreClick(built.get(INDEX_PROFILE));
++        }
++
++        tabs = built.toArray(new GlassTabView[0]);
++        for (int a = 0; a < tabs.length; a++) {
++            tabsView.addView(tabs[a]);
++            tabsView.setViewVisible(tabs[a], true, false);
++        }
++        if (!custom) {
++            final boolean calls = getUserConfig().showCallsTab;
++            tabsView.setViewVisible(tabs[INDEX_SETTINGS], !calls, false);
++            tabsView.setViewVisible(tabs[INDEX_CALLS], calls, false);
++        }
++
++        int newPosition = selectedKey != null ? newKeys.indexOf(selectedKey) : -1;
++        if (newPosition < 0) {
++            newPosition = teleChatsPagePosition();
++        }
++        if (newPosition < 0) {
++            newPosition = 0;
++        }
++        if (!initial && viewPager != null) {
++            if (viewPager.getCurrentPosition() != newPosition || viewPager.getCurrentPosition() >= telePageKeys.size()) {
++                viewPager.setPosition(newPosition);
++            } else {
++                viewPager.rebuild(false);
++            }
++        }
++
++        teleBuiltCustom = custom;
++        teleBuiltVersion = tele.helpers.MainTabsConfig.version();
++        if (viewPager != null) {
++            selectTab(viewPager.getCurrentPosition(), false);
++        }
++        teleUpdateUnreadBadges(false);
++        teleUpdateContactsBadge();
++        tabsView.requestLayout();
++        if (!initial) {
++            blur3_invalidateBlur();
++        }
++    }
++
++    /** Pages live at their slot positions: the fragments that stay keep their state, the removed ones go. */
++    private void teleRemapFragments(ArrayList<String> oldKeys, ArrayList<String> newKeys) {
++        for (int position = 0; position < oldKeys.size(); position++) {
++            if (fragmentsArr.get(position) != null && !newKeys.contains(oldKeys.get(position))) {
++                dropFragmentAtPosition(position);
++            }
++        }
++        final SparseArray<FragmentState> kept = new SparseArray<>();
++        for (int position = 0; position < oldKeys.size(); position++) {
++            final FragmentState state = fragmentsArr.get(position);
++            if (state != null) {
++                kept.put(position, state);
++            }
++        }
++        fragmentsArr.clear();
++        for (int position = 0; position < newKeys.size(); position++) {
++            final int oldPosition = oldKeys.indexOf(newKeys.get(position));
++            if (oldPosition < 0) {
++                continue;
++            }
++            final FragmentState state = kept.get(oldPosition);
++            if (state != null) {
++                fragmentsArr.put(position, state);
++            }
++        }
++    }
++
++    private GlassTabView teleBuildPageTab(String kind, int position) {
++        final GlassTabView tab;
++        if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind)) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CONTACTS, R.string.MainTabsContacts);
++            tab.setOnLongClickListener(this::openContactsSelector);
++        } else if (tele.helpers.MainTabsConfig.KIND_CALLS.equals(kind)) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CALLS, R.string.MainTabsCalls);
++            tab.setOnLongClickListener(this::teleOpenCallsSelector);
++        } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS.equals(kind)) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.SETTINGS, R.string.Settings);
++        } else if (tele.helpers.MainTabsConfig.KIND_PROFILE.equals(kind)) {
++            tab = GlassTabView.createAvatar(getContext(), resourceProvider, currentAccount, R.string.MainTabsProfile);
++            tab.setOnLongClickListener(this::openAccountSelector);
++        } else {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CHATS, R.string.MainTabsChats);
++            tab.setOnLongClickListener(this::openFoldersSelector);
++        }
++        final int page = position;
++        tab.setOnClickListener(v -> teleOnPageTabClicked(page));
++        return tab;
++    }
++
++    private GlassTabView teleBuildStockTab(int index, int position) {
++        final GlassTabView tab;
++        if (index == INDEX_CHATS) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CHATS, R.string.MainTabsChats);
++            tab.setOnLongClickListener(this::openFoldersSelector);
++        } else if (index == INDEX_CONTACTS) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CONTACTS, R.string.MainTabsContacts);
++            tab.setOnLongClickListener(this::openContactsSelector);
++        } else if (index == INDEX_SETTINGS) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.SETTINGS, R.string.Settings);
++        } else if (index == INDEX_CALLS) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, GlassTabView.TabAnimation.CALLS, R.string.MainTabsCalls);
++            tab.setOnLongClickListener(this::openCallsSelector);
++        } else {
++            tab = GlassTabView.createAvatar(getContext(), resourceProvider, currentAccount, R.string.MainTabsProfile);
++            tab.setOnLongClickListener(this::openAccountSelector);
++        }
++        final int page = position;
++        tab.setOnClickListener(v -> teleOnPageTabClicked(page));
++        return tab;
++    }
++
++    private GlassTabView teleBuildShortcutTab(tele.helpers.MainTabsConfig.Slot slot) {
++        final long dialogId = teleDialogIdOf(slot);
++        final GlassTabView tab = GlassTabView.tele_createDialogAvatar(getContext(), resourceProvider, teleDialogTitle(dialogId));
++        teleSetAvatar(tab, dialogId);
++        tab.setCounter(null, false, false);
++        tab.setOnClickListener(v -> {
++            if (viewPager.isManualScrolling() || viewPager.isTouch()) {
++                return;
++            }
++            teleOpenDialog(dialogId);
++        });
++        tab.setOnLongClickListener(v -> teleOpenShortcutMenu(v, slot));
++        return tab;
++    }
++
++    private long teleDialogIdOf(tele.helpers.MainTabsConfig.Slot slot) {
++        if (tele.helpers.MainTabsConfig.KIND_SAVED.equals(slot.getKind())) {
++            return getUserConfig().getClientUserId();
++        }
++        return slot.getDialogId();
++    }
++
++    private void teleOnPageTabClicked(int position) {
++        if (viewPager.isManualScrolling() || viewPager.isTouch()) {
++            return;
++        }
++        if (viewPager.getCurrentPosition() == position) {
++            final BaseFragment fragment = getCurrentVisibleFragment();
++            if (position == teleChatsPagePosition() && fragment instanceof DialogsActivity
++                    && tele.TeleConfig.CHATS_TAB_DOUBLE_TAP_ALL.getValue()
++                    && tele.helpers.ChatsTabDoubleTap.onReselect((DialogsActivity) fragment)) {
++                return;
++            }
++            if (fragment instanceof MainTabsActivity.TabFragmentDelegate) {
++                ((MainTabsActivity.TabFragmentDelegate) fragment).onParentScrollToTop();
++            }
++            return;
++        }
++        selectTab(position, true);
++        viewPager.scrollToPosition(position);
++    }
++
++    private void teleSelectTab(int position, boolean animated) {
++        if (tabs == null) {
++            return;
++        }
++        for (int a = 0; a < tabs.length; a++) {
++            final int page = a < teleTabPagePositions.size() ? teleTabPagePositions.get(a) : -1;
++            tabs[a].setSelected(page >= 0 && page == position, animated);
++        }
++    }
++
++    private void teleSetGestureSelectedOverride(float animatedPosition, boolean allow) {
++        if (tabs == null || tabsView == null) {
++            return;
++        }
++        for (int a = 0; a < tabs.length; a++) {
++            final int page = a < teleTabPagePositions.size() ? teleTabPagePositions.get(a) : -1;
++            final float visibility = page < 0 ? 0 : Math.max(0, 1f - Math.abs(page - animatedPosition));
++            tabs[a].setGestureSelectedOverride(visibility, allow && page >= 0);
++        }
++        tabsView.invalidate();
++    }
++
++    private void teleUpdateUnreadBadges(boolean animated) {
++        if (tabsView == null || tabs == null) {
++            return;
++        }
++        final GlassTabView chatsTab = teleTabForKind(tele.helpers.MainTabsConfig.KIND_CHATS);
++        if (chatsTab != null) {
++            final int unreadCount = tele.helpers.TeleCounters.folderCounter(MessagesStorage.getInstance(currentAccount).getMainUnreadCount());
++            chatsTab.setCounter(unreadCount > 0 ? LocaleController.formatNumber(unreadCount, ',') : null, false, animated);
++        }
++        for (int a = 0; a < tabs.length && a < teleTabDialogIds.size(); a++) {
++            final long dialogId = teleTabDialogIds.get(a);
++            if (dialogId == 0) {
++                continue;
++            }
++            final int unreadCount = tele.helpers.TeleCounters.folderCounter(tele.helpers.MainTabsBadges.unread(currentAccount, dialogId));
++            tabs[a].setCounter(unreadCount > 0 ? LocaleController.formatNumber(unreadCount, ',') : null, false, animated);
++        }
++    }
++
++    private void teleUpdateContactsBadge() {
++        final GlassTabView tab = teleTabForKind(tele.helpers.MainTabsConfig.KIND_CONTACTS);
++        if (tab == null) {
++            return;
++        }
++        final boolean hasPermission = Build.VERSION.SDK_INT >= 23 && ContactsController.hasContactsPermission();
++        if (hasPermission) {
++            MessagesController.getGlobalNotificationsSettings().edit().putBoolean("askAboutContacts2", true).apply();
++        }
++        if (Build.VERSION.SDK_INT >= 23 && UserConfig.getInstance(currentAccount).syncContacts && !hasPermission && MessagesController.getGlobalNotificationsSettings().getBoolean("askAboutContacts2", true)) {
++            tab.setCounter("!", true, true);
++        } else {
++            tab.setCounter(null, true, true);
++        }
++    }
++
++    private GlassTabView teleTabForKind(String kind) {
++        if (tabs == null) {
++            return null;
++        }
++        for (int a = 0; a < tabs.length && a < teleTabKinds.size(); a++) {
++            if (kind.equals(teleTabKinds.get(a))) {
++                return tabs[a];
++            }
++        }
++        return null;
++    }
++
++    private void teleUpdateProfileTab() {
++        final GlassTabView tab = teleTabForKind(tele.helpers.MainTabsConfig.KIND_PROFILE);
++        if (tab != null) {
++            tab.updateUserAvatar(currentAccount);
++        }
++    }
++
++    private void teleRefreshShortcuts() {
++        if (tabs == null || teleTabDialogIds.isEmpty()) {
++            return;
++        }
++        boolean changed = false;
++        for (int a = 0; a < tabs.length && a < teleTabDialogIds.size(); a++) {
++            final long dialogId = teleTabDialogIds.get(a);
++            if (dialogId == 0) {
++                continue;
++            }
++            tabs[a].setText(teleDialogTitle(dialogId));
++            teleSetAvatar(tabs[a], dialogId);
++            changed = true;
++        }
++        if (changed && tabsView != null) {
++            tabsView.requestLayout();
++        }
++    }
++
++    private void teleSetAvatar(GlassTabView tab, long dialogId) {
++        final BackupImageView image = tab.getBackupImageView();
++        if (image == null) {
++            return;
++        }
++        final AvatarDrawable drawable = new AvatarDrawable();
++        if (dialogId == getUserConfig().getClientUserId()) {
++            drawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED);
++            image.setImage(null, null, drawable, null);
++            return;
++        }
++        TLObject object = null;
++        if (DialogObject.isEncryptedDialog(dialogId)) {
++            final TLRPC.EncryptedChat encryptedChat = getMessagesController().getEncryptedChat(DialogObject.getEncryptedChatId(dialogId));
++            if (encryptedChat != null) {
++                object = getMessagesController().getUser(encryptedChat.user_id);
++            }
++        } else {
++            object = getMessagesController().getUserOrChat(dialogId);
++        }
++        if (object == null) {
++            drawable.setInfo(dialogId, "", "", null);
++            image.setImage(null, null, drawable, null);
++            return;
++        }
++        drawable.setInfo(currentAccount, object);
++        image.setForUserOrChat(object, drawable);
++    }
++
++    private CharSequence teleDialogTitle(long dialogId) {
++        if (dialogId == getUserConfig().getClientUserId()) {
++            return getString(R.string.SavedMessages);
++        }
++        if (DialogObject.isEncryptedDialog(dialogId)) {
++            final TLRPC.EncryptedChat encryptedChat = getMessagesController().getEncryptedChat(DialogObject.getEncryptedChatId(dialogId));
++            if (encryptedChat != null) {
++                final TLRPC.User user = getMessagesController().getUser(encryptedChat.user_id);
++                if (user != null) {
++                    return UserObject.getUserName(user);
++                }
++            }
++            return "";
++        }
++        return DialogObject.getName(currentAccount, dialogId);
++    }
++
++    private void teleOpenDialog(long dialogId) {
++        if (dialogId == 0) {
++            return;
++        }
++        final Bundle args = new Bundle();
++        if (DialogObject.isEncryptedDialog(dialogId)) {
++            args.putInt("enc_id", DialogObject.getEncryptedChatId(dialogId));
++        } else if (DialogObject.isUserDialog(dialogId)) {
++            args.putLong("user_id", dialogId);
++        } else {
++            args.putLong("chat_id", -dialogId);
++        }
++        if (getMessagesController().checkCanOpenChat(args, this)) {
++            presentFragment(new ChatActivity(args));
++        }
++    }
++
++    private boolean teleOpenShortcutMenu(View anchor, tele.helpers.MainTabsConfig.Slot slot) {
++        if (getContext() == null || getParentActivity() == null) {
++            return false;
++        }
++        final long dialogId = teleDialogIdOf(slot);
++        final ItemOptions o = ItemOptions.makeOptions(this, anchor);
++        o.add(R.drawable.msg_openin, getString(R.string.Open), () -> teleOpenDialog(dialogId));
++        o.add(R.drawable.msg_delete, getString(R.string.Remove), () -> {
++            tele.helpers.MainTabsConfig.remove(currentAccount, slot.getKey());
++            teleRefreshBar();
++        });
++        o.setBlur(true);
++        o.translate(0, -dp(4));
++        o.setGravity(Gravity.LEFT);
++        final ShapeDrawable bg = Theme.createRoundRectDrawable(dp(28), getThemedColor(Theme.key_windowBackgroundWhite));
++        bg.getPaint().setShadowLayer(dp(6), 0, dp(1), Theme.multAlpha(0xFF000000, 0.15f));
++        o.setScrimViewBackground(bg);
++        o.show();
++        return true;
++    }
++
++    private boolean teleOpenCallsSelector(View anchor) {
++        if (getContext() == null || getParentActivity() == null) {
++            return false;
++        }
++        final ItemOptions o = ItemOptions.makeOptions(this, anchor);
++        o.add(R.drawable.menu_call_create, getString(R.string.GroupCallCreate2), () -> CallLogActivity.openCreateCall(this));
++        o.add(R.drawable.msg_archive_hide, getString(R.string.HideCallTab), () -> {
++            tele.helpers.MainTabsConfig.remove(currentAccount, tele.helpers.MainTabsConfig.KIND_CALLS);
++            teleRefreshBar();
++        });
++        o.setBlur(true);
++        o.translate(0, -dp(4));
++        final ShapeDrawable bg = Theme.createRoundRectDrawable(dp(28), getThemedColor(Theme.key_windowBackgroundWhite));
++        bg.getPaint().setShadowLayer(dp(6), 0, dp(1), Theme.multAlpha(0xFF000000, 0.15f));
++        o.setScrimViewBackground(bg);
++        o.show();
++        return true;
++    }
++
++    private int teleChatsPagePosition() {
++        if (!tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            return POSITION_CHATS;
++        }
++        final int position = tele.helpers.MainTabsConfig.chatsPosition(currentAccount);
++        return position >= 0 ? position : POSITION_CHATS;
++    }
++
++    private int teleProfilePagePosition() {
++        if (!tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            return POSITION_PROFILE;
++        }
++        return teleProfilePage;
++    }
++
++    private void teleOpenFolder(int folderId) {
++        final int chats = teleChatsPagePosition();
++        if (viewPager.getCurrentPosition() == chats && dialogsActivity != null) {
++            dialogsActivity.scrollToFolder(folderId);
++        } else {
++            if (dialogsActivity == null) {
++                telePrepareDialogsActivity(null);
++            }
++            pendingFolderId = folderId;
++            selectTab(chats, true);
++            viewPager.scrollToPosition(chats);
++        }
++    }
++
++    private DialogsActivity telePrepareDialogsActivity(Bundle bundle) {
++        if (bundle == null) {
++            bundle = new Bundle();
++        }
++        bundle.putBoolean("hasMainTabs", true);
++        dialogsActivity = new DialogsActivity(bundle);
++        dialogsActivity.setMainTabsActivityController(new MainTabsActivityControllerImpl());
++        putFragmentAtPosition(teleChatsPagePosition(), dialogsActivity);
++        return dialogsActivity;
++    }
++
++    private BaseFragment teleCreatePageAt(int position) {
++        final tele.helpers.MainTabsConfig.Slot slot = tele.helpers.MainTabsConfig.pageSlotAt(currentAccount, position);
++        final Bundle args = new Bundle();
++        final String kind = slot != null ? slot.getKind() : tele.helpers.MainTabsConfig.KIND_CHATS;
++        if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind)) {
++            args.putBoolean("needPhonebook", true);
++            args.putBoolean("needFinishFragment", false);
++            args.putBoolean("hasMainTabs", true);
++            return new ContactsActivity(args);
++        } else if (tele.helpers.MainTabsConfig.KIND_CALLS.equals(kind)) {
++            args.putBoolean("needFinishFragment", false);
++            args.putBoolean("hasMainTabs", true);
++            return new CallLogActivity(args);
++        } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS.equals(kind)) {
++            args.putBoolean("hasMainTabs", true);
++            return new SettingsActivity(args);
++        } else if (tele.helpers.MainTabsConfig.KIND_PROFILE.equals(kind)) {
++            args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
++            args.putBoolean("my_profile", true);
++            args.putBoolean("hasMainTabs", true);
++            return new ProfileActivity(args);
++        }
++        args.putBoolean("hasMainTabs", true);
++        dialogsActivity = new DialogsActivity(args);
++        dialogsActivity.setMainTabsActivityController(new MainTabsActivityControllerImpl());
++        return dialogsActivity;
++    }
++
++    private void teleOnScrollEnd() {
++        if (tabsView != null) {
++            selectTab(viewPager.getCurrentPosition(), true);
++            setGestureSelectedOverride(0, false);
++        }
++        blur3_invalidateBlur();
++        if (viewPager != null) {
++            final int currentPosition = viewPager.getCurrentPosition();
++            final int profilePosition = teleProfilePagePosition();
++            if (profilePosition >= 0 && currentPosition != profilePosition) {
++                dropFragmentAtPosition(profilePosition);
++            }
++            if (pendingFolderId != null && currentPosition == teleChatsPagePosition() && dialogsActivity != null) {
++                dialogsActivity.scrollToFolder(pendingFolderId);
++                pendingFolderId = null;
++            }
++            if (tele.ui.TeleFolderSidebar.enabled() && fragmentView != null) {
++                fragmentView.getRootView().requestLayout();
++            }
++        }
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java
+index 5667c3986..488dcf35e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java
+@@ -432,6 +432,9 @@ public class MainTabsLayout extends AnimatedLinearLayout {
+     public void addTabToIgnoreClick(View v) {
+         tabsWithIgnoreClick.add(v);
+     }
++    public void tele_clearIgnoreClickTabs() {
++        tabsWithIgnoreClick.clear();
++    }
+ 
+     private final BoolAnimator animatorIsScaled = new BoolAnimator(0, (a, factor, c, g) -> {
+         setScaleX(lerp(1, 1.019f, factor));
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 5746db751..5200797d3 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -533,6 +533,10 @@ object TeleConfig {
+     @JvmField
+     val CHATS_TAB_DOUBLE_TAP_ALL = BoolItem("chats_tab_double_tap_all", false)
+     @JvmField
++    val CUSTOM_MAIN_TABS = BoolItem("custom_main_tabs", false)
++    @JvmField
++    val MAIN_TABS_CONFIG = StringItem("main_tabs_config", "")
++    @JvmField
+     val MATERIAL_SOURCE = StringItem("material_source", "system")
+     @JvmField
+     val MATERIAL_SEED = IntItem("material_seed", 0xFF2AABEE.toInt())
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 70c46d0eb..79e6bb2e3 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -124,6 +124,9 @@ object TeleHooks {
+             LocaleController.getInstance().recreateFormatters()
+             bumpUiRevision()
+         }
++        if (item === TeleConfig.CUSTOM_MAIN_TABS || item === TeleConfig.MAIN_TABS_CONFIG) {
++            tele.helpers.MainTabsConfig.onChanged()
++        }
+         if (item === TeleConfig.HIDE_ALL_CHATS_FOLDER) {
+             AccountInstance.getInstance(UserConfig.selectedAccount).getNotificationCenter().postNotificationName(NotificationCenter.dialogFiltersUpdated)
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsBadges.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsBadges.kt
+new file mode 100644
+index 000000000..d4fe5b3ce
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsBadges.kt
+@@ -0,0 +1,16 @@
++package tele.helpers
++
++import org.telegram.messenger.MessagesController
++
++/** The counter of a chat shortcut on the bar: the unread of that dialog, muted ones stay silent. */
++object MainTabsBadges {
++
++    @JvmStatic
++    fun unread(account: Int, dialogId: Long): Int {
++        if (dialogId == 0L) return 0
++        val messagesController = MessagesController.getInstance(account)
++        val dialog = messagesController.getDialog(dialogId) ?: return 0
++        if (messagesController.isDialogMuted(dialogId, 0)) return 0
++        return messagesController.getDialogUnreadCount(dialog)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+new file mode 100644
+index 000000000..f60942460
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+@@ -0,0 +1,165 @@
++package tele.helpers
++
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.UserConfig
++import tele.TeleConfig
++
++/** The bar of the custom main tabs: page slots drive the pager, shortcut slots open a chat. */
++object MainTabsConfig {
++
++    const val KIND_CHATS = "chats"
++    const val KIND_CONTACTS = "contacts"
++    const val KIND_CALLS = "calls"
++    const val KIND_SETTINGS = "settings"
++    const val KIND_PROFILE = "profile"
++    const val KIND_SAVED = "saved"
++    private const val KIND_CHAT_PREFIX = "chat:"
++    const val MAX_SLOTS = 6
++
++    @JvmField
++    val PAGE_KINDS = listOf(KIND_CHATS, KIND_CONTACTS, KIND_CALLS, KIND_SETTINGS, KIND_PROFILE)
++
++    class Slot(val kind: String, val iconName: String = "") {
++        val key: String get() = kind
++        val isShortcut: Boolean get() = kind == KIND_SAVED || kind.startsWith(KIND_CHAT_PREFIX)
++        val isPage: Boolean get() = !isShortcut
++        val dialogId: Long
++            get() = if (kind.startsWith(KIND_CHAT_PREFIX)) {
++                kind.substring(KIND_CHAT_PREFIX.length).toLongOrNull() ?: 0
++            } else {
++                0
++            }
++    }
++
++    private var version = 0
++    @JvmStatic
++    fun version(): Int = version
++
++    @JvmStatic
++    fun onChanged() {
++        version++
++    }
++
++    private var cachedRaw: String? = null
++    private var cachedAccount = -1
++    private var cachedSlots: List<Slot> = emptyList()
++
++    @JvmStatic
++    fun slots(account: Int): List<Slot> {
++        val raw = TeleConfig.MAIN_TABS_CONFIG.value
++        if (raw == cachedRaw && account == cachedAccount) return cachedSlots
++        val parsed = parse(raw)
++        val list = if (parsed.isNullOrEmpty()) defaults(account) else normalize(parsed)
++        cachedRaw = raw
++        cachedAccount = account
++        cachedSlots = list
++        return list
++    }
++
++    @JvmStatic
++    fun save(slots: List<Slot>) {
++        TeleConfig.set(TeleConfig.MAIN_TABS_CONFIG, serialize(normalize(slots)))
++        onChanged()
++    }
++
++    /** Hiding calls leaves the settings page in its place, like the stock bar does. */
++    @JvmStatic
++    fun remove(account: Int, key: String) {
++        val list = ArrayList(slots(account))
++        val index = list.indexOfFirst { it.key == key }
++        if (index < 0) return
++        if (key == KIND_CALLS && list.none { it.kind == KIND_SETTINGS }) {
++            list[index] = Slot(KIND_SETTINGS)
++        } else {
++            list.removeAt(index)
++        }
++        save(list)
++    }
++
++    @JvmStatic
++    fun pageCount(account: Int): Int = slots(account).count { it.isPage }
++
++    @JvmStatic
++    fun pageSlotAt(account: Int, position: Int): Slot? {
++        if (position < 0) return null
++        var index = 0
++        for (slot in slots(account)) {
++            if (!slot.isPage) continue
++            if (index == position) return slot
++            index++
++        }
++        return null
++    }
++
++    @JvmStatic
++    fun pagePosition(account: Int, kind: String): Int {
++        var index = 0
++        for (slot in slots(account)) {
++            if (!slot.isPage) continue
++            if (slot.kind == kind) return index
++            index++
++        }
++        return -1
++    }
++
++    @JvmStatic
++    fun chatsPosition(account: Int): Int = pagePosition(account, KIND_CHATS)
++
++    private fun defaults(account: Int): List<Slot> {
++        val calls = account in 0 until UserConfig.MAX_ACCOUNT_COUNT && UserConfig.getInstance(account).showCallsTab
++        return listOf(
++            Slot(KIND_CHATS),
++            Slot(KIND_CONTACTS),
++            Slot(if (calls) KIND_CALLS else KIND_SETTINGS),
++            Slot(KIND_PROFILE)
++        )
++    }
++
++    private fun normalize(input: List<Slot>): List<Slot> {
++        val out = ArrayList<Slot>(MAX_SLOTS)
++        val seen = HashSet<String>()
++        fun add(slot: Slot) {
++            if (out.size >= MAX_SLOTS || !seen.add(slot.key)) return
++            out.add(slot)
++        }
++        add(input.firstOrNull { it.kind == KIND_CHATS } ?: Slot(KIND_CHATS))
++        for (slot in input) {
++            if (slot.kind == KIND_CHATS) continue
++            val valid = slot.kind in PAGE_KINDS || slot.kind == KIND_SAVED ||
++                (slot.kind.startsWith(KIND_CHAT_PREFIX) && slot.dialogId != 0L)
++            if (valid) add(slot)
++        }
++        return out
++    }
++
++    private fun serialize(slots: List<Slot>): String {
++        val array = JSONArray()
++        for (slot in slots) {
++            val object_ = JSONObject()
++            object_.put("kind", slot.kind)
++            if (slot.iconName.isNotEmpty()) object_.put("icon", slot.iconName)
++            array.put(object_)
++        }
++        return JSONObject().put("version", 1).put("slots", array).toString()
++    }
++
++    private fun parse(raw: String): List<Slot>? {
++        if (raw.isBlank()) return null
++        return runCatching {
++            val array = JSONObject(raw).optJSONArray("slots") ?: return@runCatching null
++            val out = ArrayList<Slot>(array.length())
++            for (i in 0 until array.length()) {
++                val object_ = array.optJSONObject(i) ?: continue
++                val kind = object_.optString("kind", "")
++                if (kind.isEmpty()) continue
++                out.add(Slot(kind, object_.optString("icon", "")))
++            }
++            out
++        }.getOrElse {
++            FileLog.e(it)
++            null
++        }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 57be9367e..a22c6eafb 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1742,5 +1742,8 @@ object TeleTextRu {
+         "AMOLED black" to "Чёрный AMOLED",
+         "True black in dark mode; light mode is unchanged." to "Настоящий чёрный в тёмной теме; светлая не меняется.",
+         "Couldn't read that photo." to "Не удалось прочитать это фото.",
++        "Bottom bar" to "Нижняя панель",
++        "Customize the bottom tabs" to "Настроить нижние вкладки",
++        "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts." to "Порядок и видимость страниц, а также «Избранное» и любой чат кнопками с непрочитанными.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 748d6eac7..5a0445c67 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1742,5 +1742,8 @@ object TeleTextUk {
+         "AMOLED black" to "Чорний AMOLED",
+         "True black in dark mode; light mode is unchanged." to "Справжній чорний у темній темі; світла не змінюється.",
+         "Couldn't read that photo." to "Не вдалося прочитати це фото.",
++        "Bottom bar" to "Нижня панель",
++        "Customize the bottom tabs" to "Налаштувати нижні вкладки",
++        "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts." to "Порядок і видимість сторінок, а також «Збережене» і будь-який чат кнопками з непрочитаними.",
+     )
+ }
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index b8ee3dbd2..043d90f25 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -507,7 +507,10 @@ object TeleSearch {
+             section(1639, "left side", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left"),
+             section(1640, "open all chats by double tap", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
+             section(1641, "switch folder by double tap", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
+-            section(1642, "chats tab shortcut", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats")
++            section(1642, "chats tab shortcut", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
++            section(1656, "bottom bar", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1657, "navigation bar", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1658, "main tabs", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs")
+         ))
+         // a page button and the screen it opens are the same result: the one with the page path wins
+         val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 6c94491dd..d760c33f1 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1396,6 +1396,7 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+             "Custom color" to "The color the light and dark themes are built from.",
+             "Pick a photo" to "The photo is read on this device and not kept.",
+             "AMOLED black" to "True black in dark mode; light mode is unchanged.",
++            "Customize the bottom tabs" to "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1610,6 +1611,9 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+                 toggle("Filter lists by date", TeleConfig.LIST_DATES),
+                 toggle("Search and export star transactions", TeleConfig.STAR_TRANSACTIONS),
+                 Row(TYPE_SHADOW),
++                Row(TYPE_HEADER, "Bottom bar"),
++                toggle("Customize the bottom tabs", TeleConfig.CUSTOM_MAIN_TABS),
++                Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Playback"),
+                 toggle("Volume controls in the players", TeleConfig.INLINE_VOLUME_CONTROLS),
+                 toggle("Volume keys don't unmute videos", TeleConfig.VOLUME_KEYS_KEEP_MUTED),
