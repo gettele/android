@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Fri, 20 Nov 2026 01:48:08 +0300
+Subject: [PATCH] fix: layout bottom tab pages
+
+---
+ .../telegram/messenger/MessagesStorage.java   |  9 ++--
+ .../java/tele/ui/MainTabFiltersActivity.kt    |  2 +-
+ .../main/java/tele/ui/TeleMiniAppFragment.kt  | 49 ++++++++++---------
+ .../java/tele/ui/settings/TeleTabsActivity.kt | 29 +++++++++++
+ 4 files changed, 63 insertions(+), 26 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index 37045e47c..d0c775bc6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -14855,10 +14855,13 @@ public class MessagesStorage extends BaseController {
+                             message.id = mid;
+                             message.dialog_id = did;
+                             boolean teleWasKept = tele.helpers.DeletedMessages.isKeptDb(currentAccount, did, mid);
+-                            tele.helpers.DeletedMessages.archiveMessage(currentAccount, message, userInitiated);
+                             if (teleWasKept) {
+-                                tele.helpers.DeletedMessages.removeKeptDb(currentAccount, did, mid);
+-                            } else if (tele.helpers.DeletedMessages.keepInChat(currentAccount, message, userInitiated)) {
++                                // a repeated delete update for an already kept message: leave the archive row alone
++                                data.reuse();
++                                continue;
++                            }
++                            tele.helpers.DeletedMessages.archiveMessage(currentAccount, message, userInitiated);
++                            if (tele.helpers.DeletedMessages.keepInChat(currentAccount, message, userInitiated)) {
+                                 ArrayList<Integer> teleKept = teleKeptMids.get(did);
+                                 if (teleKept == null) {
+                                     teleKept = new ArrayList<>();
+diff --git a/TMessagesProj/src/main/java/tele/ui/MainTabFiltersActivity.kt b/TMessagesProj/src/main/java/tele/ui/MainTabFiltersActivity.kt
+index d139375ed..bd5d6ea24 100644
+--- a/TMessagesProj/src/main/java/tele/ui/MainTabFiltersActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/MainTabFiltersActivity.kt
+@@ -11,7 +11,7 @@ class MainTabFiltersActivity : FiltersSetupActivity() {
+     override fun createView(context: Context): View {
+         val view = super.createView(context)
+         simpleActionBar.setBackButtonImage(0)
+-        view.setPadding(0, 0, 0, AndroidUtilities.dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS))
++        view.setPadding(0, 0, 0, AndroidUtilities.dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS.toFloat()))
+         return view
+     }
+ }
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+index a8f2eec22..f3d5c305e 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+@@ -8,6 +8,7 @@ import android.view.View
+ import android.widget.FrameLayout
+ import android.widget.TextView
+ import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.ApplicationLoader
+ import org.telegram.messenger.DialogObject
+ import org.telegram.messenger.LocaleController
+ import org.telegram.messenger.MediaDataController
+@@ -32,7 +33,7 @@ import org.telegram.ui.PaymentFormActivity
+ import org.telegram.ui.Stars.StarsController
+ import org.telegram.ui.WebAppDisclaimerAlert
+ import org.telegram.ui.bots.BotButtons
+-import org.telegram.ui.bots.BotWebViewContainer
++import org.telegram.ui.web.BotWebViewContainer
+ import org.telegram.ui.bots.BotWebViewSheet
+ import org.telegram.ui.Components.LayoutHelper
+ import java.util.Locale
+@@ -58,26 +59,30 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+     private var queryId = 0L
+     private var sentWebViewData = false
+ 
+-    private val pollRunnable = Runnable {
+-        if (queryId == 0L || container == null) {
+-            return@Runnable
+-        }
+-        val request = TLRPC.TL_messages_prolongWebView()
+-        request.bot = MessagesController.getInstance(account).getInputUser(botId)
+-        request.peer = MessagesController.getInstance(account).getInputPeer(botId)
+-        request.query_id = queryId
+-        request.silent = false
+-        ConnectionsManager.getInstance(account).sendRequest(request) { _, error ->
+-            AndroidUtilities.runOnUIThread {
+-                if (container == null || queryId == 0L) {
+-                    return@runOnUIThread
+-                }
+-                if (error == null) {
+-                    AndroidUtilities.runOnUIThread(pollRunnable, POLL_PERIOD)
+-                } else {
+-                    queryId = 0L
+-                }
++    private val pollRunnable: Runnable = object : Runnable {
++        override fun run() {
++            if (queryId == 0L || container == null) {
++                return
+             }
++            val request = TLRPC.TL_messages_prolongWebView()
++            request.bot = MessagesController.getInstance(account).getInputUser(botId)
++            request.peer = MessagesController.getInstance(account).getInputPeer(botId)
++            request.query_id = queryId
++            request.silent = false
++            ConnectionsManager.getInstance(account).sendRequest(request, object : org.telegram.tgnet.RequestDelegate {
++                override fun run(response: TLObject?, error: TLRPC.TL_error?) {
++                    AndroidUtilities.runOnUIThread {
++                        if (container == null || queryId == 0L) {
++                            return@runOnUIThread
++                        }
++                        if (error == null) {
++                            ApplicationLoader.applicationHandler.postDelayed(pollRunnable, POLL_PERIOD)
++                        } else {
++                            queryId = 0L
++                        }
++                    }
++                }
++            })
+         }
+     }
+ 
+@@ -119,7 +124,7 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+ 
+         val web = container ?: newContainer(context).also { container = it }
+         AndroidUtilities.removeFromParent(web)
+-        frame.addView(web, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT))
++        frame.addView(web, LayoutHelper.createFrameMatchParent())
+         web.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
+ 
+         val buttonView = buttons ?: BotButtons(context, resourceProvider).also { buttons = it }
+@@ -477,7 +482,7 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+             .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+             .create()
+         dialog.show()
+-        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(Theme.getColor(Theme.key_text_RedBold, resourceProvider))
++        (dialog.getButton(AlertDialog.BUTTON_POSITIVE) as? android.widget.TextView)?.setTextColor(Theme.getColor(Theme.key_text_RedBold, resourceProvider))
+     }
+ 
+     private fun requestClose(callback: Runnable?) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index 6c47ea435..43a094e3a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -360,6 +360,35 @@ class TeleTabsActivity : BaseFragment() {
+             return
+         }
+         addSlot(slot)
++    }
++
++    private fun pickMiniApp() {
++        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++            bulletin(lc("The bar holds six tabs."))
++            return
++        }
++        if (loadingMiniApps) {
++            return
++        }
++        loadingMiniApps = true
++        MediaDataController.getInstance(account).loadAttachMenuBots(true, false) {
++            loadingMiniApps = false
++            val bots = TeleMiniAppFragment.sideMenuBots(account)
++            if (bots.isEmpty()) {
++                bulletin(localized(R.string.TeleMiniAppEmpty))
++                return@loadAttachMenuBots
++            }
++            val builder = AlertDialog.Builder(parentActivity, resourceProvider)
++            builder.setTitle(localized(R.string.TeleMiniAppPickerTitle))
++            val names = bots.map { it.short_name.ifEmpty { "Mini app" } }.toTypedArray()
++            builder.setItems(names) { _, which ->
++                addMiniApp(bots[which].bot_id)
++            }
++            builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            showDialog(builder.create())
++        }
++    }
++
+     /** The stock choose-a-chat screen, as the draft picker opens it. */
+     private fun pickChat() {
+         if (slots.size >= MainTabsConfig.MAX_SLOTS) {
