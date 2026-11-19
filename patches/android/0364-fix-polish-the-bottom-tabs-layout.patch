@@ -1,0 +1,334 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Thu, 19 Nov 2026 04:01:34 +0300
+Subject: [PATCH] fix: polish the bottom tabs layout
+
+---
+ .../ui/Components/glass/GlassTabView.java     | 42 ++++++++++++++-
+ .../org/telegram/ui/MainTabsActivity.java     | 26 ++-------
+ .../java/org/telegram/ui/MainTabsLayout.java  | 53 +++++++++++++++++++
+ .../main/java/tele/helpers/MainTabsAvatars.kt | 44 +++++++++++++++
+ .../java/tele/ui/settings/TeleTabsActivity.kt | 32 +++--------
+ 5 files changed, 149 insertions(+), 48 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MainTabsAvatars.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+index 097ec0116..c5e6e6ab1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+@@ -125,6 +125,19 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+             final float offset = (visualWidth - getMeasuredWidth()) / 2f;
+             imageView.setTranslationX(offset);
+             textView.setTranslationX(offset);
++            if (teleEqualWidth && backupImageView != null) {
++                backupImageView.setTranslationX(offset);
++            }
++        }
++        if (teleEqualWidth) {
++            final float viewWidth = hasVisualWidth ? visualWidth : getWidth();
++            if (!teleLabelShown()) {
++                teleSelectorWidth = Math.min(dp(44), viewWidth);
++                teleSelectorLeft = (viewWidth - teleSelectorWidth) / 2f;
++            } else {
++                teleSelectorWidth = viewWidth;
++                teleSelectorLeft = 0;
++            }
+         }
+     }
+ 
+@@ -155,7 +168,9 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+             final float alpha = AnimatorUtils.DECELERATE_INTERPOLATOR.getInterpolation(selectedFactor);
+ 
+             paintCounterBackground.setColor(Theme.multAlpha(colorSelected, 0.09f * alpha));
+-            tmpRectF.set(0, 0, viewWidth, getHeight());
++            tmpRectF.set(
++                    teleEqualWidth ? teleSelectorLeft : 0, 0,
++                    teleEqualWidth ? teleSelectorLeft + teleSelectorWidth : viewWidth, getHeight());
+             final float r = Math.min(tmpRectF.width(), tmpRectF.height()) / 2f;
+             final float s = lerp(0.6f, 1, selectedFactor) * MathUtils.clamp(attachScale, 0, 1);
+             canvas.save();
+@@ -587,6 +602,27 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+         teleApplyLabels();
+     }
+ 
++    private float teleSelectorWidth;
++    private float teleSelectorLeft;
++
++    /** tele: equal slots ellipsize the label instead of growing the tab. */
++    public void tele_setMaxLabelWidth(int maxWidthPx) {
++        if (textView.getMaxWidth() != maxWidthPx) {
++            textView.setMaxWidth(maxWidthPx);
++        }
++    }
++
++    private boolean teleEqualWidth;
++
++    /** tele: equal slots center the icon and the selection pill when the label is hidden. */
++    public void tele_setEqualWidth(boolean equal) {
++        if (teleEqualWidth != equal) {
++            teleEqualWidth = equal;
++            checkVisualWidth();
++            invalidate();
++        }
++    }
++
+     private boolean teleLabelShown() {
+         return teleLabelsMode == 0 || (teleLabelsMode == 1 && isTabSelected());
+     }
+@@ -599,6 +635,10 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+         if (backupImageView != null) {
+             backupImageView.setTranslationY(offset);
+         }
++        if (teleEqualWidth) {
++            checkVisualWidth();
++            invalidate();
++        }
+     }
+ 
+     @Override
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index 7c5dd3204..862b41d48 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -55,7 +55,6 @@ import org.telegram.messenger.R;
+ import org.telegram.messenger.SharedConfig;
+ import org.telegram.messenger.UserConfig;
+ import org.telegram.messenger.UserObject;
+-import org.telegram.tgnet.TLObject;
+ import org.telegram.tgnet.TLRPC;
+ import org.telegram.ui.ActionBar.ActionBarMenuSubItem;
+ import org.telegram.ui.ActionBar.BaseFragment;
+@@ -1534,8 +1533,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         }
+         final int labelsMode = custom ? tele.helpers.MainTabsConfig.labelsMode() : tele.helpers.MainTabsConfig.LABELS_ALL;
+         for (int a = 0; a < tabs.length; a++) {
++            tabs[a].tele_setEqualWidth(custom);
+             tabs[a].tele_setLabelsMode(labelsMode);
+         }
++        tabsView.tele_setEqualWidthTabs(custom);
+ 
+         int newPosition = selectedKey != null ? newKeys.indexOf(selectedKey) : -1;
+         if (newPosition < 0) {
+@@ -1808,28 +1809,7 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         if (image == null) {
+             return;
+         }
+-        final AvatarDrawable drawable = new AvatarDrawable();
+-        if (dialogId == getUserConfig().getClientUserId()) {
+-            drawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED);
+-            image.setImage(null, null, drawable, null);
+-            return;
+-        }
+-        TLObject object = null;
+-        if (DialogObject.isEncryptedDialog(dialogId)) {
+-            final TLRPC.EncryptedChat encryptedChat = getMessagesController().getEncryptedChat(DialogObject.getEncryptedChatId(dialogId));
+-            if (encryptedChat != null) {
+-                object = getMessagesController().getUser(encryptedChat.user_id);
+-            }
+-        } else {
+-            object = getMessagesController().getUserOrChat(dialogId);
+-        }
+-        if (object == null) {
+-            drawable.setInfo(dialogId, "", "", null);
+-            image.setImage(null, null, drawable, null);
+-            return;
+-        }
+-        drawable.setInfo(currentAccount, object);
+-        image.setForUserOrChat(object, drawable);
++        tele.helpers.MainTabsAvatars.bind(image, currentAccount, dialogId, 22f);
+     }
+ 
+     private CharSequence teleDialogTitle(long dialogId) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java
+index 488dcf35e..90ba63725 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsLayout.java
+@@ -55,6 +55,16 @@ public class MainTabsLayout extends AnimatedLinearLayout {
+         }
+     }
+ 
++    private boolean teleEqualWidthTabs;
++
++    /** tele: the custom bar splits its width into equal slots instead of growing with the labels. */
++    public void tele_setEqualWidthTabs(boolean equal) {
++        if (teleEqualWidthTabs != equal) {
++            teleEqualWidthTabs = equal;
++            requestLayout();
++        }
++    }
++
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+         int width = MeasureSpec.getSize(widthMeasureSpec);
+@@ -66,6 +76,10 @@ public class MainTabsLayout extends AnimatedLinearLayout {
+         }
+ 
+         final int maxTotalWidthForTabs = width - getPaddingLeft() - getPaddingRight();
++        if (teleEqualWidthTabs) {
++            teleMeasureEqualTabs(maxTotalWidthForTabs, height, tabHeight);
++            return;
++        }
+         final int minTotalWidthForTabs = Math.min(dp(320), maxTotalWidthForTabs);
+ 
+         int chosenPass = PASS_TEXT_SIZES_DP.length - 1;
+@@ -220,6 +234,45 @@ public class MainTabsLayout extends AnimatedLinearLayout {
+         }
+     }
+ 
++    private void teleMeasureEqualTabs(int maxTotalWidthForTabs, int height, int tabHeight) {
++        measureTabTexts(PASS_TEXT_SIZES_DP[0]);
++        final int slotCount = Math.max(1, visibleChildCount);
++        final int slotWidth = maxTotalWidthForTabs / slotCount;
++        final int remainder = maxTotalWidthForTabs - slotWidth * slotCount;
++        final int maxTextWidth = Math.max(0, slotWidth - dp(8) * 2);
++        for (int a = 0, N = getChildCount(); a < N; a++) {
++            final View child = getChildAt(a);
++            if (isViewVisible(child) && child instanceof GlassTabView) {
++                ((GlassTabView) child).tele_setMaxLabelWidth(maxTextWidth);
++            }
++        }
++        applyPassTextSize(0);
++
++        int l = 0;
++        int slotIndex = 0;
++        for (int a = 0, N = getChildCount(); a < N; a++) {
++            final View child = getChildAt(a);
++            if (!isViewVisible(child)) {
++                tabsWidth[a] = 0;
++                tabsLeftPos[a] = 0;
++                child.measure(
++                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.EXACTLY),
++                    MeasureSpec.makeMeasureSpec(tabHeight, MeasureSpec.EXACTLY));
++                continue;
++            }
++            final int width = slotWidth + (slotIndex < remainder ? 1 : 0);
++            slotIndex++;
++            tabsWidth[a] = width;
++            tabsLeftPos[a] = l;
++            l += width;
++            child.measure(
++                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
++                MeasureSpec.makeMeasureSpec(tabHeight, MeasureSpec.EXACTLY));
++        }
++        setMeasuredDimension(l + getPaddingLeft() + getPaddingRight(), height);
++        calculateTotalSizesAfterMeasure();
++    }
++
+     @Override
+     protected void setChildVisibilityFactor(View view, float factor) {
+         final float s = lerp(0.7f, 1f, factor);
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsAvatars.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsAvatars.kt
+new file mode 100644
+index 000000000..1a503f1ee
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsAvatars.kt
+@@ -0,0 +1,44 @@
++package tele.helpers
++
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.UserConfig
++import org.telegram.tgnet.TLObject
++import org.telegram.ui.Components.AvatarDrawable
++import org.telegram.ui.Components.BackupImageView
++
++/** The avatars of the custom bar and its editor; saved messages keep the stock bookmark look. */
++object MainTabsAvatars {
++    /** The stock bookmark is 28dp inside a ~54dp avatar: keep that ratio at tab sizes. */
++    @JvmStatic
++    fun bind(image: BackupImageView, account: Int, dialogId: Long, sizeDp: Float) {
++        val drawable = AvatarDrawable()
++        val selfId = UserConfig.getInstance(account).clientUserId
++        if (dialogId == selfId) {
++            val self = MessagesController.getInstance(account).getUser(selfId)
++            if (self != null) {
++                drawable.setInfo(account, self)
++            }
++            drawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED)
++            drawable.setScaleSize(sizeDp / 54f)
++            image.setImage(null, null, drawable, null)
++            return
++        }
++        var object_: TLObject? = null
++        if (DialogObject.isEncryptedDialog(dialogId)) {
++            val encryptedChat = MessagesController.getInstance(account).getEncryptedChat(DialogObject.getEncryptedChatId(dialogId))
++            if (encryptedChat != null) {
++                object_ = MessagesController.getInstance(account).getUser(encryptedChat.user_id)
++            }
++        } else {
++            object_ = MessagesController.getInstance(account).getUserOrChat(dialogId)
++        }
++        if (object_ == null) {
++            drawable.setInfo(dialogId, "", "", null)
++            image.setImage(null, null, drawable, null)
++            return
++        }
++        drawable.setInfo(account, object_)
++        image.setForUserOrChat(object_, drawable)
++    }
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index b4f73c2a4..be2f4f20d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -25,7 +25,6 @@ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.UserConfig
+ import org.telegram.messenger.UserObject
+-import org.telegram.tgnet.TLObject
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+@@ -46,6 +45,7 @@ import org.telegram.ui.Components.RecyclerListView
+ import org.telegram.ui.Components.glass.GlassTabView
+ import tele.TeleConfig
+ import tele.TeleHooks
++import tele.helpers.MainTabsAvatars
+ import tele.helpers.MainTabsConfig
+ import tele.helpers.TeleLowercase
+ 
+@@ -390,28 +390,7 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun setAvatar(image: BackupImageView, dialogId: Long) {
+-        val drawable = AvatarDrawable()
+-        if (dialogId == UserConfig.getInstance(account).clientUserId) {
+-            drawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED)
+-            image.setImage(null, null, drawable, null)
+-            return
+-        }
+-        var tlObject: TLObject? = null
+-        if (DialogObject.isEncryptedDialog(dialogId)) {
+-            val encryptedChat = MessagesController.getInstance(account).getEncryptedChat(DialogObject.getEncryptedChatId(dialogId))
+-            if (encryptedChat != null) {
+-                tlObject = MessagesController.getInstance(account).getUser(encryptedChat.user_id)
+-            }
+-        } else {
+-            tlObject = MessagesController.getInstance(account).getUserOrChat(dialogId)
+-        }
+-        if (tlObject == null) {
+-            drawable.setInfo(dialogId, "", "", null)
+-            image.setImage(null, null, drawable, null)
+-            return
+-        }
+-        drawable.setInfo(account, tlObject)
+-        image.setForUserOrChat(tlObject, drawable)
++        MainTabsAvatars.bind(image, account, dialogId, 28f)
+     }
+ 
+     private fun dialogIdOf(slot: MainTabsConfig.Slot): Long =
+@@ -499,7 +478,12 @@ class TeleTabsActivity : BaseFragment() {
+             } else {
+                 icon.visibility = GONE
+                 avatar.visibility = VISIBLE
+-                setAvatar(avatar, dialogIdOf(slot))
++                if (slot.kind == MainTabsConfig.KIND_PROFILE) {
++                    val user = UserConfig.getInstance(account).currentUser
++                    avatar.setForUserOrChat(user, AvatarDrawable(user))
++                } else {
++                    setAvatar(avatar, dialogIdOf(slot))
++                }
+             }
+         }
+     }

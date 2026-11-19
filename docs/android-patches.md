@@ -516,4 +516,5 @@ The Edit tabs screen opens from a row under the settings toggle and from the lon
 |---|
 | [`0362-feat-make-the-bottom-tabs-customizable.patch`](../patches/android/0362-feat-make-the-bottom-tabs-customizable.patch) |
 | [`0363-feat-add-the-bottom-tabs-editor.patch`](../patches/android/0363-feat-add-the-bottom-tabs-editor.patch) |
+| [`0364-fix-polish-the-bottom-tabs-layout.patch`](../patches/android/0364-fix-polish-the-bottom-tabs-layout.patch) |
 
