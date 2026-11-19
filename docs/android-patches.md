@@ -400,6 +400,7 @@ The ruler maps its full range to 60% of the rail width. An independent, default-
 |---|
 | [`0334-feat-improve-round-video-controls.patch`](../patches/android/0334-feat-improve-round-video-controls.patch) |
 | [`0337-feat-retain-round-pinch-zoom.patch`](../patches/android/0337-feat-retain-round-pinch-zoom.patch) — compact ruler and optional retained pinch zoom |
+| [`0371-fix-reuse-capture-request-builder-for-zoom.patch`](../patches/android/0371-fix-reuse-capture-request-builder-for-zoom.patch) — zoom reuses the capture request builder, fixing preview lag and frame freezes on some devices |
 
 <a id="a016"></a>
 ## A016 — Wide-screen folder sidebar
