@@ -1,0 +1,953 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Thu, 19 Nov 2026 16:34:54 +0300
+Subject: [PATCH] feat: add mini app tabs
+
+---
+ .../org/telegram/ui/MainTabsActivity.java     |  66 +-
+ .../main/java/tele/helpers/MainTabsConfig.kt  |  14 +-
+ .../main/java/tele/ui/TeleMiniAppFragment.kt  | 587 ++++++++++++++++++
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   5 +-
+ .../java/tele/ui/settings/TeleTabsActivity.kt |  29 +-
+ .../src/main/res/values-ru/strings_tele.xml   |   7 +
+ .../src/main/res/values-uk/strings_tele.xml   |   7 +
+ .../src/main/res/values/strings_tele.xml      |   7 +
+ 8 files changed, 716 insertions(+), 6 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index ed535f45b..15aca7271 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -1103,6 +1103,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             } else {
+                 dropFragmentAtPosition(POSITION_CALLS_OR_SETTINGS);
+             }
++        } else if (id == NotificationCenter.attachMenuBotsDidLoad) {
++            if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++                teleRefreshShortcuts();
++            }
+         } else if (id == NotificationCenter.mainUserInfoChanged) {
+             if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
+                 teleUpdateProfileTab();
+@@ -1140,6 +1144,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             .addGlobal(NotificationCenter.appUpdateLoading)
+             .addGlobal(NotificationCenter.needSetDayNightTheme);
+ 
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            observersGroup.add(NotificationCenter.attachMenuBotsDidLoad);
++        }
++
+         return super.onFragmentCreate();
+     }
+ 
+@@ -1604,7 +1612,15 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     private GlassTabView teleBuildPageTab(tele.helpers.MainTabsConfig.Slot slot, int position) {
+         final String kind = slot.getKind();
+         final GlassTabView tab;
+-        if (tele.helpers.MainTabsConfig.KIND_PROFILE.equals(kind)) {
++        if (slot.isMiniApp()) {
++            tab = GlassTabView.tele_createDialogAvatar(getContext(), resourceProvider, tele.ui.TeleMiniAppFragment.title(currentAccount, slot.getBotId()));
++            teleSetMiniAppAvatar(tab, slot.getBotId());
++            tab.setCounter(null, false, false);
++            tab.setOnLongClickListener(v -> {
++                presentFragment(new tele.ui.settings.TeleTabsActivity());
++                return true;
++            });
++        } else if (tele.helpers.MainTabsConfig.KIND_PROFILE.equals(kind)) {
+             tab = GlassTabView.createAvatar(getContext(), resourceProvider, currentAccount, R.string.MainTabsProfile);
+             tab.setOnLongClickListener(this::openAccountSelector);
+         } else {
+@@ -1842,6 +1858,20 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             return;
+         }
+         boolean changed = false;
++        if (tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            for (int a = 0; a < tabs.length && a < teleTabKinds.size(); a++) {
++                if (!teleTabKinds.get(a).startsWith(tele.helpers.MainTabsConfig.KIND_MINIAPP_PREFIX)) {
++                    continue;
++                }
++                final long botId = teleBotIdOf(teleTabKinds.get(a));
++                if (botId == 0) {
++                    continue;
++                }
++                tabs[a].setText(tele.ui.TeleMiniAppFragment.title(currentAccount, botId));
++                teleSetMiniAppAvatar(tabs[a], botId);
++                changed = true;
++            }
++        }
+         for (int a = 0; a < tabs.length && a < teleTabDialogIds.size(); a++) {
+             final long dialogId = teleTabDialogIds.get(a);
+             if (dialogId == 0) {
+@@ -1864,6 +1894,34 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         tele.helpers.MainTabsAvatars.bind(image, currentAccount, dialogId, 22f);
+     }
+ 
++    private void teleSetMiniAppAvatar(GlassTabView tab, long botId) {
++        final TLRPC.User user = getMessagesController().getUser(botId);
++        final BackupImageView image = tab.getBackupImageView();
++        if (user != null && image != null) {
++            tab.setAttachBotUser(user, currentAccount);
++            tab.setText(tele.ui.TeleMiniAppFragment.title(currentAccount, botId));
++        } else if (image != null) {
++            tele.helpers.MainTabsAvatars.bind(image, currentAccount, botId, 22f);
++        }
++    }
++
++    private long teleBotIdOf(String kind) {
++        try {
++            return Long.parseLong(kind.substring(tele.helpers.MainTabsConfig.KIND_MINIAPP_PREFIX.length()));
++        } catch (NumberFormatException e) {
++            return 0;
++        }
++    }
++
++    public void tele_showChatsTab() {
++        if (!tele.TeleConfig.CUSTOM_MAIN_TABS.getValue() || viewPager == null) {
++            return;
++        }
++        final int chats = teleChatsPagePosition();
++        selectTab(chats, true);
++        viewPager.scrollToPosition(chats);
++    }
++
+     private CharSequence teleDialogTitle(long dialogId) {
+         if (dialogId == getUserConfig().getClientUserId()) {
+             return getString(R.string.SavedMessages);
+@@ -1997,6 +2055,12 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         final tele.helpers.MainTabsConfig.Slot slot = tele.helpers.MainTabsConfig.pageSlotAt(currentAccount, position);
+         final Bundle args = new Bundle();
+         final String kind = slot != null ? slot.getKind() : tele.helpers.MainTabsConfig.KIND_CHATS;
++        if (slot != null && slot.isMiniApp()) {
++            args.putInt("account", currentAccount);
++            args.putLong("bot_id", slot.getBotId());
++            args.putBoolean("hasMainTabs", true);
++            return new tele.ui.TeleMiniAppFragment(args);
++        }
+         if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind)) {
+             args.putBoolean("needPhonebook", true);
+             args.putBoolean("needFinishFragment", false);
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+index 8f4f47253..fc8773a1e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+@@ -31,6 +31,7 @@ object MainTabsConfig {
+     const val KIND_CONTACTS_SAVED = "contacts-saved"
+     private const val KIND_CHAT_PREFIX = "chat:"
+     private const val KIND_TELE_SECTION_PREFIX = "$KIND_TELE_SETTINGS:"
++    const val KIND_MINIAPP_PREFIX = "miniapp:"
+     const val MAX_SLOTS = 6
+     const val LABELS_ALL = 0
+     const val LABELS_SELECTED = 1
+@@ -157,6 +158,9 @@ object MainTabsConfig {
+     @JvmStatic
+     fun chatKey(dialogId: Long): String = KIND_CHAT_PREFIX + dialogId
+ 
++    @JvmStatic
++    fun miniAppKey(botId: Long): String = KIND_MINIAPP_PREFIX + botId
++
+     @JvmField
+     val PAGE_KINDS = listOf(
+         KIND_CHATS, KIND_CONTACTS, KIND_CALLS, KIND_SETTINGS, KIND_PROFILE,
+@@ -172,12 +176,19 @@ object MainTabsConfig {
+         val isFolder: Boolean get() = isFolderKind(kind)
+         val filterId: Int
+             get() = if (isFolder) kind.substring(KIND_FOLDER_PREFIX.length).toIntOrNull() ?: -1 else -1
++        val isMiniApp: Boolean get() = kind.startsWith(KIND_MINIAPP_PREFIX)
+         val dialogId: Long
+             get() = if (kind.startsWith(KIND_CHAT_PREFIX)) {
+                 kind.substring(KIND_CHAT_PREFIX.length).toLongOrNull() ?: 0
+             } else {
+                 0
+             }
++        val botId: Long
++            get() = if (isMiniApp) {
++                kind.substring(KIND_MINIAPP_PREFIX.length).toLongOrNull() ?: 0
++            } else {
++                0
++            }
+     }
+ 
+     private var version = 0
+@@ -277,7 +288,8 @@ object MainTabsConfig {
+             if (slot.kind == KIND_CHATS) continue
+             val valid = slot.kind in PAGE_KINDS || isTeleSettingsKind(slot.kind) || slot.kind == KIND_SAVED || slot.isActionShortcut ||
+                 (slot.kind.startsWith(KIND_CHAT_PREFIX) && slot.dialogId != 0L) ||
+-                (slot.isFolder && MessagesController.getInstance(account).dialogFiltersById.get(slot.filterId) != null)
++                (slot.isFolder && MessagesController.getInstance(account).dialogFiltersById.get(slot.filterId) != null) ||
++                (slot.isMiniApp && slot.botId > 0L)
+             if (valid) add(slot)
+         }
+         return out
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+new file mode 100644
+index 000000000..a8f2eec22
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+@@ -0,0 +1,587 @@
++package tele.ui
++
++import android.content.Context
++import android.os.Bundle
++import android.view.Gravity
++import android.view.MotionEvent
++import android.view.View
++import android.widget.FrameLayout
++import android.widget.TextView
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.DialogObject
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.NotificationCenter
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLObject
++import org.telegram.tgnet.TLRPC
++import org.telegram.ui.ActionBar.ActionBar
++import org.telegram.ui.ActionBar.ActionBarMenuItem
++import org.telegram.ui.ActionBar.AlertDialog
++import org.telegram.ui.ActionBar.BaseFragment
++import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ChatActivity
++import org.telegram.ui.DialogsActivity
++import org.telegram.ui.LaunchActivity
++import org.telegram.ui.MainTabsActivity
++import org.telegram.ui.PaymentFormActivity
++import org.telegram.ui.Stars.StarsController
++import org.telegram.ui.WebAppDisclaimerAlert
++import org.telegram.ui.bots.BotButtons
++import org.telegram.ui.bots.BotWebViewContainer
++import org.telegram.ui.bots.BotWebViewSheet
++import org.telegram.ui.Components.LayoutHelper
++import java.util.Locale
++import tele.helpers.TeleLowercase
++
++class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.TabFragmentDelegate, NotificationCenter.NotificationCenterDelegate {
++
++    private val account = args.getInt("account", UserConfig.selectedAccount)
++    private val botId = args.getLong("bot_id")
++
++    private var container: BotWebViewContainer? = null
++    private var buttons: BotButtons? = null
++    private var root: FrameLayout? = null
++    private var placeholder: TextView? = null
++    private var settingsItem: ActionBarMenuItem? = null
++    private var settingsVisible = false
++    private var opening = false
++    private var started = false
++    private var loadingBots = false
++    private var closeConfirmation = false
++    private var backButtonVisible = false
++    private var parentSwipingAllowed = true
++    private var queryId = 0L
++    private var sentWebViewData = false
++
++    private val pollRunnable = Runnable {
++        if (queryId == 0L || container == null) {
++            return@Runnable
++        }
++        val request = TLRPC.TL_messages_prolongWebView()
++        request.bot = MessagesController.getInstance(account).getInputUser(botId)
++        request.peer = MessagesController.getInstance(account).getInputPeer(botId)
++        request.query_id = queryId
++        request.silent = false
++        ConnectionsManager.getInstance(account).sendRequest(request) { _, error ->
++            AndroidUtilities.runOnUIThread {
++                if (container == null || queryId == 0L) {
++                    return@runOnUIThread
++                }
++                if (error == null) {
++                    AndroidUtilities.runOnUIThread(pollRunnable, POLL_PERIOD)
++                } else {
++                    queryId = 0L
++                }
++            }
++        }
++    }
++
++    init {
++        setCurrentAccount(account)
++    }
++
++    override fun createActionBar(context: Context): ActionBar {
++        val bar = super.createActionBar(context)
++        bar.setBackButtonImage(R.drawable.ic_ab_back)
++        bar.setTitle(title(account, botId))
++        bar.setActionBarMenuOnItemClick(object : ActionBar.ActionBarMenuOnItemClick() {
++            override fun onItemClick(id: Int) {
++                when (id) {
++                    -1 -> if (onBackPressed(true)) closeToChats()
++                    ID_SETTINGS -> container?.onSettingsButtonPressed()
++                }
++            }
++        })
++        settingsItem = bar.createMenu().addItem(ID_SETTINGS, R.drawable.ic_ab_other, resourceProvider)
++        settingsItem?.visibility = if (settingsVisible) View.VISIBLE else View.GONE
++        return bar
++    }
++
++    override fun createView(context: Context): View {
++        val frame = FrameLayout(context)
++        frame.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        root = frame
++
++        val label = TextView(context)
++        label.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++        label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, 15f)
++        label.gravity = Gravity.CENTER
++        val padding = AndroidUtilities.dp(24f)
++        label.setPadding(padding, padding, padding, padding)
++        label.visibility = View.GONE
++        frame.addView(label, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER))
++        placeholder = label
++
++        val web = container ?: newContainer(context).also { container = it }
++        AndroidUtilities.removeFromParent(web)
++        frame.addView(web, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT))
++        web.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++
++        val buttonView = buttons ?: BotButtons(context, resourceProvider).also { buttons = it }
++        AndroidUtilities.removeFromParent(buttonView)
++        buttonView.setOnButtonClickListener { main ->
++            if (main) container?.onMainButtonPressed() else container?.onSecondaryButtonPressed()
++        }
++        buttonView.setOnResizeListener { updateButtonsHeight() }
++        frame.addView(buttonView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
++        updateButtonsHeight()
++        label.bringToFront()
++
++        frame.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
++            override fun onViewAttachedToWindow(v: View) {
++                updateButtonsHeight()
++            }
++
++            override fun onViewDetachedFromWindow(v: View) {
++            }
++        })
++
++        fragmentView = frame
++        return frame
++    }
++
++    private fun newContainer(context: Context): BotWebViewContainer {
++        val web = object : BotWebViewContainer(context, resourceProvider, Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider), true) {
++            override fun onTitleChanged(title: String?) {
++                if (!title.isNullOrBlank()) {
++                    actionBar?.setTitle(title)
++                }
++            }
++        }
++        web.setDelegate(createDelegate())
++        return web
++    }
++
++    private fun createDelegate(): BotWebViewContainer.Delegate =
++        object : BotWebViewContainer.Delegate {
++            override fun onCloseRequested(callback: Runnable?) {
++                requestClose(callback)
++            }
++
++            override fun onWebAppSetupClosingBehavior(needConfirmation: Boolean) {
++                closeConfirmation = needConfirmation
++            }
++
++            override fun onWebAppSwipingBehavior(allowSwiping: Boolean) {
++                parentSwipingAllowed = allowSwiping
++            }
++
++            override fun onWebAppSetActionBarColor(colorKey: Int, color: Int, isOverrideColor: Boolean) {
++                actionBar?.setBackgroundColor(color)
++                buttons?.setBackgroundColor(color, true)
++            }
++
++            override fun onWebAppSetNavigationBarColor(color: Int) {
++                setNavigationBarColor(color)
++            }
++
++            override fun onWebAppSetBackgroundColor(color: Int) {
++                root?.setBackgroundColor(color)
++                container?.setBackgroundColor(color)
++                buttons?.setBackgroundColor(color, true)
++            }
++
++            override fun onWebAppExpand() {
++                updateButtonsHeight()
++                root?.requestLayout()
++            }
++
++            override fun onWebAppSwitchInlineQuery(botUser: TLRPC.User, query: String, chatTypes: MutableList<String>) {
++                inlineQuery(botUser, query, chatTypes)
++            }
++
++            override fun onWebAppOpenInvoice(inputInvoice: TLRPC.InputInvoice, slug: String, response: TLObject) {
++                openInvoice(inputInvoice, slug, response)
++            }
++
++            override fun onSetupMainButton(isVisible: Boolean, isActive: Boolean, text: String, emojiId: Long, color: Int, textColor: Int, isProgressVisible: Boolean, hasShineEffect: Boolean) {
++                buttons?.setMainState(BotButtons.ButtonState.of(isVisible, isActive, isProgressVisible, hasShineEffect, text, emojiId, color, textColor), true)
++            }
++
++            override fun onSetupSecondaryButton(isVisible: Boolean, isActive: Boolean, text: String, emojiId: Long, color: Int, textColor: Int, isProgressVisible: Boolean, hasShineEffect: Boolean, position: String) {
++                buttons?.setSecondaryState(BotButtons.ButtonState.of(isVisible, isActive, isProgressVisible, hasShineEffect, text, emojiId, color, textColor, position), true)
++            }
++
++            override fun onSetBackButtonVisible(visible: Boolean) {
++                backButtonVisible = visible
++            }
++
++            override fun onSetSettingsButtonVisible(visible: Boolean) {
++                settingsVisible = visible
++                settingsItem?.visibility = if (visible) View.VISIBLE else View.GONE
++            }
++
++            override fun onSendWebViewData(data: String) {
++                if (sentWebViewData || queryId == 0L) {
++                    return
++                }
++                sentWebViewData = true
++                val request = TLRPC.TL_messages_sendWebViewData()
++                request.bot = MessagesController.getInstance(account).getInputUser(botId)
++                request.random_id = org.telegram.messenger.Utilities.random.nextLong()
++                request.button_text = title(account, botId).toString()
++                request.data = data
++                ConnectionsManager.getInstance(account).sendRequest(request) { response, _ ->
++                    if (response is TLRPC.TL_updates) {
++                        MessagesController.getInstance(account).processUpdates(response, false)
++                    }
++                }
++            }
++
++            override fun getWebAppName(): String = title(account, botId).toString()
++
++            override fun isClipboardAvailable(): Boolean =
++                MediaDataController.getInstance(account).botInAttachMenu(botId) ||
++                    MessagesController.getInstance(account).whitelistedBots.contains(botId)
++        }
++
++    override fun canParentTabsSlide(ev: MotionEvent?, forward: Boolean): Boolean = parentSwipingAllowed
++
++    private fun updateButtonsHeight() {
++        val web = container ?: return
++        val params = web.layoutParams as? FrameLayout.LayoutParams ?: return
++        val height = buttons?.getTotalHeight() ?: 0
++        if (params.bottomMargin != height) {
++            params.bottomMargin = height
++            web.layoutParams = params
++            web.requestLayout()
++        }
++    }
++
++    override fun onResume() {
++        super.onResume()
++        container?.getWebView()?.onResume()
++        if (!started) {
++            started = true
++            startMiniApp()
++        }
++    }
++
++    override fun onPause() {
++        container?.getWebView()?.onPause()
++        super.onPause()
++    }
++
++    override fun onFragmentCreate(): Boolean {
++        NotificationCenter.getInstance(account).addObserver(this, NotificationCenter.webViewResultSent)
++        return super.onFragmentCreate()
++    }
++
++    override fun onFragmentDestroy() {
++        NotificationCenter.getInstance(account).removeObserver(this, NotificationCenter.webViewResultSent)
++        AndroidUtilities.cancelRunOnUIThread(pollRunnable)
++        queryId = 0L
++        container?.destroyWebView()
++        container = null
++        buttons = null
++        root = null
++        placeholder = null
++        super.onFragmentDestroy()
++    }
++
++    override fun didReceivedNotification(id: Int, account: Int, vararg args: Any?) {
++        if (id == NotificationCenter.webViewResultSent) {
++            val sentQueryId = args.firstOrNull() as? Long ?: return
++            if (sentQueryId != 0L && sentQueryId == queryId) {
++                queryId = 0L
++                AndroidUtilities.cancelRunOnUIThread(pollRunnable)
++                closeToChats()
++            }
++        }
++    }
++
++    override fun onThemeColorsChanged() {
++        super.onThemeColorsChanged()
++        root?.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
++        placeholder?.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText, resourceProvider))
++        container?.updateColors()
++        container?.notifyThemeChanged()
++    }
++
++    override fun onBackPressed(invoked: Boolean): Boolean {
++        if (!super.onBackPressed(invoked)) {
++            return false
++        }
++        if (container?.onBackPressed() == true) {
++            return false
++        }
++        val webView = container?.getWebView()
++        if (webView != null && webView.canGoBack()) {
++            if (invoked) {
++                webView.goBack()
++            }
++            return false
++        }
++        if (backButtonVisible) {
++            return false
++        }
++        if (invoked && closeConfirmation) {
++            confirmClose(null)
++            return false
++        }
++        return true
++    }
++
++    private fun startMiniApp() {
++        val bot = findAttachBot(account, botId)
++        if (bot == null) {
++            if (loadingBots) {
++                return
++            }
++            showPlaceholder(R.string.TeleMiniAppOpenFailed)
++            loadingBots = true
++            MediaDataController.getInstance(account).loadAttachMenuBots(false, true) {
++                loadingBots = false
++                if (container == null || fragmentView == null || container?.getUrlLoaded() != null) {
++                    return@loadAttachMenuBots
++                }
++                val loaded = findAttachBot(account, botId)
++                if (loaded == null) {
++                    showPlaceholder(R.string.TeleMiniAppUnsupported)
++                } else {
++                    openBot(loaded)
++                }
++            }
++            return
++        }
++        openBot(bot)
++    }
++
++    private fun openBot(bot: TLRPC.TL_attachMenuBot) {
++        actionBar?.setTitle(title(account, botId))
++        if (bot.inactive || bot.side_menu_disclaimer_needed) {
++            val dismissed = Runnable { showPlaceholder(R.string.TeleMiniAppOpenFailed) }
++            val allowed = org.telegram.messenger.Utilities.Callback<Boolean> { accepted ->
++                if (!accepted) {
++                    showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                } else {
++                    enableBot(bot) { openWebApp() }
++                }
++            }
++            WebAppDisclaimerAlert.show(context, allowed, MessagesController.getInstance(account).getUser(botId), dismissed)
++        } else {
++            openWebApp()
++        }
++    }
++
++    private fun enableBot(bot: TLRPC.TL_attachMenuBot, onDone: () -> Unit) {
++        val request = TLRPC.TL_messages_toggleBotInAttachMenu()
++        request.bot = MessagesController.getInstance(account).getInputUser(bot.bot_id)
++        request.enabled = true
++        request.write_allowed = true
++        ConnectionsManager.getInstance(account).sendRequest(request, { _, error ->
++            AndroidUtilities.runOnUIThread {
++                if (error != null) {
++                    showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                    return@runOnUIThread
++                }
++                bot.inactive = false
++                bot.side_menu_disclaimer_needed = false
++                MediaDataController.getInstance(account).updateAttachMenuBotsInCache()
++                onDone()
++            }
++        }, ConnectionsManager.RequestFlagInvokeAfter or ConnectionsManager.RequestFlagFailOnServerErrors)
++    }
++
++    private fun openWebApp() {
++        val web = container ?: return
++        if (opening || web.getUrlLoaded() != null) {
++            return
++        }
++        opening = true
++        val user = MessagesController.getInstance(account).getUser(botId)
++        if (user == null) {
++            opening = false
++            showPlaceholder(R.string.TeleMiniAppOpenFailed)
++            return
++        }
++        web.setBotUser(user)
++        web.loadFlickerAndSettingsItem(account, botId, null)
++
++        val request = TLRPC.TL_messages_requestSimpleWebView()
++        request.bot = MessagesController.getInstance(account).getInputUser(botId)
++        request.platform = "android"
++        request.from_side_menu = true
++        request.compact = false
++        request.fullscreen = false
++        BotWebViewSheet.makeThemeParams(resourceProvider)?.let { params ->
++            request.theme_params = TLRPC.TL_dataJSON()
++            request.theme_params.data = params.toString()
++            request.flags = request.flags or 1
++        }
++        ConnectionsManager.getInstance(account).sendRequest(request, { response, error ->
++            AndroidUtilities.runOnUIThread {
++                if (container == null || fragmentView == null || error != null || response == null) {
++                    opening = false
++                    started = false
++                    showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                    return@runOnUIThread
++                }
++                val url: String?
++                val sameOrigin: Boolean
++                if (response is TLRPC.TL_webViewResultUrl) {
++                    url = response.url
++                    sameOrigin = response.same_origin
++                    queryId = response.query_id
++                } else if (response is TLRPC.TL_simpleWebViewResultUrl) {
++                    url = response.url
++                    sameOrigin = false
++                } else {
++                    url = null
++                    sameOrigin = false
++                }
++                if (url.isNullOrEmpty()) {
++                    opening = false
++                    started = false
++                    showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                    return@runOnUIThread
++                }
++                opening = false
++                placeholder?.visibility = View.GONE
++                container?.loadUrl(account, url, sameOrigin)
++                MediaDataController.getInstance(account).increaseWebappRating(botId)
++                if (queryId != 0L) {
++                    AndroidUtilities.cancelRunOnUIThread(pollRunnable)
++                    AndroidUtilities.runOnUIThread(pollRunnable, POLL_PERIOD)
++                }
++            }
++        })
++    }
++
++    private fun showPlaceholder(resId: Int) {
++        placeholder?.text = TeleLowercase.lc(LocaleController.getString(resId))
++        placeholder?.visibility = View.VISIBLE
++    }
++
++    private fun closeToChats() {
++        val tabs = (parentActivity as? LaunchActivity)?.actionBarLayout?.lastFragment as? MainTabsActivity
++        tabs?.tele_showChatsTab()
++    }
++
++    private fun confirmClose(callback: Runnable?) {
++        val user = MessagesController.getInstance(account).getUser(botId)
++        val name = if (user == null) title(account, botId) else UserObject.getUserName(user)
++        val dialog = AlertDialog.Builder(context, resourceProvider)
++            .setTitle(name)
++            .setMessage(LocaleController.getString(R.string.BotWebViewChangesMayNotBeSaved))
++            .setPositiveButton(LocaleController.getString(R.string.BotWebViewCloseAnyway)) { _, _ ->
++                closeConfirmation = false
++                callback?.run()
++                closeToChats()
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .create()
++        dialog.show()
++        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(Theme.getColor(Theme.key_text_RedBold, resourceProvider))
++    }
++
++    private fun requestClose(callback: Runnable?) {
++        if (closeConfirmation) {
++            confirmClose(callback)
++        } else {
++            callback?.run()
++            closeToChats()
++        }
++    }
++
++    private fun inlineQuery(bot: TLRPC.User, query: String, chatTypes: List<String>) {
++        if (chatTypes.isEmpty()) {
++            val last = (parentActivity as? LaunchActivity)?.actionBarLayout?.lastFragment
++            if (last is ChatActivity) {
++                last.getChatActivityEnterView()?.setFieldText("@" + UserObject.getPublicUsername(bot) + " " + query)
++                closeToChats()
++                return
++            }
++        }
++        val args = Bundle()
++        args.putInt("dialogsType", DialogsActivity.DIALOGS_TYPE_START_ATTACH_BOT)
++        args.putBoolean("onlySelect", true)
++        args.putBoolean("allowGroups", chatTypes.isEmpty() || chatTypes.contains("groups"))
++        args.putBoolean("allowMegagroups", chatTypes.isEmpty() || chatTypes.contains("groups"))
++        args.putBoolean("allowLegacyGroups", chatTypes.isEmpty() || chatTypes.contains("groups"))
++        args.putBoolean("allowUsers", chatTypes.isEmpty() || chatTypes.contains("users"))
++        args.putBoolean("allowChannels", chatTypes.contains("channels"))
++        args.putBoolean("allowBots", chatTypes.contains("bots"))
++        val picker = DialogsActivity(args)
++        picker.setDelegate { fragment, dids, _, _, _, _, _, topicsFragment ->
++            val dialogId = dids.firstOrNull()?.dialogId ?: return@setDelegate false
++            fragment.finishFragment()
++            topicsFragment?.removeSelfFromStack()
++            val chat = Bundle()
++            chat.putBoolean("scrollToTopOnResume", true)
++            if (DialogObject.isEncryptedDialog(dialogId)) {
++                chat.putInt("enc_id", DialogObject.getEncryptedChatId(dialogId))
++            } else if (DialogObject.isUserDialog(dialogId)) {
++                chat.putLong("user_id", dialogId)
++            } else {
++                chat.putLong("chat_id", -dialogId)
++            }
++            chat.putString("start_text", "@" + UserObject.getPublicUsername(bot) + " " + query)
++            AndroidUtilities.runOnUIThread({
++                if (MessagesController.getInstance(account).checkCanOpenChat(chat, this)) {
++                    presentFragment(ChatActivity(chat))
++                }
++            }, 250)
++            true
++        }
++        presentFragment(picker)
++    }
++
++    private fun openInvoice(inputInvoice: TLRPC.InputInvoice, slug: String, response: TLObject) {
++        if (response is TLRPC.TL_payments_paymentFormStars) {
++            val progress = AlertDialog(context, AlertDialog.ALERT_TYPE_SPINNER)
++            progress.showDelayed(150)
++            StarsController.getInstance(account).openPaymentForm(null, inputInvoice, response, {
++                progress.dismiss()
++            }) { status ->
++                container?.onInvoiceStatusUpdate(slug, status)
++            }
++            return
++        }
++        val payment: PaymentFormActivity = when (response) {
++            is TLRPC.PaymentForm -> {
++                MessagesController.getInstance(account).putUsers(response.users, false)
++                PaymentFormActivity(response, slug, this)
++            }
++            is TLRPC.PaymentReceipt -> PaymentFormActivity(response)
++            else -> return
++        }
++        payment.setPaymentFormCallback { status ->
++            container?.onInvoiceStatusUpdate(slug, status.name.lowercase(Locale.ROOT))
++        }
++        payment.setResourcesProvider(resourceProvider)
++        presentFragment(payment)
++    }
++
++    override fun onRequestPermissionsResultFragment(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
++        container?.onRequestPermissionsResult(requestCode, permissions, grantResults)
++        super.onRequestPermissionsResultFragment(requestCode, permissions, grantResults)
++    }
++
++    companion object {
++        private const val ID_SETTINGS = 7801
++        private const val POLL_PERIOD = 60_000L
++
++        @JvmStatic
++        fun findAttachBot(account: Int, botId: Long): TLRPC.TL_attachMenuBot? =
++            MediaDataController.getInstance(account).attachMenuBots?.bots?.firstOrNull { it.bot_id == botId }
++
++        @JvmStatic
++        fun title(account: Int, botId: Long): CharSequence {
++            val bot = findAttachBot(account, botId)
++            if (bot != null && !bot.short_name.isNullOrEmpty()) {
++                return bot.short_name
++            }
++            return DialogObject.getName(account, botId)
++        }
++
++        @JvmStatic
++        fun sideMenuBots(account: Int): List<TLRPC.TL_attachMenuBot> =
++            MediaDataController.getInstance(account).attachMenuBots?.bots?.filter { it.show_in_side_menu && it.bot_id != 0L } ?: emptyList()
++    }
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 1c35439ce..e330c7f3b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -534,7 +534,10 @@ object TeleSearch {
+             section(1672, "global search tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
+             section(1673, "notifications tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
+             section(1674, "data storage tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
+-            section(1675, "data usage tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs")
++            section(1675, "data usage tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1676, "mini app tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1677, "bot as a tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
++            section(1678, "web app tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs")
+         ))
+         results.add(screen(1670, "new message tab") { TeleTabsActivity() })
+         results.add(screen(1671, "camera tab") { TeleTabsActivity() })
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index 1fb9aa243..6c47ea435 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -21,10 +21,12 @@ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.DialogObject
+ import org.telegram.messenger.FileLog
+ import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MediaDataController
+ import org.telegram.messenger.MessagesController
+ import org.telegram.messenger.R
+ import org.telegram.messenger.UserConfig
+ import org.telegram.messenger.UserObject
++import org.telegram.tgnet.TLRPC
+ import org.telegram.ui.ActionBar.ActionBar
+ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+@@ -49,6 +51,7 @@ import tele.TeleHooks
+ import tele.helpers.MainTabsAvatars
+ import tele.helpers.MainTabsConfig
+ import tele.helpers.TeleLowercase
++import tele.ui.TeleMiniAppFragment
+ 
+ /** The editor of the bottom bar: the order of the tabs, the shortcuts, the icons and the labels. */
+ class TeleTabsActivity : BaseFragment() {
+@@ -59,6 +62,7 @@ class TeleTabsActivity : BaseFragment() {
+     private val account = UserConfig.selectedAccount
+     private var slots = mutableListOf<MainTabsConfig.Slot>()
+     private var suppressNextEntryClick = false
++    private var loadingMiniApps = false
+ 
+     override fun getListViewForSimpleGlass(): RecyclerListView? = listView
+ 
+@@ -171,7 +175,7 @@ class TeleTabsActivity : BaseFragment() {
+     private fun showSlotMenu(anchor: View, index: Int) {
+         val slot = slots.getOrNull(index) ?: return
+         val options = ItemOptions.makeOptions(this, anchor)
+-        if ((slot.isPage || slot.isActionShortcut) && slot.kind != MainTabsConfig.KIND_PROFILE) {
++        if ((slot.isPage || slot.isActionShortcut) && slot.kind != MainTabsConfig.KIND_PROFILE && !slot.isMiniApp) {
+             options.add(R.drawable.msg_edit, lc("Change icon")) { showIconSheet(slot) }
+         }
+         if (slot.kind != MainTabsConfig.KIND_CHATS) {
+@@ -256,6 +260,7 @@ class TeleTabsActivity : BaseFragment() {
+             options.add(R.drawable.settings_folders, LocaleController.getString(R.string.TeleTabFolders)) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_FOLDERS)) }
+         }
+         options.add(R.drawable.msg_add, lc("Chat…")) { pickChat() }
++        options.add(R.drawable.msg_add, localized(R.string.TeleMiniAppAdd)) { pickMiniApp() }
+         options.setBlur(true)
+         options.translate(0f, -AndroidUtilities.dp(4f).toFloat())
+         val bg = Theme.createRoundRectDrawable(AndroidUtilities.dp(28f), Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
+@@ -344,6 +349,17 @@ class TeleTabsActivity : BaseFragment() {
+         showDialog(builder.create())
+     }
+ 
++    private fun addMiniApp(botId: Long) {
++        if (botId == 0L || TeleMiniAppFragment.findAttachBot(account, botId) == null) {
++            bulletin(localized(R.string.TeleMiniAppUnsupported))
++            return
++        }
++        val slot = MainTabsConfig.Slot(MainTabsConfig.miniAppKey(botId))
++        if (slots.any { it.key == slot.key }) {
++            bulletin(localized(R.string.TeleMiniAppAlreadyAdded))
++            return
++        }
++        addSlot(slot)
+     /** The stock choose-a-chat screen, as the draft picker opens it. */
+     private fun pickChat() {
+         if (slots.size >= MainTabsConfig.MAX_SLOTS) {
+@@ -427,6 +443,8 @@ class TeleTabsActivity : BaseFragment() {
+             MainTabsConfig.KIND_CONTACTS_SAVED -> LocaleController.getString(R.string.MainTabsContacts)
+             else -> if (MainTabsConfig.isTeleSettingsKind(slot.kind)) {
+                 localized(MainTabsConfig.titleResOf(slot.kind))
++            } else if (slot.isMiniApp) {
++                TeleMiniAppFragment.title(account, slot.botId)
+             } else {
+                 chatTitle(slot.dialogId)
+             }
+@@ -453,6 +471,9 @@ class TeleTabsActivity : BaseFragment() {
+         if (slot.isShortcut && !slot.isActionShortcut) {
+             return lc("Chat button")
+         }
++        if (slot.isMiniApp) {
++            return localized(R.string.TeleMiniAppPage)
++        }
+         val animation = animationByName(MainTabsConfig.iconNameOf(slot))
+         if (animation != null) {
+             return iconLabel(animation)
+@@ -461,7 +482,7 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun pageAnimationOf(slot: MainTabsConfig.Slot): GlassTabView.TabAnimation? {
+-        if ((!slot.isPage && !slot.isActionShortcut) || slot.kind == MainTabsConfig.KIND_PROFILE) {
++        if ((!slot.isPage && !slot.isActionShortcut) || slot.kind == MainTabsConfig.KIND_PROFILE || slot.isMiniApp) {
+             return null
+         }
+         return animationByName(MainTabsConfig.iconNameOf(slot))
+@@ -595,6 +616,8 @@ class TeleTabsActivity : BaseFragment() {
+                 if (slot.kind == MainTabsConfig.KIND_PROFILE) {
+                     val user = UserConfig.getInstance(account).currentUser
+                     avatar.setForUserOrChat(user, AvatarDrawable(user))
++                } else if (slot.isMiniApp) {
++                    setAvatar(avatar, slot.botId)
+                 } else {
+                     setAvatar(avatar, dialogIdOf(slot))
+                 }
+@@ -735,7 +758,7 @@ class TeleTabsActivity : BaseFragment() {
+ 
+     private fun lc(text: String): String = TeleLowercase.lc(text)
+ 
+-    private fun localized(res: Int): String = lc(LocaleController.getString(res))
++    private fun localized(resId: Int): String = TeleLowercase.lc(LocaleController.getString(resId))
+ 
+     companion object {
+         private const val TYPE_HEADER = 0
+diff --git a/TMessagesProj/src/main/res/values-ru/strings_tele.xml b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+index 1c5837f31..2a636cc64 100644
+--- a/TMessagesProj/src/main/res/values-ru/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+@@ -375,4 +375,11 @@
+     <string name="TeleTabUpdates">Обновления</string>
+     <string name="TeleTabNewMessage">Новое сообщение</string>
+     <string name="TeleTabCamera">Камера</string>
++    <string name="TeleMiniAppAdd">Мини-приложение…</string>
++    <string name="TeleMiniAppPickerTitle">Выберите мини-приложение</string>
++    <string name="TeleMiniAppEmpty">Нет доступных мини-приложений</string>
++    <string name="TeleMiniAppAlreadyAdded">Это мини-приложение уже на панели</string>
++    <string name="TeleMiniAppUnsupported">У этого бота нет мини-приложения</string>
++    <string name="TeleMiniAppOpenFailed">Не удалось открыть мини-приложение</string>
++    <string name="TeleMiniAppPage">Мини-приложение</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values-uk/strings_tele.xml b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+index 0c21523d6..17816d644 100644
+--- a/TMessagesProj/src/main/res/values-uk/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+@@ -375,4 +375,11 @@
+     <string name="TeleTabUpdates">Оновлення</string>
+     <string name="TeleTabNewMessage">Нове повідомлення</string>
+     <string name="TeleTabCamera">Камера</string>
++    <string name="TeleMiniAppAdd">Міні-застосунок…</string>
++    <string name="TeleMiniAppPickerTitle">Виберіть міні-застосунок</string>
++    <string name="TeleMiniAppEmpty">Немає доступних міні-застосунків</string>
++    <string name="TeleMiniAppAlreadyAdded">Цей міні-застосунок уже на панелі</string>
++    <string name="TeleMiniAppUnsupported">У цього бота немає міні-застосунку</string>
++    <string name="TeleMiniAppOpenFailed">Не вдалося відкрити міні-застосунок</string>
++    <string name="TeleMiniAppPage">Міні-застосунок</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 8cfe5efd2..d8573af5f 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -391,4 +391,11 @@
+     <string name="TeleTabUpdates">Updates</string>
+     <string name="TeleTabNewMessage">New message</string>
+     <string name="TeleTabCamera">Camera</string>
++    <string name="TeleMiniAppAdd">Mini app…</string>
++    <string name="TeleMiniAppPickerTitle">Choose a mini app</string>
++    <string name="TeleMiniAppEmpty">No mini apps available</string>
++    <string name="TeleMiniAppAlreadyAdded">This mini app is already on the bar</string>
++    <string name="TeleMiniAppUnsupported">This bot has no mini app</string>
++    <string name="TeleMiniAppOpenFailed">Couldn\'t open this mini app</string>
++    <string name="TeleMiniAppPage">Mini app</string>
+ </resources>

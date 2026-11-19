@@ -1,0 +1,355 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Thu, 19 Nov 2026 16:22:44 +0300
+Subject: [PATCH] feat: add action shortcut tabs
+
+---
+ .../java/org/telegram/ui/ChatActivity.java    |  6 ++
+ .../ui/Components/ChatActivityEnterView.java  | 11 ++++
+ .../ui/Components/glass/GlassTabView.java     |  2 +
+ .../org/telegram/ui/MainTabsActivity.java     | 61 +++++++++++++++----
+ .../main/java/tele/helpers/MainTabsConfig.kt  | 14 ++++-
+ .../main/java/tele/ui/settings/TeleSearch.kt  |  3 +
+ .../java/tele/ui/settings/TeleTabsActivity.kt | 26 ++++++--
+ .../src/main/res/values-ru/strings_tele.xml   |  2 +
+ .../src/main/res/values-uk/strings_tele.xml   |  2 +
+ .../src/main/res/values/strings_tele.xml      |  2 +
+ 10 files changed, 110 insertions(+), 19 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 280a88013..8905cd60e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -11572,6 +11572,12 @@ public class ChatActivity extends BaseFragment implements
+         dimBehindView(enable ? 0.2f : 0, false, true);
+     }
+ 
++    public void tele_openRoundCamera() {
++        if (chatActivityEnterView != null) {
++            chatActivityEnterView.tele_startRoundVideoRecording();
++        }
++    }
++
+     private void checkInstantCameraView() {
+         if (instantCameraView != null || !CameraView.isCameraAllowed() || getContext() == null) {
+             return;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index 925f9e2d8..46f85b5c5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -6467,6 +6467,17 @@ public class ChatActivityEnterView extends FrameLayout implements
+         audioVideoSendButton.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
+     }
+ 
++    public void tele_startRoundVideoRecording() {
++        if (!hasRecordVideo || recordingAudioVideo || recordAudioVideoRunnableStarted) {
++            return;
++        }
++        createRecordCircle();
++        setRecordVideoButtonVisible(true, false);
++        calledRecordRunnable = false;
++        recordAudioVideoRunnableStarted = false;
++        recordAudioVideoRunnable.run();
++    }
++
+     public boolean isRecordingAudioVideo() {
+         return recordingAudioVideo || (runningAnimationAudio != null && runningAnimationAudio.isRunning()) && !recordIsCanceled;
+     }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+index 344b40512..823941ffc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/glass/GlassTabView.java
+@@ -723,6 +723,8 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
+         SEARCH(TabAnimationType.STATIC, R.drawable.outline_header_search),
+         NOTIFICATIONS(TabAnimationType.STATIC, R.drawable.settings_sounds),
+         DATA_USAGE(TabAnimationType.STATIC, R.drawable.settings_data),
++        NEW_MESSAGE(TabAnimationType.STATIC, R.drawable.filled_fab_compose_32),
++        CAMERA(TabAnimationType.STATIC, R.drawable.msg_camera),
+ 
+         CHECKLIST(R.raw.tab_checklist, R.raw.tab_checklist_reverse),
+         COLORS(R.raw.tab_colors, R.raw.tab_colors_reverse),
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index 628c6f14f..ed535f45b 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -1648,12 +1648,16 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     }
+ 
+     private int teleTitleRes(String kind) {
+-        if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind)) {
++        if (tele.helpers.MainTabsConfig.KIND_CONTACTS.equals(kind) || tele.helpers.MainTabsConfig.KIND_CONTACTS_SAVED.equals(kind)) {
+             return R.string.MainTabsContacts;
+         } else if (tele.helpers.MainTabsConfig.KIND_CALLS.equals(kind)) {
+             return R.string.MainTabsCalls;
+         } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS.equals(kind)) {
+             return R.string.Settings;
++        } else if (tele.helpers.MainTabsConfig.KIND_NEW_MESSAGE.equals(kind)) {
++            return R.string.TeleTabNewMessage;
++        } else if (tele.helpers.MainTabsConfig.KIND_CAMERA.equals(kind)) {
++            return R.string.TeleTabCamera;
+         }
+         final int title = tele.helpers.MainTabsConfig.titleResOf(kind);
+         return title != 0 ? title : R.string.MainTabsChats;
+@@ -1688,20 +1692,39 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+     }
+ 
+     private GlassTabView teleBuildShortcutTab(tele.helpers.MainTabsConfig.Slot slot) {
+-        final long dialogId = teleDialogIdOf(slot);
+-        final GlassTabView tab = GlassTabView.tele_createDialogAvatar(getContext(), resourceProvider, teleDialogTitle(dialogId));
+-        teleSetAvatar(tab, dialogId);
++        final GlassTabView tab;
++        if (slot.isActionShortcut()) {
++            tab = GlassTabView.createMainTab(getContext(), resourceProvider, teleAnimationOf(slot), teleTitleRes(slot.getKind()));
++        } else {
++            final long dialogId = teleDialogIdOf(slot);
++            tab = GlassTabView.tele_createDialogAvatar(getContext(), resourceProvider, teleDialogTitle(dialogId));
++            teleSetAvatar(tab, dialogId);
++        }
+         tab.setCounter(null, false, false);
+         tab.setOnClickListener(v -> {
+             if (viewPager.isManualScrolling() || viewPager.isTouch()) {
+                 return;
+             }
+-            teleOpenDialog(dialogId);
++            teleOpenShortcut(slot);
+         });
+         tab.setOnLongClickListener(v -> teleOpenShortcutMenu(v, slot));
+         return tab;
+     }
+ 
++    private void teleOpenShortcut(tele.helpers.MainTabsConfig.Slot slot) {
++        if (tele.helpers.MainTabsConfig.KIND_NEW_MESSAGE.equals(slot.getKind())) {
++            final Bundle args = new Bundle();
++            args.putBoolean("destroyAfterSelect", true);
++            presentFragment(new ContactsActivity(args));
++        } else if (tele.helpers.MainTabsConfig.KIND_CAMERA.equals(slot.getKind())) {
++            teleOpenCameraChat();
++        } else if (tele.helpers.MainTabsConfig.KIND_CONTACTS_SAVED.equals(slot.getKind())) {
++            presentFragment(new ContactsActivity(new Bundle()));
++        } else {
++            teleOpenDialog(teleDialogIdOf(slot));
++        }
++    }
++
+     private long teleDialogIdOf(tele.helpers.MainTabsConfig.Slot slot) {
+         if (tele.helpers.MainTabsConfig.KIND_SAVED.equals(slot.getKind())) {
+             return getUserConfig().getClientUserId();
+@@ -1778,17 +1801,20 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+ 
+     private void teleUpdateContactsBadge() {
+         final GlassTabView tab = teleTabForKind(tele.helpers.MainTabsConfig.KIND_CONTACTS);
+-        if (tab == null) {
++        final GlassTabView shortcut = teleTabForKind(tele.helpers.MainTabsConfig.KIND_CONTACTS_SAVED);
++        if (tab == null && shortcut == null) {
+             return;
+         }
+         final boolean hasPermission = Build.VERSION.SDK_INT >= 23 && ContactsController.hasContactsPermission();
+         if (hasPermission) {
+             MessagesController.getGlobalNotificationsSettings().edit().putBoolean("askAboutContacts2", true).apply();
+         }
+-        if (Build.VERSION.SDK_INT >= 23 && UserConfig.getInstance(currentAccount).syncContacts && !hasPermission && MessagesController.getGlobalNotificationsSettings().getBoolean("askAboutContacts2", true)) {
+-            tab.setCounter("!", true, true);
+-        } else {
+-            tab.setCounter(null, true, true);
++        final boolean show = Build.VERSION.SDK_INT >= 23 && UserConfig.getInstance(currentAccount).syncContacts && !hasPermission && MessagesController.getGlobalNotificationsSettings().getBoolean("askAboutContacts2", true);
++        if (tab != null) {
++            tab.setCounter(show ? "!" : null, true, true);
++        }
++        if (shortcut != null) {
++            shortcut.setCounter(show ? "!" : null, true, true);
+         }
+     }
+ 
+@@ -1855,6 +1881,18 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         return DialogObject.getName(currentAccount, dialogId);
+     }
+ 
++    private void teleOpenCameraChat() {
++        final Bundle args = new Bundle();
++        args.putLong("user_id", getUserConfig().getClientUserId());
++        if (!getMessagesController().checkCanOpenChat(args, this)) {
++            return;
++        }
++        final ChatActivity fragment = new ChatActivity(args);
++        if (presentFragment(fragment)) {
++            fragment.tele_openRoundCamera();
++        }
++    }
++
+     private void teleOpenDialog(long dialogId) {
+         if (dialogId == 0) {
+             return;
+@@ -1876,9 +1914,8 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         if (getContext() == null || getParentActivity() == null) {
+             return false;
+         }
+-        final long dialogId = teleDialogIdOf(slot);
+         final ItemOptions o = ItemOptions.makeOptions(this, anchor);
+-        o.add(R.drawable.msg_openin, getString(R.string.Open), () -> teleOpenDialog(dialogId));
++        o.add(R.drawable.msg_openin, getString(R.string.Open), () -> teleOpenShortcut(slot));
+         o.add(R.drawable.msg_delete, getString(R.string.Remove), () -> {
+             tele.helpers.MainTabsConfig.remove(currentAccount, slot.getKey());
+             teleRefreshBar();
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+index 0a345647d..8f4f47253 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+@@ -26,6 +26,9 @@ object MainTabsConfig {
+     const val KIND_SEARCH = "search"
+     const val KIND_NOTIFICATIONS = "notifications"
+     const val KIND_DATA_USAGE = "data-usage"
++    const val KIND_NEW_MESSAGE = "new-message"
++    const val KIND_CAMERA = "camera"
++    const val KIND_CONTACTS_SAVED = "contacts-saved"
+     private const val KIND_CHAT_PREFIX = "chat:"
+     private const val KIND_TELE_SECTION_PREFIX = "$KIND_TELE_SETTINGS:"
+     const val MAX_SLOTS = 6
+@@ -42,7 +45,10 @@ object MainTabsConfig {
+         KIND_TELE_SETTINGS to "SETTINGS",
+         KIND_SEARCH to "SEARCH",
+         KIND_NOTIFICATIONS to "NOTIFICATIONS",
+-        KIND_DATA_USAGE to "DATA_USAGE"
++        KIND_DATA_USAGE to "DATA_USAGE",
++        KIND_NEW_MESSAGE to "NEW_MESSAGE",
++        KIND_CAMERA to "CAMERA",
++        KIND_CONTACTS_SAVED to "CONTACTS"
+     )
+     private val TELE_SECTION_MODES = linkedMapOf(
+         "appearance" to TeleSettingsActivity.MODE_INTERFACE,
+@@ -156,10 +162,12 @@ object MainTabsConfig {
+         KIND_CHATS, KIND_CONTACTS, KIND_CALLS, KIND_SETTINGS, KIND_PROFILE,
+         KIND_ARCHIVE, KIND_FOLDERS, KIND_TELE_SETTINGS, KIND_SEARCH, KIND_NOTIFICATIONS, KIND_DATA_USAGE
+     )
++    private val ACTION_SHORTCUT_KINDS = setOf(KIND_NEW_MESSAGE, KIND_CAMERA, KIND_CONTACTS_SAVED)
+ 
+     class Slot(val kind: String, val iconName: String = "") {
+         val key: String get() = kind
+-        val isShortcut: Boolean get() = kind == KIND_SAVED || kind.startsWith(KIND_CHAT_PREFIX)
++        val isActionShortcut: Boolean get() = kind in ACTION_SHORTCUT_KINDS
++        val isShortcut: Boolean get() = kind == KIND_SAVED || kind.startsWith(KIND_CHAT_PREFIX) || isActionShortcut
+         val isPage: Boolean get() = !isShortcut
+         val isFolder: Boolean get() = isFolderKind(kind)
+         val filterId: Int
+@@ -267,7 +275,7 @@ object MainTabsConfig {
+         add(input.firstOrNull { it.kind == KIND_CHATS } ?: Slot(KIND_CHATS))
+         for (slot in input) {
+             if (slot.kind == KIND_CHATS) continue
+-            val valid = slot.kind in PAGE_KINDS || isTeleSettingsKind(slot.kind) || slot.kind == KIND_SAVED ||
++            val valid = slot.kind in PAGE_KINDS || isTeleSettingsKind(slot.kind) || slot.kind == KIND_SAVED || slot.isActionShortcut ||
+                 (slot.kind.startsWith(KIND_CHAT_PREFIX) && slot.dialogId != 0L) ||
+                 (slot.isFolder && MessagesController.getInstance(account).dialogFiltersById.get(slot.filterId) != null)
+             if (valid) add(slot)
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 25e777506..1c35439ce 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -536,6 +536,9 @@ object TeleSearch {
+             section(1674, "data storage tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs"),
+             section(1675, "data usage tab", "interface", TeleSettingsActivity.MODE_INTERFACE, "Customize the bottom tabs")
+         ))
++        results.add(screen(1670, "new message tab") { TeleTabsActivity() })
++        results.add(screen(1671, "camera tab") { TeleTabsActivity() })
++        results.add(screen(1672, "contacts shortcut") { TeleTabsActivity() })
+         // a page button and the screen it opens are the same result: the one with the page path wins
+         val pageTitles = results.filter { it.path != null && it.path.size > 1 }.map { it.searchTitle.lowercase() }.toHashSet()
+         val unique = LinkedHashMap<String, ProfileActivity.SearchAdapter.SearchResult>()
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index fd88dc2dd..1fb9aa243 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -171,7 +171,7 @@ class TeleTabsActivity : BaseFragment() {
+     private fun showSlotMenu(anchor: View, index: Int) {
+         val slot = slots.getOrNull(index) ?: return
+         val options = ItemOptions.makeOptions(this, anchor)
+-        if (slot.isPage && slot.kind != MainTabsConfig.KIND_PROFILE) {
++        if ((slot.isPage || slot.isActionShortcut) && slot.kind != MainTabsConfig.KIND_PROFILE) {
+             options.add(R.drawable.msg_edit, lc("Change icon")) { showIconSheet(slot) }
+         }
+         if (slot.kind != MainTabsConfig.KIND_CHATS) {
+@@ -199,6 +199,21 @@ class TeleTabsActivity : BaseFragment() {
+         if (slots.none { it.kind == MainTabsConfig.KIND_SAVED }) {
+             options.add(R.drawable.msg_saved, lc("Saved messages")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_SAVED)) }
+         }
++        if (slots.none { it.kind == MainTabsConfig.KIND_NEW_MESSAGE }) {
++            options.add(R.drawable.filled_fab_compose_32, LocaleController.getString(R.string.TeleTabNewMessage)) {
++                addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_NEW_MESSAGE))
++            }
++        }
++        if (slots.none { it.kind == MainTabsConfig.KIND_CAMERA }) {
++            options.add(R.drawable.msg_camera, LocaleController.getString(R.string.TeleTabCamera)) {
++                addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CAMERA))
++            }
++        }
++        if (slots.none { it.kind == MainTabsConfig.KIND_CONTACTS_SAVED }) {
++            options.add(R.drawable.msg_contacts, LocaleController.getString(R.string.MainTabsContacts)) {
++                addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CONTACTS_SAVED))
++            }
++        }
+         if (slots.none { it.kind == MainTabsConfig.KIND_CONTACTS }) {
+             options.add(R.drawable.msg_contacts, lc("Contacts")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CONTACTS)) }
+         }
+@@ -407,6 +422,9 @@ class TeleTabsActivity : BaseFragment() {
+             MainTabsConfig.KIND_SAVED -> LocaleController.getString(R.string.SavedMessages)
+             MainTabsConfig.KIND_SEARCH, MainTabsConfig.KIND_NOTIFICATIONS, MainTabsConfig.KIND_DATA_USAGE ->
+                 localized(MainTabsConfig.titleResOf(slot.kind))
++            MainTabsConfig.KIND_NEW_MESSAGE -> LocaleController.getString(R.string.TeleTabNewMessage)
++            MainTabsConfig.KIND_CAMERA -> LocaleController.getString(R.string.TeleTabCamera)
++            MainTabsConfig.KIND_CONTACTS_SAVED -> LocaleController.getString(R.string.MainTabsContacts)
+             else -> if (MainTabsConfig.isTeleSettingsKind(slot.kind)) {
+                 localized(MainTabsConfig.titleResOf(slot.kind))
+             } else {
+@@ -432,10 +450,10 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun subtitleOf(slot: MainTabsConfig.Slot): CharSequence {
+-        if (slot.isShortcut) {
++        if (slot.isShortcut && !slot.isActionShortcut) {
+             return lc("Chat button")
+         }
+-        val animation = animationByName(slot.iconName)
++        val animation = animationByName(MainTabsConfig.iconNameOf(slot))
+         if (animation != null) {
+             return iconLabel(animation)
+         }
+@@ -443,7 +461,7 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun pageAnimationOf(slot: MainTabsConfig.Slot): GlassTabView.TabAnimation? {
+-        if (!slot.isPage || slot.kind == MainTabsConfig.KIND_PROFILE) {
++        if ((!slot.isPage && !slot.isActionShortcut) || slot.kind == MainTabsConfig.KIND_PROFILE) {
+             return null
+         }
+         return animationByName(MainTabsConfig.iconNameOf(slot))
+diff --git a/TMessagesProj/src/main/res/values-ru/strings_tele.xml b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+index 61d0c4f1d..1c5837f31 100644
+--- a/TMessagesProj/src/main/res/values-ru/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+@@ -373,4 +373,6 @@
+     <string name="TeleTabServer">Сервер</string>
+     <string name="TeleTabBackup">Резервное копирование</string>
+     <string name="TeleTabUpdates">Обновления</string>
++    <string name="TeleTabNewMessage">Новое сообщение</string>
++    <string name="TeleTabCamera">Камера</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values-uk/strings_tele.xml b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+index e848f5499..0c21523d6 100644
+--- a/TMessagesProj/src/main/res/values-uk/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+@@ -373,4 +373,6 @@
+     <string name="TeleTabServer">Сервер</string>
+     <string name="TeleTabBackup">Резервне копіювання</string>
+     <string name="TeleTabUpdates">Оновлення</string>
++    <string name="TeleTabNewMessage">Нове повідомлення</string>
++    <string name="TeleTabCamera">Камера</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 4a338edd2..8cfe5efd2 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -389,4 +389,6 @@
+     <string name="TeleTabServer">Server</string>
+     <string name="TeleTabBackup">Backup</string>
+     <string name="TeleTabUpdates">Updates</string>
++    <string name="TeleTabNewMessage">New message</string>
++    <string name="TeleTabCamera">Camera</string>
+ </resources>
