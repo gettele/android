@@ -1,0 +1,283 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Fri, 20 Nov 2026 13:39:59 +0300
+Subject: [PATCH] fix: tab editor details
+
+---
+ .../main/java/tele/helpers/MainTabsConfig.kt  | 39 +++++++++-----
+ .../main/java/tele/ui/TeleMiniAppFragment.kt  | 52 ++++++++++++++-----
+ .../java/tele/ui/settings/TeleTabsActivity.kt | 40 ++++++++++----
+ .../src/main/res/values-ru/strings_tele.xml   |  2 +-
+ .../src/main/res/values-uk/strings_tele.xml   |  2 +-
+ .../src/main/res/values/strings_tele.xml      |  2 +-
+ 6 files changed, 96 insertions(+), 41 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+index e784e006c..8569c8707 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+@@ -95,6 +95,23 @@ object MainTabsConfig {
+         "backup" to R.string.TeleTabBackup,
+         "updates" to R.string.TeleTabUpdates
+     )
++    private val TELE_SECTION_ICONS = mapOf(
++        "appearance" to "COLORS",
++        "interface" to "COLORS",
++        "chats" to "CHATS",
++        "messages" to "CHATS",
++        "sending" to "REPLIES",
++        "menus" to "SETTINGS",
++        "privacy" to "SETTINGS",
++        "profiles-ids" to "CONTACTS",
++        "bots" to "SETTINGS",
++        "money" to "WALLET",
++        "scripts" to "SYMBOLS",
++        "debug" to "SETTINGS",
++        "server" to "LINK",
++        "backup" to "FILES",
++        "updates" to "SETTINGS"
++    )
+     private val TELE_SECTION_KINDS = TELE_SECTION_MODES.keys.mapTo(HashSet()) { teleSectionKind(it) }
+ 
+     @JvmField
+@@ -154,7 +171,11 @@ object MainTabsConfig {
+     fun iconNameOf(slot: Slot): String =
+         if (slot.iconName.isNotEmpty()) slot.iconName
+         else if (slot.isFolder) "CHATS"
+-        else DEFAULT_ICONS[slot.kind].orEmpty()
++        else DEFAULT_ICONS[slot.kind] ?: if (isTeleSettingsKind(slot.kind)) {
++            TELE_SECTION_ICONS[slot.kind.removePrefix(KIND_TELE_SECTION_PREFIX)] ?: "SETTINGS"
++        } else {
++            ""
++        }
+ 
+     @JvmStatic
+     fun isFolderKind(kind: String): Boolean = kind.startsWith(KIND_FOLDER_PREFIX)
+@@ -311,26 +332,16 @@ object MainTabsConfig {
+             if (out.size >= MAX_SLOTS || !seen.add(slot.key)) return
+             out.add(slot)
+         }
+-        var chatsAdded = false
+         for (slot in input) {
+-            if (slot.kind == KIND_CHATS) {
+-                if (!chatsAdded) {
+-                    add(slot)
+-                    chatsAdded = true
+-                }
+-                continue
+-            }
+-            val valid = slot.kind in PAGE_KINDS || isTeleSettingsKind(slot.kind) || slot.kind == KIND_SAVED || slot.isActionShortcut ||
++            val valid = slot.kind == KIND_CHATS || slot.kind in PAGE_KINDS || isTeleSettingsKind(slot.kind) || slot.kind == KIND_SAVED || slot.isActionShortcut ||
+                 (slot.kind.startsWith(KIND_CHAT_PREFIX) && slot.dialogId != 0L) ||
+                 (slot.isFolder && MessagesController.getInstance(account).dialogFiltersById.get(slot.filterId) != null) ||
+                 (slot.isMiniApp && slot.botId > 0L)
+             if (valid) add(slot)
+         }
+-        if (!chatsAdded) {
+-            if (out.size >= MAX_SLOTS) {
+-                out.removeAt(out.lastIndex)
+-            }
++        if (out.none { it.kind == KIND_CHATS }) {
+             out.add(0, Slot(KIND_CHATS))
++            if (out.size > MAX_SLOTS) out.removeAt(out.lastIndex)
+         }
+         return out
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+index edd4147c7..5b8c99ff2 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+@@ -411,16 +411,40 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+         web.setBotUser(user)
+         web.loadFlickerAndSettingsItem(account, botId, null)
+ 
+-        val request = TLRPC.TL_messages_requestSimpleWebView()
+-        request.bot = MessagesController.getInstance(account).getInputUser(botId)
+-        request.platform = "android"
+-        request.from_side_menu = true
+-        request.compact = false
+-        request.fullscreen = false
+-        BotWebViewSheet.makeThemeParams(resourceProvider)?.let { params ->
+-            request.theme_params = TLRPC.TL_dataJSON()
+-            request.theme_params.data = params.toString()
+-            request.flags = request.flags or 1
++        val request: TLObject
++        val sideMenu = findAttachBot(account, botId)?.show_in_side_menu == true
++        val themeParams = BotWebViewSheet.makeThemeParams(resourceProvider)?.let { params ->
++            TLRPC.TL_dataJSON().also { it.data = params.toString() }
++        }
++        if (sideMenu) {
++            val simple = TLRPC.TL_messages_requestSimpleWebView()
++            simple.bot = MessagesController.getInstance(account).getInputUser(botId)
++            simple.platform = "android"
++            simple.from_side_menu = true
++            simple.compact = false
++            simple.fullscreen = false
++            if (themeParams != null) {
++                simple.theme_params = themeParams
++                simple.flags = simple.flags or 1
++            }
++            request = simple
++        } else {
++            val main = TLRPC.TL_messages_requestMainWebView()
++            main.bot = MessagesController.getInstance(account).getInputUser(botId)
++            main.peer = MessagesController.getInstance(account).getInputPeer(botId)
++            main.platform = "android"
++            main.compact = false
++            main.fullscreen = false
++            if (themeParams != null) {
++                main.theme_params = themeParams
++                main.flags = main.flags or 1
++            }
++            request = main
++        }
++        val requestFlags = if (sideMenu) {
++            0
++        } else {
++            ConnectionsManager.RequestFlagInvokeAfter or ConnectionsManager.RequestFlagFailOnServerErrors
+         }
+         ConnectionsManager.getInstance(account).sendRequest(request, { response, error ->
+             AndroidUtilities.runOnUIThread {
+@@ -458,7 +482,7 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+                     AndroidUtilities.runOnUIThread(pollRunnable, POLL_PERIOD)
+                 }
+             }
+-        })
++        }, requestFlags)
+     }
+ 
+     private fun showPlaceholder(resId: Int) {
+@@ -589,7 +613,9 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+         }
+ 
+         @JvmStatic
+-        fun sideMenuBots(account: Int): List<TLRPC.TL_attachMenuBot> =
+-            MediaDataController.getInstance(account).attachMenuBots?.bots?.filter { it.show_in_side_menu && it.bot_id != 0L } ?: emptyList()
++        fun attachBots(account: Int): List<TLRPC.TL_attachMenuBot> =
++            MediaDataController.getInstance(account).attachMenuBots?.bots?.filter {
++                it.bot_id != 0L && (it.show_in_attach_menu || it.show_in_side_menu)
++            } ?: emptyList()
+     }
+ }
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index ed382045b..b5dbab423 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -115,7 +115,7 @@ class TeleTabsActivity : BaseFragment() {
+         touchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
+             override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
+                 val position = viewHolder.adapterPosition
+-                if (position < 1 || position > slots.size) {
++                if (position !in 1..slots.size) {
+                     return 0
+                 }
+                 return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
+@@ -124,7 +124,7 @@ class TeleTabsActivity : BaseFragment() {
+             override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
+                 val from = viewHolder.adapterPosition - 1
+                 val to = target.adapterPosition - 1
+-                if (from < 0 || to < 0 || from >= slots.size || to >= slots.size) {
++                if (from !in slots.indices || to !in slots.indices) {
+                     return false
+                 }
+                 val slot = slots.removeAt(from)
+@@ -393,7 +393,13 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun addMiniApp(botId: Long) {
+-        if (botId == 0L || TeleMiniAppFragment.findAttachBot(account, botId) == null) {
++        val bot = TeleMiniAppFragment.findAttachBot(account, botId)
++        if (botId == 0L || bot == null || !bot.show_in_attach_menu && !bot.show_in_side_menu) {
++            bulletin(localized(R.string.TeleMiniAppUnsupported))
++            return
++        }
++        val user = MessagesController.getInstance(account).getUser(botId)
++        if (user != null && !user.bot) {
+             bulletin(localized(R.string.TeleMiniAppUnsupported))
+             return
+         }
+@@ -420,17 +426,15 @@ class TeleTabsActivity : BaseFragment() {
+                 loadingMiniApps = false
+                 progress.dismiss()
+                 if (parentActivity == null) return@loadAttachMenuBots
+-                val bots = TeleMiniAppFragment.sideMenuBots(account)
+-                if (bots.isEmpty()) {
+-                    bulletin(localized(R.string.TeleMiniAppEmpty))
+-                    return@loadAttachMenuBots
+-                }
+-                val names = bots.map { bot ->
++                val bots = TeleMiniAppFragment.attachBots(account)
++                val names = (bots.map { bot ->
+                     bot.short_name?.takeIf { it.isNotEmpty() } ?: DialogObject.getName(account, bot.bot_id)
+-                }.toTypedArray()
++                } + localized(R.string.TeleMiniAppChooseBot)).toTypedArray()
+                 val builder = AlertDialog.Builder(activity, resourceProvider)
+                 builder.setTitle(localized(R.string.TeleMiniAppPickerTitle))
+-                builder.setItems(names) { _, which -> addMiniApp(bots[which].bot_id) }
++                builder.setItems(names) { _, which ->
++                    if (which == bots.size) pickMiniAppBot() else addMiniApp(bots[which].bot_id)
++                }
+                 builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                 showDialog(builder.create())
+             }
+@@ -442,6 +446,20 @@ class TeleTabsActivity : BaseFragment() {
+         }
+     }
+ 
++    private fun pickMiniAppBot() {
++        val args = Bundle()
++        args.putBoolean("onlySelect", true)
++        val picker = DialogsActivity(args)
++        picker.setDelegate { fragment, dids, _, _, _, _, _, topicsFragment ->
++            val dialogId = dids.firstOrNull()?.dialogId ?: return@setDelegate false
++            fragment.finishFragment()
++            topicsFragment?.removeSelfFromStack()
++            AndroidUtilities.runOnUIThread({ addMiniApp(dialogId) }, 250)
++            true
++        }
++        presentFragment(picker)
++    }
++
+     /** The stock choose-a-chat screen, as the draft picker opens it. */
+     private fun pickChat() {
+         if (slots.size >= MainTabsConfig.MAX_SLOTS) {
+diff --git a/TMessagesProj/src/main/res/values-ru/strings_tele.xml b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+index b64dd9fc9..999d345a5 100644
+--- a/TMessagesProj/src/main/res/values-ru/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+@@ -379,7 +379,7 @@
+     <string name="TeleTabCamera">Кружок</string>
+     <string name="TeleMiniAppAdd">Мини-приложение…</string>
+     <string name="TeleMiniAppPickerTitle">Выберите мини-приложение</string>
+-    <string name="TeleMiniAppEmpty">Нет доступных мини-приложений</string>
++    <string name="TeleMiniAppChooseBot">Выбрать бота…</string>
+     <string name="TeleMiniAppAlreadyAdded">Это мини-приложение уже на панели</string>
+     <string name="TeleMiniAppUnsupported">У этого бота нет мини-приложения</string>
+     <string name="TeleMiniAppOpenFailed">Не удалось открыть мини-приложение</string>
+diff --git a/TMessagesProj/src/main/res/values-uk/strings_tele.xml b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+index 36c106986..152edb2de 100644
+--- a/TMessagesProj/src/main/res/values-uk/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+@@ -379,7 +379,7 @@
+     <string name="TeleTabCamera">Кружечок</string>
+     <string name="TeleMiniAppAdd">Міні-застосунок…</string>
+     <string name="TeleMiniAppPickerTitle">Виберіть міні-застосунок</string>
+-    <string name="TeleMiniAppEmpty">Немає доступних міні-застосунків</string>
++    <string name="TeleMiniAppChooseBot">Вибрати бота…</string>
+     <string name="TeleMiniAppAlreadyAdded">Цей міні-застосунок уже на панелі</string>
+     <string name="TeleMiniAppUnsupported">У цього бота немає міні-застосунку</string>
+     <string name="TeleMiniAppOpenFailed">Не вдалося відкрити міні-застосунок</string>
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 01afe690f..e418e80af 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -395,7 +395,7 @@
+     <string name="TeleTabCamera">Round video</string>
+     <string name="TeleMiniAppAdd">Mini app…</string>
+     <string name="TeleMiniAppPickerTitle">Choose a mini app</string>
+-    <string name="TeleMiniAppEmpty">No mini apps available</string>
++    <string name="TeleMiniAppChooseBot">Choose a bot…</string>
+     <string name="TeleMiniAppAlreadyAdded">This mini app is already on the bar</string>
+     <string name="TeleMiniAppUnsupported">This bot has no mini app</string>
+     <string name="TeleMiniAppOpenFailed">Couldn\'t open this mini app</string>

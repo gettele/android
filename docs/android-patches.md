@@ -524,4 +524,6 @@ The Edit tabs screen opens from a row under the settings toggle and from the lon
 | [`0368-feat-add-mini-app-tabs.patch`](../patches/android/0368-feat-add-mini-app-tabs.patch) |
 | [`0369-fix-layout-bottom-tab-pages.patch`](../patches/android/0369-fix-layout-bottom-tab-pages.patch) |
 | [`0370-fix-editor-tab-types.patch`](../patches/android/0370-fix-editor-tab-types.patch) |
+| [`0372-fix-tab-page-transitions-and-insets.patch`](../patches/android/0372-fix-tab-page-transitions-and-insets.patch) |
+| [`0373-fix-tab-editor-details.patch`](../patches/android/0373-fix-tab-editor-details.patch) |
 

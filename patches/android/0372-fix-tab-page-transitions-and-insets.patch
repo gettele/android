@@ -1,0 +1,454 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Fri, 20 Nov 2026 14:28:12 +0300
+Subject: [PATCH] fix: tab page transitions and insets
+
+---
+ .../org/telegram/ui/DataUsageActivity.java    |  9 +++-
+ .../org/telegram/ui/MainTabsActivity.java     | 42 +++++++++++++---
+ .../ui/NotificationsSettingsActivity.java     | 49 ++++++++++++++++++-
+ .../main/java/tele/helpers/MainTabsConfig.kt  | 16 +++++-
+ .../main/java/tele/ui/TeleMiniAppFragment.kt  |  7 ++-
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 40 ++++++++++++++-
+ .../java/tele/ui/settings/TeleTabsActivity.kt |  4 +-
+ 7 files changed, 151 insertions(+), 16 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DataUsageActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DataUsageActivity.java
+index 611c90377..a3a654db5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DataUsageActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DataUsageActivity.java
+@@ -17,6 +17,7 @@ import android.content.DialogInterface;
+ import android.graphics.Canvas;
+ import android.graphics.Paint;
+ import android.graphics.drawable.Drawable;
++import android.os.Bundle;
+ import android.view.Gravity;
+ import android.view.MotionEvent;
+ import android.view.VelocityTracker;
+@@ -82,11 +83,17 @@ public class DataUsageActivity extends BaseFragment {
+     };
+ 
+     private boolean swipeBackEnabled = true;
++    private boolean hasMainTabs;
+ 
+     public DataUsageActivity() {
+         super();
+     }
+ 
++    public DataUsageActivity(Bundle args) {
++        super(args);
++        hasMainTabs = args != null && args.getBoolean("hasMainTabs", false);
++    }
++
+     @Override
+     public View createView(Context context) {
+         actionBar.setBackButtonImage(R.drawable.ic_ab_back);
+@@ -201,7 +208,7 @@ public class DataUsageActivity extends BaseFragment {
+                         continue;
+                     }
+                     if (viewPages[a].listView != null) {
+-                        viewPages[a].listView.setPadding(0, actionBarHeight, 0, AndroidUtilities.dp(4));
++                        viewPages[a].listView.setPadding(0, actionBarHeight, 0, AndroidUtilities.dp(4) + (hasMainTabs ? AndroidUtilities.dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS) : 0));
+                     }
+                 }
+                 globalIgnoreLayout = false;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index 6b59dbb9b..edc32b4b5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -149,6 +149,13 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         Bulletin.addDelegate(contentView, delegate);
+     }
+ 
++    private boolean teleCapturePageAt(int position) {
++        if (!tele.TeleConfig.CUSTOM_MAIN_TABS.getValue()) {
++            return true;
++        }
++        return viewPager != null && viewPager.getPositionVisibility(position) > 0f;
++    }
++
+     /** The pages under the tabs: an intermediate node over one or two of them, their glass or their frosted glass. */
+     @RequiresApi(api = Build.VERSION_CODES.S)
+     private GlassSourceRenderNode createTabSource(boolean frosted) {
+@@ -162,6 +169,9 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+                 for (int a = 0, N = fragmentsArr.size(); a < N; a++) {
+                     final FragmentState state = fragmentsArr.valueAt(a);
+                     final BaseFragment fragment = state.fragment;
++                    if (!teleCapturePageAt(fragmentsArr.keyAt(a))) {
++                        continue;
++                    }
+                     if (fragment.fragmentView == null) {
+                         continue;
+                     }
+@@ -194,6 +204,9 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+                 for (int a = 0, N = fragmentsArr.size(); a < N; a++) {
+                     final FragmentState state = fragmentsArr.valueAt(a);
+                     final BaseFragment fragment = state.fragment;
++                    if (!teleCapturePageAt(fragmentsArr.keyAt(a))) {
++                        continue;
++                    }
+                     if (fragment.fragmentView == null) {
+                         continue;
+                     }
+@@ -1346,10 +1359,21 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         final int bottom = contentView.getHeight() - navigationBarHeight - updateLayoutHeight - dp(DialogsActivity.MAIN_TABS_MARGIN);
+         final int top = bottom - dp(DialogsActivity.MAIN_TABS_HEIGHT);
+ 
++        final boolean custom = tele.TeleConfig.CUSTOM_MAIN_TABS.getValue();
+         for (int a = 0, N = fragmentsArr.size(); a < N; a++) {
+             final BaseFragment fragment = fragmentsArr.valueAt(a).fragment;
+             final View view = fragment.fragmentView;
+-            if (view == null || view.getWidth() <= 0 || !(fragment instanceof TabFragmentDelegate)) {
++            if (view == null) {
++                continue;
++            }
++            if (!teleCapturePageAt(fragmentsArr.keyAt(a))) {
++                fragment.setParentGlass(null, null);
++                continue;
++            }
++            if (view.getWidth() <= 0 || !(fragment instanceof TabFragmentDelegate)) {
++                if (custom) {
++                    fragment.setParentGlass(null, null);
++                }
+                 continue;
+             }
+             if (top >= view.getHeight()) {
+@@ -2080,23 +2104,27 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+             search.setInitialSearchString("");
+             return search;
+         } else if (tele.helpers.MainTabsConfig.KIND_TELE_SETTINGS.equals(kind)) {
+-            return new tele.ui.settings.TeleSettingsActivity(tele.ui.settings.TeleSettingsActivity.MODE_ROOT);
++            return new tele.ui.settings.TeleSettingsActivity(tele.ui.settings.TeleSettingsActivity.MODE_ROOT, null, null, true);
+         } else if (tele.helpers.MainTabsConfig.isTeleSettingsKind(kind)) {
+-            return new tele.ui.settings.TeleSettingsActivity(tele.helpers.MainTabsConfig.teleSettingsMode(kind));
++            return new tele.ui.settings.TeleSettingsActivity(tele.helpers.MainTabsConfig.teleSettingsMode(kind), null, null, true);
+         } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS_THEME.equals(kind)) {
+             return new ThemeActivity(ThemeActivity.THEME_TYPE_BASIC);
+         } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS_NOTIFICATIONS.equals(kind)) {
+-            return new NotificationsSettingsActivity();
++            args.putBoolean("hasMainTabs", true);
++            return new NotificationsSettingsActivity(args);
+         } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS_DATA_USAGE.equals(kind)) {
+-            return new DataUsageActivity();
++            args.putBoolean("hasMainTabs", true);
++            return new DataUsageActivity(args);
+         } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS_PRIVACY.equals(kind)) {
+             return new PrivacySettingsActivity();
+         } else if (tele.helpers.MainTabsConfig.KIND_SETTINGS_FOLDERS.equals(kind)) {
+             return new FiltersSetupActivity();
+         } else if (tele.helpers.MainTabsConfig.KIND_NOTIFICATIONS.equals(kind)) {
+-            return new NotificationsSettingsActivity();
++            args.putBoolean("hasMainTabs", true);
++            return new NotificationsSettingsActivity(args);
+         } else if (tele.helpers.MainTabsConfig.KIND_DATA_USAGE.equals(kind)) {
+-            return new DataUsageActivity();
++            args.putBoolean("hasMainTabs", true);
++            return new DataUsageActivity(args);
+         } else if (tele.helpers.MainTabsConfig.KIND_PROFILE.equals(kind)) {
+             args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
+             args.putBoolean("my_profile", true);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
+index f1aee7810..b3e5e888a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/NotificationsSettingsActivity.java
+@@ -20,9 +20,11 @@ import android.media.Ringtone;
+ import android.media.RingtoneManager;
+ import android.net.Uri;
+ import android.os.Build;
++import android.os.Bundle;
+ import android.provider.Settings;
+ import android.text.TextUtils;
+ import android.util.LongSparseArray;
++import android.view.MotionEvent;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.widget.FrameLayout;
+@@ -30,6 +32,7 @@ import android.widget.TextView;
+ import android.widget.Toast;
+ 
+ import androidx.annotation.Keep;
++import androidx.core.view.ViewCompat;
+ import androidx.recyclerview.widget.LinearLayoutManager;
+ import androidx.recyclerview.widget.RecyclerView;
+ 
+@@ -69,6 +72,7 @@ import org.telegram.ui.Components.AlertsCreator;
+ import org.telegram.ui.Components.LayoutHelper;
+ import org.telegram.ui.Components.RecyclerListView;
+ import org.telegram.utils.glass.BaseFragmentSimpleGlass;
++import org.telegram.utils.glass.source.GlassSourceRenderNode;
+ 
+ import java.util.ArrayList;
+ import java.util.Collections;
+@@ -76,7 +80,7 @@ import java.util.Comparator;
+ import java.util.HashSet;
+ import java.util.Map;
+ 
+-public class NotificationsSettingsActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
++public class NotificationsSettingsActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate, MainTabsActivity.TabFragmentDelegate {
+ 
+     public static class NotificationException {
+         public int muteUntil;
+@@ -90,6 +94,8 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+     private RecyclerListView listView;
+     private boolean reseting = false;
+     private ListAdapter adapter;
++    private boolean hasMainTabs;
++    private int additionNavigationBarHeight;
+     @SuppressWarnings("FieldCanBeLocal")
+     private LinearLayoutManager layoutManager;
+     private ArrayList<NotificationException> exceptionUsers = null;
+@@ -163,8 +169,18 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+     private boolean updateRingtone;
+     private boolean updateRepeatNotifications;
+ 
++    public NotificationsSettingsActivity() {
++        super();
++    }
++
++    public NotificationsSettingsActivity(Bundle args) {
++        super(args);
++    }
++
+     @Override
+     public boolean onFragmentCreate() {
++        hasMainTabs = arguments != null && arguments.getBoolean("hasMainTabs", false);
++        additionNavigationBarHeight = hasMainTabs ? dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS) : 0;
+         MessagesController.getInstance(currentAccount).loadSignUpNotificationsSettings();
+         loadExceptions(null);
+ 
+@@ -495,6 +511,9 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+ 
+         fragmentView = new FrameLayout(context);
+         FrameLayout frameLayout = (FrameLayout) fragmentView;
++        if (hasMainTabs) {
++            ViewCompat.setOnApplyWindowInsetsListener(frameLayout, this::onInsetsInternal);
++        }
+ 
+         listView = new RecyclerListView(context);
+         listView.setSections();
+@@ -508,6 +527,7 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+             }
+         });
+         listView.setVerticalScrollBarEnabled(false);
++        BaseFragmentSimpleGlass.setListViewParams(listView, 0, 0, 0, additionNavigationBarHeight);
+         frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+         listView.setAdapter(adapter = new ListAdapter(context));
+         listView.setOnItemClickListener((view, position, x, y) -> {
+@@ -826,6 +846,26 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+         return listView;
+     }
+ 
++    @Override
++    public GlassSourceRenderNode getGlassSource() {
++        return getBaseSimpleGlass().getGlassSource();
++    }
++
++    @Override
++    public GlassSourceRenderNode getFrostedGlassSource() {
++        return getBaseSimpleGlass().getFrostedGlassSource();
++    }
++
++    @Override
++    public void onParentScrollToTop() {
++        listView.smoothScrollToPosition(0);
++    }
++
++    @Override
++    public boolean canParentTabsSlide(MotionEvent ev, boolean forward) {
++        return true;
++    }
++
+     @Override
+     public void onActivityResultFragment(int requestCode, int resultCode, Intent data) {
+         if (resultCode == Activity.RESULT_OK) {
+@@ -1260,6 +1300,13 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
+         return true;
+     }
+ 
++    @Override
++    public void onInsets(int left, int top, int right, int bottom) {
++        if (listView != null) {
++            BaseFragmentSimpleGlass.setListViewParams(listView, top, bottom, ActionBar.getCurrentActionBarHeight(), additionNavigationBarHeight);
++        }
++    }
++
+ 
+     /** theme editor: colors this page shows (former ThemeDescription keys) */
+     @Override
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+index 3ae49104b..e784e006c 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+@@ -311,15 +311,27 @@ object MainTabsConfig {
+             if (out.size >= MAX_SLOTS || !seen.add(slot.key)) return
+             out.add(slot)
+         }
+-        add(input.firstOrNull { it.kind == KIND_CHATS } ?: Slot(KIND_CHATS))
++        var chatsAdded = false
+         for (slot in input) {
+-            if (slot.kind == KIND_CHATS) continue
++            if (slot.kind == KIND_CHATS) {
++                if (!chatsAdded) {
++                    add(slot)
++                    chatsAdded = true
++                }
++                continue
++            }
+             val valid = slot.kind in PAGE_KINDS || isTeleSettingsKind(slot.kind) || slot.kind == KIND_SAVED || slot.isActionShortcut ||
+                 (slot.kind.startsWith(KIND_CHAT_PREFIX) && slot.dialogId != 0L) ||
+                 (slot.isFolder && MessagesController.getInstance(account).dialogFiltersById.get(slot.filterId) != null) ||
+                 (slot.isMiniApp && slot.botId > 0L)
+             if (valid) add(slot)
+         }
++        if (!chatsAdded) {
++            if (out.size >= MAX_SLOTS) {
++                out.removeAt(out.lastIndex)
++            }
++            out.add(0, Slot(KIND_CHATS))
++        }
+         return out
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+index f3d5c305e..edd4147c7 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+@@ -43,6 +43,7 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+ 
+     private val account = args.getInt("account", UserConfig.selectedAccount)
+     private val botId = args.getLong("bot_id")
++    private val mainTabsInset = if (args.getBoolean("hasMainTabs", false)) AndroidUtilities.dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS.toFloat()) else 0
+ 
+     private var container: BotWebViewContainer? = null
+     private var buttons: BotButtons? = null
+@@ -133,7 +134,9 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+             if (main) container?.onMainButtonPressed() else container?.onSecondaryButtonPressed()
+         }
+         buttonView.setOnResizeListener { updateButtonsHeight() }
+-        frame.addView(buttonView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
++        val buttonParams = LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
++        buttonParams.bottomMargin = mainTabsInset
++        frame.addView(buttonView, buttonParams)
+         updateButtonsHeight()
+         label.bringToFront()
+ 
+@@ -250,7 +253,7 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+     private fun updateButtonsHeight() {
+         val web = container ?: return
+         val params = web.layoutParams as? FrameLayout.LayoutParams ?: return
+-        val height = buttons?.getTotalHeight() ?: 0
++        val height = (buttons?.getTotalHeight() ?: 0) + mainTabsInset
+         if (params.bottomMargin != height) {
+             params.bottomMargin = height
+             web.layoutParams = params
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 5959f8ea9..6d8a5240c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -4,11 +4,14 @@ import android.content.Context
+ import android.content.Intent
+ import android.net.Uri
+ import android.util.TypedValue
++import android.view.MotionEvent
+ import android.view.View
+ import android.widget.FrameLayout
+ import android.widget.TextView
+ import java.util.ArrayList
+ import androidx.recyclerview.widget.LinearLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import androidx.core.view.ViewCompat
+ import org.telegram.messenger.Utilities
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.BuildVars
+@@ -31,13 +34,22 @@ import org.telegram.ui.Components.UniversalAdapter
+ import org.telegram.ui.Components.UniversalRecyclerView
+ import org.telegram.ui.Components.RecyclerListView
+ import org.telegram.ui.Components.SeekBarView
++import org.telegram.ui.DialogsActivity
++import org.telegram.ui.MainTabsActivity
++import org.telegram.utils.glass.BaseFragmentSimpleGlass
++import org.telegram.utils.glass.source.GlassSourceRenderNode
+ import tele.Item
+ import tele.TeleHooks
+ import tele.TeleConfig
+ import tele.helpers.TeleLowercase
+ import tele.helpers.TeleSettingsLinks
+ 
+-class TeleSettingsActivity @JvmOverloads constructor(private val mode: String = MODE_ROOT, private val jumpTo: String? = null, private val jumpId: String? = null) : BaseFragment() {
++class TeleSettingsActivity @JvmOverloads constructor(
++    private val mode: String = MODE_ROOT,
++    private val jumpTo: String? = null,
++    private val jumpId: String? = null,
++    private val hasMainTabs: Boolean = false
++) : BaseFragment(), MainTabsActivity.TabFragmentDelegate {
+ 
+     private data class Row(
+         val type: Int,
+@@ -595,12 +607,18 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         val frameLayout = FrameLayout(context)
+         frameLayout.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+         fragmentView = frameLayout
++        if (hasMainTabs) {
++            ViewCompat.setOnApplyWindowInsetsListener(frameLayout) { view, insets -> onInsetsInternal(view, insets) }
++        }
+         listView = UniversalRecyclerView(this, this::fillItems, this::onItemClick, this::onItemLongClick)
+         listView!!.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundGray))
+         listView!!.setSections()
+         listView!!.adapter.setApplyBackground(false)
+         listView!!.setPadding(0, AndroidUtilities.dp(12f), 0, AndroidUtilities.dp(12f))
+         listView!!.setClipToPadding(false)
++        if (hasMainTabs) {
++            BaseFragmentSimpleGlass.setListViewParams(listView!!, 0, 0, AndroidUtilities.dp(12f), AndroidUtilities.dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS.toFloat()))
++        }
+         frameLayout.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+         // a link scrolls to its row and highlights it, like the search does
+         if ((jumpId != null || jumpTo != null) && teleSearchRow >= 0) {
+@@ -612,6 +630,26 @@ class TeleSettingsActivity @JvmOverloads constructor(private val mode: String =
+         }
+         return fragmentView
+     }
++
++    override fun onInsets(left: Int, top: Int, right: Int, bottom: Int) {
++        if (!hasMainTabs) return
++        listView?.let {
++            BaseFragmentSimpleGlass.setListViewParams(
++                it, top, bottom, ActionBar.getCurrentActionBarHeight(), AndroidUtilities.dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS.toFloat())
++            )
++        }
++    }
++
++    override fun getGlassSource(): GlassSourceRenderNode? = getBaseSimpleGlass().glassSource
++
++    override fun getFrostedGlassSource(): GlassSourceRenderNode? = getBaseSimpleGlass().frostedGlassSource
++
++    override fun onParentScrollToTop() {
++        listView?.smoothScrollToPosition(0)
++    }
++
++    override fun canParentTabsSlide(ev: MotionEvent?, forward: Boolean): Boolean = true
++
+     private fun fillItems(items: ArrayList<UItem>, adapter: UniversalAdapter) {
+         val query = searchQuery.orEmpty()
+         if (query.isNotEmpty()) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index bf2657ffe..ed382045b 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -115,7 +115,7 @@ class TeleTabsActivity : BaseFragment() {
+         touchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
+             override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
+                 val position = viewHolder.adapterPosition
+-                if (position < 1 || position > slots.size || position == 1) {
++                if (position < 1 || position > slots.size) {
+                     return 0
+                 }
+                 return makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
+@@ -124,7 +124,7 @@ class TeleTabsActivity : BaseFragment() {
+             override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
+                 val from = viewHolder.adapterPosition - 1
+                 val to = target.adapterPosition - 1
+-                if (from < 1 || to < 1 || from >= slots.size || to >= slots.size) {
++                if (from < 0 || to < 0 || from >= slots.size || to >= slots.size) {
+                     return false
+                 }
+                 val slot = slots.removeAt(from)
