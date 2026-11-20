@@ -1,0 +1,387 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 21 Nov 2026 01:06:36 +0300
+Subject: [PATCH] feat: replace tabs and open menu-button apps
+
+---
+ .../main/java/tele/ui/TeleMiniAppFragment.kt  | 54 ++++++++++-
+ .../java/tele/ui/settings/TeleTabsActivity.kt | 97 +++++++++++++------
+ 2 files changed, 119 insertions(+), 32 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+index d41311e9d..9cf7a2ed4 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+@@ -564,7 +564,7 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+                 }
+                 val botApp = (response as? TLRPC.TL_messages_botApp)?.app
+                 if (error != null || botApp == null) {
+-                    showPlaceholder(if (error?.text == "BOT_APP_SHORTNAME_INVALID") R.string.TeleMiniAppUnsupported else R.string.TeleMiniAppOpenFailed)
++                    openMenuButtonApp(themeParams)
+                     return@runOnUIThread
+                 }
+                 openApp(botApp, themeParams)
+@@ -606,6 +606,58 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+         }, ConnectionsManager.RequestFlagInvokeAfter or ConnectionsManager.RequestFlagFailOnServerErrors)
+     }
+ 
++    private fun openMenuButtonApp(themeParams: TLRPC.TL_dataJSON?) {
++        val user = MessagesController.getInstance(account).getUser(botId)
++        if (user == null) {
++            showPlaceholder(R.string.TeleMiniAppOpenFailed)
++            return
++        }
++        // getBotMenuButton is bot-only; users read the menu button from the full user info
++        MessagesController.getInstance(account).loadFullUser(user, classGuid, false) { full ->
++            if (container == null || fragmentView == null) {
++                return@loadFullUser
++            }
++            val button = full?.bot_info?.menu_button as? org.telegram.tgnet.tl.TL_bots.TL_botMenuButton
++            if (button == null || button.url.isNullOrEmpty()) {
++                showPlaceholder(R.string.TeleMiniAppUnsupported)
++                return@loadFullUser
++            }
++            openButtonUrl(button.url, themeParams)
++        }
++    }
++
++    private fun openButtonUrl(url: String, themeParams: TLRPC.TL_dataJSON?) {
++        val request = TLRPC.TL_messages_requestWebView()
++        request.bot = MessagesController.getInstance(account).getInputUser(botId)
++        request.peer = MessagesController.getInstance(account).getInputPeer(botId)
++        request.platform = "android"
++        request.url = url
++        request.flags = request.flags or 2
++        request.compact = false
++        request.fullscreen = false
++        if (themeParams != null) {
++            request.theme_params = themeParams
++            request.flags = request.flags or 4
++        }
++        ConnectionsManager.getInstance(account).sendRequest(request, { response, error ->
++            AndroidUtilities.runOnUIThread {
++                val result = response as? TLRPC.TL_webViewResultUrl
++                if (container == null || fragmentView == null || error != null || result == null || result.url.isNullOrEmpty()) {
++                    showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                    return@runOnUIThread
++                }
++                queryId = result.query_id
++                placeholder?.visibility = View.GONE
++                container?.loadUrl(account, result.url, result.same_origin)
++                MediaDataController.getInstance(account).increaseWebappRating(botId)
++                if (queryId != 0L) {
++                    AndroidUtilities.cancelRunOnUIThread(pollRunnable)
++                    AndroidUtilities.runOnUIThread(pollRunnable, POLL_PERIOD)
++                }
++            }
++        }, ConnectionsManager.RequestFlagInvokeAfter or ConnectionsManager.RequestFlagFailOnServerErrors)
++    }
++
+     private fun showPlaceholder(resId: Int) {
+         placeholder?.text = TeleLowercase.lc(LocaleController.getString(resId))
+         placeholder?.visibility = View.VISIBLE
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index 848b73c1c..40e174706 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -67,6 +67,8 @@ class TeleTabsActivity : BaseFragment() {
+     private val account = UserConfig.selectedAccount
+     private var slots = mutableListOf<MainTabsConfig.Slot>()
+     private var loadingMiniApps = false
++    private var replaceIndex = -1
++    private var replaceHandoff = false
+ 
+     override fun getListViewForSimpleGlass(): RecyclerListView? = listView
+ 
+@@ -78,6 +80,8 @@ class TeleTabsActivity : BaseFragment() {
+             finishFragment()
+             return
+         }
++        replaceIndex = -1
++        replaceHandoff = false
+         reload()
+         adapter?.notifyDataSetChanged()
+     }
+@@ -166,6 +170,10 @@ class TeleTabsActivity : BaseFragment() {
+             options.add(R.drawable.msg_edit, lc("Change icon")) { showIconSheet(slot) }
+         }
+         if (slot.kind != MainTabsConfig.KIND_CHATS) {
++            options.add(R.drawable.msg_edit, lc("Replace")) {
++                replaceIndex = slots.indexOfFirst { it.key == slot.key }
++                if (replaceIndex >= 0) showAddMenu(anchor) else replaceIndex = -1
++            }
+             options.add(R.drawable.msg_delete, lc("Remove"), true) {
+                 slots.removeAt(index)
+                 save()
+@@ -182,79 +190,80 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun showAddMenu(anchor: View) {
+-        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++        if (replaceIndex < 0 && slots.size >= MainTabsConfig.MAX_SLOTS) {
+             bulletin(lc("The bar holds six tabs."))
+             return
+         }
+         val options = ItemOptions.makeOptions(this, anchor)
+-        if (slots.none { it.kind == MainTabsConfig.KIND_SAVED }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_SAVED }) {
+             options.add(R.drawable.msg_saved, lc("Saved messages")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_SAVED)) }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_NEW_MESSAGE }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_NEW_MESSAGE }) {
+             options.add(R.drawable.filled_fab_compose_32, LocaleController.getString(R.string.TeleTabNewMessage)) {
+                 addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_NEW_MESSAGE))
+             }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_CAMERA }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_CAMERA }) {
+             options.add(R.drawable.msg_camera, LocaleController.getString(R.string.TeleTabCamera)) {
+                 addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CAMERA))
+             }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_CONTACTS || it.kind == MainTabsConfig.KIND_CONTACTS_SAVED }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_CONTACTS || it.kind == MainTabsConfig.KIND_CONTACTS_SAVED }) {
+             options.add(R.drawable.msg_contacts, LocaleController.getString(R.string.MainTabsContacts)) {
+                 addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CONTACTS))
+             }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_CALLS }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_CALLS }) {
+             options.add(R.drawable.msg_calls, lc("Calls")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CALLS)) }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_SETTINGS }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_SETTINGS }) {
+             options.add(R.drawable.msg_settings, lc("Settings")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_SETTINGS)) }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_PROFILE }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_PROFILE }) {
+             options.add(R.drawable.msg_openprofile, lc("Profile")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_PROFILE)) }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_TELE_SETTINGS }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_TELE_SETTINGS }) {
+             options.add(R.drawable.tele_settings_icon, localized(R.string.TeleTabTeleSettings)) {
+                 addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_TELE_SETTINGS))
+             }
+         }
+-        options.add(R.drawable.msg_settings, localized(R.string.TeleTabTeleSection)) { showTeleSectionPicker(anchor) }
+-        options.add(R.drawable.msg_settings, localized(R.string.TeleTabSettingsSection)) { showStockSettingsPicker(anchor) }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_SEARCH }) {
++        options.add(R.drawable.msg_settings, localized(R.string.TeleTabTeleSection)) { replaceHandoff = true; showTeleSectionPicker(anchor) }
++        options.add(R.drawable.msg_settings, localized(R.string.TeleTabSettingsSection)) { replaceHandoff = true; showStockSettingsPicker(anchor) }
++        if (!offered { it.kind == MainTabsConfig.KIND_SEARCH }) {
+             options.add(R.drawable.outline_header_search, localized(MainTabsConfig.titleResOf(MainTabsConfig.KIND_SEARCH))) {
+                 addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_SEARCH))
+             }
+         }
+         options.addGapIf(options.getItemsCount() > 0)
+-        options.add(R.drawable.msg_folders, LocaleController.getString(R.string.TeleTabFolder)) { pickFolder(anchor) }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_ARCHIVE }) {
++        options.add(R.drawable.msg_folders, LocaleController.getString(R.string.TeleTabFolder)) { replaceHandoff = true; pickFolder(anchor) }
++        if (!offered { it.kind == MainTabsConfig.KIND_ARCHIVE }) {
+             options.add(R.drawable.msg_archive, LocaleController.getString(R.string.TeleTabArchive)) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_ARCHIVE)) }
+         }
+-        options.add(R.drawable.msg_add, lc("Chat…")) { pickChat() }
+-        options.add(R.drawable.msg_add, localized(R.string.TeleMiniAppAdd)) { pickMiniApp() }
++        options.add(R.drawable.msg_add, lc("Chat…")) { replaceHandoff = true; pickChat() }
++        options.add(R.drawable.msg_add, localized(R.string.TeleMiniAppAdd)) { replaceHandoff = true; pickMiniApp() }
+         options.setBlur(true)
+         options.translate(0f, -AndroidUtilities.dp(4f).toFloat())
+         val bg = Theme.createRoundRectDrawable(AndroidUtilities.dp(28f), Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
+         bg.paint.setShadowLayer(AndroidUtilities.dp(6f).toFloat(), 0f, AndroidUtilities.dp(1f).toFloat(), Theme.multAlpha(0xFF000000.toInt(), 0.15f))
+         options.setScrimViewBackground(bg)
++        options.setOnDismiss { if (replaceHandoff) replaceHandoff = false else replaceIndex = -1 }
+         options.show()
+     }
+ 
+     private fun showTeleSectionPicker(anchor: View) {
+-        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++        if (replaceIndex < 0 && slots.size >= MainTabsConfig.MAX_SLOTS) {
+             bulletin(lc("The bar holds six tabs."))
+             return
+         }
+         val options = ItemOptions.makeOptions(this, anchor)
+-        if (slots.none { it.kind == MainTabsConfig.KIND_TELE_SETTINGS }) {
++        if (!offered { it.kind == MainTabsConfig.KIND_TELE_SETTINGS }) {
+             options.add(R.drawable.tele_settings_icon, localized(R.string.TeleTabTeleSettings)) {
+                 addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_TELE_SETTINGS))
+             }
+         }
+         for (slug in MainTabsConfig.TELE_SECTION_SLUGS) {
+             val kind = MainTabsConfig.teleSectionKind(slug)
+-            if (slots.any { it.kind == kind }) continue
++            if (offered { it.kind == kind }) continue
+             options.add(R.drawable.msg_settings, localized(MainTabsConfig.titleResOf(kind))) {
+                 addSlot(MainTabsConfig.Slot(kind))
+             }
+@@ -264,18 +273,19 @@ class TeleTabsActivity : BaseFragment() {
+         val bg = Theme.createRoundRectDrawable(AndroidUtilities.dp(28f), Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
+         bg.paint.setShadowLayer(AndroidUtilities.dp(6f).toFloat(), 0f, AndroidUtilities.dp(1f).toFloat(), Theme.multAlpha(0xFF000000.toInt(), 0.15f))
+         options.setScrimViewBackground(bg)
++        options.setOnDismiss { replaceIndex = -1 }
+         options.show()
+     }
+ 
+     private fun showStockSettingsPicker(anchor: View) {
+-        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++        if (replaceIndex < 0 && slots.size >= MainTabsConfig.MAX_SLOTS) {
+             bulletin(lc("The bar holds six tabs."))
+             return
+         }
+         val options = ItemOptions.makeOptions(this, anchor)
+         for (stockKind in MainTabsConfig.STOCK_SETTINGS_KINDS) {
+             val kind = if (stockKind == MainTabsConfig.KIND_SETTINGS_FOLDERS) MainTabsConfig.KIND_FOLDERS else stockKind
+-            if (slots.any { it.kind == kind }) continue
++            if (offered { it.kind == kind }) continue
+             options.add(stockSettingsIcon(kind), localized(MainTabsConfig.titleResOf(stockKind))) {
+                 addSlot(MainTabsConfig.Slot(kind))
+             }
+@@ -285,6 +295,7 @@ class TeleTabsActivity : BaseFragment() {
+         val bg = Theme.createRoundRectDrawable(AndroidUtilities.dp(28f), Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
+         bg.paint.setShadowLayer(AndroidUtilities.dp(6f).toFloat(), 0f, AndroidUtilities.dp(1f).toFloat(), Theme.multAlpha(0xFF000000.toInt(), 0.15f))
+         options.setScrimViewBackground(bg)
++        options.setOnDismiss { replaceIndex = -1 }
+         options.show()
+     }
+ 
+@@ -296,6 +307,21 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun addSlot(slot: MainTabsConfig.Slot) {
++        val target = replaceIndex
++        replaceIndex = -1
++        if (target in slots.indices) {
++            if (slots[target].key == slot.key) {
++                return
++            }
++            if (slots.withIndex().any { (i, s) -> i != target && s.key == slot.key }) {
++                bulletin(lc("This tab is already on the bar."))
++                return
++            }
++            slots[target] = slot
++            save()
++            adapter?.notifyDataSetChanged()
++            return
++        }
+         if (slots.size >= MainTabsConfig.MAX_SLOTS) {
+             bulletin(lc("The bar holds six tabs."))
+             return
+@@ -309,12 +335,16 @@ class TeleTabsActivity : BaseFragment() {
+         listView?.layoutManager?.scrollToPosition(slots.size + 1)
+     }
+ 
++    /** In replace mode the slot being replaced does not block its own kind. */
++    private fun offered(predicate: (MainTabsConfig.Slot) -> Boolean): Boolean =
++        slots.withIndex().any { (i, s) -> i != replaceIndex && predicate(s) }
++
+     private fun addChat(dialogId: Long) {
+         if (dialogId == 0L) {
+             return
+         }
+         val slot = MainTabsConfig.Slot(MainTabsConfig.chatKey(dialogId))
+-        if (slots.any { it.key == slot.key }) {
++        if (offered { it.key == slot.key }) {
+             bulletin(lc("This chat is already on the bar."))
+             return
+         }
+@@ -323,7 +353,7 @@ class TeleTabsActivity : BaseFragment() {
+ 
+     private fun addFolder(filterId: Int) {
+         val slot = MainTabsConfig.Slot(MainTabsConfig.folderKey(filterId))
+-        if (slots.any { it.key == slot.key }) {
++        if (offered { it.key == slot.key }) {
+             bulletin(LocaleController.getString(R.string.TeleTabFolderAlreadyAdded))
+             return
+         }
+@@ -331,7 +361,7 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun pickFolder(anchor: View) {
+-        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++        if (replaceIndex < 0 && slots.size >= MainTabsConfig.MAX_SLOTS) {
+             bulletin(lc("The bar holds six tabs."))
+             return
+         }
+@@ -358,8 +388,8 @@ class TeleTabsActivity : BaseFragment() {
+             item.textView.setEmojiColor(Theme.getColor(Theme.key_featuredStickers_addButton, resourceProvider))
+             item.minimumWidth = AndroidUtilities.dp(160f)
+             item.setOnClickListener {
+-                options.dismiss()
+                 addFolder(filter.id)
++                options.dismiss()
+             }
+             options.addView(item, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT))
+         }
+@@ -368,6 +398,7 @@ class TeleTabsActivity : BaseFragment() {
+         val bg = Theme.createRoundRectDrawable(AndroidUtilities.dp(28f), Theme.getColor(Theme.key_windowBackgroundWhite, resourceProvider))
+         bg.paint.setShadowLayer(AndroidUtilities.dp(6f).toFloat(), 0f, AndroidUtilities.dp(1f).toFloat(), Theme.multAlpha(0xFF000000.toInt(), 0.15f))
+         options.setScrimViewBackground(bg)
++        options.setOnDismiss { replaceIndex = -1 }
+         options.show()
+     }
+ 
+@@ -387,7 +418,7 @@ class TeleTabsActivity : BaseFragment() {
+             return
+         }
+         val slot = MainTabsConfig.Slot(MainTabsConfig.miniAppKey(botId), botHash = user.access_hash)
+-        if (slots.any { it.key == slot.key }) {
++        if (offered { it.key == slot.key }) {
+             bulletin(localized(R.string.TeleMiniAppAlreadyAdded))
+             return
+         }
+@@ -395,7 +426,7 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun pickMiniApp() {
+-        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++        if (replaceIndex < 0 && slots.size >= MainTabsConfig.MAX_SLOTS) {
+             bulletin(lc("The bar holds six tabs."))
+             return
+         }
+@@ -419,7 +450,9 @@ class TeleTabsActivity : BaseFragment() {
+                     if (which == bots.size) pickMiniAppBot() else addMiniApp(bots[which].bot_id)
+                 }
+                 builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+-                showDialog(builder.create())
++                val dialog = builder.create()
++                dialog.setOnDismissListener { replaceIndex = -1 }
++                showDialog(dialog)
+             }
+         } catch (e: Exception) {
+             loadingMiniApps = false
+@@ -440,11 +473,12 @@ class TeleTabsActivity : BaseFragment() {
+         args.putBoolean("allowChannels", false)
+         args.putBoolean("allowBots", true)
+         val picker = DialogsActivity(args)
++        val target = replaceIndex
+         picker.setDelegate { fragment, dids, _, _, _, _, _, topicsFragment ->
+             val dialogId = dids.firstOrNull()?.dialogId ?: return@setDelegate false
+             fragment.finishFragment()
+             topicsFragment?.removeSelfFromStack()
+-            AndroidUtilities.runOnUIThread({ addMiniApp(dialogId) }, 250)
++            AndroidUtilities.runOnUIThread({ replaceIndex = target; addMiniApp(dialogId) }, 250)
+             true
+         }
+         presentFragment(picker)
+@@ -452,19 +486,20 @@ class TeleTabsActivity : BaseFragment() {
+ 
+     /** The stock choose-a-chat screen, as the draft picker opens it. */
+     private fun pickChat() {
+-        if (slots.size >= MainTabsConfig.MAX_SLOTS) {
++        if (replaceIndex < 0 && slots.size >= MainTabsConfig.MAX_SLOTS) {
+             bulletin(lc("The bar holds six tabs."))
+             return
+         }
+         val args = Bundle()
+         args.putBoolean("onlySelect", true)
+         val picker = DialogsActivity(args)
++        val target = replaceIndex
+         picker.setDelegate { fragment, dids, _, _, _, _, _, topicsFragment ->
+             val dialogId = dids.firstOrNull()?.dialogId ?: return@setDelegate false
+             fragment.finishFragment()
+             topicsFragment?.removeSelfFromStack()
+             // the picker is still leaving the stack, the editor gets the result on top
+-            AndroidUtilities.runOnUIThread({ addChat(dialogId) }, 250)
++            AndroidUtilities.runOnUIThread({ replaceIndex = target; addChat(dialogId) }, 250)
+             true
+         }
+         presentFragment(picker)
