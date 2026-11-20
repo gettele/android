@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Fri, 20 Nov 2026 21:56:56 +0300
+Subject: [PATCH] fix: tab editor click and bot picking
+
+---
+ .../main/java/tele/ui/TeleMiniAppFragment.kt  | 45 ++++++-----
+ .../java/tele/ui/settings/TeleTabsActivity.kt | 74 ++++++++++---------
+ 2 files changed, 64 insertions(+), 55 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+index 5b8c99ff2..6406ab186 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+@@ -337,27 +337,34 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+ 
+     private fun startMiniApp() {
+         val bot = findAttachBot(account, botId)
+-        if (bot == null) {
+-            if (loadingBots) {
+-                return
+-            }
+-            showPlaceholder(R.string.TeleMiniAppOpenFailed)
+-            loadingBots = true
+-            MediaDataController.getInstance(account).loadAttachMenuBots(false, true) {
+-                loadingBots = false
+-                if (container == null || fragmentView == null || container?.getUrlLoaded() != null) {
+-                    return@loadAttachMenuBots
+-                }
+-                val loaded = findAttachBot(account, botId)
+-                if (loaded == null) {
+-                    showPlaceholder(R.string.TeleMiniAppUnsupported)
+-                } else {
+-                    openBot(loaded)
+-                }
+-            }
++        if (bot != null) {
++            openBot(bot)
+             return
+         }
+-        openBot(bot)
++        val user = MessagesController.getInstance(account).getUser(botId)
++        if (user != null && user.bot) {
++            openWebApp()
++            return
++        }
++        if (loadingBots) {
++            return
++        }
++        showPlaceholder(R.string.TeleMiniAppOpenFailed)
++        loadingBots = true
++        MessagesController.getInstance(account).reloadUser(botId)
++        MediaDataController.getInstance(account).loadAttachMenuBots(false, true) {
++            loadingBots = false
++            if (container == null || fragmentView == null || container?.getUrlLoaded() != null) {
++                return@loadAttachMenuBots
++            }
++            val loaded = findAttachBot(account, botId)
++            val loadedUser = MessagesController.getInstance(account).getUser(botId)
++            when {
++                loaded != null -> openBot(loaded)
++                loadedUser != null && loadedUser.bot -> openWebApp()
++                else -> showPlaceholder(R.string.TeleMiniAppUnsupported)
++            }
++        }
+     }
+ 
+     private fun openBot(bot: TLRPC.TL_attachMenuBot) {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index b5dbab423..5a27b3c14 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -66,7 +66,6 @@ class TeleTabsActivity : BaseFragment() {
+     private var touchHelper: ItemTouchHelper? = null
+     private val account = UserConfig.selectedAccount
+     private var slots = mutableListOf<MainTabsConfig.Slot>()
+-    private var suppressNextEntryClick = false
+     private var loadingMiniApps = false
+ 
+     override fun getListViewForSimpleGlass(): RecyclerListView? = listView
+@@ -139,28 +138,11 @@ class TeleTabsActivity : BaseFragment() {
+             override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                 super.clearView(recyclerView, viewHolder)
+                 save()
+-                listView?.postDelayed({ suppressNextEntryClick = false }, 300)
+             }
+         })
+         touchHelper?.attachToRecyclerView(list)
+ 
+-        list.setOnItemClickListener { view, position ->
+-            if (suppressNextEntryClick) {
+-                suppressNextEntryClick = false
+-                return@setOnItemClickListener
+-            }
+-            if (position in 1..slots.size) {
+-                showSlotMenu(view, position - 1)
+-            } else if (position == slots.size + 1) {
+-                showAddMenu(view)
+-            } else if (position == slots.size + 2) {
+-                showLabelsDialog()
+-            } else if (position == slots.size + 3 && showSelectedText()) {
+-                TeleConfig.set(TeleConfig.MAIN_TABS_SELECTED_TEXT, !TeleConfig.MAIN_TABS_SELECTED_TEXT.value)
+-                TeleHooks.onConfigChanged(TeleConfig.MAIN_TABS_SELECTED_TEXT)
+-                adapter?.notifyDataSetChanged()
+-            }
+-        }
++
+ 
+         frameLayout.addView(list, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT.toFloat()))
+         return fragmentView ?: frameLayout
+@@ -218,14 +200,11 @@ class TeleTabsActivity : BaseFragment() {
+                 addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CAMERA))
+             }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_CONTACTS_SAVED }) {
++        if (slots.none { it.kind == MainTabsConfig.KIND_CONTACTS || it.kind == MainTabsConfig.KIND_CONTACTS_SAVED }) {
+             options.add(R.drawable.msg_contacts, LocaleController.getString(R.string.MainTabsContacts)) {
+-                addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CONTACTS_SAVED))
++                addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CONTACTS))
+             }
+         }
+-        if (slots.none { it.kind == MainTabsConfig.KIND_CONTACTS }) {
+-            options.add(R.drawable.msg_contacts, lc("Contacts")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CONTACTS)) }
+-        }
+         if (slots.none { it.kind == MainTabsConfig.KIND_CALLS }) {
+             options.add(R.drawable.msg_calls, lc("Calls")) { addSlot(MainTabsConfig.Slot(MainTabsConfig.KIND_CALLS)) }
+         }
+@@ -393,13 +372,17 @@ class TeleTabsActivity : BaseFragment() {
+     }
+ 
+     private fun addMiniApp(botId: Long) {
+-        val bot = TeleMiniAppFragment.findAttachBot(account, botId)
+-        if (botId == 0L || bot == null || !bot.show_in_attach_menu && !bot.show_in_side_menu) {
++        if (botId <= 0L || !DialogObject.isUserDialog(botId)) {
+             bulletin(localized(R.string.TeleMiniAppUnsupported))
+             return
+         }
+         val user = MessagesController.getInstance(account).getUser(botId)
+-        if (user != null && !user.bot) {
++        if (user == null) {
++            MessagesController.getInstance(account).reloadUser(botId)
++            bulletin(localized(R.string.TeleMiniAppOpenFailed))
++            return
++        }
++        if (!user.bot) {
+             bulletin(localized(R.string.TeleMiniAppUnsupported))
+             return
+         }
+@@ -448,7 +431,14 @@ class TeleTabsActivity : BaseFragment() {
+ 
+     private fun pickMiniAppBot() {
+         val args = Bundle()
++        args.putInt("dialogsType", DialogsActivity.DIALOGS_TYPE_START_ATTACH_BOT)
+         args.putBoolean("onlySelect", true)
++        args.putBoolean("allowUsers", false)
++        args.putBoolean("allowGroups", false)
++        args.putBoolean("allowLegacyGroups", false)
++        args.putBoolean("allowMegagroups", false)
++        args.putBoolean("allowChannels", false)
++        args.putBoolean("allowBots", true)
+         val picker = DialogsActivity(args)
+         picker.setDelegate { fragment, dids, _, _, _, _, _, topicsFragment ->
+             val dialogId = dids.firstOrNull()?.dialogId ?: return@setDelegate false
+@@ -655,14 +645,10 @@ class TeleTabsActivity : BaseFragment() {
+             handle.setOnTouchListener { _, event ->
+                 when (event.actionMasked) {
+                     MotionEvent.ACTION_DOWN -> {
+-                        suppressNextEntryClick = true
+                         listView?.findContainingViewHolder(this)?.let { touchHelper?.startDrag(it) }
+                         true
+                     }
+-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+-                        listView?.postDelayed({ suppressNextEntryClick = false }, 250)
+-                        true
+-                    }
++                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                     else -> false
+                 }
+             }
+@@ -750,13 +736,29 @@ class TeleTabsActivity : BaseFragment() {
+         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+             when (holder.itemViewType) {
+                 TYPE_HEADER -> (holder.itemView as HeaderCell).setText(lc("Tabs"))
+-                TYPE_ADD -> (holder.itemView as TextCell).setTextAndIcon(lc("Add tab"), R.drawable.msg_add, false)
+-                TYPE_LABELS -> (holder.itemView as TextSettingsCell).setTextAndValue(lc("Labels"), labelsValue(), true)
+-                TYPE_SELECTED_TEXT -> (holder.itemView as TextCheckCell).setTextAndCheck(lc("Text on the selected tab"), TeleConfig.MAIN_TABS_SELECTED_TEXT.value, true)
++                TYPE_ADD -> {
++                    (holder.itemView as TextCell).setTextAndIcon(lc("Add tab"), R.drawable.msg_add, false)
++                    holder.itemView.setOnClickListener { showAddMenu(it) }
++                }
++                TYPE_LABELS -> {
++                    (holder.itemView as TextSettingsCell).setTextAndValue(lc("Labels"), labelsValue(), true)
++                    holder.itemView.setOnClickListener { showLabelsDialog() }
++                }
++                TYPE_SELECTED_TEXT -> {
++                    (holder.itemView as TextCheckCell).setTextAndCheck(lc("Text on the selected tab"), TeleConfig.MAIN_TABS_SELECTED_TEXT.value, true)
++                    holder.itemView.setOnClickListener {
++                        TeleConfig.set(TeleConfig.MAIN_TABS_SELECTED_TEXT, !TeleConfig.MAIN_TABS_SELECTED_TEXT.value)
++                        TeleHooks.onConfigChanged(TeleConfig.MAIN_TABS_SELECTED_TEXT)
++                        adapter?.notifyDataSetChanged()
++                    }
++                }
+                 TYPE_SHADOW -> (holder.itemView as TextInfoPrivacyCell).setText(
+                     lc("Tap a tab to change its icon or remove it; drag the handle to reorder.")
+                 )
+-                else -> (holder.itemView as SlotCell).bind(slots[position - 1])
++                else -> {
++                    (holder.itemView as SlotCell).bind(slots[position - 1])
++                    holder.itemView.setOnClickListener { showSlotMenu(it, holder.adapterPosition - 1) }
++                }
+             }
+         }
+ 

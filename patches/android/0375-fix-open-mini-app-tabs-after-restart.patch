@@ -1,0 +1,289 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Fri, 20 Nov 2026 23:27:49 +0300
+Subject: [PATCH] fix: open mini app tabs after restart
+
+---
+ .../org/telegram/ui/MainTabsActivity.java     |   1 +
+ .../main/java/tele/helpers/MainTabsConfig.kt  |   5 +-
+ .../main/java/tele/ui/TeleMiniAppFragment.kt  | 132 ++++++++++++++++--
+ .../java/tele/ui/settings/TeleTabsActivity.kt |   4 +-
+ 4 files changed, 129 insertions(+), 13 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+index edc32b4b5..e6a0078f6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/MainTabsActivity.java
+@@ -2083,6 +2083,7 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
+         if (slot != null && slot.isMiniApp()) {
+             args.putInt("account", currentAccount);
+             args.putLong("bot_id", slot.getBotId());
++            args.putLong("bot_hash", slot.getBotHash());
+             args.putBoolean("hasMainTabs", true);
+             return new tele.ui.TeleMiniAppFragment(args);
+         }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+index 8569c8707..ba339b6e0 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/MainTabsConfig.kt
+@@ -217,7 +217,7 @@ object MainTabsConfig {
+     )
+     private val ACTION_SHORTCUT_KINDS = setOf(KIND_NEW_MESSAGE, KIND_CAMERA, KIND_CONTACTS_SAVED)
+ 
+-    class Slot(val kind: String, val iconName: String = "") {
++    class Slot(val kind: String, val iconName: String = "", val botHash: Long = 0L) {
+         val key: String get() = kind
+         val isActionShortcut: Boolean get() = kind in ACTION_SHORTCUT_KINDS
+         val isShortcut: Boolean get() = kind == KIND_SAVED || kind.startsWith(KIND_CHAT_PREFIX) || isActionShortcut
+@@ -352,6 +352,7 @@ object MainTabsConfig {
+             val object_ = JSONObject()
+             object_.put("kind", slot.kind)
+             if (slot.iconName.isNotEmpty()) object_.put("icon", slot.iconName)
++            if (slot.botHash != 0L) object_.put("hash", slot.botHash)
+             array.put(object_)
+         }
+         return JSONObject().put("version", 1).put("slots", array).toString()
+@@ -371,7 +372,7 @@ object MainTabsConfig {
+                     KIND_DATA_USAGE -> KIND_SETTINGS_DATA_USAGE
+                     else -> storedKind
+                 }
+-                out.add(Slot(kind, object_.optString("icon", "")))
++                out.add(Slot(kind, object_.optString("icon", ""), object_.optLong("hash", 0L)))
+             }
+             out
+         }.getOrElse {
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+index 6406ab186..d41311e9d 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleMiniAppFragment.kt
+@@ -43,6 +43,7 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+ 
+     private val account = args.getInt("account", UserConfig.selectedAccount)
+     private val botId = args.getLong("bot_id")
++    private val botHash = args.getLong("bot_hash")
+     private val mainTabsInset = if (args.getBoolean("hasMainTabs", false)) AndroidUtilities.dp(DialogsActivity.MAIN_TABS_HEIGHT_WITH_MARGINS.toFloat()) else 0
+ 
+     private var container: BotWebViewContainer? = null
+@@ -277,11 +278,13 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+ 
+     override fun onFragmentCreate(): Boolean {
+         NotificationCenter.getInstance(account).addObserver(this, NotificationCenter.webViewResultSent)
++        NotificationCenter.getInstance(account).addObserver(this, NotificationCenter.updateInterfaces)
+         return super.onFragmentCreate()
+     }
+ 
+     override fun onFragmentDestroy() {
+         NotificationCenter.getInstance(account).removeObserver(this, NotificationCenter.webViewResultSent)
++        NotificationCenter.getInstance(account).removeObserver(this, NotificationCenter.updateInterfaces)
+         AndroidUtilities.cancelRunOnUIThread(pollRunnable)
+         queryId = 0L
+         container?.destroyWebView()
+@@ -300,6 +303,17 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+                 AndroidUtilities.cancelRunOnUIThread(pollRunnable)
+                 closeToChats()
+             }
++        } else if (id == NotificationCenter.updateInterfaces && (args.firstOrNull() as? Int ?: 0) and MessagesController.UPDATE_MASK_STATUS != 0) {
++            // reloadUser may land after the attach-bots callback; retry once the user is cached
++            val web = container ?: return
++            if (opening || web.getUrlLoaded() != null || !loadingBots) return
++            val user = MessagesController.getInstance(account).getUser(botId) ?: return
++            loadingBots = false
++            if (user.bot) {
++                startMiniApp()
++            } else {
++                showPlaceholder(R.string.TeleMiniAppUnsupported)
++            }
+         }
+     }
+ 
+@@ -351,22 +365,46 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+         }
+         showPlaceholder(R.string.TeleMiniAppOpenFailed)
+         loadingBots = true
+-        MessagesController.getInstance(account).reloadUser(botId)
++        reloadBot()
+         MediaDataController.getInstance(account).loadAttachMenuBots(false, true) {
+-            loadingBots = false
+             if (container == null || fragmentView == null || container?.getUrlLoaded() != null) {
++                loadingBots = false
+                 return@loadAttachMenuBots
+             }
+             val loaded = findAttachBot(account, botId)
+             val loadedUser = MessagesController.getInstance(account).getUser(botId)
+             when {
+-                loaded != null -> openBot(loaded)
+-                loadedUser != null && loadedUser.bot -> openWebApp()
+-                else -> showPlaceholder(R.string.TeleMiniAppUnsupported)
++                loaded != null -> { loadingBots = false; openBot(loaded) }
++                loadedUser != null && loadedUser.bot -> { loadingBots = false; openWebApp() }
++                loadedUser != null -> { loadingBots = false; showPlaceholder(R.string.TeleMiniAppUnsupported) }
++                // user still loading; the updateInterfaces observer retries
+             }
+         }
+     }
+ 
++    private fun reloadBot() {
++        val controller = MessagesController.getInstance(account)
++        if (controller.getUser(botId) == null && botHash != 0L) {
++            // after restart the bot is not cached; the stored hash makes the lookup valid
++            val input = TLRPC.TL_inputUser()
++            input.user_id = botId
++            input.access_hash = botHash
++            val request = TLRPC.TL_users_getUsers()
++            request.id.add(input)
++            ConnectionsManager.getInstance(account).sendRequest(request, { response, _ ->
++                if (response is org.telegram.tgnet.Vector<*>) {
++                    val users = ArrayList<TLRPC.User>()
++                    for (obj in response.objects) {
++                        if (obj is TLRPC.User) users.add(obj)
++                    }
++                    controller.putUsers(users, false)
++                }
++            })
++        } else {
++            controller.reloadUser(botId)
++        }
++    }
++
+     private fun openBot(bot: TLRPC.TL_attachMenuBot) {
+         actionBar?.setTitle(title(account, botId))
+         if (bot.inactive || bot.side_menu_disclaimer_needed) {
+@@ -404,6 +442,11 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+     }
+ 
+     private fun openWebApp() {
++        openWebApp(0)
++    }
++
++    // 0 = main app, 1 = simple webview, 2 = default named app
++    private fun openWebApp(stage: Int) {
+         val web = container ?: return
+         if (opening || web.getUrlLoaded() != null) {
+             return
+@@ -423,11 +466,16 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+         val themeParams = BotWebViewSheet.makeThemeParams(resourceProvider)?.let { params ->
+             TLRPC.TL_dataJSON().also { it.data = params.toString() }
+         }
+-        if (sideMenu) {
++        if (!sideMenu && stage >= 2) {
++            opening = false
++            openNamedApp(themeParams)
++            return
++        }
++        if (sideMenu || stage == 1) {
+             val simple = TLRPC.TL_messages_requestSimpleWebView()
+             simple.bot = MessagesController.getInstance(account).getInputUser(botId)
+             simple.platform = "android"
+-            simple.from_side_menu = true
++            simple.from_side_menu = sideMenu
+             simple.compact = false
+             simple.fullscreen = false
+             if (themeParams != null) {
+@@ -455,10 +503,20 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+         }
+         ConnectionsManager.getInstance(account).sendRequest(request, { response, error ->
+             AndroidUtilities.runOnUIThread {
+-                if (container == null || fragmentView == null || error != null || response == null) {
++                if (container == null || fragmentView == null) {
+                     opening = false
+                     started = false
+-                    showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                    return@runOnUIThread
++                }
++                if (error != null || response == null) {
++                    opening = false
++                    started = false
++                    if (!sideMenu && stage < 2 && error != null && error.text != null &&
++                        (error.text.startsWith("BOT_") || error.text == "URL_INVALID")) {
++                        openWebApp(stage + 1)
++                    } else {
++                        showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                    }
+                     return@runOnUIThread
+                 }
+                 val url: String?
+@@ -492,6 +550,62 @@ class TeleMiniAppFragment(args: Bundle) : BaseFragment(args), MainTabsActivity.T
+         }, requestFlags)
+     }
+ 
++    private fun openNamedApp(themeParams: TLRPC.TL_dataJSON?) {
++        val app = TLRPC.TL_inputBotAppShortName()
++        app.bot_id = MessagesController.getInstance(account).getInputUser(botId)
++        app.short_name = ""
++        val get = TLRPC.TL_messages_getBotApp()
++        get.app = app
++        get.hash = 0
++        ConnectionsManager.getInstance(account).sendRequest(get, { response, error ->
++            AndroidUtilities.runOnUIThread {
++                if (container == null || fragmentView == null) {
++                    return@runOnUIThread
++                }
++                val botApp = (response as? TLRPC.TL_messages_botApp)?.app
++                if (error != null || botApp == null) {
++                    showPlaceholder(if (error?.text == "BOT_APP_SHORTNAME_INVALID") R.string.TeleMiniAppUnsupported else R.string.TeleMiniAppOpenFailed)
++                    return@runOnUIThread
++                }
++                openApp(botApp, themeParams)
++            }
++        }, ConnectionsManager.RequestFlagFailOnServerErrors)
++    }
++
++    private fun openApp(botApp: TLRPC.BotApp, themeParams: TLRPC.TL_dataJSON?) {
++        val request = TLRPC.TL_messages_requestAppWebView()
++        val app = TLRPC.TL_inputBotAppID()
++        app.id = botApp.id
++        app.access_hash = botApp.access_hash
++        request.app = app
++        request.peer = MessagesController.getInstance(account).getInputPeer(botId)
++        request.platform = "android"
++        request.write_allowed = true
++        request.compact = false
++        request.fullscreen = false
++        if (themeParams != null) {
++            request.theme_params = themeParams
++            request.flags = request.flags or 4
++        }
++        ConnectionsManager.getInstance(account).sendRequest(request, { response, error ->
++            AndroidUtilities.runOnUIThread {
++                val url = (response as? TLRPC.TL_webViewResultUrl)?.url
++                if (container == null || fragmentView == null || error != null || url.isNullOrEmpty()) {
++                    showPlaceholder(R.string.TeleMiniAppOpenFailed)
++                    return@runOnUIThread
++                }
++                queryId = (response as TLRPC.TL_webViewResultUrl).query_id
++                placeholder?.visibility = View.GONE
++                container?.loadUrl(account, url, response.same_origin)
++                MediaDataController.getInstance(account).increaseWebappRating(botId)
++                if (queryId != 0L) {
++                    AndroidUtilities.cancelRunOnUIThread(pollRunnable)
++                    AndroidUtilities.runOnUIThread(pollRunnable, POLL_PERIOD)
++                }
++            }
++        }, ConnectionsManager.RequestFlagInvokeAfter or ConnectionsManager.RequestFlagFailOnServerErrors)
++    }
++
+     private fun showPlaceholder(resId: Int) {
+         placeholder?.text = TeleLowercase.lc(LocaleController.getString(resId))
+         placeholder?.visibility = View.VISIBLE
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+index 5a27b3c14..848b73c1c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleTabsActivity.kt
+@@ -386,7 +386,7 @@ class TeleTabsActivity : BaseFragment() {
+             bulletin(localized(R.string.TeleMiniAppUnsupported))
+             return
+         }
+-        val slot = MainTabsConfig.Slot(MainTabsConfig.miniAppKey(botId))
++        val slot = MainTabsConfig.Slot(MainTabsConfig.miniAppKey(botId), botHash = user.access_hash)
+         if (slots.any { it.key == slot.key }) {
+             bulletin(localized(R.string.TeleMiniAppAlreadyAdded))
+             return
+@@ -475,7 +475,7 @@ class TeleTabsActivity : BaseFragment() {
+         if (index < 0) {
+             return
+         }
+-        slots[index] = MainTabsConfig.Slot(slot.kind, name)
++        slots[index] = MainTabsConfig.Slot(slot.kind, name, slot.botHash)
+         save()
+         adapter?.notifyDataSetChanged()
+     }
