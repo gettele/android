@@ -165,6 +165,7 @@ Stores kept deleted messages, message edits and draft snapshots in tele.db and a
 | [`0131-feat-redesign-saved-drafts.patch`](../patches/android/0131-feat-redesign-saved-drafts.patch) |
 | [`0132-feat-redesign-deleted-messages.patch`](../patches/android/0132-feat-redesign-deleted-messages.patch) |
 | [`0143-fix-protect-all-kept-media.patch`](../patches/android/0143-fix-protect-all-kept-media.patch) |
+| [`0364-fix-keep-deleted-messages-on-repeated-deletes.patch`](../patches/android/0364-fix-keep-deleted-messages-on-repeated-deletes.patch) — repeated server delete updates no longer wipe kept messages |
 
 <a id="a006"></a>
 

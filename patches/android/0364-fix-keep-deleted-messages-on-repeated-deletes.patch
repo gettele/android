@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 21 Nov 2026 19:21:24 +0300
+Subject: [PATCH] fix: keep deleted messages on repeated deletes
+
+A repeated server delete update (echo, getDifference after a new message, push) wiped the kept message: the archive row was removed, the chat copy was deleted because it missed the exclusion list, and the UI dropped its kept mark. Server-side repeats are now a no-op; deleting a kept message again by the user still forgets it for good.
+---
+ .../telegram/messenger/MessagesStorage.java   | 27 ++++++++++---------
+ .../main/java/tele/helpers/DeletedMessages.kt |  9 ++++++-
+ 2 files changed, 23 insertions(+), 13 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+index d0c775bc6..bb6ce2629 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java
+@@ -14855,19 +14855,22 @@ public class MessagesStorage extends BaseController {
+                             message.id = mid;
+                             message.dialog_id = did;
+                             boolean teleWasKept = tele.helpers.DeletedMessages.isKeptDb(currentAccount, did, mid);
+-                            if (teleWasKept) {
+-                                // a repeated delete update for an already kept message: leave the archive row alone
+-                                data.reuse();
+-                                continue;
+-                            }
+-                            tele.helpers.DeletedMessages.archiveMessage(currentAccount, message, userInitiated);
+-                            if (tele.helpers.DeletedMessages.keepInChat(currentAccount, message, userInitiated)) {
+-                                ArrayList<Integer> teleKept = teleKeptMids.get(did);
+-                                if (teleKept == null) {
+-                                    teleKept = new ArrayList<>();
+-                                    teleKeptMids.put(did, teleKept);
++                            if (teleWasKept && userInitiated) {
++                                // deleting a kept message again forgets it for good
++                                tele.helpers.DeletedMessages.removeKeptDb(currentAccount, did, mid);
++                            } else {
++                                if (!teleWasKept) {
++                                    tele.helpers.DeletedMessages.archiveMessage(currentAccount, message, userInitiated);
++                                }
++                                // a repeated server delete update must not drop the kept row: the exclusion below needs it
++                                if (teleWasKept || tele.helpers.DeletedMessages.keepInChat(currentAccount, message, userInitiated)) {
++                                    ArrayList<Integer> teleKept = teleKeptMids.get(did);
++                                    if (teleKept == null) {
++                                        teleKept = new ArrayList<>();
++                                        teleKeptMids.put(did, teleKept);
++                                    }
++                                    teleKept.add(mid);
+                                 }
+-                                teleKept.add(mid);
+                             }
+                             data.reuse();
+                             if (deletedMessages != null) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+index cc2eef391..a28197bf1 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/DeletedMessages.kt
+@@ -161,7 +161,14 @@ object DeletedMessages {
+             val obj = lookup(id)
+             if (obj != null && obj.messageOwner != null) {
+                 if (set.contains(id)) {
+-                    set.remove(id)
++                    if (userInitiated) {
++                        // deleting a kept message again forgets it: the row goes with the storage pass
++                        set.remove(id)
++                    } else {
++                        // a repeated server delete update (echo, difference, push): the message stays kept
++                        keptAny = true
++                        continue
++                    }
+                 } else if (keepInChat(account, obj.messageOwner, userInitiated)) {
+                     set.add(id)
+                     keptAny = true
