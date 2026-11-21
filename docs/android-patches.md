@@ -400,7 +400,7 @@ The ruler maps its full range to 60% of the rail width. An independent, default-
 |---|
 | [`0334-feat-improve-round-video-controls.patch`](../patches/android/0334-feat-improve-round-video-controls.patch) |
 | [`0337-feat-retain-round-pinch-zoom.patch`](../patches/android/0337-feat-retain-round-pinch-zoom.patch) — compact ruler and optional retained pinch zoom |
-| [`0371-fix-reuse-capture-request-builder-for-zoom.patch`](../patches/android/0371-fix-reuse-capture-request-builder-for-zoom.patch) — zoom reuses the capture request builder, fixing preview lag and frame freezes on some devices |
+| [`0363-fix-reuse-capture-request-builder-for-zoom.patch`](../patches/android/0363-fix-reuse-capture-request-builder-for-zoom.patch) — zoom reuses the capture request builder, fixing preview lag and frame freezes on some devices |
 
 <a id="a016"></a>
 ## A016 — Wide-screen folder sidebar
@@ -515,15 +515,5 @@ The Edit tabs screen opens from a row under the settings toggle and from the lon
 
 | patch |
 |---|
-| [`0362-feat-make-the-bottom-tabs-customizable.patch`](../patches/android/0362-feat-make-the-bottom-tabs-customizable.patch) |
-| [`0363-feat-add-the-bottom-tabs-editor.patch`](../patches/android/0363-feat-add-the-bottom-tabs-editor.patch) |
-| [`0364-fix-polish-the-bottom-tabs-layout.patch`](../patches/android/0364-fix-polish-the-bottom-tabs-layout.patch) |
-| [`0365-feat-add-folder-and-archive-tabs.patch`](../patches/android/0365-feat-add-folder-and-archive-tabs.patch) |
-| [`0366-feat-add-settings-and-search-tabs.patch`](../patches/android/0366-feat-add-settings-and-search-tabs.patch) |
-| [`0367-feat-add-action-shortcut-tabs.patch`](../patches/android/0367-feat-add-action-shortcut-tabs.patch) |
-| [`0368-feat-add-mini-app-tabs.patch`](../patches/android/0368-feat-add-mini-app-tabs.patch) |
-| [`0369-fix-layout-bottom-tab-pages.patch`](../patches/android/0369-fix-layout-bottom-tab-pages.patch) |
-| [`0370-fix-editor-tab-types.patch`](../patches/android/0370-fix-editor-tab-types.patch) |
-| [`0372-fix-tab-page-transitions-and-insets.patch`](../patches/android/0372-fix-tab-page-transitions-and-insets.patch) |
-| [`0373-fix-tab-editor-details.patch`](../patches/android/0373-fix-tab-editor-details.patch) |
+| [`0362-feat-add-customizable-bottom-tabs.patch`](../patches/android/0362-feat-add-customizable-bottom-tabs.patch) |
 
