@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 21 Nov 2026 20:32:48 +0300
+Subject: [PATCH] fix: stop skipping dialogs by date
+
+Stock pagination picked the oldest message of a page as the getDialogs offset, including old pinned top messages: everything between that date and the real page bottom was never fetched. dialogsLoadedTillDate got poisoned the same way and sortDialogs then hid loaded old chats in every folder. Now the offset uses the oldest non-pinned top message per dialog (split for channels), and the till-date filter skips pinned dialogs and tracks channels separately.
+---
+ .../messenger/MessagesController.java         | 107 ++++++++++++++----
+ 1 file changed, 83 insertions(+), 24 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 8e3da39c4..0de684d3c 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -173,6 +173,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     public ArrayList<TLRPC.Dialog> dialogsGroupsOnly = new ArrayList<>();
+     public DialogFilter[] selectedDialogFilter = new DialogFilter[2];
+     private int dialogsLoadedTillDate = Integer.MAX_VALUE;
++    private int dialogsLoadedTillDateChannels = Integer.MAX_VALUE;
+     public int unreadUnmutedDialogs;
+     public ConcurrentHashMap<Long, Integer> dialogs_read_inbox_max = new ConcurrentHashMap<>(100, 1.0f, 2);
+     public ConcurrentHashMap<Long, Integer> dialogs_read_outbox_max = new ConcurrentHashMap<>(100, 1.0f, 2);
+@@ -6578,6 +6579,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         dialogsForward.clear();
+         allDialogs.clear();
+         dialogsLoadedTillDate = Integer.MAX_VALUE;
++        dialogsLoadedTillDateChannels = Integer.MAX_VALUE;
+         dialogsCanAddUsers.clear();
+         dialogsMyChannels.clear();
+         dialogsMyGroups.clear();
+@@ -13008,7 +13010,8 @@ public class MessagesController extends BaseController implements NotificationCe
+             for (int a = 0; a < resetDialogsAll.messages.size(); a++) {
+                 TLRPC.Message message = resetDialogsAll.messages.get(a);
+                 if (a < messagesCount) {
+-                    if (lastMessage == null || message.date < lastMessage.date) {
++                    // pinned top messages can be old; an old offset would skip the dialogs in between
++                    if (message.date != 0 && !message.pinned && (lastMessage == null || message.date < lastMessage.date)) {
+                         lastMessage = message;
+                     }
+                 }
+@@ -13167,7 +13170,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                             MessageObject messageObject = messageObjects.get(i);
+                             if (messageObject != null && messageObject.messageOwner.peer_id.channel_id == 0) {
+                                 dialogMessagesByIds.put(messageObject.getId(), messageObject);
+-                                dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, messageObject.messageOwner.date);
++                                if (!value.pinned) {
++                                    dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, messageObject.messageOwner.date);
++                                }
+                                 if (messageObject.messageOwner.random_id != 0) {
+                                     dialogMessagesByRandomIds.put(messageObject.messageOwner.random_id, messageObject);
+                                 }
+@@ -13245,7 +13250,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                             if (BuildVars.LOGS_ENABLED) {
+                                 FileLog.d("search migrate id " + message.id + " date " + LocaleController.getInstance().getFormatterStats().format((long) message.date * 1000));
+                             }
+-                            if (lastMessage == null || message.date < lastMessage.date) {
++                            if (message.date != 0 && !message.pinned && (lastMessage == null || message.date < lastMessage.date)) {
+                                 lastMessage = message;
+                             }
+                         }
+@@ -13440,6 +13445,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                         // nothing to load, otherwise sortDialogs hides every new dialog of an empty account
+                         if (folderId == 0) {
+                             dialogsLoadedTillDate = Integer.MIN_VALUE;
++                            dialogsLoadedTillDateChannels = Integer.MIN_VALUE;
+                         }
+                         dialogsEndReached.put(folderId, true);
+                         serverDialogsEndReached.put(folderId, true);
+@@ -13479,14 +13485,22 @@ public class MessagesController extends BaseController implements NotificationCe
+             }
+ 
+             TLRPC.Message lastMessage = null;
++            TLRPC.Message lastMessageChannels = null;
+             ArrayList<MessageObject> newMessages = new ArrayList<>();
+             for (int a = 0; a < dialogsRes.messages.size(); a++) {
+                 TLRPC.Message message = dialogsRes.messages.get(a);
+                 if (message.date == 0) {
+                     continue;
+                 }
+-                if (lastMessage == null || message.date < lastMessage.date) {
+-                    lastMessage = message;
++                // pinned top messages can be old; an old offset would skip the dialogs in between
++                if (!message.pinned) {
++                    if (message.peer_id.channel_id != 0) {
++                        if (lastMessageChannels == null || message.date < lastMessageChannels.date) {
++                            lastMessageChannels = message;
++                        }
++                    } else if (lastMessage == null || message.date < lastMessage.date) {
++                        lastMessage = message;
++                    }
+                 }
+                 if (message.peer_id.channel_id != 0) {
+                     TLRPC.Chat chat = chatsDict.get(message.peer_id.channel_id);
+@@ -13509,6 +13523,36 @@ public class MessagesController extends BaseController implements NotificationCe
+                 arrayList.add(messageObject);
+                 new_dialogMessage.put(did, arrayList);
+             }
++            LongSparseArray<TLRPC.Message> lastDialogMessages = new LongSparseArray<>();
++            for (int a = 0; a < dialogsRes.messages.size(); a++) {
++                TLRPC.Message message = dialogsRes.messages.get(a);
++                if (message.pinned || message.date == 0) {
++                    continue;
++                }
++                long did = MessageObject.getDialogId(message);
++                TLRPC.Message old = lastDialogMessages.get(did);
++                if (old == null || message.date > old.date || message.date == old.date && message.id > old.id) {
++                    lastDialogMessages.put(did, message);
++                }
++            }
++            for (int a = 0; a < dialogsRes.dialogs.size(); a++) {
++                TLRPC.Dialog d = dialogsRes.dialogs.get(a);
++                if (d.pinned || d instanceof TLRPC.TL_dialogFolder || d instanceof TLRPC.TL_dialogCommunity) {
++                    continue;
++                }
++                TLRPC.Message last = lastDialogMessages.get(d.id);
++                if (last == null) {
++                    continue;
++                }
++                if (last.peer_id.channel_id != 0) {
++                    if (lastMessageChannels == null || last.date < lastMessageChannels.date || last.date == lastMessageChannels.date && last.id < lastMessageChannels.id) {
++                        lastMessageChannels = last;
++                    }
++                } else if (lastMessage == null || last.date < lastMessage.date || last.date == lastMessage.date && last.id < lastMessage.id) {
++                    lastMessage = last;
++                }
++            }
++            TLRPC.Message offsetMessage = folderId == 0 ? lastMessage : lastMessageChannels;
+             if (!fromCache && !migrate && dialogsLoadOffset[UserConfig.i_dialogsLoadOffsetId] != -1 && loadType == 0) {
+                 int totalDialogsLoadCount = getUserConfig().getTotalDialogsCount(folderId);
+                 int dialogsLoadOffsetId;
+@@ -13517,12 +13561,12 @@ public class MessagesController extends BaseController implements NotificationCe
+                 long dialogsLoadOffsetChatId = 0;
+                 long dialogsLoadOffsetUserId = 0;
+                 long dialogsLoadOffsetAccess = 0;
+-                if (lastMessage != null && lastMessage.id != dialogsLoadOffset[UserConfig.i_dialogsLoadOffsetId]) {
++                if (offsetMessage != null && offsetMessage.id != dialogsLoadOffset[UserConfig.i_dialogsLoadOffsetId]) {
+                     totalDialogsLoadCount += dialogsRes.dialogs.size();
+-                    dialogsLoadOffsetId = lastMessage.id;
+-                    dialogsLoadOffsetDate = lastMessage.date;
+-                    if (lastMessage.peer_id.channel_id != 0) {
+-                        dialogsLoadOffsetChannelId = lastMessage.peer_id.channel_id;
++                    dialogsLoadOffsetId = offsetMessage.id;
++                    dialogsLoadOffsetDate = offsetMessage.date;
++                    if (offsetMessage.peer_id.channel_id != 0) {
++                        dialogsLoadOffsetChannelId = offsetMessage.peer_id.channel_id;
+                         dialogsLoadOffsetChatId = 0;
+                         dialogsLoadOffsetUserId = 0;
+                         for (int a = 0; a < dialogsRes.chats.size(); a++) {
+@@ -13532,8 +13576,8 @@ public class MessagesController extends BaseController implements NotificationCe
+                                 break;
+                             }
+                         }
+-                    } else if (lastMessage.peer_id.chat_id != 0) {
+-                        dialogsLoadOffsetChatId = lastMessage.peer_id.chat_id;
++                    } else if (offsetMessage.peer_id.chat_id != 0) {
++                        dialogsLoadOffsetChatId = offsetMessage.peer_id.chat_id;
+                         dialogsLoadOffsetChannelId = 0;
+                         dialogsLoadOffsetUserId = 0;
+                         for (int a = 0; a < dialogsRes.chats.size(); a++) {
+@@ -13543,8 +13587,8 @@ public class MessagesController extends BaseController implements NotificationCe
+                                 break;
+                             }
+                         }
+-                    } else if (lastMessage.peer_id.user_id != 0) {
+-                        dialogsLoadOffsetUserId = lastMessage.peer_id.user_id;
++                    } else if (offsetMessage.peer_id.user_id != 0) {
++                        dialogsLoadOffsetUserId = offsetMessage.peer_id.user_id;
+                         dialogsLoadOffsetChatId = 0;
+                         dialogsLoadOffsetChannelId = 0;
+                         for (int a = 0; a < dialogsRes.users.size(); a++) {
+@@ -13672,11 +13716,19 @@ public class MessagesController extends BaseController implements NotificationCe
+             }
+ 
+             TLRPC.Message lastMessageFinal = lastMessage;
++            TLRPC.Message lastMessageChannelsFinal = lastMessageChannels;
+             AndroidUtilities.runOnUIThread(() -> {
+-                if (lastMessageFinal != null) {
+-                    dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, lastMessageFinal.date);
+-                } else {
+-                    dialogsLoadedTillDate = Integer.MIN_VALUE;
++                if (folderId == 0) {
++                    if (lastMessageFinal != null) {
++                        dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, lastMessageFinal.date);
++                    } else {
++                        dialogsLoadedTillDate = Integer.MIN_VALUE;
++                    }
++                }
++                if (lastMessageChannelsFinal != null) {
++                    dialogsLoadedTillDateChannels = Math.min(dialogsLoadedTillDateChannels, lastMessageChannelsFinal.date);
++                } else if (folderId != 0) {
++                    dialogsLoadedTillDateChannels = Integer.MIN_VALUE;
+                 }
+                 if (loadType != DIALOGS_LOAD_TYPE_CACHE) {
+                     applyDialogsNotificationsSettings(dialogsRes.dialogs);
+@@ -14287,7 +14339,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                                 MessageObject newMsg = newMsgs.get(i);
+                                 if (newMsg != null && newMsg.messageOwner.peer_id.channel_id == 0) {
+                                     dialogMessagesByIds.put(newMsg.getId(), newMsg);
+-                                    dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, newMsg.messageOwner.date);
++                                    if (!value.pinned) {
++                                        dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, newMsg.messageOwner.date);
++                                    }
+                                     if (newMsg.messageOwner.random_id != 0) {
+                                         dialogMessagesByRandomIds.put(newMsg.messageOwner.random_id, newMsg);
+                                     }
+@@ -14356,7 +14410,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                                         }
+                                         if (newMsg != null && newMsg.messageOwner.peer_id.channel_id == 0) {
+                                             dialogMessagesByIds.put(newMsg.getId(), newMsg);
+-                                            dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, newMsg.messageOwner.date);
++                                            if (!value.pinned) {
++                                                dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, newMsg.messageOwner.date);
++                                            }
+                                             if (newMsg.messageOwner.random_id != 0) {
+                                                 dialogMessagesByRandomIds.put(newMsg.messageOwner.random_id, newMsg);
+                                             }
+@@ -14397,7 +14453,9 @@ public class MessagesController extends BaseController implements NotificationCe
+                                         }
+                                         if (newMsg != null && newMsg.messageOwner.peer_id.channel_id == 0) {
+                                             dialogMessagesByIds.put(newMsg.getId(), newMsg);
+-                                            dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, newMsg.messageOwner.date);
++                                            if (!value.pinned) {
++                                                dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, newMsg.messageOwner.date);
++                                            }
+                                             if (newMsg.messageOwner.random_id != 0) {
+                                                 dialogMessagesByRandomIds.put(newMsg.messageOwner.random_id, newMsg);
+                                             }
+@@ -17650,7 +17708,7 @@ public class MessagesController extends BaseController implements NotificationCe
+                                         MessageObject messageObject = messageObjects.get(i);
+                                         if (messageObject != null && messageObject.messageOwner.peer_id.channel_id == 0) {
+                                             dialogMessagesByIds.put(messageObject.getId(), messageObject);
+-                                            dialogsLoadedTillDate = Math.min(dialogsLoadedTillDate, messageObject.messageOwner.date);
++                                            // pinned dialogs can hold old top messages; they must not poison the loaded range
+                                             if (messageObject.messageOwner.random_id != 0) {
+                                                 dialogMessagesByRandomIds.put(messageObject.messageOwner.random_id, messageObject);
+                                             }
+@@ -22654,7 +22712,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             TLRPC.Dialog d = allDialogs.get(a);
+             if (d instanceof TLRPC.TL_dialog) {
+                 ArrayList<MessageObject> messageObjects = dialogMessage.get(d.id);
+-                if (messageObjects != null) {
++                if (messageObjects != null && !d.pinned) {
+                     int maxDate = Integer.MIN_VALUE;
+                     for (int i = 0; i < messageObjects.size(); ++i) {
+                         MessageObject message = messageObjects.get(i);
+@@ -22663,7 +22721,8 @@ public class MessagesController extends BaseController implements NotificationCe
+                         }
+                     }
+                     if (maxDate > Integer.MIN_VALUE) {
+-                        if (maxDate < dialogsLoadedTillDate) {
++                        int tillDate = DialogObject.isChannel(d) ? dialogsLoadedTillDateChannels : dialogsLoadedTillDate;
++                        if (maxDate < tillDate) {
+                             continue;
+                         }
+                     }

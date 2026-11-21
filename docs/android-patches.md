@@ -63,6 +63,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A021](#a021) | Pin Saved Messages past the limit | original | active | 1 |
 | [A022](#a022) | Material You themes and custom palettes | original | active | 1 |
 | [A023](#a023) | Customizable bottom navigation bar | original | active | 2 |
+| [A024](#a024) | Chat list keeps old dialogs | adaptation | active | 1 |
 
 <a id="a001"></a>
 
@@ -517,4 +518,18 @@ The Edit tabs screen opens from a row under the settings toggle and from the lon
 | patch |
 |---|
 | [`0362-feat-add-customizable-bottom-tabs.patch`](../patches/android/0362-feat-add-customizable-bottom-tabs.patch) |
+
+<a id="a024"></a>
+
+## A024 — Chat list keeps old dialogs
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** none (fixes a stock Android chat-list bug).
+
+Chats from an older period could vanish from All chats and every folder. Dialog pagination used the oldest message of a loaded page as the `getDialogs` offset, including old pinned top messages, so everything between that date and the real page bottom was never fetched. `dialogsLoadedTillDate` was poisoned the same way, and `sortDialogs` then hid already-loaded old chats. The offset now uses the oldest non-pinned top message per dialog, tracked separately for channels; the till-date filter skips pinned dialogs and tracks channels separately. The same guards apply to the dialogs reset and migration paths.
+
+| patch |
+|---|
+| [`0365-fix-stop-skipping-dialogs-by-date.patch`](../patches/android/0365-fix-stop-skipping-dialogs-by-date.patch) |
 
