@@ -58,7 +58,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A016](#a016) | Wide-screen folder sidebar | adaptation | active | 1 |
 | [A017](#a017) | Photo shape padding | adaptation | active | 1 |
 | [A018](#a018) | Per-media software volumes | adaptation | active | 1 |
-| [A019](#a019) | Composer editing helpers | adaptation | active | 1 |
+| [A019](#a019) | Composer editing helpers | adaptation | active | 2 |
 | [A020](#a020) | Chat picture editor | original | active | 1 |
 | [A021](#a021) | Pin Saved Messages past the limit | original | active | 1 |
 | [A022](#a022) | Material You themes and custom palettes | original | active | 1 |
@@ -453,11 +453,12 @@ Android has a single system volume stream, so the desktop's four saved volumes b
 
 **Desktop references:** optional composer editing helpers.
 
-Three independent field helpers behind off-by-default switches: wrapping a selection in quotes, brackets, bold markers or backticks (and unwrapping it), auto-closing bracket and quote pairs with step-over and one-step pair deletion, and keeping a line's indentation on a new line. Auto-closing also completes a code block: three backticks at the end of a line add the blank body and the closing fence, with the cursor placed inside, unless the cursor is already inside an open fence. A single backtick never pairs on its own, matching the desktop, where it only wraps a selection. Implemented once in EditTextBoldCursor, so chats, topics, replies, edits and captions share it; every operation is one undo step and inserts plain text only.
+Three independent field helpers behind off-by-default switches: wrapping a selection in quotes, brackets, bold markers or backticks (and unwrapping it), auto-closing bracket and quote pairs with step-over and one-step pair deletion, and keeping a line's indentation on a new line. Auto-closing also completes a code block: three backticks at the end of a line add the blank body and the closing fence, with the cursor placed inside, unless the cursor is already inside an open fence. A single backtick never pairs on its own, matching the desktop, where it only wraps a selection. A paren that continues a typed emoticon like `:-(` stays literal instead of auto-closing. Implemented once in EditTextBoldCursor, so chats, topics, replies, edits and captions share it; every operation is one undo step and inserts plain text only.
 
 | patch |
 |---|
 | [`0348-feat-add-optional-composer-editing-helpers.patch`](../patches/android/0348-feat-add-optional-composer-editing-helpers.patch) |
+| [`0366-fix-keep-typed-emoticons-literal.patch`](../patches/android/0366-fix-keep-typed-emoticons-literal.patch) — a paren continuing an emoticon stays literal |
 
 <a id="a020"></a>
 

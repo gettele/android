@@ -1,0 +1,380 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 21 Nov 2026 23:04:02 +0300
+Subject: [PATCH] feat: delete and drag-select gifts
+
+Bulk delete of the picked gifts (basic, not refunded, owned here) with a permanent-delete confirmation and Stars lock, counters and local list removal like the single-gift menu. While picking, a long press starts a range drag: the anchor decides select or unselect, gifts outside the range return to their pre-drag state. Port of desktop 0340.
+---
+ .../ui/Gifts/ProfileGiftsContainer.java       |  13 +-
+ .../src/main/java/tele/helpers/GiftBulk.kt    |  61 ++++++++-
+ .../main/java/tele/helpers/GiftDragSelect.kt  | 120 ++++++++++++++++++
+ .../main/java/tele/helpers/GiftSelection.kt   |  11 ++
+ .../main/java/tele/ui/TeleGiftSelectionBar.kt |   5 +-
+ .../src/main/res/values-ru/strings_tele.xml   |   6 +
+ .../src/main/res/values-uk/strings_tele.xml   |   6 +
+ .../src/main/res/values/strings_tele.xml      |   6 +
+ 8 files changed, 225 insertions(+), 3 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftDragSelect.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+index 05407caf1..d21012655 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ProfileGiftsContainer.java
+@@ -248,6 +248,8 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+ 
+         private boolean reordering;
+ 
++        private tele.helpers.GiftDragSelect dragSelect;
++
+         public void update(boolean animated) {
+             if (listView == null || listView.adapter == null) return;
+             final boolean atTop = !listView.canScrollVertically(-1);
+@@ -278,6 +280,11 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+             listView.setClipToPadding(false);
+             listView.setClipChildren(false);
+             addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.FILL));
++            dragSelect = new tele.helpers.GiftDragSelect(parent.selection, listView, parent::onSelectionChanged);
++            listView.setOnInterceptTouchListener(event -> {
++                dragSelect.touch(event);
++                return dragSelect.isDragging();
++            });
+             updatePadding();
+             listView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+                 @Override
+@@ -836,7 +843,11 @@ public class ProfileGiftsContainer extends FrameLayout implements NotificationCe
+ 
+         public boolean onItemLongPress(UItem item, View view, int position, float x, float y) {
+             if (list == null) return false;
+-            if (parent.selection.isActive() || parent.searching()) return false;
++            if (parent.selection.isActive()) {
++                // while picking, a long press starts a range drag instead of the menu
++                return dragSelect.begin(view, position, x, y);
++            }
++            if (parent.searching()) return false;
+             if (view instanceof GiftSheet.GiftCell && item.object instanceof TL_stars.SavedStarGift) {
+                 final GiftSheet.GiftCell cell = (GiftSheet.GiftCell) view;
+                 final TL_stars.SavedStarGift savedStarGift = (TL_stars.SavedStarGift) item.object;
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+index 6ed731ee4..bb96e5648 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+@@ -35,7 +35,7 @@ import org.telegram.ui.Stars.StarsIntroActivity
+ object GiftBulk {
+ 
+     /** The actions of the bar, in the order of its buttons. */
+-    enum class Action { SHOW, HIDE, PIN, UNPIN, TRANSFER, SELL, UNLIST, CONVERT, COLLECTION }
++    enum class Action { SHOW, HIDE, PIN, UNPIN, TRANSFER, SELL, UNLIST, CONVERT, COLLECTION, DELETE }
+ 
+     private fun manage(selection: GiftSelection): Boolean =
+         StarGiftSheet.isMineWithActions(selection.currentAccount, selection.dialogId)
+@@ -127,6 +127,8 @@ object GiftBulk {
+                 selection.collections.getCollections().isEmpty() -> LocaleController.getString(R.string.TeleGiftsReasonNoCollections)
+                 else -> null
+             }
++            Action.DELETE -> if (!manage(selection)) noRights
++                else problem(gifts, "TeleGiftsReasonNoDelete") { !canDelete(selection, it) }
+         }
+     }
+ 
+@@ -378,6 +380,7 @@ object GiftBulk {
+             Action.UNLIST -> unlist(selection, fragment, context, resourcesProvider)
+             Action.CONVERT -> convert(selection, fragment, context, resourcesProvider)
+             Action.COLLECTION -> chooseCollection(selection, fragment, anchor)
++            Action.DELETE -> delete(selection, fragment, context, resourcesProvider)
+         }
+     }
+ 
+@@ -592,4 +595,60 @@ object GiftBulk {
+             }
+         }
+     }
++
++    /** The same gifts the single-gift menu deletes: basic, not refunded, owned here (desktop 0340). */
++    private fun canDelete(selection: GiftSelection, gift: TL_stars.SavedStarGift): Boolean {
++        val base = gift.gift as? TL_stars.TL_starGift ?: return false
++        return !base.limited && base.availability_total <= 0 && !base.auction && !gift.refunded
++    }
++
++    private fun delete(selection: GiftSelection, fragment: BaseFragment?, context: Context, resourcesProvider: Theme.ResourcesProvider?) {
++        val gifts = selection.gifts
++        AlertDialog.Builder(context, resourcesProvider)
++            .setTitle(LocaleController.getString(R.string.Gift2DeleteOption))
++            .setMessage(LocaleController.formatPluralString("TeleGiftsDeleteConfirm", gifts.size))
++            .setPositiveButton(LocaleController.getString(R.string.Delete)) { _, _ ->
++                StarsLock.guard(fragment, "delete") {
++                    if (!selection.isBusy) runDelete(selection, fragment, gifts)
++                }
++            }
++            .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++            .makeRed(AlertDialog.BUTTON_POSITIVE)
++            .show()
++    }
++
++    private fun runDelete(selection: GiftSelection, fragment: BaseFragment?, gifts: List<TL_stars.SavedStarGift>) {
++        val account = selection.currentAccount
++        runBatch(
++            selection, fragment, "gifts-deleted", gifts,
++            LocaleController.formatPluralString("TeleGiftsDeleted", gifts.size),
++            { index, batch, done ->
++                val gift = gifts[index]
++                val request = TL_stars.deleteStarGift()
++                request.stargift = selection.list.getInput(gift)
++                batch.send(request) { res, err ->
++                    if (res is TLRPC.TL_boolTrue) {
++                        // counters first: the profile re-checks them when the list changes (gifts tab hides at 0)
++                        val dialogId = selection.dialogId
++                        if (dialogId >= 0) {
++                            MessagesController.getInstance(account).getUserFull(dialogId)?.let {
++                                it.stargifts_count = Math.max(0, it.stargifts_count - 1)
++                                if (it.stargifts_count <= 0) it.flags2 = it.flags2 and 256.inv()
++                            }
++                        } else {
++                            MessagesController.getInstance(account).getChatFull(-dialogId)?.let {
++                                it.stargifts_count = Math.max(0, it.stargifts_count - 1)
++                                if (it.stargifts_count <= 0) it.flags2 = it.flags2 and 262144.inv()
++                            }
++                        }
++                        StarsController.getInstance(account).removeProfileGiftLocally(dialogId, gift)
++                        selection.remove(gift)
++                        done(null)
++                    } else {
++                        done(GiftBatch.Failure.of(err, "DELETE_FAILED", false))
++                    }
++                }
++            }
++        )
++    }
+ }
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftDragSelect.kt b/TMessagesProj/src/main/java/tele/helpers/GiftDragSelect.kt
+new file mode 100644
+index 000000000..2f2f1c6a6
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftDragSelect.kt
+@@ -0,0 +1,120 @@
++package tele.helpers
++
++import android.view.MotionEvent
++import android.view.View
++import android.view.ViewConfiguration
++import androidx.recyclerview.widget.RecyclerView
++import org.telegram.tgnet.tl.TL_stars
++import org.telegram.ui.Components.RecyclerListView
++import org.telegram.ui.Gifts.GiftSheet
++
++/**
++ * Drag-select of gifts (desktop 0340): while the selection is on, a long press on a gift starts a
++ * range drag instead of the menu. The anchor decides the mode — an unpicked gift selects the range,
++ * a picked one unpicks it; gifts outside the current range go back to how they were before the drag.
++ */
++class GiftDragSelect(
++    private val selection: GiftSelection,
++    private val list: RecyclerListView,
++    private val onChanged: Runnable
++) {
++
++    private var anchor = -1
++    private var select = true
++    private var enabled = false
++    private var from = -1
++    private var till = -1
++    private var startX = 0f
++    private var startY = 0f
++    private val before = HashSet<String>()
++    private val slop = ViewConfiguration.get(list.context).scaledTouchSlop
++
++    /** True from the long press on: the list must not scroll or click under the finger. */
++    val isDragging: Boolean get() = anchor >= 0
++
++    /** A long press on a gift while picking: takes the gesture over from the item menu. */
++    fun begin(view: View, position: Int, x: Float, y: Float): Boolean {
++        if (!selection.isActive || selection.isBusy) return false
++        val gift = giftOf(view) ?: return false
++        anchor = position
++        select = !selection.isSelected(gift)
++        before.clear()
++        for (picked in selection.gifts) before.add(GiftSelection.key(picked))
++        enabled = false
++        from = position
++        till = position + 1
++        startX = view.left + x
++        startY = view.top + y
++        // the pressed cell must not fire its click when the finger lifts
++        list.cancelClickRunnables(true)
++        return true
++    }
++
++    fun touch(event: MotionEvent) {
++        if (anchor < 0) return
++        when (event.actionMasked) {
++            MotionEvent.ACTION_MOVE -> {
++                if (!selection.isActive || selection.isBusy) {
++                    end()
++                    return
++                }
++                if (!enabled) {
++                    val dx = event.x - startX
++                    val dy = event.y - startY
++                    if (dx * dx + dy * dy <= slop * slop) return
++                    enabled = true
++                }
++                update(event.x, event.y)
++            }
++            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> end()
++        }
++    }
++
++    fun end() {
++        anchor = -1
++        enabled = false
++        from = -1
++        till = -1
++        before.clear()
++    }
++
++    private fun update(x: Float, y: Float) {
++        val at = positionAt(x, y) ?: return
++        val newFrom = minOf(anchor, at)
++        val newTill = maxOf(anchor, at) + 1
++        if (newFrom == from && newTill == till) return
++        var changed = false
++        // gifts that left the range go back to their pre-drag state
++        for (i in from until till) {
++            if (i < newFrom || i >= newTill) {
++                val gift = giftAt(i) ?: continue
++                changed = selection.setSelected(gift, before.contains(GiftSelection.key(gift))) || changed
++            }
++        }
++        // gifts that entered it take the drag mode
++        for (i in newFrom until newTill) {
++            if (i < from || i >= till) {
++                val gift = giftAt(i) ?: continue
++                changed = selection.setSelected(gift, select) || changed
++            }
++        }
++        from = newFrom
++        till = newTill
++        if (changed) onChanged.run()
++    }
++
++    private fun positionAt(x: Float, y: Float): Int? {
++        val child = list.findChildViewUnder(x, y) ?: return null
++        if (giftOf(child) == null) return null
++        val position = list.getChildAdapterPosition(child)
++        return if (position == RecyclerView.NO_POSITION) null else position
++    }
++
++    private fun giftAt(position: Int): TL_stars.SavedStarGift? {
++        val child = list.findViewHolderForAdapterPosition(position)?.itemView ?: return null
++        return giftOf(child)
++    }
++
++    private fun giftOf(view: View): TL_stars.SavedStarGift? =
++        (view as? GiftSheet.GiftCell)?.getSavedGift()
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt b/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt
+index ef725e39d..31faa7517 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftSelection.kt
+@@ -93,6 +93,17 @@ class GiftSelection(
+         return true
+     }
+ 
++    /** Picks or unpicks a gift to [on]; false when nothing changed (not active, busy, or already so). */
++    fun setSelected(gift: TL_stars.SavedStarGift, on: Boolean): Boolean {
++        if (!isActive || isBusy) return false
++        val key = key(gift)
++        val had = selected.containsKey(key)
++        if (had == on) return false
++        if (on) selected[key] = gift else selected.remove(key)
++        fire()
++        return true
++    }
++
+     fun remove(gift: TL_stars.SavedStarGift) {
+         if (selected.remove(key(gift)) != null) fire()
+     }
+diff --git a/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt b/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt
+index dd527d6a3..f32ed14ef 100644
+--- a/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt
++++ b/TMessagesProj/src/main/java/tele/ui/TeleGiftSelectionBar.kt
+@@ -95,6 +95,7 @@ class TeleGiftSelectionBar(
+         Action.UNLIST -> ID_UNLIST
+         Action.CONVERT -> ID_CONVERT
+         Action.COLLECTION -> ID_COLLECTION
++        Action.DELETE -> ID_DELETE
+     }
+ 
+     private fun labelOf(action: Action): Int = when (action) {
+@@ -107,10 +108,11 @@ class TeleGiftSelectionBar(
+         Action.UNLIST -> R.string.Gift2ActionUnlist
+         Action.CONVERT -> R.string.TeleGiftsConvert
+         Action.COLLECTION -> R.string.Gift2AddToCollection
++        Action.DELETE -> R.string.Gift2DeleteOption
+     }
+ 
+     private fun button(id: Int, text: Int, action: Action): TextView {
+-        val accent = color(Theme.key_featuredStickers_addButton)
++        val accent = color(if (action == Action.DELETE) Theme.key_text_RedRegular else Theme.key_featuredStickers_addButton)
+         val view = TextView(context)
+         view.id = id
+         view.gravity = Gravity.CENTER
+@@ -160,6 +162,7 @@ class TeleGiftSelectionBar(
+         const val ID_UNLIST = 9678
+         const val ID_CONVERT = 9679
+         const val ID_COLLECTION = 9680
++        const val ID_DELETE = 9682
+         const val ID_SCROLL = 9681
+         // the "Select gifts" entry of the gifts menu
+         const val ID_SELECT = 9665
+diff --git a/TMessagesProj/src/main/res/values-ru/strings_tele.xml b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+index 999d345a5..95fcf8a04 100644
+--- a/TMessagesProj/src/main/res/values-ru/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+@@ -319,6 +319,12 @@
+     <string name="TeleGiftsConverted_other">Подарки (%1$d) конвертированы в %2$s Stars</string>
+     <string name="TeleGiftsAddedToCollection_one">%1$d подарок добавлен в %2$s</string>
+     <string name="TeleGiftsAddedToCollection_other">Подарки (%1$d) добавлены в %2$s</string>
++    <string name="TeleGiftsReasonNoDelete_one">%1$d подарок нельзя удалить</string>
++    <string name="TeleGiftsReasonNoDelete_other">Подарки (%1$d) нельзя удалить</string>
++    <string name="TeleGiftsDeleteConfirm_one">Удалить %1$d подарок навсегда? Stars не вернутся.</string>
++    <string name="TeleGiftsDeleteConfirm_other">Удалить подарки (%1$d) навсегда? Stars не вернутся.</string>
++    <string name="TeleGiftsDeleted_one">%1$d подарок удалён</string>
++    <string name="TeleGiftsDeleted_other">Подарки (%1$d) удалены</string>
+     <string name="TeleGiftStudioSaved">Подарок сохранён</string>
+     <string name="TeleGiftStudioRarityUncommon">необычный</string>
+     <string name="TeleGiftStudioRarityRare">редкий</string>
+diff --git a/TMessagesProj/src/main/res/values-uk/strings_tele.xml b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+index 152edb2de..266ef913b 100644
+--- a/TMessagesProj/src/main/res/values-uk/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+@@ -319,6 +319,12 @@
+     <string name="TeleGiftsConverted_other">Подарунки (%1$d) конвертовано у %2$s Stars</string>
+     <string name="TeleGiftsAddedToCollection_one">%1$d подарунок додано до %2$s</string>
+     <string name="TeleGiftsAddedToCollection_other">Подарунки (%1$d) додано до %2$s</string>
++    <string name="TeleGiftsReasonNoDelete_one">%1$d подарунок не можна видалити</string>
++    <string name="TeleGiftsReasonNoDelete_other">Подарунки (%1$d) не можна видалити</string>
++    <string name="TeleGiftsDeleteConfirm_one">Видалити %1$d подарунок назавжди? Stars не повернуться.</string>
++    <string name="TeleGiftsDeleteConfirm_other">Видалити подарунки (%1$d) назавжди? Stars не повернуться.</string>
++    <string name="TeleGiftsDeleted_one">%1$d подарунок видалено</string>
++    <string name="TeleGiftsDeleted_other">Подарунки (%1$d) видалено</string>
+     <string name="TeleGiftStudioSaved">Подарунок збережено</string>
+     <string name="TeleGiftStudioRarityUncommon">незвичайний</string>
+     <string name="TeleGiftStudioRarityRare">рідкісний</string>
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index e418e80af..65846fbb6 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -320,6 +320,12 @@
+     <string name="TeleGiftsConverted_other">%1$d gifts converted to %2$s stars</string>
+     <string name="TeleGiftsAddedToCollection_one">%1$d gift added to %2$s</string>
+     <string name="TeleGiftsAddedToCollection_other">%1$d gifts added to %2$s</string>
++    <string name="TeleGiftsReasonNoDelete_one">%1$d gift can\'t be deleted</string>
++    <string name="TeleGiftsReasonNoDelete_other">%1$d gifts can\'t be deleted</string>
++    <string name="TeleGiftsDeleteConfirm_one">Delete %1$d gift permanently? You won\'t receive any Stars.</string>
++    <string name="TeleGiftsDeleteConfirm_other">Delete %1$d gifts permanently? You won\'t receive any Stars.</string>
++    <string name="TeleGiftsDeleted_one">%1$d gift deleted</string>
++    <string name="TeleGiftsDeleted_other">%1$d gifts deleted</string>
+     <string name="TeleGiftStudioSaved">The gift is saved</string>
+     <string name="TeleGiftStudioRarityUncommon">uncommon</string>
+     <string name="TeleGiftStudioRarityRare">rare</string>

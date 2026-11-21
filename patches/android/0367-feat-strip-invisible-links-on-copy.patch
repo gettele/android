@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Sat, 21 Nov 2026 23:04:01 +0300
+Subject: [PATCH] feat: strip invisible links on copy
+
+A custom-url link whose whole text is invisible code points is dropped when copying a message (plain, rich, gift caption, admin log, Markdown/HTML), behind the off-by-default Remove invisible links when copying switch in tele links settings. Port of desktop 0343.
+---
+ .../telegram/ui/ChannelAdminLogActivity.java  |  2 +-
+ .../java/org/telegram/ui/ChatActivity.java    |  9 ++--
+ .../src/main/java/tele/TeleConfig.kt          |  2 +
+ .../src/main/java/tele/helpers/CopyLinks.kt   | 54 +++++++++++++++++++
+ .../src/main/java/tele/helpers/CopyMarkup.kt  |  4 +-
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  1 +
+ 6 files changed, 65 insertions(+), 7 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/CopyLinks.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java
+index f0639f67b..e03302556 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChannelAdminLogActivity.java
+@@ -2096,7 +2096,7 @@ public class ChannelAdminLogActivity extends BaseFragment implements Notificatio
+         }
+         switch (option) {
+             case OPTION_COPY: {
+-                AndroidUtilities.addToClipboard(getMessageContent(selectedObject, 0, true));
++                AndroidUtilities.addToClipboard(tele.helpers.CopyLinks.clean(getMessageContent(selectedObject, 0, true)));
+                 BulletinFactory.of(ChannelAdminLogActivity.this).createCopyBulletin(getString(R.string.MessageCopied)).show();
+                 break;
+             }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 8905cd60e..1d29dfe91 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -35733,24 +35733,25 @@ public class ChatActivity extends BaseFragment implements
+                     CharSequence plain = selectedObject.richLayout != null && !TextUtils.isEmpty(selectedObject.richLayout.joinedText)
+                         ? selectedObject.richLayout.joinedText
+                         : getMessageContent(selectedObject, 0, false);
++                    plain = tele.helpers.CopyLinks.clean(plain);
+                     if (!TextUtils.isEmpty(html)) {
+                         AndroidUtilities.addToClipboard(plain, html);
+                     } else {
+                         AndroidUtilities.addToClipboard(plain);
+                     }
+                 } else if (selectedObject.richLayout != null && !TextUtils.isEmpty(selectedObject.richLayout.joinedText)) {
+-                    AndroidUtilities.addToClipboard(selectedObject.richLayout.joinedText);
++                    AndroidUtilities.addToClipboard(tele.helpers.CopyLinks.clean(selectedObject.richLayout.joinedText));
+                 } else if (selectedObject.messageOwner.action instanceof TLRPC.TL_messageActionStarGiftUnique && ((TLRPC.TL_messageActionStarGiftUnique) (selectedObject.messageOwner.action)).message != null) {
+                     TLRPC.TL_textWithEntities textWithEntities = ((TLRPC.TL_messageActionStarGiftUnique) (selectedObject.messageOwner.action)).message;
+                     CharSequence caption = Emoji.replaceEmoji(textWithEntities.text, Theme.chat_msgTextPaint.getFontMetricsInt(), false);
+                     caption = MessageObject.replaceAnimatedEmoji(caption, textWithEntities.entities, Theme.chat_msgTextPaint.getFontMetricsInt(), false);
+-                    AndroidUtilities.addToClipboard(caption);
++                    AndroidUtilities.addToClipboard(tele.helpers.CopyLinks.clean(caption));
+                 } else {
+                     CharSequence caption = getMessageCaption(selectedObject, selectedObjectGroup);
+                     if (caption != null) {
+-                        AndroidUtilities.addToClipboard(caption);
++                        AndroidUtilities.addToClipboard(tele.helpers.CopyLinks.clean(caption));
+                     } else {
+-                        AndroidUtilities.addToClipboard(getMessageContent(selectedObject, 0, false));
++                        AndroidUtilities.addToClipboard(tele.helpers.CopyLinks.clean(getMessageContent(selectedObject, 0, false)));
+                     }
+                 }
+                 createUndoView();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 2e9125269..a7bc15939 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -280,6 +280,8 @@ object TeleConfig {
+     @JvmField
+     val CLEAN_SENT_LINKS = BoolItem("clean_sent_links", false)
+     @JvmField
++    val REMOVE_INVISIBLE_COPY_LINKS = BoolItem("remove_invisible_copy_links", false)
++    @JvmField
+     val REWRITE_PASTED_LINKS = BoolItem("rewrite_pasted_links", false)
+     @JvmField
+     val REWRITE_PREVIEW_ONLY = BoolItem("rewrite_preview_only", false)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/CopyLinks.kt b/TMessagesProj/src/main/java/tele/helpers/CopyLinks.kt
+new file mode 100644
+index 000000000..b190fd206
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/CopyLinks.kt
+@@ -0,0 +1,54 @@
++package tele.helpers
++
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.style.URLSpan
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++/**
++ * Strips links hidden in invisible text when copying (desktop 0343). A custom-url entity whose
++ * whole range is invisible code points carries no visible text, so the link goes and the invisible
++ * characters with it; a link over visible text stays.
++ */
++object CopyLinks {
++
++    @JvmStatic
++    fun enabled(): Boolean = TeleConfig.REMOVE_INVISIBLE_COPY_LINKS.value
++
++    /** The plain copy of a message: invisible custom links are dropped from the spanned text. */
++    @JvmStatic
++    fun clean(text: CharSequence?): CharSequence? {
++        if (!enabled() || text !is Spanned) return text
++        val spans = text.getSpans(0, text.length, URLSpan::class.java)
++        var result: SpannableStringBuilder? = null
++        // right to left, so earlier offsets stay valid while ranges are removed
++        for (span in spans.sortedByDescending { text.getSpanStart(it) }) {
++            val start = text.getSpanStart(span)
++            val end = text.getSpanEnd(span)
++            if (start < 0 || end <= start) continue
++            if (!InvisibleNames.isInvisibleText(text.subSequence(start, end))) continue
++            val builder = result ?: SpannableStringBuilder(text).also { result = it }
++            builder.removeSpan(span)
++            builder.delete(start, end)
++        }
++        return result ?: text
++    }
++
++    /** The Markdown/HTML copy: invisible text-url entities are dropped before conversion. */
++    @JvmStatic
++    fun cleanEntities(text: String, entities: List<TLRPC.MessageEntity>?): List<TLRPC.MessageEntity>? {
++        if (!enabled() || entities.isNullOrEmpty()) return entities
++        val result = ArrayList<TLRPC.MessageEntity>(entities.size)
++        for (entity in entities) {
++            if (entity is TLRPC.TL_messageEntityTextUrl && hidden(text, entity.offset, entity.length)) continue
++            result.add(entity)
++        }
++        return result
++    }
++
++    private fun hidden(text: String, offset: Int, length: Int): Boolean {
++        if (offset < 0 || length <= 0 || offset > text.length || length > text.length - offset) return false
++        return InvisibleNames.isInvisibleText(text.substring(offset, offset + length))
++    }
++}
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt b/TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt
+index 7ed295277..6d086c7fe 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/CopyMarkup.kt
+@@ -343,10 +343,10 @@ object CopyMarkup {
+     }
+ 
+     @JvmStatic
+-    fun toMarkdown(text: String, entities: List<TLRPC.MessageEntity>?): String = convert(text, entities, false)
++    fun toMarkdown(text: String, entities: List<TLRPC.MessageEntity>?): String = convert(text, CopyLinks.cleanEntities(text, entities), false)
+ 
+     @JvmStatic
+-    fun toHtml(text: String, entities: List<TLRPC.MessageEntity>?): String = convert(text, entities, true)
++    fun toHtml(text: String, entities: List<TLRPC.MessageEntity>?): String = convert(text, CopyLinks.cleanEntities(text, entities), true)
+ 
+     // the message, or the one message of an album that has the text
+     private fun source(message: MessageObject?, group: MessageObject.GroupedMessages?): MessageObject? {
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 6d8a5240c..c9c1ab3e2 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -2076,6 +2076,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 rows.add(Row(TYPE_HEADER, "Links"))
+                 rows.add(toggle("Clean tracking parameters from opened links", TeleConfig.CLEAN_OPENED_LINKS))
+                 rows.add(toggle("Clean tracking parameters from sent links", TeleConfig.CLEAN_SENT_LINKS))
++                rows.add(toggle("Remove invisible links when copying", TeleConfig.REMOVE_INVISIBLE_COPY_LINKS))
+                 rows.add(toggle("Rewrite pasted links by rules", TeleConfig.REWRITE_PASTED_LINKS))
+                 if (all || TeleConfig.REWRITE_PASTED_LINKS.value) {
+                     rows.add(toggle("Rewrite only the link preview", TeleConfig.REWRITE_PREVIEW_ONLY))
