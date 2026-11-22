@@ -2,11 +2,11 @@
 
 every tele android release, newest first. release notes and the in-app what's new are made from `ci/changelog.json` and the published `tele-changelog.json`; this page keeps the same history readable in the repository. [features](../features.md) groups the same features by settings page. Follow [releasing](releasing.md#before-a-release) when writing the next changelog: new/fix sections keep categories one heading level below, and Telegram news appears only when the base changes from the latest published release.
 
-14 releases, 357 patches at [tele 14](https://github.com/gettele/android/releases/tag/v13.2.2-tele.14). the queue now has 357 patches on telegram 13.2.2. Upcoming changes live in `ci/changelog.json`; only published releases belong in this history.
+15 releases, 370 patches at [tele 15](https://github.com/gettele/android/releases/tag/v13.2.2-tele.15). the queue now has 370 patches on telegram 13.2.2. Upcoming changes live in `ci/changelog.json`; only published releases belong in this history.
 
 | release | base | published | patches |
 |---|---|---|---|
-| [tele 14 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.14) | 13.2.2 | 2026-11-16 | 357 |
+| [tele 15 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.15) | 13.2.2 | 2026-11-22 | 370 |
 | [tele 13 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.13) | 13.2.2 | 2026-11-15 | 349 |
 | [tele 12 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.12) | 13.2.2 | 2026-11-13 | 342 |
 | [tele 11 · 13.2.1](https://github.com/gettele/android/releases/tag/v13.2.1-tele.11) | 13.2.1 | 2026-11-11 | 336 |
@@ -21,6 +21,46 @@ every tele android release, newest first. release notes and the in-app what's ne
 | [tele 2 · 13.0.3](https://github.com/gettele/android/releases/tag/v13.0.3-tele.2) | 13.0.3 | 2026-10-21 | 127 |
 | [tele 1 · 13.0.2](https://github.com/gettele/android/releases/tag/v13.0.2-tele.1) | 13.0.2 | 2026-10-19 | 96 |
 
+
+### [tele 15 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.15)
+
+#### new
+
+##### messages
+
+- links hidden in invisible characters — zero-width text or just spaces and tabs — lose the link when copying a message, in plain, rich, Markdown and HTML copies; their spaces and tabs stay as plain text, zero-width characters go, and links over visible text stay (tele → privacy → links, off)
+
+##### interface
+
+- material you themes on android 12 and newer: colors from the wallpaper palette, a picked color or a photo, with a flat chat background from the same palette and a tile in chat settings appearance that turns the theme off when you pick another; switching it off restores the previous themes, auto-night rule and wallpaper (tele → interface → appearance, off)
+- true black for the dark material theme (tele → interface → appearance → amoled black, off)
+- customize the bottom bar: up to six tabs, the stock pages in any order with chats movable too, folders or the archive as pages, tele settings or a tele section, a universal settings section, global search, new message, round video, saved messages or any chat added as a tab with its avatar and unread count, and mini apps as pages, under a glass app bar; mini apps open from their main app, named app or menu button, and keep working after a restart (tele → interface → bottom bar, off)
+- an editor for the bottom bar: drag, replace (any tab except chats swaps its purpose in place), add and remove tabs, pick from the stock animated icons, choose which tabs show labels and reset to the defaults; tabs share one width with long titles cut short, saved and profile tabs show real avatars, icons center when labels are hidden, and the selected tab can show its name instead of its icon (tele → interface → bottom bar → edit tabs, off)
+- new toggles carry a NEW badge on their settings page after an update, until the what's new page is opened (tele, always on)
+
+##### profiles
+
+- bulk delete of picked gifts with a permanent-delete confirmation, and drag-select: while picking, a long press and drag selects a whole range, the first gift decides select or unselect (tele → profiles and ids → select several gifts, off)
+
+#### fixes
+
+##### sending
+
+- round-video zoom reuses the capture request builder instead of recreating it every frame, removing the preview lag and frame freeze some devices showed when zooming while recording (tele → sending → round video, always on)
+
+##### messages
+
+- kept deleted messages no longer disappear when someone sends a new message after deleting one: a repeated delete update from the server is ignored, while deleting a kept message again yourself still forgets it (tele → messages → keep deleted messages, always on)
+- typed emoticons like :-( stay literal: the composer no longer auto-closes a paren that continues an emoticon (tele → messages → composer, off)
+
+##### chats
+
+- folder tabs stay available when the all chats folder is hidden and only one folder is left; local folders and an open folder selection survive a sync, and saved folders load on a cold start instead of only after opening chat folders (always on)
+- chats from an older period no longer vanish from the chat list and folders: loading more chats no longer skips over dialogs because of an old pinned message, and old chats that are already loaded are no longer hidden (chat list, always on)
+
+##### interface
+
+- the photo and video viewer's menu no longer shows a stray separator above save to gallery when it is the only action (photo and video viewer → ⋮, always on)
 ### [tele 12 · 13.2.2](https://github.com/gettele/android/releases/tag/v13.2.2-tele.12)
 
 #### telegram android 13.2.2
