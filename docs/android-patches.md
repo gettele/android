@@ -212,6 +212,7 @@ Implements the Android in-app updater (APK feed, SHA-256, resume and retry), a l
 | [`0201-feat-every-version-s-changes.patch`](../patches/android/0201-feat-every-version-s-changes.patch) |
 | [`0202-feat-what-s-new-with-live-toggles.patch`](../patches/android/0202-feat-what-s-new-with-live-toggles.patch) |
 | [`0203-fix-retry-dropped-update-downloads.patch`](../patches/android/0203-fix-retry-dropped-update-downloads.patch) |
+| [`0370-feat-mark-new-tele-toggles-with-NEW.patch`](../patches/android/0370-feat-mark-new-tele-toggles-with-NEW.patch) |
 
 <a id="a008"></a>
 
