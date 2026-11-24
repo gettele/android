@@ -1,0 +1,1638 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Tue, 24 Nov 2026 21:14:40 +0300
+Subject: [PATCH] feat: port desktop 29 parity
+
+- Port member-rank prefetch, exact leading reply quotes, story posting gate, bot previews, sharp folder emoji, plain calendar, gift-offer hiding and Money coverage.
+- Add bounded incoming Money transfer notices and chat-menu badge, earlier on-chain password guards, and per-socket media-to-regular download fallback after two pre-data timeouts.
+- Desktop-only reply-next, Linux helper packaging and AI bot-info editing are not applicable to this fork.
+---
+ TMessagesProj/jni/tgnet/Connection.cpp        |  17 +-
+ TMessagesProj/jni/tgnet/Connection.h          |   5 +
+ .../jni/tgnet/ConnectionsManager.cpp          |  58 ++-
+ TMessagesProj/jni/tgnet/Datacenter.cpp        |  30 +-
+ TMessagesProj/jni/tgnet/Datacenter.h          |   3 +-
+ TMessagesProj/jni/tgnet/Request.cpp           |   2 +-
+ TMessagesProj/jni/tgnet/Request.h             |   2 +
+ .../messenger/MessagesController.java         |   1 +
+ .../messenger/NotificationsController.java    |   5 +
+ .../org/telegram/ui/CalendarActivity.java     |  13 +-
+ .../org/telegram/ui/Cells/ChatActionCell.java |   4 +-
+ .../telegram/ui/Cells/ChatMessageCell.java    |  18 +-
+ .../java/org/telegram/ui/ChatActivity.java    |  14 +-
+ .../ui/Components/FilterTabsView.java         |  26 +-
+ .../ui/Components/SharedMediaLayout.java      |   8 +-
+ .../java/org/telegram/ui/DialogsActivity.java |   5 +-
+ .../ui/Gifts/ResaleGiftsFragment.java         |   4 +
+ .../java/org/telegram/ui/LaunchActivity.java  |   3 +
+ .../org/telegram/ui/PeerColorActivity.java    |   4 +
+ .../java/org/telegram/ui/ProfileActivity.java |  13 +-
+ .../org/telegram/ui/Stars/GiftOfferSheet.java |   4 +
+ .../org/telegram/ui/Stars/StarGiftSheet.java  |  14 +-
+ .../org/telegram/ui/Wallet/GramWallet.java    |   1 +
+ .../telegram/ui/Wallet/WalletActivity.java    |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |  12 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |  15 +-
+ .../src/main/java/tele/helpers/GiftBulk.kt    |   4 +-
+ .../src/main/java/tele/helpers/GiftOffers.kt  |  16 +
+ .../main/java/tele/helpers/MoneyIncoming.kt   | 368 ++++++++++++++++++
+ .../java/tele/helpers/ReplyQuotePromotion.kt  |  96 +++++
+ .../main/java/tele/helpers/TeleMtpDanger.kt   |   2 +-
+ .../src/main/java/tele/helpers/TeleNotices.kt |   3 +-
+ .../java/tele/helpers/TeleSettingsLinks.kt    |   3 +-
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  12 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  12 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  12 +
+ .../src/main/res/values-ru/strings_tele.xml   |   2 +
+ .../src/main/res/values-uk/strings_tele.xml   |   2 +
+ .../src/main/res/values/strings_tele.xml      |   2 +
+ 39 files changed, 774 insertions(+), 42 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/GiftOffers.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
+
+diff --git a/TMessagesProj/jni/tgnet/Connection.cpp b/TMessagesProj/jni/tgnet/Connection.cpp
+index 3ce0c222d..8f1b2c907 100644
+--- a/TMessagesProj/jni/tgnet/Connection.cpp
++++ b/TMessagesProj/jni/tgnet/Connection.cpp
+@@ -308,7 +308,7 @@ void Connection::connect() {
+     }
+     uint32_t isStatic = connectionType == ConnectionTypeProxy || !ConnectionsManager::getInstance(currentDatacenter->instanceNum).proxyAddress.empty() ? TcpAddressFlagStatic : 0;
+     TcpAddress *tcpAddress = nullptr;
+-    if (isMediaConnectionType(connectionType)) {
++    if (isMediaConnectionType(connectionType) && !(isDownloadConnectionType(connectionType) && regularDownloadRoute)) {
+         currentAddressFlags = TcpAddressFlagDownload | isStatic;
+         tcpAddress = currentDatacenter->getCurrentAddress(currentAddressFlags | ipv6);
+         if (tcpAddress == nullptr) {
+@@ -415,6 +415,18 @@ bool Connection::isMediaConnectionType(ConnectionType type) {
+     return (type & ConnectionTypeGenericMedia) != 0 || (type & ConnectionTypeDownload) != 0;
+ }
+ 
++bool Connection::isDownloadConnectionType(uint32_t type) {
++    return (type & 0xffff) == ConnectionTypeDownload;
++}
++
++bool Connection::usesMediaAddress() const {
++    return isMediaConnection;
++}
++
++bool Connection::isRegularDownloadRoute() const {
++    return regularDownloadRoute;
++}
++
+ void Connection::setHasUsefullData() {
+     if (!usefullData) {
+         usefullDataReceiveTime = ConnectionsManager::getInstance(currentDatacenter->instanceNum).getCurrentTimeMonotonicMillis();
+@@ -738,6 +750,9 @@ void Connection::onConnected() {
+     wasConnected = true;
+     if (LOGS_ENABLED) DEBUG_D("connection(%p, account%u, dc%u, type %d) connected to %s:%hu", this, currentDatacenter->instanceNum, currentDatacenter->getDatacenterId(), connectionType, hostAddress.c_str(), hostPort);
+     ConnectionsManager::getInstance(currentDatacenter->instanceNum).onConnectionConnected(this);
++    if (isDownloadConnectionType(connectionType) && isMediaConnection) {
++        mediaConnectTimeouts = 0;
++    }
+ }
+ 
+ bool Connection::hasPendingRequests() {
+diff --git a/TMessagesProj/jni/tgnet/Connection.h b/TMessagesProj/jni/tgnet/Connection.h
+index 81e4d5edc..50aad4fd6 100644
+--- a/TMessagesProj/jni/tgnet/Connection.h
++++ b/TMessagesProj/jni/tgnet/Connection.h
+@@ -42,6 +42,9 @@ public:
+     Datacenter *getDatacenter();
+     bool isSuspended();
+     static bool isMediaConnectionType(ConnectionType type);
++    static bool isDownloadConnectionType(uint32_t type);
++    bool usesMediaAddress() const;
++    bool isRegularDownloadRoute() const;
+ 
+ protected:
+ 
+@@ -102,6 +105,8 @@ private:
+     uint32_t currentTimeout = 4;
+     uint32_t receivedDataAmount = 0;
+     uint32_t generation = 0;
++    bool regularDownloadRoute = false;
++    uint8_t mediaConnectTimeouts = 0;
+ 
+     uint8_t temp[64];
+ 
+diff --git a/TMessagesProj/jni/tgnet/ConnectionsManager.cpp b/TMessagesProj/jni/tgnet/ConnectionsManager.cpp
+index b9d0c46a0..a8738e469 100644
+--- a/TMessagesProj/jni/tgnet/ConnectionsManager.cpp
++++ b/TMessagesProj/jni/tgnet/ConnectionsManager.cpp
+@@ -701,6 +701,53 @@ void ConnectionsManager::onConnectionClosed(Connection *connection, int reason)
+         lastProtocolUsefullData = false;
+     }
+     Datacenter *datacenter = connection->getDatacenter();
++    if (reason == 2 && Connection::isDownloadConnectionType(connection->getConnectionType()) &&
++            !datacenter->isCdnDatacenter && connection->usesMediaAddress() &&
++            !connection->hasSomeDataSinceLastConnect && !connection->regularDownloadRoute) {
++        if (++connection->mediaConnectTimeouts >= 2) {
++            uint32_t flags = connection->currentAddressFlags & ~TcpAddressFlagDownload;
++            if (datacenter->getCurrentAddress(flags) != nullptr) {
++                uint32_t token = connection->getConnectionToken();
++                uint8_t slot = connection->getConnectionNum();
++                scheduleTask([this, connection, datacenter, token, slot] {
++                    connection->regularDownloadRoute = true;
++                    connection->mediaConnectTimeouts = 0;
++                    connection->failedConnectionCount = 0;
++                    connection->willRetryConnectCount = 1;
++                    connection->lastReconnectTimeout = 100;
++                    connection->isTryingNextPort = false;
++                    connection->forceNextPort = false;
++                    connection->recreateSession();
++                    auto markRegular = [&](Request *request) {
++                        if (request->cancelled || request->datacenterId != datacenter->getDatacenterId() ||
++                                !Connection::isDownloadConnectionType(request->connectionType) ||
++                                (uint8_t) (request->connectionType >> 16) != slot) {
++                            return;
++                        }
++                        request->regularDownloadRoute = true;
++                        request->regularDownloadDcId = request->datacenterId;
++                        if (request->isInitMediaRequest) {
++                            request->isInitMediaRequest = false;
++                            request->isInitRequest = true;
++                        }
++                    };
++                    for (auto &request : runningRequests) {
++                        if (request->connectionToken == token) {
++                            markRegular(request.get());
++                            request->retryCount = 0;
++                            request->clear(true);
++                        }
++                    }
++                    for (auto &request : requestsQueue) {
++                        markRegular(request.get());
++                    }
++                    processRequestQueue(ConnectionTypeDownload, datacenter->getDatacenterId(), connection);
++                });
++            }
++        }
++    } else if (reason != 2 || connection->hasSomeDataSinceLastConnect) {
++        connection->mediaConnectTimeouts = 0;
++    }
+     if ((connection->getConnectionType() == ConnectionTypeGeneric || connection->getConnectionType() == ConnectionTypeGenericMedia) && datacenter->isHandshakingAny()) {
+         datacenter->onHandshakeConnectionClosed(connection);
+     }
+@@ -806,7 +853,10 @@ void ConnectionsManager::onConnectionConnected(Connection *connection) {
+         return;
+     }
+ 
+-    if (datacenter->hasAuthKey(connectionType, 1)) {
++    ConnectionType authKeyType = connectionType == ConnectionTypeDownload
++            ? (ConnectionType) (ConnectionTypeDownload | (connection->getConnectionNum() << 16))
++            : connectionType;
++    if (datacenter->hasAuthKey(authKeyType, 1)) {
+         if (connectionType == ConnectionTypePush) {
+             sendingPushPing = false;
+             lastPushPingTime = getCurrentTimeMonotonicMillis();
+@@ -1132,7 +1182,7 @@ void ConnectionsManager::processServerResponse(TLObject *message, int64_t messag
+             salt->valid_until = salt->valid_since = getCurrentTime();
+             salt->valid_until += 30 * 60;
+             salt->salt = response->server_salt;
+-            datacenter->addServerSalt(salt, Connection::isMediaConnectionType(connection->getConnectionType()));
++            datacenter->addServerSalt(salt, connection->usesMediaAddress());
+ 
+             for (auto & runningRequest : runningRequests) {
+                 Request *request = runningRequest.get();
+@@ -1648,7 +1698,7 @@ void ConnectionsManager::processServerResponse(TLObject *message, int64_t messag
+                 break;
+         }
+     } else if (typeInfo == typeid(TL_bad_server_salt)) {
+-        bool media = Connection::isMediaConnectionType(connection->getConnectionType());
++        bool media = connection->usesMediaAddress();
+         requestSaltsForDatacenter(datacenter, media, connection->getConnectionType() == ConnectionTypeTemp);
+         if (messageId != 0) {
+             auto time = (int64_t) (messageId / 4294967296.0 * 1000);
+@@ -3193,7 +3243,7 @@ void ConnectionsManager::processRequestQueue(uint32_t connectionTypes, uint32_t
+     size_t count = neededDatacenters.size();
+     for (uint32_t a = 0; a < count; a++) {
+         Datacenter *datacenter = neededDatacenters[a].first;
+-        bool media = Connection::isMediaConnectionType(neededDatacenters[a].second) && datacenter->hasMediaAddress();
++        bool media = datacenter->isMediaRoute(neededDatacenters[a].second);
+         if (datacenter->getDatacenterId() != movingToDatacenterId && !datacenter->isHandshaking(media) && !datacenter->hasAuthKey(neededDatacenters[a].second, 1)) {
+             datacenter->beginHandshake(media ? HandshakeTypeMediaTemp : HandshakeTypeTemp, true);
+         }
+diff --git a/TMessagesProj/jni/tgnet/Datacenter.cpp b/TMessagesProj/jni/tgnet/Datacenter.cpp
+index 7adf307da..cf855fe0b 100644
+--- a/TMessagesProj/jni/tgnet/Datacenter.cpp
++++ b/TMessagesProj/jni/tgnet/Datacenter.cpp
+@@ -820,10 +820,15 @@ void Datacenter::recreateSessions(HandshakeType type) {
+                 a->recreateSession();
+             }
+         }
++        for (auto & a : downloadConnection) {
++            if (a != nullptr && a->isRegularDownloadRoute()) {
++                a->recreateSession();
++            }
++        }
+     }
+     if (type == HandshakeTypeAll || type == HandshakeTypeMediaTemp || type == HandshakeTypePerm) {
+         for (auto & a : downloadConnection) {
+-            if (a != nullptr) {
++            if (a != nullptr && !a->isRegularDownloadRoute()) {
+                 a->recreateSession();
+             }
+         }
+@@ -1072,7 +1077,18 @@ inline void generateMessageKey(int32_t instanceNum, uint8_t *authKey, uint8_t *m
+     }
+ }
+ 
+-ByteArray *Datacenter::getAuthKey(ConnectionType connectionType, bool perm, int64_t *authKeyId, int32_t allowPendingKey) {
++bool Datacenter::isMediaRoute(uint32_t connectionType) {
++    if (!Connection::isMediaConnectionType((ConnectionType) (connectionType & 0xffff)) || !hasMediaAddress()) {
++        return false;
++    }
++    if (Connection::isDownloadConnectionType(connectionType)) {
++        Connection *connection = downloadConnection[(uint8_t) (connectionType >> 16)];
++        return connection == nullptr || !connection->isRegularDownloadRoute();
++    }
++    return true;
++}
++
++ByteArray *Datacenter::getAuthKey(ConnectionType connectionType, bool perm, int64_t *authKeyId, int32_t allowPendingKey, Connection *connection) {
+     bool usePermKey = isCdnDatacenter || perm || !PFS_ENABLED;
+     if (usePermKey) {
+         if (authKeyId != nullptr) {
+@@ -1080,7 +1096,7 @@ ByteArray *Datacenter::getAuthKey(ConnectionType connectionType, bool perm, int6
+         }
+         return authKeyPerm;
+     } else {
+-        bool media = Connection::isMediaConnectionType(connectionType) && hasMediaAddress();
++        bool media = connection != nullptr ? connection->usesMediaAddress() : isMediaRoute(connectionType);
+         ByteArray *authKeyPending = nullptr;
+         int64_t authKeyPendingId = 0;
+         for (auto & iter : handshakes) {
+@@ -1112,7 +1128,7 @@ ByteArray *Datacenter::getAuthKey(ConnectionType connectionType, bool perm, int6
+ 
+ NativeByteBuffer *Datacenter::createRequestsData(std::vector<std::unique_ptr<NetworkMessage>> &requests, int32_t *quickAckId, Connection *connection, bool pfsInit) {
+     int64_t authKeyId;
+-    ByteArray *authKey = getAuthKey(connection->getConnectionType(), pfsInit, &authKeyId, 1);
++    ByteArray *authKey = getAuthKey(connection->getConnectionType(), pfsInit, &authKeyId, 1, connection);
+     if (authKey == nullptr) {
+         return nullptr;
+     }
+@@ -1195,7 +1211,7 @@ NativeByteBuffer *Datacenter::createRequestsData(std::vector<std::unique_ptr<Net
+         RAND_bytes((uint8_t *) &value, 8);
+         buffer->writeInt64(value);
+     } else {
+-        buffer->writeInt64(getServerSalt(Connection::isMediaConnectionType(connection->getConnectionType())));
++        buffer->writeInt64(getServerSalt(connection->usesMediaAddress()));
+         buffer->writeInt64(connection->getSessionId());
+     }
+     buffer->writeInt64(messageId);
+@@ -1245,7 +1261,7 @@ NativeByteBuffer *Datacenter::createRequestsData(std::vector<std::unique_ptr<Net
+ 
+ bool Datacenter::decryptServerResponse(int64_t keyId, uint8_t *key, uint8_t *data, uint32_t length, Connection *connection) {
+     int64_t authKeyId;
+-    ByteArray *authKey = getAuthKey(connection->getConnectionType(), false, &authKeyId, 1);
++    ByteArray *authKey = getAuthKey(connection->getConnectionType(), false, &authKeyId, 1, connection);
+     if (authKey == nullptr) {
+         return false;
+     }
+@@ -1324,7 +1340,7 @@ Connection *Datacenter::getProxyConnection(uint8_t num, bool create, bool connec
+ }
+ 
+ Connection *Datacenter::getDownloadConnection(uint8_t num, bool create) {
+-    ByteArray *authKey = getAuthKey(ConnectionTypeDownload, false, nullptr, 0);
++    ByteArray *authKey = getAuthKey((ConnectionType) (ConnectionTypeDownload | (num << 16)), false, nullptr, 0);
+     if (authKey == nullptr) {
+         return nullptr;
+     }
+diff --git a/TMessagesProj/jni/tgnet/Datacenter.h b/TMessagesProj/jni/tgnet/Datacenter.h
+index 8d10580b8..e0f025705 100644
+--- a/TMessagesProj/jni/tgnet/Datacenter.h
++++ b/TMessagesProj/jni/tgnet/Datacenter.h
+@@ -79,8 +79,9 @@ private:
+     NativeByteBuffer *createRequestsData(std::vector<std::unique_ptr<NetworkMessage>> &requests, int32_t *quickAckId, Connection *connection, bool pfsInit);
+     bool decryptServerResponse(int64_t keyId, uint8_t *key, uint8_t *data, uint32_t length, Connection *connection);
+     TLObject *getCurrentHandshakeRequest(bool media);
+-    ByteArray *getAuthKey(ConnectionType connectionType, bool perm, int64_t *authKeyId, int32_t allowPendingKey);
++    ByteArray *getAuthKey(ConnectionType connectionType, bool perm, int64_t *authKeyId, int32_t allowPendingKey, Connection *connection = nullptr);
+ 
++    bool isMediaRoute(uint32_t connectionType);
+     const int32_t *defaultPorts = new int32_t[4] {-1, 443, 5222, -1};
+ 
+     int32_t instanceNum;
+diff --git a/TMessagesProj/jni/tgnet/Request.cpp b/TMessagesProj/jni/tgnet/Request.cpp
+index d64dca32f..e965c1502 100644
+--- a/TMessagesProj/jni/tgnet/Request.cpp
++++ b/TMessagesProj/jni/tgnet/Request.cpp
+@@ -70,7 +70,7 @@ bool Request::hasInitFlag() {
+ }
+ 
+ bool Request::isMediaRequest() {
+-    return Connection::isMediaConnectionType(connectionType);
++    return !(regularDownloadRoute && regularDownloadDcId == datacenterId) && Connection::isMediaConnectionType(connectionType);
+ }
+ 
+ bool Request::isCancelRequest() {
+diff --git a/TMessagesProj/jni/tgnet/Request.h b/TMessagesProj/jni/tgnet/Request.h
+index 78b28608e..662f27d5e 100644
+--- a/TMessagesProj/jni/tgnet/Request.h
++++ b/TMessagesProj/jni/tgnet/Request.h
+@@ -47,6 +47,8 @@ public:
+     bool cancelled = false;
+     bool isInitRequest = false;
+     bool isInitMediaRequest = false;
++    bool regularDownloadRoute = false;
++    uint32_t regularDownloadDcId = 0;
+     uint8_t dataType = 0;
+     int32_t serializedLength = 0;
+     int32_t startTime = 0;
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 0de684d3c..09df81bd0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -5050,6 +5050,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             editor.apply();
+             AndroidUtilities.runOnUIThread(() -> {
+                 getNotificationCenter().postNotificationName(NotificationCenter.appConfigUpdated);
++                tele.helpers.MoneyIncoming.onToggled();
+             });
+         }
+         if (liteAppOptions != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+index 97018d96a..ca79b2f44 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+@@ -1097,6 +1097,11 @@ public class NotificationsController extends BaseController implements Notificat
+                 if (messageObject == null || messageObject.messageOwner == null) {
+                     continue;
+                 }
++                if (tele.helpers.GiftOffers.hidden(messageObject)) {
++                    messageObjects.remove(i);
++                    i--;
++                    continue;
++                }
+                 boolean show = tele.scripting.ScriptNotifications.intercept(
+                         currentAccount,
+                         messageObject.getDialogId(),
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java
+index 2334714f1..728397c2e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/CalendarActivity.java
+@@ -1251,7 +1251,16 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+                     imagesByDays = null;
+                 }
+             }
+-            if (messagesByDays != null) {
++            if (tele.TeleConfig.PLAIN_SEARCH_CALENDAR.getValue()) {
++                if (imagesByDays != null) {
++                    for (int i = 0; i < imagesByDays.size(); i++) {
++                        imagesByDays.valueAt(i).onDetachedFromWindow();
++                        imagesByDays.valueAt(i).setParentView(null);
++                    }
++                }
++                imagesByDays = new SparseArray<>();
++            }
++            if (messagesByDays != null && !tele.TeleConfig.PLAIN_SEARCH_CALENDAR.getValue()) {
+                 if (imagesByDays == null) {
+                     imagesByDays = new SparseArray<>();
+                 }
+@@ -1360,7 +1369,7 @@ public class CalendarActivity extends BaseFragment implements NotificationCenter
+                     textPaint.setAlpha((int) (oldAlpha * 0.3f));
+                     canvas.drawText(Integer.toString(i + 1), cx, cy + dp(5), textPaint);
+                     textPaint.setAlpha(oldAlpha);
+-                } else if (day != null && day.hasImage) {
++                } else if (!tele.TeleConfig.PLAIN_SEARCH_CALENDAR.getValue() && day != null && day.hasImage) {
+                     float alpha = 1f;
+                     if (imagesByDays.get(i) != null) {
+                         if (checkEnterItems && !day.wasDrawn) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
+index f83270238..e92742a21 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatActionCell.java
+@@ -1924,7 +1924,7 @@ public class ChatActionCell extends BaseCell implements DownloadController.FileD
+ 
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+-        if (tele.helpers.TeleCommunities.hiddenService(currentMessageObject)) {
++        if (tele.helpers.TeleCommunities.hiddenService(currentMessageObject) || tele.helpers.GiftOffers.hidden(currentMessageObject)) {
+             setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 0);
+             return;
+         }
+@@ -2951,7 +2951,7 @@ public class ChatActionCell extends BaseCell implements DownloadController.FileD
+ 
+     @Override
+     protected void onDraw(Canvas canvas) {
+-        if (tele.helpers.TeleCommunities.hiddenService(currentMessageObject)) {
++        if (tele.helpers.TeleCommunities.hiddenService(currentMessageObject) || tele.helpers.GiftOffers.hidden(currentMessageObject)) {
+             return;
+         }
+         canvas.save();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index 0b23a918e..81ccb0847 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -16573,9 +16573,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                 CharSequence name = null;
+                 tele.ui.TeleNameBadges.HeaderBadges teleReplyBadges = null;
+                 boolean teleReplyForwarded = false;
+-                hasReplyQuote = messageObject.messageOwner.reply_to != null && (messageObject.messageOwner.reply_to.flags & 64) != 0 && messageObject.messageOwner.reply_to.quote_text != null;
+-                isReplyQuote = hasReplyQuote && messageObject.messageOwner.reply_to.quote;
+-                final boolean showQuote = isReplyQuote && messageObject.messageOwner.reply_to.quote;
++                final TLRPC.TL_textWithEntities promotedReplyQuote = tele.helpers.ReplyQuotePromotion.promote(messageObject);
++                final boolean hasServerReplyQuote = messageObject.messageOwner.reply_to != null && (messageObject.messageOwner.reply_to.flags & 64) != 0 && messageObject.messageOwner.reply_to.quote_text != null;
++                hasReplyQuote = hasServerReplyQuote || promotedReplyQuote != null;
++                isReplyQuote = hasServerReplyQuote && messageObject.messageOwner.reply_to.quote || promotedReplyQuote != null;
++                final boolean showQuote = isReplyQuote;
+                 if (isReplyQuote && showQuote && replyQuoteDrawable == null) {
+                     replyQuoteDrawable = getContext().getResources().getDrawable(R.drawable.mini_quote).mutate();
+                     replyQuoteDrawableColor = Color.WHITE;
+@@ -16816,7 +16818,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                                 stringFinalText = MessageObject.formatTextWithEntities(mediaTodo.poll.question, messageObject.isOutOwner(), textPaint);
+                             }
+                         }
+-                    } else if (hasReplyQuote || messageObject.messageOwner.reply_to != null && messageObject.messageOwner.reply_to.quote_text != null && messageObject.messageOwner.reply_to.reply_from != null) {
++                    } else if (hasServerReplyQuote || messageObject.messageOwner.reply_to != null && messageObject.messageOwner.reply_to.quote_text != null && messageObject.messageOwner.reply_to.reply_from != null) {
+                         String mess = messageObject.messageOwner.reply_to.quote_text;
+                         mess = mess.replace('\n', ' ');
+                         stringFinalText = new SpannableStringBuilder(mess);
+@@ -16825,6 +16827,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                             stringFinalText = MessageObject.replaceAnimatedEmoji(stringFinalText, messageObject.messageOwner.reply_to.quote_entities, textPaint.getFontMetricsInt(), true);
+                             MessageObject.addEntitiesToText(stringFinalText, messageObject.messageOwner.reply_to.quote_entities, currentMessageObject.isOutOwner(), false, false, false);
+                         }
++                    } else if (promotedReplyQuote != null) {
++                        String mess = promotedReplyQuote.text.replace('\n', ' ');
++                        stringFinalText = new SpannableStringBuilder(mess);
++                        stringFinalText = Emoji.replaceEmoji(stringFinalText, textPaint.getFontMetricsInt(), false);
++                        stringFinalText = MessageObject.replaceAnimatedEmoji(stringFinalText, promotedReplyQuote.entities, textPaint.getFontMetricsInt(), true);
++                        MessageObject.addEntitiesToText(stringFinalText, promotedReplyQuote.entities, currentMessageObject.isOutOwner(), false, false, false);
+                     } else if (messageObject.messageOwner.reply_to != null && messageObject.replyMessageObject != null && MessageObject.getMedia(messageObject.replyMessageObject) instanceof TLRPC.TL_messageMediaPoll) {
+                         TLRPC.TL_messageMediaPoll poll = (TLRPC.TL_messageMediaPoll) MessageObject.getMedia(messageObject.replyMessageObject);
+                         SpannableStringBuilder ssb = new SpannableStringBuilder();
+@@ -20391,7 +20399,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                 final float offsetX = currentMessageObject != null && currentMessageObject.shouldDrawWithoutBackground() ? -dp(6) : -dp(1);
+                 final float offsetY = currentMessageObject != null && currentMessageObject.shouldDrawWithoutBackground() ? dp(1) : dp(3);
+ 
+-                final boolean showQuote = isReplyQuote && currentMessageObject != null && currentMessageObject.messageOwner != null && currentMessageObject.messageOwner.reply_to.quote;
++                final boolean showQuote = isReplyQuote;
+                 if (isReplyQuote && showQuote && replyQuoteDrawable != null) {
+                     if (replyLine.getColor() != replyQuoteDrawableColor) {
+                         replyQuoteDrawable.setColorFilter(new PorterDuffColorFilter(replyQuoteDrawableColor = replyLine.getColor(), PorterDuff.Mode.SRC_IN));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 1d29dfe91..2fe26e012 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -41800,6 +41800,9 @@ public class ChatActivity extends BaseFragment implements
+ 
+                     @Override
+                     protected void onShareStory(View cell) {
++                        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++                            return;
++                        }
+                         StoryRecorder.SourceView sourceView = null;
+                         if (cell instanceof ShareDialogCell) {
+                             sourceView = StoryRecorder.SourceView.fromShareCell((ShareDialogCell) cell);
+@@ -43451,6 +43454,8 @@ public class ChatActivity extends BaseFragment implements
+             } else {
+                 String quote = null;
+                 int quoteOffset = -1;
++                final TLRPC.TL_textWithEntities promotedReplyQuote = tele.helpers.ReplyQuotePromotion.promote(messageObject);
++                final boolean hasQuote = messageObject.messageOwner != null && messageObject.messageOwner.reply_to != null && messageObject.messageOwner.reply_to.quote || promotedReplyQuote != null;
+                 Integer task_id = null;
+                 byte[] option_id = null;
+                 if (messageObject.messageOwner != null && messageObject.messageOwner.reply_to != null && (messageObject.messageOwner.reply_to.flags & 2048) != 0) {
+@@ -43462,6 +43467,9 @@ public class ChatActivity extends BaseFragment implements
+                     if ((messageObject.messageOwner.reply_to.flags & 1024) != 0) {
+                         quoteOffset = messageObject.messageOwner.reply_to.quote_offset;
+                     }
++                } else if (promotedReplyQuote != null) {
++                    quote = promotedReplyQuote.text;
++                    quoteOffset = 0;
+                 }
+                 long did = dialog_id;
+                 boolean couldBeDifferentTopic = false;
+@@ -43494,7 +43502,7 @@ public class ChatActivity extends BaseFragment implements
+                         updateMessageAnimated(messageObject, true);
+                     } else {
+                         int str;
+-                        if (messageObject.messageOwner != null && messageObject.messageOwner.reply_to != null && messageObject.messageOwner.reply_to.quote) {
++                        if (hasQuote) {
+                             if (chat != null && chat.megagroup) {
+                                 str = R.string.QuotePrivateGroup;
+                             } else if (ChatObject.isChannel(chat)) {
+@@ -43546,9 +43554,9 @@ public class ChatActivity extends BaseFragment implements
+                         highlightPollOptionId = option_id;
+                     } else if (task_id != null) {
+                         highlightTaskId = task_id;
+-                    } else if (messageObject.messageOwner != null && messageObject.messageOwner.reply_to != null && messageObject.messageOwner.reply_to.quote) {
++                    } else if (hasQuote) {
+                         highlightMessageQuoteFirst = true;
+-                        highlightMessageQuote = messageObject.messageOwner.reply_to.quote_text;
++                        highlightMessageQuote = quote;
+                         highlightMessageQuoteOffset = quoteOffset;
+                         showNoQuoteAlert = true;
+                     }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
+index 7708f9434..48ac546b5 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/FilterTabsView.java
+@@ -30,6 +30,7 @@ import android.graphics.drawable.Drawable;
+ import android.graphics.drawable.GradientDrawable;
+ import android.os.SystemClock;
+ import android.text.Layout;
++import android.text.Spannable;
+ import android.text.SpannableStringBuilder;
+ import android.text.StaticLayout;
+ import android.text.TextPaint;
+@@ -133,6 +134,7 @@ public class FilterTabsView extends FrameLayout {
+         }
+ 
+         public int getWidth(boolean store) {
++            tele_rebuildIcon();
+             int width = titleWidth = (int) Math.ceil(HintView2.measureCorrectly(title, textPaint));
+             int c;
+             if (store) {
+@@ -175,11 +177,33 @@ public class FilterTabsView extends FrameLayout {
+ 
+         // icon-only folders: the icon is the title, the real title stays for accessibility
+         public CharSequence tele_label;
++        private String tele_emoji;
++        private int tele_emojiSize;
++
++        private void tele_rebuildIcon() {
++            if (tele_emoji == null) {
++                return;
++            }
++            int size = Math.max(1, Math.round(textPaint.getTextSize()));
++            if (size == tele_emojiSize) {
++                return;
++            }
++            title = Emoji.replaceEmoji(tele_emoji, textPaint.getFontMetricsInt(), true);
++            if (title instanceof Spannable) {
++                Emoji.EmojiSpan[] spans = ((Spannable) title).getSpans(0, title.length(), Emoji.EmojiSpan.class);
++                for (Emoji.EmojiSpan span : spans) {
++                    span.size = size;
++                }
++            }
++            tele_emojiSize = size;
++        }
+ 
+         public void tele_setIcon(String emoji) {
+             allTabsWidth -= getWidth(false) + dp(TAB_PADDING_WIDTH);
+             tele_label = title;
+-            title = Emoji.replaceEmoji(emoji, textPaint.getFontMetricsInt(), false);
++            tele_emoji = emoji;
++            tele_emojiSize = 0;
++            tele_rebuildIcon();
+             allTabsWidth += getWidth(false) + dp(TAB_PADDING_WIDTH);
+         }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+index 3a24c09d7..c7ef3e240 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+@@ -1673,9 +1673,9 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+         }
+         if (initialTab == TAB_GIFTS || initialTab == TAB_RECOMMENDED_CHANNELS || initialTab == TAB_SAVED_DIALOGS || initialTab == TAB_COMMON_GROUPS) {
+             this.initialTab = initialTab;
+-        } else if (user != null && user.bot && user.bot_has_main_app && user.bot_can_edit) {
++        } else if (!tele.TeleConfig.HIDE_BOT_PREVIEWS.getValue() && user != null && user.bot && user.bot_has_main_app && user.bot_can_edit) {
+             this.initialTab = TAB_BOT_PREVIEWS;
+-        } else if (userInfo != null && userInfo.bot_info != null && userInfo.bot_info.has_preview_medias) {
++        } else if (!tele.TeleConfig.HIDE_BOT_PREVIEWS.getValue() && userInfo != null && userInfo.bot_info != null && userInfo.bot_info.has_preview_medias) {
+             this.initialTab = TAB_STORIES;
+         } else if (main_tab instanceof TLRPC.TL_profileTabPosts && (userInfo != null && userInfo.stories_pinned_available || chatInfo != null && chatInfo.stories_pinned_available || isStoriesView())) {
+             this.initialTab = TAB_STORIES;
+@@ -6709,8 +6709,8 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+         boolean hasSavedDialogs = false;
+         boolean hasSavedMessages = savedMessagesContainer != null && sharedMediaPreloader != null && sharedMediaPreloader.hasSavedMessages;
+         final TLRPC.User user = dialog_id <= 0 || profileActivity == null ? null : profileActivity.getMessagesController().getUser(dialog_id);
+-        boolean hasEditBotPreviews = user != null && user.bot && user.bot_has_main_app && user.bot_can_edit;
+-        boolean hasBotPreviews = user != null && user.bot && !user.bot_can_edit && (userInfo != null && userInfo.bot_info != null && userInfo.bot_info.has_preview_medias) && !hasEditBotPreviews;
++        boolean hasEditBotPreviews = !tele.TeleConfig.HIDE_BOT_PREVIEWS.getValue() && user != null && user.bot && user.bot_has_main_app && user.bot_can_edit;
++        boolean hasBotPreviews = !tele.TeleConfig.HIDE_BOT_PREVIEWS.getValue() && user != null && user.bot && !user.bot_can_edit && (userInfo != null && userInfo.bot_info != null && userInfo.bot_info.has_preview_medias) && !hasEditBotPreviews;
+         boolean hasStories = (DialogObject.isUserDialog(dialog_id) || DialogObject.isChatDialog(dialog_id)) && !DialogObject.isEncryptedDialog(dialog_id) && (userInfo != null && userInfo.stories_pinned_available || info != null && info.stories_pinned_available || isStoriesView()) && includeStories();
+         boolean hasGifts = giftsContainer != null && (userInfo != null && userInfo.stargifts_count > 0 || info != null && info.stargifts_count > 0);
+         final TLRPC.ProfileTab main_tab = info != null ? info.main_tab : userInfo != null ? userInfo.main_tab : null;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 4fcd70f9b..d80e93a97 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -13668,7 +13668,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
+         }
+         if (getMessagesController().config.walletAvailable()) {
+-            io.add(R.drawable.ic_gram, LocaleController.getString(R.string.WalletAttachMoney), () -> {
++            final int incoming = tele.helpers.MoneyIncoming.unseen(currentAccount);
++            io.add(R.drawable.ic_gram, LocaleController.getString(R.string.WalletAttachMoney),
++                    incoming > 0 ? "+" + incoming : null, () -> {
++                tele.helpers.MoneyIncoming.markSeen(currentAccount);
+                 presentFragment(new WalletActivity());
+             });
+         } else {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ResaleGiftsFragment.java b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ResaleGiftsFragment.java
+index 1ab101add..ce514a7fe 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ResaleGiftsFragment.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Gifts/ResaleGiftsFragment.java
+@@ -2448,6 +2448,10 @@ public class ResaleGiftsFragment extends BaseFragment implements FactorAnimator.
+         }
+ 
+         private void buyGift(TL_stars.TL_starGiftUnique gift) {
++            if (tele.helpers.StarsLock.intercept(getContext(), resourcesProvider, tele.helpers.StarsLock.BUY,
++                    () -> buyGift(gift), null)) {
++                return;
++            }
+             final AlertDialog progressDialog = new AlertDialog(getContext(), AlertDialog.ALERT_TYPE_SPINNER);
+             progressDialog.showDelayed(400);
+             final long to = UserConfig.getInstance(currentAccount).getClientUserId();
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index 3439186cb..63b00c307 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -6361,6 +6361,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+ 
+     @Override
+     public boolean didSelectStories(DialogsActivity dialogsFragment) {
++        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++            return false;
++        }
+         StoryEntry entry = null;
+         if (photoPathsArray != null && !photoPathsArray.isEmpty()) {
+             entry = StoryEntry.fromMedia(photoPathsArray);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PeerColorActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/PeerColorActivity.java
+index 806d9fbd1..2402ce0a7 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PeerColorActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PeerColorActivity.java
+@@ -1918,6 +1918,10 @@ public class PeerColorActivity extends BaseFragment implements NotificationCente
+     }
+ 
+     public void buy(TL_stars.TL_starGiftUnique gift, Utilities.Callback<Boolean> bought) {
++        if (tele.helpers.StarsLock.intercept(getContext(), resourceProvider, tele.helpers.StarsLock.BUY,
++                () -> buy(gift, bought), null)) {
++            return;
++        }
+         final long to = UserConfig.getInstance(currentAccount).getClientUserId();
+         final AmountUtils.Currency currency = gift.resale_ton_only ?
+                 AmountUtils.Currency.TON : AmountUtils.Currency.STARS;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index 6006e052e..d24e4ab60 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -503,6 +503,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+     private boolean loadingUsers;
+     private LongSparseArray<TLRPC.ChatParticipant> participantsMap = new LongSparseArray<>();
+     private boolean usersEndReached;
++    private boolean recentParticipantsRequested;
+ 
+     private long banFromGroup;
+     private float backwardTransitionFromExtraHeight;
+@@ -7934,6 +7935,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         }
+         loadingUsers = true;
+         final int delay = participantsMap.size() != 0 && reload ? 300 : 0;
++        if (reload) {
++            recentParticipantsRequested = true;
++        }
+ 
+         final TLRPC.TL_channels_getParticipants req = new TLRPC.TL_channels_getParticipants();
+         req.channel = getMessagesController().getInputChannel(chatId);
+@@ -10935,6 +10939,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 participantsMap.put(chatParticipant.user_id, chatParticipant);
+             }
+         }
++        if (!recentParticipantsRequested) {
++            getChannelParticipants(true);
++        }
+     }
+ 
+     private void kickUser(long uid, TLRPC.ChatParticipant participant) {
+@@ -11112,9 +11119,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         if (!hasMedia && userInfo != null) {
+             hasMedia = userInfo.stories_pinned_available;
+         }
+-        if (!hasMedia && userInfo != null && userInfo.bot_info != null) {
+-            hasMedia = userInfo.bot_info.has_preview_medias;
+-        }
++        if (!hasMedia && userInfo != null && userInfo.bot_info != null && !tele.TeleConfig.HIDE_BOT_PREVIEWS.getValue()) {
++             hasMedia = userInfo.bot_info.has_preview_medias;
++         }
+         if (!hasMedia && (userInfo != null && userInfo.stargifts_count > 0 || chatInfo != null && chatInfo.stargifts_count > 0)) {
+             hasMedia = true;
+         }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stars/GiftOfferSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Stars/GiftOfferSheet.java
+index 8a1930bf0..58e06496f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stars/GiftOfferSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stars/GiftOfferSheet.java
+@@ -782,6 +782,10 @@ public class GiftOfferSheet extends BottomSheetWithRecyclerListView {
+     }
+ 
+     public static void openOfferAcceptAlert(BaseFragment fragment, Context context, Theme.ResourcesProvider resourcesProvider, int currentAccount, long dialogId, int msgId, TLRPC.TL_messageActionStarGiftPurchaseOffer offer) {
++        if (tele.helpers.StarsLock.intercept(context, resourcesProvider, tele.helpers.StarsLock.SELL,
++                () -> openOfferAcceptAlert(fragment, context, resourcesProvider, currentAccount, dialogId, msgId, offer), null)) {
++            return;
++        }
+         final AmountUtils.Amount amount = AmountUtils.Amount.ofSafe(offer.price);
+         final AmountUtils.Amount amountWithFee = getAmountMinusFee(currentAccount, amount);
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
+index b92e1db75..7c3176b8f 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
+@@ -1149,7 +1149,7 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+             .addIf(link != null, R.drawable.msg_share, getString(R.string.ShareFile), () -> {
+                 onSharePressed(null);
+             })
+-            .addIf(giftUnique != null && giftUnique.offer_min_stars > 0, R.drawable.input_suggest_paid_24, getString(R.string.GiftOfferToBuyMenu), this::showGiftOfferSheet)
++            .addIf(!tele.TeleConfig.NO_MONEY.getValue() && giftUnique != null && giftUnique.offer_min_stars > 0, R.drawable.input_suggest_paid_24, getString(R.string.GiftOfferToBuyMenu), this::showGiftOfferSheet)
+             .addIf(canSetAsTheme(), R.drawable.msg_colors, getString(R.string.GiftThemesSetIn), this::openSetAsTheme)
+             .addIf(walletCollectible == null && myProfile && savedStarGift != null && isMine(currentAccount, dialogId), savedStarGift != null && !savedStarGift.unsaved ? R.drawable.menu_hide_from_profile : R.drawable.menu_show_on_profile, getString(savedStarGift != null && !savedStarGift.unsaved ? R.string.Gift2HideFromProfile : R.string.Gift2ShowOnProfile), this::toggleShow)
+             .addIf(tele.helpers.ViewAsTl.isEnabled() && giftUnique != null && !TextUtils.isEmpty(giftUnique.slug), R.drawable.msg_info, getString(R.string.TeleViewAsTl), () -> {
+@@ -1171,6 +1171,9 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+ 
+     private void showGiftOfferSheet() {
+         final TL_stars.TL_starGiftUnique giftUnique = getUniqueGift();
++        if (tele.helpers.StarsLock.intercept(getContext(), resourcesProvider, tele.helpers.StarsLock.BUY, this::showGiftOfferSheet, null)) {
++            return;
++        }
+         new GiftOfferSheet(getContext(), currentAccount, DialogObject.getPeerDialogId(giftUnique.owner_id), giftUnique, resourcesProvider, () -> {
+             if (closeParentSheet != null) {
+                 closeParentSheet.run(false);
+@@ -1478,6 +1481,9 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+     public void onUpdatePriceClick(View btn) {
+         final TL_stars.TL_starGiftUnique gift = getUniqueGift();
+         if (gift == null) return;
++        if (tele.helpers.StarsLock.intercept(getContext(), resourcesProvider, tele.helpers.StarsLock.SELL, () -> onUpdatePriceClick(btn), null)) {
++            return;
++        }
+         StarsIntroActivity.showGiftResellPriceSheet(getContext(), currentAccount, gift, null, (price, done) -> StarsLock.guard(getContext(), resourcesProvider, StarsLock.SELL, () -> {
+             final TL_stars.StarsAmount tlAmount = price.toTl();
+             final TL_stars.updateStarGiftPrice req = new TL_stars.updateStarGiftPrice();
+@@ -1519,6 +1525,9 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+         }
+         final TL_stars.TL_starGiftUnique gift = getUniqueGift();
+         if (gift == null) return;
++        if (tele.helpers.StarsLock.intercept(getContext(), resourcesProvider, tele.helpers.StarsLock.SELL, () -> onResellPressed(btn), null)) {
++            return;
++        }
+         if (gift.resell_amount != null) {
+             new AlertDialog.Builder(getContext(), resourcesProvider)
+                 .setTitle(formatString(R.string.Gift2UnlistTitle, getGiftName()))
+@@ -8107,6 +8116,9 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
+     public void onBuyPressed() {
+         final TL_stars.TL_starGiftUnique gift = getUniqueGift();
+         if (button.isLoading() || gift == null) return;
++        if (tele.helpers.StarsLock.intercept(getContext(), resourcesProvider, tele.helpers.StarsLock.BUY, this::onBuyPressed, null)) {
++            return;
++        }
+ 
+         final long to = slugStarGift != null && resale && dialogId != 0 ? dialogId : UserConfig.getInstance(currentAccount).getClientUserId();
+         final AmountUtils.Currency currency = gift.resale_ton_only ?
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+index 52c96d2d5..673dd7787 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+@@ -979,6 +979,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+     };
+ 
+     public void notifyUpdate() {
++        tele.helpers.MoneyIncoming.onWalletState(currentAccount, state);
+         NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.walletUpdate, this);
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
+index 05cd0916e..d00892b62 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
+@@ -3729,6 +3729,7 @@ public class WalletActivity extends UniversalFragment implements NotificationCen
+     @Override
+     public void onResume() {
+         super.onResume();
++        tele.helpers.MoneyIncoming.markSeen(currentAccount);
+         if (actionBar != null) {
+             actionBar.post(this::attachBalanceOverlay);
+         }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index a7bc15939..c1cb679e6 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -141,6 +141,10 @@ object TeleConfig {
+     @JvmField
+     val NO_MONEY = BoolItem("no_money", false)
+     @JvmField
++    val MONEY_INCOMING_NOTIFY = BoolItem("money_incoming_notify", false)
++    @JvmField
++    val MONEY_INCOMING_BADGE = BoolItem("money_incoming_badge", false)
++    @JvmField
+     val DIM_WALLET_ADDRESS = BoolItem("dim_wallet_address", false)
+     @JvmField
+     val HIDE_OTHER_WALLET_BALANCES = BoolItem("hide_other_wallet_balances", false)
+@@ -196,6 +200,8 @@ object TeleConfig {
+     @JvmField
+     val DELETED_REPLY = StringItem("deleted_reply", "skip")
+     @JvmField
++    val PROMOTE_REPLY_QUOTES = BoolItem("promote_reply_quotes", false)
++    @JvmField
+     val DELETED_QUOTE_NAME = StringItem("deleted_quote_name", "")
+ 
+     @JvmField
+@@ -235,6 +241,8 @@ object TeleConfig {
+     @JvmField
+     val GIFT_SELECT = BoolItem("gift_select", false)
+     @JvmField
++    val HIDE_GIFT_OFFERS = BoolItem("hide_gift_offers", false)
++    @JvmField
+     val GIFT_SEARCH = BoolItem("gift_search", false)
+     @JvmField
+     val GIFT_QUANTITY = BoolItem("gift_quantity", false)
+@@ -404,6 +412,8 @@ object TeleConfig {
+     @JvmField
+     val HIDE_BOT_EDITED_LABEL = BoolItem("hide_bot_edited_label", false)
+     @JvmField
++    val HIDE_BOT_PREVIEWS = BoolItem("hide_bot_previews", false)
++    @JvmField
+     val WEBAPPS_NO_FULLSCREEN = BoolItem("webapps_no_fullscreen", false)
+     @JvmField
+     val SHOW_START_PARAMETER = BoolItem("show_start_parameter", false)
+@@ -460,6 +470,8 @@ object TeleConfig {
+     @JvmField
+     val SEARCH_TYPES = BoolItem("search_types", false)
+     @JvmField
++    val PLAIN_SEARCH_CALENDAR = BoolItem("plain_search_calendar", false)
++    @JvmField
+     val ONLINE_NOTIFY = BoolItem("online_notify", false)
+     @JvmField
+     val NOTICES = BoolItem("notices", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 357e95346..a799bc274 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -50,6 +50,11 @@ object TeleHooks {
+         tele.helpers.TeleMentions.install()
+         tele.scripting.Scripts.init()
+         tele.helpers.MaterialTheme.init()
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (UserConfig.getInstance(account).isClientActivated) {
++                tele.helpers.MoneyIncoming.start(account)
++            }
++        }
+     }
+ 
+     @JvmStatic
+@@ -141,6 +146,9 @@ object TeleHooks {
+                 AccountInstance.getInstance(account).getNotificationCenter().postNotificationName(NotificationCenter.storiesUpdated)
+             }
+         }
++        if (item === TeleConfig.MONEY_INCOMING_NOTIFY || item === TeleConfig.MONEY_INCOMING_BADGE || item === TeleConfig.NO_MONEY) {
++            tele.helpers.MoneyIncoming.onToggled()
++        }
+         if (item === TeleConfig.QUEUE_BEHIND_MEDIA) {
+             for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
+                 tele.helpers.SendOrder.flush(account)
+@@ -228,7 +236,7 @@ object TeleHooks {
+         if (item === TeleConfig.PROFILE_PHOTO_BACKGROUND || item === TeleConfig.PROFILE_PHOTO_BACKGROUND_COLOR) {
+             tele.ui.TeleProfilePhoto.onConfigChanged()
+         }
+-        if (item === TeleConfig.HIDE_BUBBLE_TAILS || item === TeleConfig.BUBBLE_BADGES || item === TeleConfig.NO_MONEY) {
++        if (item === TeleConfig.HIDE_BUBBLE_TAILS || item === TeleConfig.BUBBLE_BADGES || item === TeleConfig.NO_MONEY || item === TeleConfig.HIDE_GIFT_OFFERS || item === TeleConfig.HIDE_BOT_PREVIEWS) {
+             // the open chats rebind their visible cells on a name update; the profiles rebuild their wallet card
+             for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
+                 AccountInstance.getInstance(account).getNotificationCenter()
+@@ -251,7 +259,10 @@ object TeleHooks {
+             // the open chats refresh their subtitle on resume
+             bumpUiRevision()
+         }
+-        if (item === TeleConfig.REGEX_SEARCH || item === TeleConfig.SEARCH_TYPES) {
++        if (item === TeleConfig.PROMOTE_REPLY_QUOTES) {
++            bumpUiRevision()
++        }
++        if (item === TeleConfig.REGEX_SEARCH || item === TeleConfig.SEARCH_TYPES || item === TeleConfig.PLAIN_SEARCH_CALENDAR) {
+             tele.helpers.ChatSearch.onToggled()
+         }
+         if (tele.helpers.InvisibleNames.isNameItem(item)) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+index bb96e5648..4b6d677c3 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftBulk.kt
+@@ -450,7 +450,9 @@ object GiftBulk {
+             .setTitle(LocaleController.getString(R.string.Gift2ActionUnlist))
+             .setMessage(LocaleController.formatPluralString("TeleGiftsUnlistConfirm", gifts.size))
+             .setPositiveButton(LocaleController.getString(R.string.Gift2ActionUnlist)) { _, _ ->
+-                if (!selection.isBusy) runSell(selection, fragment, gifts, null)
++                StarsLock.guard(fragment, StarsLock.SELL) {
++                    if (!selection.isBusy) runSell(selection, fragment, gifts, null)
++                }
+             }
+             .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+             .show()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/GiftOffers.kt b/TMessagesProj/src/main/java/tele/helpers/GiftOffers.kt
+new file mode 100644
+index 000000000..18b07a614
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/GiftOffers.kt
+@@ -0,0 +1,16 @@
++package tele.helpers
++
++import org.telegram.messenger.MessageObject
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++/** Incoming on-chain gift offers are money actions: both money switches can hide them. */
++object GiftOffers {
++    @JvmStatic
++    fun hidden(message: MessageObject?): Boolean {
++        val owner = message?.messageOwner ?: return false
++        return !message.isOutOwner &&
++            owner.action is TLRPC.TL_messageActionStarGiftPurchaseOffer &&
++            (TeleConfig.HIDE_GIFT_OFFERS.value || TeleConfig.NO_MONEY.value)
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt b/TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt
+new file mode 100644
+index 000000000..1e31f5de5
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt
+@@ -0,0 +1,368 @@
++package tele.helpers
++
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.DispatchQueue
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_wallet
++import org.telegram.ui.Wallet.WalletActivity
++import org.telegram.ui.Wallet.GramWallet
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.CopyOnWriteArrayList
++
++object MoneyIncoming {
++    private const val KEY = "money_incoming"
++    private const val VERSION = 1
++    private const val PAGE_LIMIT = 20
++    private const val MAX_SEEN = 200
++    private const val MAX_ID_LENGTH = 256
++    private const val POLL_INTERVAL = 10 * 60 * 1000L
++
++    fun interface Listener {
++        fun onChanged(account: Int, unseen: Int)
++    }
++
++    private class AccountState(val account: Int, val generation: Long) {
++        var baseline = false
++        var unseen = 0
++        var balance = -1L
++        var requestId = -1
++        var checkAgain = false
++        var poll: Runnable? = null
++        val seenOrder = ArrayDeque<String>()
++        val seenIds = HashSet<String>()
++    }
++
++    private val queue by lazy { DispatchQueue("moneyIncoming") }
++    private val states = HashMap<Int, AccountState>()
++    private val listeners = CopyOnWriteArrayList<Listener>()
++
++    @Volatile
++    private var unseenSnapshot = IntArray(UserConfig.MAX_ACCOUNT_COUNT)
++    init {
++        TeleNotices.registerAction(NoticeKind.MONEY) { fragment, _, _ ->
++            fragment.presentFragment(WalletActivity())
++            true
++        }
++    }
++
++    @JvmStatic
++    fun start(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable { state(account, true)?.let { refresh(it, false) } }
++    }
++
++    @JvmStatic
++    fun onWalletState(account: Int, state: TL_wallet.WalletState?) {
++        if (!valid(account)) return
++        queue.postRunnable {
++            val tracker = state(account, false) ?: return@postRunnable
++            val balance = (state as? TL_wallet.TL_walletState)?.balance ?: -1L
++            val grew = tracker.balance >= 0L && balance > tracker.balance
++            tracker.balance = balance
++            if (grew || !tracker.baseline) check(tracker)
++        }
++    }
++
++    @JvmStatic
++    fun onTransactionsChanged(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable { state(account, false)?.let { check(it) } }
++    }
++
++    @JvmStatic
++    fun markSeen(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable {
++            val tracker = state(account, false) ?: return@postRunnable
++            if (tracker.unseen == 0) return@postRunnable
++            tracker.unseen = 0
++            write(tracker)
++            publish(tracker)
++        }
++    }
++
++    @JvmStatic
++    fun unseen(account: Int): Int =
++        if (valid(account) && badgeEnabled()) unseenSnapshot[account] else 0
++
++    @JvmStatic
++    fun addListener(listener: Listener) {
++        listeners.add(listener)
++    }
++
++    @JvmStatic
++    fun removeListener(listener: Listener) {
++        listeners.remove(listener)
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        queue.postRunnable {
++            for (tracker in states.values.toList()) refresh(tracker, false)
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                if (UserConfig.getInstance(account).isClientActivated) {
++                    state(account, true)?.let { refresh(it, false) }
++                }
++            }
++        }
++    }
++
++    @JvmStatic
++    fun onLogout(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable {
++            val tracker = states.remove(account)
++            if (tracker != null) {
++                cancelPoll(tracker)
++                cancelRequest(tracker)
++            }
++            runCatching { TeleDatabaseHelper.put(key(account), null) }.onFailure { FileLog.e(it) }
++            publishCount(account, 0)
++        }
++    }
++
++    private fun valid(account: Int) = account in 0 until UserConfig.MAX_ACCOUNT_COUNT
++
++    private fun key(account: Int) = "$KEY:$account"
++
++    private fun notifyEnabled() = !TeleConfig.NO_MONEY.value && TeleConfig.MONEY_INCOMING_NOTIFY.value
++
++    private fun badgeEnabled() = !TeleConfig.NO_MONEY.value && TeleConfig.MONEY_INCOMING_BADGE.value
++
++    private fun enabled(account: Int) =
++        valid(account) && UserConfig.getInstance(account).isClientActivated &&
++            !TeleConfig.NO_MONEY.value && (notifyEnabled() || badgeEnabled())
++
++    private fun canCheck(account: Int) =
++        enabled(account) && MessagesController.getInstance(account).config.walletAvailable()
++
++    private fun state(account: Int, create: Boolean): AccountState? {
++        if (!valid(account)) return null
++        val generation = TeleAccounts.generation(account)
++        states[account]?.let { if (it.generation == generation) return it }
++        if (!create) return null
++        val tracker = AccountState(account, generation)
++        states[account] = tracker
++        read(tracker)
++        publish(tracker)
++        return tracker
++    }
++
++    private fun refresh(tracker: AccountState, poll: Boolean) {
++        if (states[tracker.account] !== tracker || !TeleAccounts.isCurrent(tracker.account, tracker.generation)) return
++        if (!enabled(tracker.account)) {
++            cancelPoll(tracker)
++            cancelRequest(tracker)
++            clearUnseen(tracker)
++            return
++        }
++        schedulePoll(tracker)
++        if (canCheck(tracker.account) && (poll || !tracker.baseline)) check(tracker)
++    }
++
++    private fun schedulePoll(tracker: AccountState) {
++        if (tracker.poll != null) return
++        val task = object : Runnable {
++            override fun run() {
++                tracker.poll = null
++                if (states[tracker.account] !== tracker) return
++                if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) {
++                    states.remove(tracker.account)
++                    publishCount(tracker.account, 0)
++                    return
++                }
++                refresh(tracker, true)
++            }
++        }
++        tracker.poll = task
++        queue.postRunnable(task, POLL_INTERVAL)
++    }
++
++    private fun cancelPoll(tracker: AccountState) {
++        tracker.poll?.let { queue.cancelRunnable(it) }
++        tracker.poll = null
++    }
++
++    private fun check(tracker: AccountState) {
++        if (!canCheck(tracker.account)) return
++        if (tracker.requestId >= 0) {
++            tracker.checkAgain = true
++            return
++        }
++        if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) return
++        val request = TL_wallet.getTransactions().apply {
++            inbound = true
++            outbound = false
++            offset = ""
++            limit = PAGE_LIMIT
++        }
++        tracker.checkAgain = false
++        tracker.requestId = ConnectionsManager.getInstance(tracker.account).sendRequestTyped(
++            request,
++            AndroidUtilities::runOnUIThread
++        ) { result, error ->
++            if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) return@sendRequestTyped
++            if (result != null) {
++                val controller = MessagesController.getInstance(tracker.account)
++                controller.putUsers(result.users, false)
++                controller.putChats(result.chats, false)
++            } else if (error != null) {
++                FileLog.e("incoming transactions: ${error.text ?: "NULL_ERROR"}")
++            }
++            queue.postRunnable {
++                val current = states[tracker.account]
++                if (current !== tracker) return@postRunnable
++                tracker.requestId = -1
++                if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) return@postRunnable
++                if (result != null) apply(tracker, result)
++                if (tracker.checkAgain) check(tracker)
++            }
++        }
++    }
++
++    private fun cancelRequest(tracker: AccountState) {
++        if (tracker.requestId >= 0) {
++            ConnectionsManager.getInstance(tracker.account).cancelRequest(tracker.requestId, true)
++            tracker.requestId = -1
++        }
++        tracker.checkAgain = false
++    }
++
++    private fun apply(tracker: AccountState, result: TL_wallet.walletTransactions) {
++        val first = !tracker.baseline
++        val oldUnseen = tracker.unseen
++        val notices = ArrayList<TL_wallet.walletTransaction>()
++        tracker.baseline = true
++        for (index in result.transactions.indices.reversed()) {
++            val transaction = result.transactions[index] ?: continue
++            val id = transaction.id
++            if (id.isNullOrEmpty() || id.length > MAX_ID_LENGTH) continue
++            if (!remember(tracker, id)) continue
++            if (first || !eligible(transaction)) continue
++            if (badgeEnabled()) tracker.unseen = (tracker.unseen + 1).coerceAtMost(MAX_SEEN)
++            if (notifyEnabled()) notices.add(transaction)
++        }
++        // Persist the ids before UI delivery so a restart cannot announce the same transfer twice.
++        write(tracker)
++        if (oldUnseen != tracker.unseen) publish(tracker)
++        for (transaction in notices) emit(tracker, transaction)
++    }
++
++    private fun eligible(transaction: TL_wallet.walletTransaction) =
++        transaction.incoming && !transaction.failed && !transaction.key_change &&
++            !transaction.pending && transaction.nft == null && transaction.amount > 0L
++
++    private fun remember(tracker: AccountState, id: String): Boolean {
++        if (!tracker.seenIds.add(id)) return false
++        tracker.seenOrder.addLast(id)
++        while (tracker.seenOrder.size > MAX_SEEN) {
++            tracker.seenIds.remove(tracker.seenOrder.removeFirst())
++        }
++        return true
++    }
++
++    private fun emit(tracker: AccountState, transaction: TL_wallet.walletTransaction) {
++        val generation = tracker.generation
++        AndroidUtilities.runOnUIThread {
++            if (!TeleAccounts.isCurrent(tracker.account, generation) || !notifyEnabled()) return@runOnUIThread
++            val from = fromText(tracker.account, transaction.peer)
++            val text = if (from.isEmpty()) {
++                LocaleController.getString(R.string.TeleMoneyIncoming)
++            } else {
++                LocaleController.formatString(R.string.TeleMoneyFrom, from)
++            }
++            TeleNotices.add(
++                tracker.account,
++                TeleNotice(
++                    kind = NoticeKind.MONEY,
++                    title = "+" + GramWallet.formatGrams(transaction.amount),
++                    text = TeleLowercase.lc(text),
++                    tone = NoticeTone.SUCCESS,
++                    date = transaction.date,
++                    key = "money_incoming:${transaction.id}"
++                )
++            )
++        }
++    }
++
++    private fun fromText(account: Int, peer: TL_wallet.WalletTransactionPeer?): String =
++        when (peer) {
++            is TL_wallet.walletTransactionPeerUser ->
++                MessagesController.getInstance(account).getUser(peer.user_id)?.let { UserObject.getUserName(it) }
++                    ?: shortAddress(peer.address)
++            is TL_wallet.walletTransactionPeerChannel ->
++                MessagesController.getInstance(account).getChat(peer.channel_id)?.title ?: shortAddress(peer.address)
++            is TL_wallet.walletTransactionPeerAddress -> peer.domain?.takeIf { it.isNotEmpty() } ?: shortAddress(peer.address)
++            is TL_wallet.walletTransactionPeerOnramp -> peer.provider_name ?: ""
++            else -> ""
++        }
++
++    private fun shortAddress(address: String?): String =
++        if (address != null && address.length > 12) address.take(4) + "…" + address.takeLast(4) else address ?: ""
++
++    private fun clearUnseen(tracker: AccountState) {
++        if (tracker.unseen == 0) {
++            publish(tracker)
++            return
++        }
++        tracker.unseen = 0
++        write(tracker)
++        publish(tracker)
++    }
++
++    private fun publish(tracker: AccountState) {
++        publishCount(tracker.account, if (badgeEnabled()) tracker.unseen else 0)
++    }
++
++    private fun publishCount(account: Int, count: Int) {
++        val next = unseenSnapshot.copyOf()
++        next[account] = count.coerceIn(0, MAX_SEEN)
++        unseenSnapshot = next
++        val visible = if (badgeEnabled()) next[account] else 0
++        AndroidUtilities.runOnUIThread { listeners.forEach { it.onChanged(account, visible) } }
++    }
++
++    private fun read(tracker: AccountState) {
++        val owner = TeleAccounts.identity(tracker.account)
++        if (owner.isEmpty()) return
++        runCatching {
++            val raw = TeleDatabaseHelper.get(key(tracker.account)) ?: return@runCatching
++            val json = JSONObject(raw)
++            if (json.optInt("v") != VERSION || json.optString("owner") != owner || !json.optBoolean("baseline")) return@runCatching
++            tracker.unseen = json.optInt("unseen").coerceIn(0, MAX_SEEN)
++            val ids = json.optJSONArray("seen") ?: JSONArray()
++            for (index in 0 until ids.length()) {
++                val id = ids.optString(index)
++                if (id.isNotEmpty() && id.length <= MAX_ID_LENGTH) remember(tracker, id)
++            }
++            tracker.baseline = true
++        }.onFailure { FileLog.e(it) }
++    }
++
++    private fun write(tracker: AccountState) {
++        if (!tracker.baseline) return
++        val owner = TeleAccounts.identity(tracker.account)
++        if (owner.isEmpty()) return
++        runCatching {
++            val ids = JSONArray()
++            for (id in tracker.seenOrder) ids.put(id)
++            val json = JSONObject()
++                .put("v", VERSION)
++                .put("owner", owner)
++                .put("baseline", true)
++                .put("unseen", tracker.unseen)
++                .put("seen", ids)
++            TeleDatabaseHelper.put(key(tracker.account), json.toString())
++        }.onFailure { FileLog.e(it) }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
+new file mode 100644
+index 000000000..faaa25911
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
+@@ -0,0 +1,96 @@
++package tele.helpers
++
++import android.text.TextUtils
++import org.telegram.messenger.MediaDataController
++import org.telegram.messenger.MessageObject
++import org.telegram.messenger.MessagesController
++import org.telegram.tgnet.TLRPC
++import tele.TeleConfig
++
++object ReplyQuotePromotion {
++    @JvmStatic
++    fun promote(item: MessageObject?): TLRPC.TL_textWithEntities? {
++        if (!TeleConfig.PROMOTE_REPLY_QUOTES.value) {
++            return null
++        }
++        val reply = item ?: return null
++        val owner = reply.messageOwner ?: return null
++        val source = reply.replyMessageObject ?: return null
++        val replyTo = owner.reply_to ?: return null
++        if (reply === source ||
++            replyTo.quote ||
++            replyTo.quote_text != null ||
++            replyTo.quote_rich != null ||
++            replyTo.poll_option != null ||
++            owner.flags and 2048 != 0 ||
++            !isOrdinaryText(reply) ||
++            !isOrdinaryText(source)
++        ) {
++            return null
++        }
++
++        val replyQuote = leadingQuote(reply) ?: return null
++        val sourceQuote = leadingQuote(source) ?: return null
++        if (sourceQuote.text != replyQuote.text ||
++            sourceQuote.text.indexOf(replyQuote.text, 1) >= 0
++        ) {
++            return null
++        }
++        MediaDataController.sortEntities(replyQuote.entities)
++        MediaDataController.sortEntities(sourceQuote.entities)
++        return sourceQuote.takeIf { it == replyQuote }
++    }
++
++    private fun isOrdinaryText(item: MessageObject): Boolean {
++        val owner = item.messageOwner
++        return item.type == MessageObject.TYPE_TEXT &&
++            owner is TLRPC.TL_message &&
++            owner.rich_message == null &&
++            item.richLayout == null &&
++            item.isMediaEmptyWebpage &&
++            TextUtils.isEmpty(item.caption) &&
++            item.getGroupId() == 0L &&
++            !item.isRestrictedMessage &&
++            !item.isRepostPreview &&
++            !item.translated &&
++            !item.summarized &&
++            !owner.message.isNullOrEmpty() &&
++            owner.entities != null
++    }
++
++    private fun leadingQuote(item: MessageObject): TLRPC.TL_textWithEntities? {
++        val owner = item.messageOwner as? TLRPC.TL_message ?: return null
++        val text = owner.message ?: return null
++        val entities = owner.entities ?: return null
++        val outer = entities.firstOrNull {
++            it.offset == 0 && it is TLRPC.TL_messageEntityBlockquote
++        } ?: return null
++        val end = outer.length
++        val limit = MessagesController.getInstance(item.currentAccount).quoteLengthMax
++        if (end <= 0 || end > text.length || end > limit || text.substring(0, end).isBlank()) {
++            return null
++        }
++        var prefix = end
++        while (prefix < text.length && text[prefix] == '\n') {
++            prefix++
++        }
++        val result = TLRPC.TL_textWithEntities().apply {
++            this.text = text.substring(0, end)
++        }
++        for (entity in entities) {
++            if (entity === outer || entity.offset >= prefix) {
++                continue
++            }
++            if (entity is TLRPC.TL_messageEntityBlockquote ||
++                entity.offset < 0 ||
++                entity.length <= 0 ||
++                entity.offset > end ||
++                entity.length > end - entity.offset
++            ) {
++                return null
++            }
++            result.entities.add(entity)
++        }
++        return result
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt b/TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt
+index 502d1492d..7d4ee9e81 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleMtpDanger.kt
+@@ -53,7 +53,7 @@ object TeleMtpDanger {
+         "payments.sendStarsForm" to StarsLock.BOT_PAYMENTS,
+         "payments.sendPaymentForm" to StarsLock.BUY,
+         "payments.transferStarGift" to StarsLock.TRANSFER,
+-        "payments.sendStarGiftOffer" to StarsLock.TRANSFER,
++        "payments.sendStarGiftOffer" to StarsLock.BUY,
+         "payments.convertStarGift" to StarsLock.CONVERT,
+         "payments.upgradeStarGift" to StarsLock.UPGRADE,
+         "payments.craftStarGift" to StarsLock.UPGRADE,
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+index da78f7c4d..c614a111e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+@@ -24,7 +24,8 @@ enum class NoticeKind(val id: String, val icon: Int, val color: Int, val cap: In
+     CRASH("crash", R.drawable.msg_report, 0xFFE5574E.toInt()),
+     ONLINE("online", R.drawable.msg_online, 0xFF3FB6C7.toInt()),
+     MENTION("mention", R.drawable.msg_mention, 0xFFE0609C.toInt(), cap = 300),
+-    COPY("copy", R.drawable.msg_copy, 0xFF5C7CFA.toInt());
++    COPY("copy", R.drawable.msg_copy, 0xFF5C7CFA.toInt()),
++    MONEY("money", R.drawable.ic_gram, 0xFF4DB86A.toInt());
+ 
+     companion object {
+         @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+index e5038d5af..70f2d0b2b 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleSettingsLinks.kt
+@@ -92,7 +92,8 @@ object TeleSettingsLinks {
+         "tele-hide-phone-in-profile" to optionId(TeleConfig.HIDE_PHONE_IN_PROFILES.key),
+         "tele-server-url" to optionId(TeleConfig.TELE_SERVER_URL.key),
+         "tele-stars-tools" to optionId(TeleConfig.STAR_TRANSACTIONS.key),
+-        "tele-list-dates" to optionId(TeleConfig.LIST_DATES.key)
++        "tele-list-dates" to optionId(TeleConfig.LIST_DATES.key),
++        "tele-promote-reply-quotes" to optionId(TeleConfig.PROMOTE_REPLY_QUOTES.key),
+     )
+ 
+     private val ALIASES: Map<String, String> = DESKTOP_IDS.toMap()
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index de67dfc99..19d335cb5 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -757,6 +757,10 @@ object TeleTextRu {
+         "Choose per chat" to "Выбирать для каждого чата",
+         "Clean tracking parameters from opened links" to "Убирать трекинговые параметры из открываемых ссылок",
+         "Clean tracking parameters from sent links" to "Убирать трекинговые параметры из отправляемых ссылок",
++        "Show matching blockquotes as reply quotes" to "Показывать совпадающие цитаты в заголовке ответа",
++        "Moves an exact leading quote into the reply header." to "Переносит начальную цитату в заголовок ответа, если она точно совпадает.",
++        "Plain search calendar" to "Обычный календарь поиска",
++        "Hide photo and video thumbnails on calendar days." to "Скрывает миниатюры фото и видео на днях календаря.",
+         "Clear cached data" to "Очистить кэш данных",
+         "Clear console history" to "Очистить историю консоли",
+         "Code blocks" to "Блоки кода",
+@@ -851,6 +855,10 @@ object TeleTextRu {
+         "Hide sponsored messages" to "Скрывать спонсорские сообщения",
+         "Hide stories" to "Скрывать истории",
+         "Hide stories and their entry points." to "Скрывать истории и точки входа в них.",
++        "Hide bot previews" to "Скрывать превью ботов",
++        "Hide the screenshots and videos on bot profiles." to "Скрывает скриншоты и видео в профилях ботов.",
++        "Hide gift offers" to "Скрывать предложения подарков",
++        "Hide incoming offers to buy your gifts, with their notifications." to "Скрывает входящие предложения купить ваши подарки и их уведомления.",
+         "Hide the all chats folder" to "Скрывать папку «Все чаты»",
+         "Hide the camera in the gallery" to "Скрывать камеру в галерее",
+         "The photo picker starts with your photos instead of a live camera preview." to "Выбор фото начинается с ваших фото, без предпросмотра камеры.",
+@@ -1138,6 +1146,10 @@ object TeleTextRu {
+         "Try again after 3 seconds when the collections of a profile fail to load." to "Повторять через 3 секунды, если коллекции профиля не загрузились.",
+         "Turn off AI features" to "Отключить функции ИИ",
+         "Turn off Money" to "Отключить «Деньги»",
++        "Incoming transfers in notifications" to "Входящие переводы в уведомлениях",
++        "Show incoming Money transfers on tele's Notifications page." to "Показывать входящие переводы на странице уведомлений tele.",
++        "New transfers badge" to "Значок новых переводов",
++        "Show a +N badge next to Money until you open it." to "Показывать +N рядом с «Деньгами», пока вы их не откроете.",
+         "Turn off animated userpics" to "Отключить анимированные аватары",
+         "Turn off bot widgets" to "Отключить виджеты ботов",
+         "Turns on the ghost switches below." to "Включает переключатели невидимки ниже.",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 1a18c945f..f872f0078 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -757,6 +757,10 @@ object TeleTextUk {
+         "Choose per chat" to "Вибирати для кожного чату",
+         "Clean tracking parameters from opened links" to "Очищати параметри відстеження з відкритих посилань",
+         "Clean tracking parameters from sent links" to "Очищати параметри відстеження з надісланих посилань",
++        "Show matching blockquotes as reply quotes" to "Показувати збіжні цитати в заголовку відповіді",
++        "Moves an exact leading quote into the reply header." to "Переносить початкову цитату в заголовок відповіді, якщо вона точно збігається.",
++        "Plain search calendar" to "Звичайний календар пошуку",
++        "Hide photo and video thumbnails on calendar days." to "Приховує мініатюри фото та відео на днях календаря.",
+         "Clear cached data" to "Очистити кешовані дані",
+         "Clear console history" to "Очистити історію консолі",
+         "Code blocks" to "Блоки коду",
+@@ -851,6 +855,10 @@ object TeleTextUk {
+         "Hide sponsored messages" to "Приховувати спонсорські повідомлення",
+         "Hide stories" to "Приховувати історії",
+         "Hide stories and their entry points." to "Приховує історії та точки входу до них.",
++        "Hide bot previews" to "Приховувати прев’ю ботів",
++        "Hide the screenshots and videos on bot profiles." to "Приховує скриншоти та відео в профілях ботів.",
++        "Hide gift offers" to "Приховувати пропозиції подарунків",
++        "Hide incoming offers to buy your gifts, with their notifications." to "Приховує вхідні пропозиції купити ваші подарунки та їхні сповіщення.",
+         "Hide the all chats folder" to "Приховувати папку «Усі чати»",
+         "Hide the camera in the gallery" to "Приховувати камеру в галереї",
+         "The photo picker starts with your photos instead of a live camera preview." to "Вибір фото починається з ваших фото, без попереднього перегляду камери.",
+@@ -1138,6 +1146,10 @@ object TeleTextUk {
+         "Try again after 3 seconds when the collections of a profile fail to load." to "Повторювати спробу через 3 секунди, якщо колекції профілю не завантажуються.",
+         "Turn off AI features" to "Вимкнути функції ШІ",
+         "Turn off Money" to "Вимкнути гроші",
++        "Incoming transfers in notifications" to "Вхідні перекази в сповіщеннях",
++        "Show incoming Money transfers on tele's Notifications page." to "Показувати вхідні перекази на сторінці сповіщень tele.",
++        "New transfers badge" to "Позначка нових переказів",
++        "Show a +N badge next to Money until you open it." to "Показувати +N поруч із «Грошима», доки ви їх не відкриєте.",
+         "Turn off animated userpics" to "Вимкнути анімовані аватари",
+         "Turn off bot widgets" to "Вимкнути віджети ботів",
+         "Turns on the ghost switches below." to "Вмикає перемикачі невидимості нижче.",
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index bd6554eb9..f41639985 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1270,6 +1270,8 @@ class TeleSettingsActivity @JvmOverloads constructor(
+             "Show names instead of phone numbers in chat headers" to "The header shows a person's name, not their number.",
+             "Reveal spoilers automatically" to "Show spoilers without a tap.",
+             "Hide mention and reaction badges" to "No jump buttons or badges; mentions stay unread.",
++            "Show matching blockquotes as reply quotes" to "Moves an exact leading quote into the reply header.",
++            "Plain search calendar" to "Hide photo and video thumbnails on calendar days.",
+             "Turn off AI features" to "Hides the AI editor, summaries and AI styles; voice transcription stays.",
+             "Reactions in the menu" to "Pin your reactions and choose how many show above the message menu.",
+             "Turn off animated userpics" to "Keep video userpics still.",
+@@ -1287,6 +1289,8 @@ class TeleSettingsActivity @JvmOverloads constructor(
+             "Show the start parameter" to "Show what a bot's start button sends.",
+             "Pick brush colors from the image" to "Pick a color from the edited image.",
+             "Hide stories" to "Hide stories and their entry points.",
++            "Hide bot previews" to "Hide the screenshots and videos on bot profiles.",
++            "Hide gift offers" to "Hide incoming offers to buy your gifts, with their notifications.",
+             "Watch stories invisibly" to "Don't appear among story viewers.",
+             "Hide online status" to "Don't send your online status.",
+             "Hide typing status" to "Don't send typing status.",
+@@ -1381,6 +1385,8 @@ class TeleSettingsActivity @JvmOverloads constructor(
+             "Console history" to "Remember the last console requests on this device.",
+             "Report crashes without a dump" to "Say why a crash had no dump when it is sent.",
+             "Turn off Money" to "Money is gone from the app, links and messages included.",
++            "Incoming transfers in notifications" to "Show incoming Money transfers on tele's Notifications page.",
++            "New transfers badge" to "Show a +N badge next to Money until you open it.",
+             "Dim wallet address groups" to "Dims every other group of four in an address, like on iOS.",
+             "Hide other balances" to "Hides the rows above the card — the old wallets' balance and the earnings. Your balance stays.",
+             "Transaction links" to "Copy or open a transaction on tonscan.org from the history and from a transfer message.",
+@@ -1722,6 +1728,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 toggle("Send quick replies by name", TeleConfig.QUICK_REPLIES_BY_NAME),
+                 toggle("Regex search in chats", TeleConfig.REGEX_SEARCH),
+                 toggle("Message type filter in chat search", TeleConfig.SEARCH_TYPES),
++                toggle("Plain search calendar", TeleConfig.PLAIN_SEARCH_CALENDAR),
+                 toggle("Select more than 100 messages", TeleConfig.SELECT_MANY),
+                 toggle("Show sticker captions", TeleConfig.STICKER_CAPTIONS_SHOW),
+                 Row(TYPE_SHADOW),
+@@ -1769,6 +1776,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Quotes"),
+                 toggle("Multiple quotes in one reply", TeleConfig.MULTI_QUOTE),
++                toggle("Show matching blockquotes as reply quotes", TeleConfig.PROMOTE_REPLY_QUOTES),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Code blocks"),
+                 toggle("Line numbers in code blocks", TeleConfig.CODE_LINE_NUMBERS),
+@@ -1962,6 +1970,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 toggle("Show ids on regular gifts", TeleConfig.SHOW_REGULAR_GIFT_IDS),
+                 toggle("Dim hidden gifts", TeleConfig.GIFT_HIDDEN_DIM),
+                 toggle("Select several gifts", TeleConfig.GIFT_SELECT),
++                toggle("Hide gift offers", TeleConfig.HIDE_GIFT_OFFERS),
+                 toggle("Search gifts", TeleConfig.GIFT_SEARCH),
+                 toggle("Send several gifts at once", TeleConfig.GIFT_QUANTITY),
+                 toggle("Copy gift collection link", TeleConfig.GIFT_COLLECTION_LINK),
+@@ -2004,6 +2013,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 Row(TYPE_HEADER, "bots"),
+                 Row(TYPE_HEADER, "Bot buttons"),
+                 toggle("Show bot button payloads on long press", TeleConfig.BOT_BUTTON_PAYLOADS),
++                toggle("Hide bot previews", TeleConfig.HIDE_BOT_PREVIEWS),
+                 Row(TYPE_SHADOW),
+                 Row(TYPE_HEADER, "Mini apps"),
+                 toggle("Never open web apps in fullscreen", TeleConfig.WEBAPPS_NO_FULLSCREEN),
+@@ -2030,6 +2040,8 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                     rows.add(Row(TYPE_SHADOW))
+                     rows.add(Row(TYPE_HEADER, "Transactions"))
+                     rows.add(toggle("Transaction links", TeleConfig.WALLET_TRANSACTION_LINKS))
++                    rows.add(toggle("Incoming transfers in notifications", TeleConfig.MONEY_INCOMING_NOTIFY))
++                    rows.add(toggle("New transfers badge", TeleConfig.MONEY_INCOMING_BADGE))
+                 }
+                 rows.add(Row(TYPE_SHADOW))
+                 rows
+diff --git a/TMessagesProj/src/main/res/values-ru/strings_tele.xml b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+index 95fcf8a04..cbae78d6b 100644
+--- a/TMessagesProj/src/main/res/values-ru/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+@@ -390,4 +390,6 @@
+     <string name="TeleMiniAppUnsupported">У этого бота нет мини-приложения</string>
+     <string name="TeleMiniAppOpenFailed">Не удалось открыть мини-приложение</string>
+     <string name="TeleMiniAppPage">Мини-приложение</string>
++    <string name="TeleMoneyIncoming">Входящий перевод</string>
++    <string name="TeleMoneyFrom">От %1$s</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values-uk/strings_tele.xml b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+index 266ef913b..bd1095340 100644
+--- a/TMessagesProj/src/main/res/values-uk/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+@@ -390,4 +390,6 @@
+     <string name="TeleMiniAppUnsupported">У цього бота немає міні-застосунку</string>
+     <string name="TeleMiniAppOpenFailed">Не вдалося відкрити міні-застосунок</string>
+     <string name="TeleMiniAppPage">Міні-застосунок</string>
++    <string name="TeleMoneyIncoming">Вхідний переказ</string>
++    <string name="TeleMoneyFrom">Від %1$s</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 65846fbb6..291319c45 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -405,5 +405,7 @@
+     <string name="TeleMiniAppAlreadyAdded">This mini app is already on the bar</string>
+     <string name="TeleMiniAppUnsupported">This bot has no mini app</string>
+     <string name="TeleMiniAppOpenFailed">Couldn\'t open this mini app</string>
++    <string name="TeleMoneyIncoming">Incoming transfer</string>
++    <string name="TeleMoneyFrom">From %1$s</string>
+     <string name="TeleMiniAppPage">Mini app</string>
+ </resources>

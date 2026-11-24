@@ -64,6 +64,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A022](#a022) | Material You themes and custom palettes | original | active | 1 |
 | [A023](#a023) | Customizable bottom navigation bar | original | active | 2 |
 | [A024](#a024) | Chat list keeps old dialogs | adaptation | active | 1 |
+| [A025](#a025) | Desktop tele 29 parity | adaptation | active | 1 |
 
 <a id="a001"></a>
 
@@ -534,4 +535,18 @@ Chats from an older period could vanish from All chats and every folder. Dialog 
 | patch |
 |---|
 | [`0365-fix-stop-skipping-dialogs-by-date.patch`](../patches/android/0365-fix-stop-skipping-dialogs-by-date.patch) |
+
+<a id="a025"></a>
+
+## A025 — Desktop tele 29 parity
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** member ranks, matching blockquotes, media-route fallback, story posting, bot previews, folder emoji icons, plain search calendar, gift offers, Money coverage, on-chain password guards and incoming Money transfers.
+
+Ports the applicable tele Desktop 29 changes: member ranks fetch the first full participants page even when cached rows fill the viewport; exact leading ordinary-text blockquotes can be promoted into reply headers with source highlighting; story posting, bot previews and incoming gift offers gain the desktop hide switches; folder emoji tabs rebuild at their final text size; search calendar can hide day thumbnails; `NO_MONEY` also hides gift-offer actions; existing local-password protection guards on-chain gift buy/sell/offer flows earlier; incoming Money transfers get bounded per-account tracking, tele notices and a `+N` menu badge; native download sockets fall back from a blackholed media route to the regular route after two pre-data connect timeouts without changing request tokens or leaking media keys/salts. Desktop-only reply-next, Linux helper packaging and AI bot-info editing are not applicable to this fork.
+
+| patch |
+|---|
+| [`0371-feat-port-desktop-29-parity.patch`](../patches/android/0371-feat-port-desktop-29-parity.patch) |
 
