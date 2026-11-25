@@ -1,0 +1,590 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Wed, 25 Nov 2026 08:34:28 +0300
+Subject: [PATCH] feat: notify incoming money transfers
+
+---
+ .../messenger/MessagesController.java         |   1 +
+ .../java/org/telegram/ui/DialogsActivity.java |   5 +-
+ .../org/telegram/ui/Wallet/GramWallet.java    |   1 +
+ .../telegram/ui/Wallet/WalletActivity.java    |   1 +
+ .../src/main/java/tele/TeleConfig.kt          |   4 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   8 +
+ .../main/java/tele/helpers/MoneyIncoming.kt   | 368 ++++++++++++++++++
+ .../src/main/java/tele/helpers/TeleNotices.kt |   3 +-
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   4 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   4 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ .../src/main/res/values-ru/strings_tele.xml   |   2 +
+ .../src/main/res/values-uk/strings_tele.xml   |   2 +
+ .../src/main/res/values/strings_tele.xml      |   2 +
+ 14 files changed, 407 insertions(+), 2 deletions(-)
+ create mode 100644 TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 0de684d3c..09df81bd0 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -5050,6 +5050,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             editor.apply();
+             AndroidUtilities.runOnUIThread(() -> {
+                 getNotificationCenter().postNotificationName(NotificationCenter.appConfigUpdated);
++                tele.helpers.MoneyIncoming.onToggled();
+             });
+         }
+         if (liteAppOptions != null) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 4fcd70f9b..d80e93a97 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -13668,7 +13668,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
+         }
+         if (getMessagesController().config.walletAvailable()) {
+-            io.add(R.drawable.ic_gram, LocaleController.getString(R.string.WalletAttachMoney), () -> {
++            final int incoming = tele.helpers.MoneyIncoming.unseen(currentAccount);
++            io.add(R.drawable.ic_gram, LocaleController.getString(R.string.WalletAttachMoney),
++                    incoming > 0 ? "+" + incoming : null, () -> {
++                tele.helpers.MoneyIncoming.markSeen(currentAccount);
+                 presentFragment(new WalletActivity());
+             });
+         } else {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+index 52c96d2d5..673dd7787 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/GramWallet.java
+@@ -979,6 +979,7 @@ public class GramWallet implements GramWalletStreaming.IGramWalletStreamingSubsc
+     };
+ 
+     public void notifyUpdate() {
++        tele.helpers.MoneyIncoming.onWalletState(currentAccount, state);
+         NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.walletUpdate, this);
+     }
+ 
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
+index 05cd0916e..d00892b62 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Wallet/WalletActivity.java
+@@ -3729,6 +3729,7 @@ public class WalletActivity extends UniversalFragment implements NotificationCen
+     @Override
+     public void onResume() {
+         super.onResume();
++        tele.helpers.MoneyIncoming.markSeen(currentAccount);
+         if (actionBar != null) {
+             actionBar.post(this::attachBalanceOverlay);
+         }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index 04718e77a..c1cb679e6 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -141,6 +141,10 @@ object TeleConfig {
+     @JvmField
+     val NO_MONEY = BoolItem("no_money", false)
+     @JvmField
++    val MONEY_INCOMING_NOTIFY = BoolItem("money_incoming_notify", false)
++    @JvmField
++    val MONEY_INCOMING_BADGE = BoolItem("money_incoming_badge", false)
++    @JvmField
+     val DIM_WALLET_ADDRESS = BoolItem("dim_wallet_address", false)
+     @JvmField
+     val HIDE_OTHER_WALLET_BALANCES = BoolItem("hide_other_wallet_balances", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 94411c7e4..a799bc274 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -50,6 +50,11 @@ object TeleHooks {
+         tele.helpers.TeleMentions.install()
+         tele.scripting.Scripts.init()
+         tele.helpers.MaterialTheme.init()
++        for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++            if (UserConfig.getInstance(account).isClientActivated) {
++                tele.helpers.MoneyIncoming.start(account)
++            }
++        }
+     }
+ 
+     @JvmStatic
+@@ -141,6 +146,9 @@ object TeleHooks {
+                 AccountInstance.getInstance(account).getNotificationCenter().postNotificationName(NotificationCenter.storiesUpdated)
+             }
+         }
++        if (item === TeleConfig.MONEY_INCOMING_NOTIFY || item === TeleConfig.MONEY_INCOMING_BADGE || item === TeleConfig.NO_MONEY) {
++            tele.helpers.MoneyIncoming.onToggled()
++        }
+         if (item === TeleConfig.QUEUE_BEHIND_MEDIA) {
+             for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
+                 tele.helpers.SendOrder.flush(account)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt b/TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt
+new file mode 100644
+index 000000000..1e31f5de5
+--- /dev/null
++++ b/TMessagesProj/src/main/java/tele/helpers/MoneyIncoming.kt
+@@ -0,0 +1,368 @@
++package tele.helpers
++
++import org.json.JSONArray
++import org.json.JSONObject
++import org.telegram.messenger.AndroidUtilities
++import org.telegram.messenger.DispatchQueue
++import org.telegram.messenger.FileLog
++import org.telegram.messenger.LocaleController
++import org.telegram.messenger.MessagesController
++import org.telegram.messenger.R
++import org.telegram.messenger.UserConfig
++import org.telegram.messenger.UserObject
++import org.telegram.tgnet.ConnectionsManager
++import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_wallet
++import org.telegram.ui.Wallet.WalletActivity
++import org.telegram.ui.Wallet.GramWallet
++import tele.TeleConfig
++import tele.db.TeleDatabaseHelper
++import java.util.concurrent.CopyOnWriteArrayList
++
++object MoneyIncoming {
++    private const val KEY = "money_incoming"
++    private const val VERSION = 1
++    private const val PAGE_LIMIT = 20
++    private const val MAX_SEEN = 200
++    private const val MAX_ID_LENGTH = 256
++    private const val POLL_INTERVAL = 10 * 60 * 1000L
++
++    fun interface Listener {
++        fun onChanged(account: Int, unseen: Int)
++    }
++
++    private class AccountState(val account: Int, val generation: Long) {
++        var baseline = false
++        var unseen = 0
++        var balance = -1L
++        var requestId = -1
++        var checkAgain = false
++        var poll: Runnable? = null
++        val seenOrder = ArrayDeque<String>()
++        val seenIds = HashSet<String>()
++    }
++
++    private val queue by lazy { DispatchQueue("moneyIncoming") }
++    private val states = HashMap<Int, AccountState>()
++    private val listeners = CopyOnWriteArrayList<Listener>()
++
++    @Volatile
++    private var unseenSnapshot = IntArray(UserConfig.MAX_ACCOUNT_COUNT)
++    init {
++        TeleNotices.registerAction(NoticeKind.MONEY) { fragment, _, _ ->
++            fragment.presentFragment(WalletActivity())
++            true
++        }
++    }
++
++    @JvmStatic
++    fun start(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable { state(account, true)?.let { refresh(it, false) } }
++    }
++
++    @JvmStatic
++    fun onWalletState(account: Int, state: TL_wallet.WalletState?) {
++        if (!valid(account)) return
++        queue.postRunnable {
++            val tracker = state(account, false) ?: return@postRunnable
++            val balance = (state as? TL_wallet.TL_walletState)?.balance ?: -1L
++            val grew = tracker.balance >= 0L && balance > tracker.balance
++            tracker.balance = balance
++            if (grew || !tracker.baseline) check(tracker)
++        }
++    }
++
++    @JvmStatic
++    fun onTransactionsChanged(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable { state(account, false)?.let { check(it) } }
++    }
++
++    @JvmStatic
++    fun markSeen(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable {
++            val tracker = state(account, false) ?: return@postRunnable
++            if (tracker.unseen == 0) return@postRunnable
++            tracker.unseen = 0
++            write(tracker)
++            publish(tracker)
++        }
++    }
++
++    @JvmStatic
++    fun unseen(account: Int): Int =
++        if (valid(account) && badgeEnabled()) unseenSnapshot[account] else 0
++
++    @JvmStatic
++    fun addListener(listener: Listener) {
++        listeners.add(listener)
++    }
++
++    @JvmStatic
++    fun removeListener(listener: Listener) {
++        listeners.remove(listener)
++    }
++
++    @JvmStatic
++    fun onToggled() {
++        queue.postRunnable {
++            for (tracker in states.values.toList()) refresh(tracker, false)
++            for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
++                if (UserConfig.getInstance(account).isClientActivated) {
++                    state(account, true)?.let { refresh(it, false) }
++                }
++            }
++        }
++    }
++
++    @JvmStatic
++    fun onLogout(account: Int) {
++        if (!valid(account)) return
++        queue.postRunnable {
++            val tracker = states.remove(account)
++            if (tracker != null) {
++                cancelPoll(tracker)
++                cancelRequest(tracker)
++            }
++            runCatching { TeleDatabaseHelper.put(key(account), null) }.onFailure { FileLog.e(it) }
++            publishCount(account, 0)
++        }
++    }
++
++    private fun valid(account: Int) = account in 0 until UserConfig.MAX_ACCOUNT_COUNT
++
++    private fun key(account: Int) = "$KEY:$account"
++
++    private fun notifyEnabled() = !TeleConfig.NO_MONEY.value && TeleConfig.MONEY_INCOMING_NOTIFY.value
++
++    private fun badgeEnabled() = !TeleConfig.NO_MONEY.value && TeleConfig.MONEY_INCOMING_BADGE.value
++
++    private fun enabled(account: Int) =
++        valid(account) && UserConfig.getInstance(account).isClientActivated &&
++            !TeleConfig.NO_MONEY.value && (notifyEnabled() || badgeEnabled())
++
++    private fun canCheck(account: Int) =
++        enabled(account) && MessagesController.getInstance(account).config.walletAvailable()
++
++    private fun state(account: Int, create: Boolean): AccountState? {
++        if (!valid(account)) return null
++        val generation = TeleAccounts.generation(account)
++        states[account]?.let { if (it.generation == generation) return it }
++        if (!create) return null
++        val tracker = AccountState(account, generation)
++        states[account] = tracker
++        read(tracker)
++        publish(tracker)
++        return tracker
++    }
++
++    private fun refresh(tracker: AccountState, poll: Boolean) {
++        if (states[tracker.account] !== tracker || !TeleAccounts.isCurrent(tracker.account, tracker.generation)) return
++        if (!enabled(tracker.account)) {
++            cancelPoll(tracker)
++            cancelRequest(tracker)
++            clearUnseen(tracker)
++            return
++        }
++        schedulePoll(tracker)
++        if (canCheck(tracker.account) && (poll || !tracker.baseline)) check(tracker)
++    }
++
++    private fun schedulePoll(tracker: AccountState) {
++        if (tracker.poll != null) return
++        val task = object : Runnable {
++            override fun run() {
++                tracker.poll = null
++                if (states[tracker.account] !== tracker) return
++                if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) {
++                    states.remove(tracker.account)
++                    publishCount(tracker.account, 0)
++                    return
++                }
++                refresh(tracker, true)
++            }
++        }
++        tracker.poll = task
++        queue.postRunnable(task, POLL_INTERVAL)
++    }
++
++    private fun cancelPoll(tracker: AccountState) {
++        tracker.poll?.let { queue.cancelRunnable(it) }
++        tracker.poll = null
++    }
++
++    private fun check(tracker: AccountState) {
++        if (!canCheck(tracker.account)) return
++        if (tracker.requestId >= 0) {
++            tracker.checkAgain = true
++            return
++        }
++        if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) return
++        val request = TL_wallet.getTransactions().apply {
++            inbound = true
++            outbound = false
++            offset = ""
++            limit = PAGE_LIMIT
++        }
++        tracker.checkAgain = false
++        tracker.requestId = ConnectionsManager.getInstance(tracker.account).sendRequestTyped(
++            request,
++            AndroidUtilities::runOnUIThread
++        ) { result, error ->
++            if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) return@sendRequestTyped
++            if (result != null) {
++                val controller = MessagesController.getInstance(tracker.account)
++                controller.putUsers(result.users, false)
++                controller.putChats(result.chats, false)
++            } else if (error != null) {
++                FileLog.e("incoming transactions: ${error.text ?: "NULL_ERROR"}")
++            }
++            queue.postRunnable {
++                val current = states[tracker.account]
++                if (current !== tracker) return@postRunnable
++                tracker.requestId = -1
++                if (!TeleAccounts.isCurrent(tracker.account, tracker.generation)) return@postRunnable
++                if (result != null) apply(tracker, result)
++                if (tracker.checkAgain) check(tracker)
++            }
++        }
++    }
++
++    private fun cancelRequest(tracker: AccountState) {
++        if (tracker.requestId >= 0) {
++            ConnectionsManager.getInstance(tracker.account).cancelRequest(tracker.requestId, true)
++            tracker.requestId = -1
++        }
++        tracker.checkAgain = false
++    }
++
++    private fun apply(tracker: AccountState, result: TL_wallet.walletTransactions) {
++        val first = !tracker.baseline
++        val oldUnseen = tracker.unseen
++        val notices = ArrayList<TL_wallet.walletTransaction>()
++        tracker.baseline = true
++        for (index in result.transactions.indices.reversed()) {
++            val transaction = result.transactions[index] ?: continue
++            val id = transaction.id
++            if (id.isNullOrEmpty() || id.length > MAX_ID_LENGTH) continue
++            if (!remember(tracker, id)) continue
++            if (first || !eligible(transaction)) continue
++            if (badgeEnabled()) tracker.unseen = (tracker.unseen + 1).coerceAtMost(MAX_SEEN)
++            if (notifyEnabled()) notices.add(transaction)
++        }
++        // Persist the ids before UI delivery so a restart cannot announce the same transfer twice.
++        write(tracker)
++        if (oldUnseen != tracker.unseen) publish(tracker)
++        for (transaction in notices) emit(tracker, transaction)
++    }
++
++    private fun eligible(transaction: TL_wallet.walletTransaction) =
++        transaction.incoming && !transaction.failed && !transaction.key_change &&
++            !transaction.pending && transaction.nft == null && transaction.amount > 0L
++
++    private fun remember(tracker: AccountState, id: String): Boolean {
++        if (!tracker.seenIds.add(id)) return false
++        tracker.seenOrder.addLast(id)
++        while (tracker.seenOrder.size > MAX_SEEN) {
++            tracker.seenIds.remove(tracker.seenOrder.removeFirst())
++        }
++        return true
++    }
++
++    private fun emit(tracker: AccountState, transaction: TL_wallet.walletTransaction) {
++        val generation = tracker.generation
++        AndroidUtilities.runOnUIThread {
++            if (!TeleAccounts.isCurrent(tracker.account, generation) || !notifyEnabled()) return@runOnUIThread
++            val from = fromText(tracker.account, transaction.peer)
++            val text = if (from.isEmpty()) {
++                LocaleController.getString(R.string.TeleMoneyIncoming)
++            } else {
++                LocaleController.formatString(R.string.TeleMoneyFrom, from)
++            }
++            TeleNotices.add(
++                tracker.account,
++                TeleNotice(
++                    kind = NoticeKind.MONEY,
++                    title = "+" + GramWallet.formatGrams(transaction.amount),
++                    text = TeleLowercase.lc(text),
++                    tone = NoticeTone.SUCCESS,
++                    date = transaction.date,
++                    key = "money_incoming:${transaction.id}"
++                )
++            )
++        }
++    }
++
++    private fun fromText(account: Int, peer: TL_wallet.WalletTransactionPeer?): String =
++        when (peer) {
++            is TL_wallet.walletTransactionPeerUser ->
++                MessagesController.getInstance(account).getUser(peer.user_id)?.let { UserObject.getUserName(it) }
++                    ?: shortAddress(peer.address)
++            is TL_wallet.walletTransactionPeerChannel ->
++                MessagesController.getInstance(account).getChat(peer.channel_id)?.title ?: shortAddress(peer.address)
++            is TL_wallet.walletTransactionPeerAddress -> peer.domain?.takeIf { it.isNotEmpty() } ?: shortAddress(peer.address)
++            is TL_wallet.walletTransactionPeerOnramp -> peer.provider_name ?: ""
++            else -> ""
++        }
++
++    private fun shortAddress(address: String?): String =
++        if (address != null && address.length > 12) address.take(4) + "…" + address.takeLast(4) else address ?: ""
++
++    private fun clearUnseen(tracker: AccountState) {
++        if (tracker.unseen == 0) {
++            publish(tracker)
++            return
++        }
++        tracker.unseen = 0
++        write(tracker)
++        publish(tracker)
++    }
++
++    private fun publish(tracker: AccountState) {
++        publishCount(tracker.account, if (badgeEnabled()) tracker.unseen else 0)
++    }
++
++    private fun publishCount(account: Int, count: Int) {
++        val next = unseenSnapshot.copyOf()
++        next[account] = count.coerceIn(0, MAX_SEEN)
++        unseenSnapshot = next
++        val visible = if (badgeEnabled()) next[account] else 0
++        AndroidUtilities.runOnUIThread { listeners.forEach { it.onChanged(account, visible) } }
++    }
++
++    private fun read(tracker: AccountState) {
++        val owner = TeleAccounts.identity(tracker.account)
++        if (owner.isEmpty()) return
++        runCatching {
++            val raw = TeleDatabaseHelper.get(key(tracker.account)) ?: return@runCatching
++            val json = JSONObject(raw)
++            if (json.optInt("v") != VERSION || json.optString("owner") != owner || !json.optBoolean("baseline")) return@runCatching
++            tracker.unseen = json.optInt("unseen").coerceIn(0, MAX_SEEN)
++            val ids = json.optJSONArray("seen") ?: JSONArray()
++            for (index in 0 until ids.length()) {
++                val id = ids.optString(index)
++                if (id.isNotEmpty() && id.length <= MAX_ID_LENGTH) remember(tracker, id)
++            }
++            tracker.baseline = true
++        }.onFailure { FileLog.e(it) }
++    }
++
++    private fun write(tracker: AccountState) {
++        if (!tracker.baseline) return
++        val owner = TeleAccounts.identity(tracker.account)
++        if (owner.isEmpty()) return
++        runCatching {
++            val ids = JSONArray()
++            for (id in tracker.seenOrder) ids.put(id)
++            val json = JSONObject()
++                .put("v", VERSION)
++                .put("owner", owner)
++                .put("baseline", true)
++                .put("unseen", tracker.unseen)
++                .put("seen", ids)
++            TeleDatabaseHelper.put(key(tracker.account), json.toString())
++        }.onFailure { FileLog.e(it) }
++    }
++}
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+index da78f7c4d..c614a111e 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleNotices.kt
+@@ -24,7 +24,8 @@ enum class NoticeKind(val id: String, val icon: Int, val color: Int, val cap: In
+     CRASH("crash", R.drawable.msg_report, 0xFFE5574E.toInt()),
+     ONLINE("online", R.drawable.msg_online, 0xFF3FB6C7.toInt()),
+     MENTION("mention", R.drawable.msg_mention, 0xFFE0609C.toInt(), cap = 300),
+-    COPY("copy", R.drawable.msg_copy, 0xFF5C7CFA.toInt());
++    COPY("copy", R.drawable.msg_copy, 0xFF5C7CFA.toInt()),
++    MONEY("money", R.drawable.ic_gram, 0xFF4DB86A.toInt());
+ 
+     companion object {
+         @JvmStatic
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index de677ea9b..19d335cb5 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1146,6 +1146,10 @@ object TeleTextRu {
+         "Try again after 3 seconds when the collections of a profile fail to load." to "Повторять через 3 секунды, если коллекции профиля не загрузились.",
+         "Turn off AI features" to "Отключить функции ИИ",
+         "Turn off Money" to "Отключить «Деньги»",
++        "Incoming transfers in notifications" to "Входящие переводы в уведомлениях",
++        "Show incoming Money transfers on tele's Notifications page." to "Показывать входящие переводы на странице уведомлений tele.",
++        "New transfers badge" to "Значок новых переводов",
++        "Show a +N badge next to Money until you open it." to "Показывать +N рядом с «Деньгами», пока вы их не откроете.",
+         "Turn off animated userpics" to "Отключить анимированные аватары",
+         "Turn off bot widgets" to "Отключить виджеты ботов",
+         "Turns on the ghost switches below." to "Включает переключатели невидимки ниже.",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 2c824b17b..f872f0078 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1146,6 +1146,10 @@ object TeleTextUk {
+         "Try again after 3 seconds when the collections of a profile fail to load." to "Повторювати спробу через 3 секунди, якщо колекції профілю не завантажуються.",
+         "Turn off AI features" to "Вимкнути функції ШІ",
+         "Turn off Money" to "Вимкнути гроші",
++        "Incoming transfers in notifications" to "Вхідні перекази в сповіщеннях",
++        "Show incoming Money transfers on tele's Notifications page." to "Показувати вхідні перекази на сторінці сповіщень tele.",
++        "New transfers badge" to "Позначка нових переказів",
++        "Show a +N badge next to Money until you open it." to "Показувати +N поруч із «Грошима», доки ви їх не відкриєте.",
+         "Turn off animated userpics" to "Вимкнути анімовані аватари",
+         "Turn off bot widgets" to "Вимкнути віджети ботів",
+         "Turns on the ghost switches below." to "Вмикає перемикачі невидимості нижче.",
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 9955b23c8..f41639985 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1385,6 +1385,8 @@ class TeleSettingsActivity @JvmOverloads constructor(
+             "Console history" to "Remember the last console requests on this device.",
+             "Report crashes without a dump" to "Say why a crash had no dump when it is sent.",
+             "Turn off Money" to "Money is gone from the app, links and messages included.",
++            "Incoming transfers in notifications" to "Show incoming Money transfers on tele's Notifications page.",
++            "New transfers badge" to "Show a +N badge next to Money until you open it.",
+             "Dim wallet address groups" to "Dims every other group of four in an address, like on iOS.",
+             "Hide other balances" to "Hides the rows above the card — the old wallets' balance and the earnings. Your balance stays.",
+             "Transaction links" to "Copy or open a transaction on tonscan.org from the history and from a transfer message.",
+@@ -2038,6 +2040,8 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                     rows.add(Row(TYPE_SHADOW))
+                     rows.add(Row(TYPE_HEADER, "Transactions"))
+                     rows.add(toggle("Transaction links", TeleConfig.WALLET_TRANSACTION_LINKS))
++                    rows.add(toggle("Incoming transfers in notifications", TeleConfig.MONEY_INCOMING_NOTIFY))
++                    rows.add(toggle("New transfers badge", TeleConfig.MONEY_INCOMING_BADGE))
+                 }
+                 rows.add(Row(TYPE_SHADOW))
+                 rows
+diff --git a/TMessagesProj/src/main/res/values-ru/strings_tele.xml b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+index 95fcf8a04..cbae78d6b 100644
+--- a/TMessagesProj/src/main/res/values-ru/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-ru/strings_tele.xml
+@@ -390,4 +390,6 @@
+     <string name="TeleMiniAppUnsupported">У этого бота нет мини-приложения</string>
+     <string name="TeleMiniAppOpenFailed">Не удалось открыть мини-приложение</string>
+     <string name="TeleMiniAppPage">Мини-приложение</string>
++    <string name="TeleMoneyIncoming">Входящий перевод</string>
++    <string name="TeleMoneyFrom">От %1$s</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values-uk/strings_tele.xml b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+index 266ef913b..bd1095340 100644
+--- a/TMessagesProj/src/main/res/values-uk/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values-uk/strings_tele.xml
+@@ -390,4 +390,6 @@
+     <string name="TeleMiniAppUnsupported">У цього бота немає міні-застосунку</string>
+     <string name="TeleMiniAppOpenFailed">Не вдалося відкрити міні-застосунок</string>
+     <string name="TeleMiniAppPage">Міні-застосунок</string>
++    <string name="TeleMoneyIncoming">Вхідний переказ</string>
++    <string name="TeleMoneyFrom">Від %1$s</string>
+ </resources>
+diff --git a/TMessagesProj/src/main/res/values/strings_tele.xml b/TMessagesProj/src/main/res/values/strings_tele.xml
+index 65846fbb6..291319c45 100644
+--- a/TMessagesProj/src/main/res/values/strings_tele.xml
++++ b/TMessagesProj/src/main/res/values/strings_tele.xml
+@@ -405,5 +405,7 @@
+     <string name="TeleMiniAppAlreadyAdded">This mini app is already on the bar</string>
+     <string name="TeleMiniAppUnsupported">This bot has no mini app</string>
+     <string name="TeleMiniAppOpenFailed">Couldn\'t open this mini app</string>
++    <string name="TeleMoneyIncoming">Incoming transfer</string>
++    <string name="TeleMoneyFrom">From %1$s</string>
+     <string name="TeleMiniAppPage">Mini app</string>
+ </resources>

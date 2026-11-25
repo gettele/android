@@ -112,6 +112,7 @@ patches are shipped in batches (the current plan is the local-only `docs/interna
 
 1. `./gradlew :TMessagesProj_App:assembleDebug` with every batch toggle exercised in at least one of: on, off, default state.
 2. hand the apk over for manual testing (device or avd). state plainly what to test and how.
+   The desktop tele 29 ports have a dedicated checklist in [testing-desktop-29.md](testing-desktop-29.md).
 3. after human verification, mark the batch `done` in `docs/internal/PATCHLIST.md`.
 
 a feature is never claimed working because it compiles.

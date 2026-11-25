@@ -64,7 +64,10 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 | [A022](#a022) | Material You themes and custom palettes | original | active | 1 |
 | [A023](#a023) | Customizable bottom navigation bar | original | active | 2 |
 | [A024](#a024) | Chat list keeps old dialogs | adaptation | active | 1 |
-| [A025](#a025) | Desktop tele 29 parity | adaptation | active | 1 |
+| [A025](#a025) | Desktop tele 29 parity | adaptation | removed | 0 |
+| [A026](#a026) | Matching blockquotes in reply headers | adaptation | active | 1 |
+| [A027](#a027) | Incoming Money transfer notices | adaptation | active | 1 |
+| [A028](#a028) | Media download route fallback | adaptation | active | 1 |
 
 <a id="a001"></a>
 
@@ -540,13 +543,49 @@ Chats from an older period could vanish from All chats and every folder. Dialog 
 
 ## A025 — Desktop tele 29 parity
 
+**Type:** `adaptation` · **Status:** `removed`
+
+The combined desktop tele 29 bundle was split into one patch per feature. Pure desktop ports keep their desktop origin; substantial adaptations use A026–A028.
+
+<a id="a026"></a>
+
+## A026 — Matching blockquotes in reply headers
+
 **Type:** `adaptation` · **Status:** `active`
 
-**Desktop references:** member ranks, matching blockquotes, media-route fallback, story posting, bot previews, folder emoji icons, plain search calendar, gift offers, Money coverage, on-chain password guards and incoming Money transfers.
+**Desktop references:** show matching blockquotes as reply quotes.
 
-Ports the applicable tele Desktop 29 changes: member ranks fetch the first full participants page even when cached rows fill the viewport; exact leading ordinary-text blockquotes can be promoted into reply headers with source highlighting; story posting, bot previews and incoming gift offers gain the desktop hide switches; folder emoji tabs rebuild at their final text size; search calendar can hide day thumbnails; `NO_MONEY` also hides gift-offer actions; existing local-password protection guards on-chain gift buy/sell/offer flows earlier; incoming Money transfers get bounded per-account tracking, tele notices and a `+N` menu badge; native download sockets fall back from a blackholed media route to the regular route after two pre-data connect timeouts without changing request tokens or leaking media keys/salts. Desktop-only reply-next, Linux helper packaging and AI bot-info editing are not applicable to this fork.
+A display-only Android adaptation: when a reply and the ordinary text message it answers begin with exactly the same raw blockquote text and inline entities, the source quote appears in the reply header with existing quote chrome and inline formatting. Tapping the header highlights source offset 0. Existing server/manual quotes always win; rich messages, media, albums, translations and mismatched or duplicate quotes stay stock.
 
 | patch |
 |---|
-| [`0371-feat-port-desktop-29-parity.patch`](../patches/android/0371-feat-port-desktop-29-parity.patch) |
+| [`0377-feat-promote-matching-reply-quotes.patch`](../patches/android/0377-feat-promote-matching-reply-quotes.patch) |
+
+<a id="a027"></a>
+
+## A027 — Incoming Money transfer notices
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** incoming money transfer notifications and badge.
+
+Tracks inbound wallet transactions per account with a bounded, persisted seen-id baseline and a ten-minute fallback poll. New incoming transfers optionally create entries in tele's notification center and add a `+N` count next to Money in the chat menu until the wallet is opened. Both switches default off, `NO_MONEY` disables the tracker, and Telegram unread counters are untouched.
+
+| patch |
+|---|
+| [`0380-feat-notify-incoming-money-transfers.patch`](../patches/android/0380-feat-notify-incoming-money-transfers.patch) |
+
+<a id="a028"></a>
+
+## A028 — Media download route fallback
+
+**Type:** `adaptation` · **Status:** `active`
+
+**Desktop references:** stalled media downloads fall back to the regular connection.
+
+After two pre-data connect timeouts on one download slot, the native socket latches onto the regular DC route and switches address, temporary auth key, salt, init state and session together. Request tokens, chunk offsets and callbacks stay unchanged; sibling slots, CDN, uploads, established transfers and cached media keys/salts are left alone.
+
+| patch |
+|---|
+| [`0372-fix-fall-back-stalled-downloads.patch`](../patches/android/0372-fix-fall-back-stalled-downloads.patch) |
 
