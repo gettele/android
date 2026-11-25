@@ -43,9 +43,10 @@ Expected: same DC, same slot, same request token and chunk offset; only address/
 ### 0373 — hide story posting
 
 1. Enable **tele → privacy → Hide stories**.
-2. Open the story compose entry points from the app and from a share flow.
-3. Verify posting/compose is unavailable while viewing/reposting stays hidden.
-4. Disable the toggle and verify the stock story compose entry returns.
+2. Verify other people's stories disappear while the chat-list story camera button and posting entry points still follow the nested **Hide story posting** sub-toggle (`off` by default if toggled off explicitly, `on` by default when turning **Hide stories** on with no child set).
+3. Expand **Hide stories**, toggle **Hide story posting** off then back on, and verify the chat-list story camera button, share-to-story, profile bottom post button, `StoryRecorder`, `StarGiftSheet`, and `tg://post` disappear and return live.
+4. Search settings for `story camera`, `post stories`, and `Hide story posting` with the group collapsed and verify all three open and highlight **Hide story posting**.
+5. Disable **Hide stories** and verify viewing and stock story posting both return.
 
 ### 0374 — hide bot previews
 
@@ -63,13 +64,13 @@ Expected: same DC, same slot, same request token and chunk offset; only address/
 
 ### 0376 — matching blockquotes in reply headers
 
-1. Create an ordinary source message beginning with a blockquote containing bold text, a standard emoji and a custom emoji.
-2. Reply with a message beginning with the identical raw blockquote and entities, followed by different reply text.
+1. Create an ordinary text source message with formatted text (bold, emoji, custom emoji, formatted date, or plain text in the middle) and reply with a leading blockquote matching a unique substring anywhere in that source, followed by reply text.
+2. Repeat against a rich message (`TYPE_ARTICLE`) source with an unambiguous mid-message blockquote match.
 3. Enable **tele → messages → quotes → Show matching blockquotes as reply quotes**.
-4. Verify the reply header shows the source quote with quote chrome and inline formatting.
-5. Tap the header and verify the source is scrolled to and the quote is highlighted.
-6. Disable the toggle and verify the header returns to stock.
-7. Repeat with mismatched text/entities, a rich message, media, an album and an existing manual quote; all must stay stock.
+4. Verify both reply headers show the source quote with quote chrome and inline formatting.
+5. Tap each header and verify the source is scrolled to and the matched offset (not only offset 0) is highlighted.
+6. Disable the toggle and verify headers return to stock.
+7. Repeat with duplicate/ambiguous substrings, mismatched entities, media, an album, and an existing manual quote; all must stay stock.
 
 ### 0377 — hide incoming gift offers
 

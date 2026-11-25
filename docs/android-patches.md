@@ -555,7 +555,7 @@ The combined desktop tele 29 bundle was split into one patch per feature. Pure d
 
 **Desktop references:** show matching blockquotes as reply quotes.
 
-A display-only Android adaptation: when a reply and the ordinary text message it answers begin with exactly the same raw blockquote text and inline entities, the source quote appears in the reply header with existing quote chrome and inline formatting. Tapping the header highlights source offset 0. Existing server/manual quotes always win; rich messages, media, albums, translations and mismatched or duplicate quotes stay stock.
+A display-only Android adaptation: when a reply begins with a leading blockquote whose raw text and inline entities uniquely match anywhere inside the ordinary text or rich message it answers, the source quote appears in the reply header with existing quote chrome and inline formatting. Tapping the header highlights the matched source offset. Existing server/manual quotes always win; media, albums, translations and mismatched or duplicate quotes stay stock.
 
 | patch |
 |---|

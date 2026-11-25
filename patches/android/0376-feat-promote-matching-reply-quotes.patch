@@ -4,38 +4,39 @@ Date: Wed, 25 Nov 2026 08:33:37 +0300
 Subject: [PATCH] feat: promote matching reply quotes
 
 ---
- .../org/telegram/messenger/MessageObject.java | 138 +++++++++++++++++-
- .../telegram/ui/Cells/ChatMessageCell.java    |  77 ++++++++--
- .../java/org/telegram/ui/ChatActivity.java    |  26 +++-
+ .../org/telegram/messenger/MessageObject.java | 144 ++++-
+ .../telegram/ui/Cells/ChatMessageCell.java    |  77 ++-
+ .../java/org/telegram/ui/ChatActivity.java    |  26 +-
  .../ui/Components/ChatActivityEnterView.java  |   4 +-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
- .../java/tele/helpers/ReplyQuotePromotion.kt  | 125 ++++++++++++++++
+ .../java/tele/helpers/ReplyQuotePromotion.kt  | 595 ++++++++++++++++++
  .../java/tele/helpers/TeleSettingsLinks.kt    |   3 +-
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   2 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   2 +
  .../main/java/tele/scripting/ScriptDisplay.kt |   2 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
- 12 files changed, 358 insertions(+), 28 deletions(-)
+ 12 files changed, 834 insertions(+), 28 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
-index 281b85733..c4feabf7a 100644
+index 281b85733..11b233b39 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
-@@ -362,6 +362,11 @@ public class MessageObject {
+@@ -362,6 +362,12 @@ public class MessageObject {
      private float generatedWithFontSize;
      private int tele_codeLinesRevision = tele.helpers.CodeLines.revision();
      private int tele_hiddenRevision = tele.helpers.InvisibleNames.revision();
 +    private int tele_replyQuoteRevision = -1;
 +    private TLRPC.Message tele_replyQuoteSourceOwner;
 +    private String tele_replyQuoteSourceText;
++    private Object tele_replyQuoteSourceRich;
 +    private CharSequence tele_fullPromotedMessageText;
 +    public int tele_replyQuoteBodyPrefix;
      public tele.helpers.ShotNames tele_names;
      public boolean wasJustSent;
      public boolean isBotPendingDraft;
-@@ -3984,6 +3989,8 @@ public class MessageObject {
+@@ -3984,6 +3990,8 @@ public class MessageObject {
      }
  
      public void applyNewText(CharSequence text) {
@@ -44,7 +45,7 @@ index 281b85733..c4feabf7a 100644
          if (TextUtils.isEmpty(text)) {
              return;
          }
-@@ -3994,7 +4001,6 @@ public class MessageObject {
+@@ -3994,7 +4002,6 @@ public class MessageObject {
          if (tele.TeleConfig.SCRIPTING.getValue()) {
              tele.scripting.ScriptDisplay.onTextChanged(this);
          }
@@ -52,7 +53,7 @@ index 281b85733..c4feabf7a 100644
          final ArrayList<TLRPC.MessageEntity> entities = getEntities();
          final TextPaint paint;
          if (getMedia(messageOwner) instanceof TLRPC.TL_messageMediaGame) {
-@@ -4874,6 +4880,7 @@ public class MessageObject {
+@@ -4874,6 +4881,7 @@ public class MessageObject {
      }
  
      private void updateMessageText(AbstractMap<Long, TLRPC.User> users, AbstractMap<Long, TLRPC.Chat> chats, LongSparseArray<TLRPC.User> sUsers, LongSparseArray<TLRPC.Chat> sChats) {
@@ -60,7 +61,7 @@ index 281b85733..c4feabf7a 100644
          TLRPC.User fromUser = null;
          TLRPC.Chat fromChat = null;
          if (messageOwner.from_id instanceof TLRPC.TL_peerUser) {
-@@ -7113,7 +7120,7 @@ public class MessageObject {
+@@ -7113,7 +7121,7 @@ public class MessageObject {
      }
  
      public boolean checkLayout() {
@@ -69,7 +70,7 @@ index 281b85733..c4feabf7a 100644
              return false;
          }
          if (layoutCreated) {
-@@ -7127,6 +7134,7 @@ public class MessageObject {
+@@ -7127,6 +7135,7 @@ public class MessageObject {
              }
          }
          if (!layoutCreated) {
@@ -77,7 +78,7 @@ index 281b85733..c4feabf7a 100644
              layoutCreated = true;
              tele_codeLinesRevision = tele.helpers.CodeLines.revision();
              tele_hiddenRevision = tele.helpers.InvisibleNames.revision();
-@@ -7159,10 +7167,101 @@ public class MessageObject {
+@@ -7159,10 +7168,106 @@ public class MessageObject {
          return false;
      }
  
@@ -111,7 +112,7 @@ index 281b85733..c4feabf7a 100644
  
 +    public boolean tele_refreshReplyQuotePromotion() {
 +        final boolean enabled = tele.TeleConfig.PROMOTE_REPLY_QUOTES.getValue();
-+        if (!enabled && tele_replyQuoteBodyPrefix == 0 && tele_replyQuoteRevision == -1 && tele_replyQuoteSourceOwner == null && tele_replyQuoteSourceText == null) {
++        if (!enabled && tele_replyQuoteBodyPrefix == 0 && tele_replyQuoteRevision == -1 && tele_replyQuoteSourceOwner == null && tele_replyQuoteSourceText == null && tele_replyQuoteSourceRich == null) {
 +            return false;
 +        }
 +        final tele.helpers.ReplyQuotePromotion.PromotedQuote promoted = enabled
@@ -120,12 +121,14 @@ index 281b85733..c4feabf7a 100644
 +        final int bodyPrefix = promoted != null ? promoted.bodyPrefix : 0;
 +        final TLRPC.Message sourceOwner = replyMessageObject == null ? null : replyMessageObject.messageOwner;
 +        final String sourceText = sourceOwner != null ? sourceOwner.message : null;
++        final Object sourceRich = replyMessageObject == null ? null : replyMessageObject.getDisplayRichMessage();
 +        final int revision = tele.TeleHooks.uiRevision();
 +        if (bodyPrefix == 0 && tele_replyQuoteBodyPrefix == 0) {
 +            if (enabled) {
 +                tele_replyQuoteRevision = revision;
 +                tele_replyQuoteSourceOwner = sourceOwner;
 +                tele_replyQuoteSourceText = sourceText;
++                tele_replyQuoteSourceRich = sourceRich;
 +            } else {
 +                tele_clearReplyQuotePromotion();
 +            }
@@ -134,7 +137,7 @@ index 281b85733..c4feabf7a 100644
 +        if (bodyPrefix == tele_replyQuoteBodyPrefix &&
 +            (!enabled || tele_replyQuoteRevision == revision) &&
 +            tele_replyQuoteSourceOwner == sourceOwner &&
-+            TextUtils.equals(tele_replyQuoteSourceText, sourceText)) {
++            TextUtils.equals(tele_replyQuoteSourceText, sourceText) && tele_replyQuoteSourceRich == sourceRich) {
 +            return false;
 +        }
 +        if (messageOwner instanceof TLRPC.TL_message && !translated && !summarized && messageOwner.message != null) {
@@ -150,6 +153,7 @@ index 281b85733..c4feabf7a 100644
 +            tele_replyQuoteRevision = -1;
 +            tele_replyQuoteSourceOwner = null;
 +            tele_replyQuoteSourceText = null;
++            tele_replyQuoteSourceRich = null;
 +        }
 +        layoutCreated = false;
 +        return true;
@@ -165,6 +169,7 @@ index 281b85733..c4feabf7a 100644
 +        tele_replyQuoteRevision = -1;
 +        tele_replyQuoteSourceOwner = null;
 +        tele_replyQuoteSourceText = null;
++        tele_replyQuoteSourceRich = null;
 +    }
 +
 +    private void tele_updateReplyQuoteLayoutState() {
@@ -174,12 +179,13 @@ index 281b85733..c4feabf7a 100644
 +        tele_replyQuoteRevision = tele.TeleHooks.uiRevision();
 +        tele_replyQuoteSourceOwner = replyMessageObject == null ? null : replyMessageObject.messageOwner;
 +        tele_replyQuoteSourceText = tele_replyQuoteSourceOwner != null ? tele_replyQuoteSourceOwner.message : null;
++        tele_replyQuoteSourceRich = replyMessageObject == null ? null : replyMessageObject.getDisplayRichMessage();
 +    }
 +
      public String getMimeType() {
          TLRPC.Document document = getDocument();
          if (document != null) {
-@@ -9041,8 +9140,9 @@ public class MessageObject {
+@@ -9041,8 +9146,9 @@ public class MessageObject {
          generateLayout(null);
          forceUpdate = true;
      }
@@ -190,7 +196,7 @@ index 281b85733..c4feabf7a 100644
          if (tele.TeleConfig.SCRIPTING.getValue() && (type == TYPE_TEXT || type == TYPE_EMOJIS)) {
              tele.scripting.ScriptDisplay.apply(currentAccount, this);
          }
-@@ -9060,7 +9160,37 @@ public class MessageObject {
+@@ -9060,7 +9166,37 @@ public class MessageObject {
          if (type != TYPE_TEXT && type != TYPE_EMOJIS && type != TYPE_STORY_MENTION || messageOwner.peer_id == null || TextUtils.isEmpty(messageText) && !isBotPendingDraft) {
              return;
          }
@@ -426,7 +432,7 @@ index 0b23a918e..fb9bed0fa 100644
                      if (replyLine.getColor() != replyQuoteDrawableColor) {
                          replyQuoteDrawable.setColorFilter(new PorterDuffColorFilter(replyQuoteDrawableColor = replyLine.getColor(), PorterDuff.Mode.SRC_IN));
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 7a250c126..dd7277c09 100644
+index b2b10415a..555be4fb3 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -3737,7 +3737,6 @@ public class ChatActivity extends BaseFragment implements
@@ -493,7 +499,7 @@ index 7a250c126..dd7277c09 100644
                      }
 +                } else if (promotedReplyQuote != null) {
 +                    quote = promotedReplyQuote.text;
-+                    quoteOffset = 0;
++                    quoteOffset = promotedQuote.sourceOffset;
                  }
                  long did = dialog_id;
                  boolean couldBeDifferentTopic = false;
@@ -541,10 +547,10 @@ index 46f85b5c5..d011bc267 100644
              if (editingText != null) {
                  final Paint.FontMetricsInt fontMetricsInt;
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-index 7bdb031dc..226e10651 100644
+index 484a20855..cc6e52cbd 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
-@@ -196,6 +196,8 @@ object TeleConfig {
+@@ -200,6 +200,8 @@ object TeleConfig {
      @JvmField
      val DELETED_REPLY = StringItem("deleted_reply", "skip")
      @JvmField
@@ -554,7 +560,7 @@ index 7bdb031dc..226e10651 100644
  
      @JvmField
 diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
-index 587ceef3e..23f601a56 100644
+index 3dc004baf..13fc6281a 100644
 --- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
 @@ -252,6 +252,9 @@ object TeleHooks {
@@ -569,30 +575,44 @@ index 587ceef3e..23f601a56 100644
          }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
 new file mode 100644
-index 000000000..92c380d7f
+index 000000000..8c8823f92
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,595 @@
 +package tele.helpers
 +
 +import android.text.SpannableStringBuilder
 +import android.text.TextUtils
-+import org.telegram.messenger.MediaDataController
 +import org.telegram.messenger.MessageObject
 +import org.telegram.messenger.MessagesController
++import org.telegram.messenger.RichQuote
++import org.telegram.tgnet.TLObject
 +import org.telegram.tgnet.TLRPC
++import org.telegram.tgnet.tl.TL_iv
++import org.telegram.ui.iv.RichTextStyle
 +import tele.TeleConfig
 +
 +object ReplyQuotePromotion {
 +    data class PromotedQuote(
 +        @JvmField val quote: TLRPC.TL_textWithEntities,
-+        @JvmField val bodyPrefix: Int
++        @JvmField val bodyPrefix: Int,
++        @JvmField val sourceOffset: Int
 +    )
 +
 +    data class LeadingQuote(
 +        val quote: TLRPC.TL_textWithEntities,
 +        val bodyPrefix: Int
 +    )
++
++    private val entityComparator = Comparator<TLRPC.MessageEntity> { a, b ->
++        compareValuesBy(
++            a, b,
++            { it.offset },
++            { it.length },
++            { canonicalEntityTypeRank(it) },
++            { entityPayloadKey(it) }
++        )
++    }
 +
 +    @JvmStatic
 +    fun promote(item: MessageObject?): PromotedQuote? {
@@ -609,28 +629,485 @@ index 000000000..92c380d7f
 +            replyTo.quote_rich != null ||
 +            replyTo.poll_option != null ||
 +            owner.flags and 2048 != 0 ||
-+            !isOrdinaryText(reply) ||
-+            !isOrdinaryText(source)
++            !isOrdinaryText(reply)
 +        ) {
 +            return null
 +        }
 +
 +        val replyQuote = leadingQuote(reply) ?: return null
-+        val sourceQuote = leadingQuote(source) ?: return null
-+        if (sourceQuote.quote.text != replyQuote.quote.text) {
-+            return null
-+        }
-+        val fullSourceText = (source.messageOwner as? TLRPC.TL_message)?.message ?: return null
-+        if (!fullSourceText.startsWith(replyQuote.quote.text) ||
-+            fullSourceText.indexOf(replyQuote.quote.text, 1) >= 0
++        sortEntitiesNormalized(replyQuote.quote.entities)
++        return promoteRichSource(source, replyQuote) ?: promoteTextSource(source, replyQuote)
++    }
++
++    private fun promoteRichSource(source: MessageObject, replyQuote: LeadingQuote): PromotedQuote? {
++        if (source.type != MessageObject.TYPE_ARTICLE ||
++            source.isRestrictedMessage ||
++            source.isRepostPreview ||
++            source.translated ||
++            source.summarized ||
++            TeleConfig.SCRIPTING.value && tele.scripting.ScriptDisplay.hasReplacement(source)
 +        ) {
 +            return null
 +        }
-+        MediaDataController.sortEntities(replyQuote.quote.entities)
-+        MediaDataController.sortEntities(sourceQuote.quote.entities)
-+        return sourceQuote.quote.takeIf { it == replyQuote.quote }?.let {
-+            PromotedQuote(it, replyQuote.bodyPrefix)
++        val rich = source.getDisplayRichMessage() ?: return null
++        val (flat, flatEntities) = collectRichText(rich)
++        val offset = uniqueOffset(flat, replyQuote.quote.text) ?: return null
++        val end = offset + replyQuote.quote.text.length
++        val entities = sliceEntities(flatEntities, offset, end, false) ?: return null
++        if (!entitiesEqual(entities, replyQuote.quote.entities)) {
++            return null
 +        }
++        return PromotedQuote(replyQuote.quote, replyQuote.bodyPrefix, offset)
++    }
++
++    private fun collectRichText(message: TL_iv.RichMessage): Pair<String, ArrayList<TLRPC.MessageEntity>> {
++        val text = StringBuilder()
++        val entities = ArrayList<TLRPC.MessageEntity>()
++        val nodes = RichQuote.collectNodes(message)
++        for ((index, node) in nodes.withIndex()) {
++            if (index > 0) {
++                text.append('\n')
++            }
++            appendRichText(node, text, entities)
++        }
++        return text.toString() to entities
++    }
++
++    private fun appendRichText(text: TL_iv.RichText?, out: StringBuilder, entities: ArrayList<TLRPC.MessageEntity>) {
++        if (text == null || text is TL_iv.textEmpty || text is TL_iv.textImage) {
++            return
++        }
++        if (text is TL_iv.textPlain) {
++            if (text.text != null) {
++                out.append(text.text)
++            }
++            return
++        }
++        if (text is TL_iv.textMath) {
++            if (text.source != null) {
++                out.append(text.source)
++            }
++            return
++        }
++        if (text is TL_iv.textCustomEmoji) {
++            val start = out.length
++            out.append(if (TextUtils.isEmpty(text.alt)) "😀" else text.alt)
++            addEntity(
++                entities,
++                TLRPC.TL_messageEntityCustomEmoji().apply { document_id = text.document_id },
++                start,
++                out.length
++            )
++            return
++        }
++        if (text is TL_iv.textConcat) {
++            for (child in text.texts.orEmpty()) {
++                appendRichText(child, out, entities)
++            }
++            return
++        }
++        if (text is TL_iv.textDiff) {
++            appendRichText(if (RichTextStyle.isEmpty(text.text)) text.old_text else text.text, out, entities)
++            return
++        }
++        val start = out.length
++        appendRichText(text.text, out, entities)
++        richTextEntity(text)?.let { addEntity(entities, it, start, out.length) }
++    }
++
++    private fun richTextEntity(text: TL_iv.RichText): TLRPC.MessageEntity? = when (text) {
++        is TL_iv.textBold -> TLRPC.TL_messageEntityBold()
++        is TL_iv.textItalic -> TLRPC.TL_messageEntityItalic()
++        is TL_iv.textUnderline -> TLRPC.TL_messageEntityUnderline()
++        is TL_iv.textStrike -> TLRPC.TL_messageEntityStrike()
++        is TL_iv.textFixed -> TLRPC.TL_messageEntityCode()
++        is TL_iv.textSpoiler -> TLRPC.TL_messageEntitySpoiler()
++        is TL_iv.textUrl -> TLRPC.TL_messageEntityTextUrl().apply { url = text.url }
++        is TL_iv.textAutoUrl -> TLRPC.TL_messageEntityUrl()
++        is TL_iv.textMention -> TLRPC.TL_messageEntityMention()
++        is TL_iv.textMentionName -> TLRPC.TL_messageEntityMentionName().apply {
++            user_id = normalizedId(text.user_id)
++        }
++        is TL_iv.textHashtag -> TLRPC.TL_messageEntityHashtag()
++        is TL_iv.textCashtag -> TLRPC.TL_messageEntityCashtag()
++        is TL_iv.textBotCommand -> TLRPC.TL_messageEntityBotCommand()
++        is TL_iv.textEmail, is TL_iv.textAutoEmail -> TLRPC.TL_messageEntityEmail()
++        is TL_iv.textPhone, is TL_iv.textAutoPhone -> TLRPC.TL_messageEntityPhone()
++        is TL_iv.textBankCard -> TLRPC.TL_messageEntityBankCard()
++        is TL_iv.textTonAddress -> TLRPC.TL_messageEntityTonAddress()
++        is TL_iv.textDate -> createFormattedDateEntity(
++            text.flags,
++            text.relative,
++            text.short_time,
++            text.long_time,
++            text.short_date,
++            text.long_date,
++            text.day_of_week,
++            text.date
++        )
++        else -> null
++    }
++
++    private fun promoteTextSource(source: MessageObject, replyQuote: LeadingQuote): PromotedQuote? {
++        if (!isOrdinaryText(source)) {
++            return null
++        }
++        val owner = source.messageOwner as? TLRPC.TL_message ?: return null
++        val fullSourceText = owner.message ?: return null
++        val offset = uniqueOffset(fullSourceText, replyQuote.quote.text) ?: return null
++        val end = offset + replyQuote.quote.text.length
++        val entities = sliceEntities(owner.entities, offset, end, true) ?: return null
++        if (!entitiesEqual(entities, replyQuote.quote.entities)) {
++            return null
++        }
++        return PromotedQuote(replyQuote.quote, replyQuote.bodyPrefix, offset)
++    }
++
++    private fun uniqueOffset(text: String, quote: String): Int? {
++        if (quote.isEmpty()) {
++            return null
++        }
++        val offset = text.indexOf(quote)
++        if (offset < 0 || text.indexOf(quote, offset + 1) >= 0) {
++            return null
++        }
++        val end = offset + quote.length
++        if (offset > 0 && Character.isLowSurrogate(text[offset]) && Character.isHighSurrogate(text[offset - 1]) ||
++            end < text.length && Character.isHighSurrogate(text[end - 1]) && Character.isLowSurrogate(text[end])
++        ) {
++            return null
++        }
++        return offset
++    }
++
++    private fun sliceEntities(
++        entities: List<TLRPC.MessageEntity>?,
++        start: Int,
++        end: Int,
++        ignoreOuterBlockquote: Boolean
++    ): ArrayList<TLRPC.MessageEntity>? {
++        val result = ArrayList<TLRPC.MessageEntity>()
++        if (entities != null) {
++            for (entity in entities) {
++                val entityEnd = entity.offset + entity.length
++                if (entity.offset >= end || entityEnd <= start) {
++                    continue
++                }
++                if (ignoreOuterBlockquote && entity is TLRPC.TL_messageEntityBlockquote) {
++                    if (entity.offset <= start && entityEnd >= end) {
++                        continue
++                    }
++                    if (entity.offset < start || entityEnd > end) {
++                        return null
++                    }
++                }
++                val copy = copyEntitySlice(entity, start, end) ?: return null
++                result.add(copy)
++            }
++        }
++        sortEntitiesNormalized(result)
++        return result
++    }
++
++    private fun copyEntitySlice(entity: TLRPC.MessageEntity, start: Int, end: Int): TLRPC.MessageEntity? {
++        val entityStart = maxOf(start, entity.offset)
++        val entityEnd = minOf(end, entity.offset + entity.length)
++        if (entityStart >= entityEnd) {
++            return null
++        }
++        val copy: TLRPC.MessageEntity = when (entity) {
++            is TLRPC.TL_messageEntityBold -> TLRPC.TL_messageEntityBold()
++            is TLRPC.TL_messageEntityItalic -> TLRPC.TL_messageEntityItalic()
++            is TLRPC.TL_messageEntityUnderline -> TLRPC.TL_messageEntityUnderline()
++            is TLRPC.TL_messageEntityStrike -> TLRPC.TL_messageEntityStrike()
++            is TLRPC.TL_messageEntityCode -> TLRPC.TL_messageEntityCode()
++            is TLRPC.TL_messageEntityPre -> TLRPC.TL_messageEntityPre().apply {
++                language = entity.language
++            }
++            is TLRPC.TL_messageEntitySpoiler -> TLRPC.TL_messageEntitySpoiler()
++            is TLRPC.TL_messageEntityTextUrl -> TLRPC.TL_messageEntityTextUrl().apply {
++                url = entity.url
++            }
++            is TLRPC.TL_messageEntityUrl -> TLRPC.TL_messageEntityUrl()
++            is TLRPC.TL_messageEntityEmail -> TLRPC.TL_messageEntityEmail()
++            is TLRPC.TL_messageEntityPhone -> TLRPC.TL_messageEntityPhone()
++            is TLRPC.TL_messageEntityHashtag -> TLRPC.TL_messageEntityHashtag()
++            is TLRPC.TL_messageEntityCashtag -> TLRPC.TL_messageEntityCashtag()
++            is TLRPC.TL_messageEntityMention -> TLRPC.TL_messageEntityMention()
++            is TLRPC.TL_messageEntityBotCommand -> TLRPC.TL_messageEntityBotCommand()
++            is TLRPC.TL_messageEntityMentionName -> TLRPC.TL_messageEntityMentionName().apply {
++                user_id = normalizedId(entity.user_id)
++            }
++            is TLRPC.TL_inputMessageEntityMentionName -> TLRPC.TL_inputMessageEntityMentionName().apply {
++                user_id = entity.user_id
++            }
++            is TLRPC.TL_messageEntityCustomEmoji -> TLRPC.TL_messageEntityCustomEmoji().apply {
++                document_id = entity.document_id
++                document = entity.document
++            }
++            is TLRPC.TL_messageEntityFormattedDate -> createFormattedDateEntity(
++                entity.flags,
++                entity.relative,
++                entity.short_time,
++                entity.long_time,
++                entity.short_date,
++                entity.long_date,
++                entity.day_of_week,
++                entity.date
++            )
++            is TLRPC.TL_messageEntityBankCard -> TLRPC.TL_messageEntityBankCard()
++            is TLRPC.TL_messageEntityTonAddress -> TLRPC.TL_messageEntityTonAddress()
++            is TLRPC.TL_messageEntityBlockquote -> TLRPC.TL_messageEntityBlockquote().apply {
++                flags = entity.flags
++                collapsed = entity.collapsed
++            }
++            else -> return null
++        }
++        copy.offset = entityStart - start
++        copy.length = entityEnd - entityStart
++        return copy
++    }
++
++    private fun entitiesEqual(a: List<TLRPC.MessageEntity>?, b: List<TLRPC.MessageEntity>?): Boolean {
++        if (a === b) {
++            return true
++        }
++        if (a == null || b == null || a.size != b.size) {
++            return false
++        }
++        for (i in a.indices) {
++            val ea = a[i]
++            val eb = b[i]
++            if (canonicalEntityType(ea) != canonicalEntityType(eb) || ea.offset != eb.offset || ea.length != eb.length) {
++                return false
++            }
++            when (ea) {
++                is TLRPC.TL_messageEntityTextUrl -> if (ea.url != (eb as TLRPC.TL_messageEntityTextUrl).url) return false
++                is TLRPC.TL_messageEntityMentionName -> {
++                    val other = eb as TLRPC.TL_messageEntityMentionName
++                    if (normalizedId(ea.user_id) != normalizedId(other.user_id)) return false
++                }
++                is TLRPC.TL_inputMessageEntityMentionName -> {
++                    if (!inputUsersEqual(ea.user_id, (eb as TLRPC.TL_inputMessageEntityMentionName).user_id)) return false
++                }
++                is TLRPC.TL_messageEntityCustomEmoji -> {
++                    val other = eb as TLRPC.TL_messageEntityCustomEmoji
++                    val id = effectiveDocumentId(ea)
++                    if (id != effectiveDocumentId(other) || (id == 0L && ea.document !== other.document)) return false
++                }
++                is TLRPC.TL_messageEntityBlockquote -> {
++                    if (ea.collapsed != (eb as TLRPC.TL_messageEntityBlockquote).collapsed) return false
++                }
++                is TLRPC.TL_messageEntityPre -> {
++                    if ((ea.language ?: "") != ((eb as TLRPC.TL_messageEntityPre).language ?: "")) return false
++                }
++                is TLRPC.TL_messageEntityFormattedDate -> {
++                    val other = eb as TLRPC.TL_messageEntityFormattedDate
++                    if (ea.date != other.date ||
++                        ea.relative != other.relative ||
++                        ea.short_time != other.short_time ||
++                        ea.long_time != other.long_time ||
++                        ea.short_date != other.short_date ||
++                        ea.long_date != other.long_date ||
++                        ea.day_of_week != other.day_of_week
++                    ) return false
++                }
++            }
++        }
++        return true
++    }
++
++
++    private fun inputUsersEqual(a: TLRPC.InputUser?, b: TLRPC.InputUser?): Boolean {
++        if (a === b) {
++            return true
++        }
++        if (a == null || b == null ||
++            canonicalInputUserType(a) != canonicalInputUserType(b) ||
++            normalizedId(a.user_id) != normalizedId(b.user_id) ||
++            a.access_hash != b.access_hash
++        ) {
++            return false
++        }
++        val aMessage = inputUserMessage(a)
++        val bMessage = inputUserMessage(b)
++        if (aMessage != null || bMessage != null) {
++            return aMessage != null && bMessage != null &&
++                aMessage.second == bMessage.second &&
++                inputPeersEqual(aMessage.first, bMessage.first)
++        }
++        return true
++    }
++
++    private fun canonicalInputUserType(user: TLRPC.InputUser): String = when (user) {
++        is TLRPC.TL_inputUserFromMessage, is TLRPC.TL_inputUserFromMessage_layer132 -> "from_message"
++        is TLRPC.TL_inputUser, is TLRPC.TL_inputUser_layer132 -> "user"
++        is TLRPC.TL_inputUserEmpty -> "empty"
++        is TLRPC.TL_inputUserSelf -> "self"
++        else -> user.javaClass.name
++    }
++
++    private fun canonicalInputPeerType(peer: TLRPC.InputPeer): String = when (peer) {
++        is TLRPC.TL_inputPeerUserFromMessage, is TLRPC.TL_inputPeerUserFromMessage_layer131 -> "user_from_message"
++        is TLRPC.TL_inputPeerChannelFromMessage, is TLRPC.TL_inputPeerChannelFromMessage_layer131 -> "channel_from_message"
++        is TLRPC.TL_inputPeerUser, is TLRPC.TL_inputPeerUser_layer131 -> "user"
++        is TLRPC.TL_inputPeerChat, is TLRPC.TL_inputPeerChat_layer131 -> "chat"
++        is TLRPC.TL_inputPeerChannel, is TLRPC.TL_inputPeerChannel_layer131 -> "channel"
++        is TLRPC.TL_inputPeerEmpty -> "empty"
++        is TLRPC.TL_inputPeerSelf -> "self"
++        else -> peer.javaClass.name
++    }
++
++    private fun inputUserMessage(user: TLRPC.InputUser): Pair<TLRPC.InputPeer?, Int>? = when (user) {
++        is TLRPC.TL_inputUserFromMessage -> user.peer to user.msg_id
++        is TLRPC.TL_inputUserFromMessage_layer132 -> user.peer to user.msg_id
++        else -> null
++    }
++
++    private fun inputPeersEqual(a: TLRPC.InputPeer?, b: TLRPC.InputPeer?): Boolean {
++        if (a === b) {
++            return true
++        }
++        if (a == null || b == null ||
++            canonicalInputPeerType(a) != canonicalInputPeerType(b) ||
++            a.msg_id != b.msg_id ||
++            normalizedId(a.user_id) != normalizedId(b.user_id) ||
++            normalizedId(a.channel_id) != normalizedId(b.channel_id) ||
++            normalizedId(a.chat_id) != normalizedId(b.chat_id) ||
++            a.access_hash != b.access_hash
++        ) {
++            return false
++        }
++        return inputPeersEqual(a.peer, b.peer)
++    }
++
++    private fun sortEntitiesNormalized(entities: ArrayList<TLRPC.MessageEntity>?) {
++        entities?.sortWith(entityComparator)
++    }
++
++    private fun canonicalEntityType(entity: TLRPC.MessageEntity): Class<out TLRPC.MessageEntity> = when (entity) {
++        is TLRPC.TL_messageEntityMentionName -> TLRPC.TL_messageEntityMentionName::class.java
++        is TLRPC.TL_messageEntityBlockquote -> TLRPC.TL_messageEntityBlockquote::class.java
++        else -> entity.javaClass
++    }
++
++    private fun canonicalEntityTypeRank(entity: TLRPC.MessageEntity): Int = when (entity) {
++        is TLRPC.TL_messageEntityBold -> 0
++        is TLRPC.TL_messageEntityItalic -> 1
++        is TLRPC.TL_messageEntityUnderline -> 2
++        is TLRPC.TL_messageEntityStrike -> 3
++        is TLRPC.TL_messageEntityCode -> 4
++        is TLRPC.TL_messageEntityPre -> 5
++        is TLRPC.TL_messageEntitySpoiler -> 6
++        is TLRPC.TL_messageEntityTextUrl -> 7
++        is TLRPC.TL_messageEntityUrl -> 8
++        is TLRPC.TL_messageEntityEmail -> 9
++        is TLRPC.TL_messageEntityPhone -> 10
++        is TLRPC.TL_messageEntityHashtag -> 11
++        is TLRPC.TL_messageEntityCashtag -> 12
++        is TLRPC.TL_messageEntityMention -> 13
++        is TLRPC.TL_messageEntityMentionName -> 14
++        is TLRPC.TL_inputMessageEntityMentionName -> 15
++        is TLRPC.TL_messageEntityBotCommand -> 16
++        is TLRPC.TL_messageEntityBankCard -> 17
++        is TLRPC.TL_messageEntityTonAddress -> 18
++        is TLRPC.TL_messageEntityCustomEmoji -> 19
++        is TLRPC.TL_messageEntityFormattedDate -> 20
++        is TLRPC.TL_messageEntityBlockquote -> 21
++        is TLRPC.TL_messageEntityUnknown -> 22
++        is TLRPC.TL_messageEntityDiffInsert -> 23
++        is TLRPC.TL_messageEntityDiffReplace -> 24
++        is TLRPC.TL_messageEntityDiffDelete -> 25
++        else -> Int.MAX_VALUE
++    }
++
++    private fun entityPayloadKey(entity: TLRPC.MessageEntity): String {
++        val payload = when (entity) {
++            is TLRPC.TL_messageEntityTextUrl -> "url=${entity.url?.length ?: -1}:${entity.url ?: ""}"
++            is TLRPC.TL_messageEntityMentionName -> normalizedId(entity.user_id).toString()
++            is TLRPC.TL_inputMessageEntityMentionName -> inputUserPayloadKey(entity.user_id)
++            is TLRPC.TL_messageEntityCustomEmoji -> {
++                val id = effectiveDocumentId(entity)
++                if (id == 0L) "document=${System.identityHashCode(entity.document)}" else id.toString()
++            }
++            is TLRPC.TL_messageEntityBlockquote -> entity.collapsed.toString()
++            is TLRPC.TL_messageEntityPre -> entity.language ?: ""
++            is TLRPC.TL_messageEntityFormattedDate -> listOf(
++                entity.relative,
++                entity.short_time,
++                entity.long_time,
++                entity.short_date,
++                entity.long_date,
++                entity.day_of_week,
++                entity.date
++            ).joinToString(":")
++            else -> ""
++        }
++        return "${canonicalEntityType(entity).name}:$payload"
++    }
++
++    private fun inputUserPayloadKey(user: TLRPC.InputUser?): String {
++        if (user == null) {
++            return "null"
++        }
++        val base = "${canonicalInputUserType(user)}:${normalizedId(user.user_id)}:${user.access_hash}"
++        val message = inputUserMessage(user) ?: return base
++        return "$base:${message.second}:${inputPeerPayloadKey(message.first)}"
++    }
++
++    private fun inputPeerPayloadKey(peer: TLRPC.InputPeer?): String {
++        if (peer == null) {
++            return "null"
++        }
++        return "${canonicalInputPeerType(peer)}:${peer.msg_id}:${normalizedId(peer.user_id)}:" +
++            "${normalizedId(peer.channel_id)}:${normalizedId(peer.chat_id)}:${peer.access_hash}:" +
++            inputPeerPayloadKey(peer.peer)
++    }
++
++    private fun createFormattedDateEntity(
++        srcFlags: Int,
++        relativeFlag: Boolean,
++        shortTime: Boolean,
++        longTime: Boolean,
++        shortDate: Boolean,
++        longDate: Boolean,
++        dayOfWeek: Boolean,
++        dateValue: Int
++    ): TLRPC.TL_messageEntityFormattedDate = TLRPC.TL_messageEntityFormattedDate().apply {
++        flags = srcFlags
++        applyFlags()
++        relative = relative || relativeFlag
++        short_time = short_time || shortTime
++        long_time = long_time || longTime
++        short_date = short_date || shortDate
++        long_date = long_date || longDate
++        day_of_week = day_of_week || dayOfWeek
++        date = dateValue
++        flags = TLObject.setFlag(flags, TLObject.FLAG_0, relative)
++        flags = TLObject.setFlag(flags, TLObject.FLAG_1, short_time)
++        flags = TLObject.setFlag(flags, TLObject.FLAG_2, long_time)
++        flags = TLObject.setFlag(flags, TLObject.FLAG_3, short_date)
++        flags = TLObject.setFlag(flags, TLObject.FLAG_4, long_date)
++        flags = TLObject.setFlag(flags, TLObject.FLAG_5, day_of_week)
++    }
++
++    private fun normalizedId(id: Long): Long = if (id < 0L) id and 0xffffffffL else id
++
++    private fun effectiveDocumentId(entity: TLRPC.TL_messageEntityCustomEmoji): Long =
++        if (entity.document_id != 0L) entity.document_id else entity.document?.id ?: 0L
++
++    private fun addEntity(
++        entities: ArrayList<TLRPC.MessageEntity>,
++        entity: TLRPC.MessageEntity,
++        start: Int,
++        end: Int
++    ) {
++        if (end <= start) {
++            return
++        }
++        entity.offset = start
++        entity.length = end - start
++        entities.add(entity)
 +    }
 +
 +    @JvmStatic
@@ -658,8 +1135,7 @@ index 000000000..92c380d7f
 +            !item.translated &&
 +            !item.summarized &&
 +            !(TeleConfig.SCRIPTING.value && tele.scripting.ScriptDisplay.hasReplacement(item)) &&
-+            !owner.message.isNullOrEmpty() &&
-+            owner.entities != null
++            !owner.message.isNullOrEmpty()
 +    }
 +
 +    private fun leadingQuote(item: MessageObject): LeadingQuote? {
@@ -713,7 +1189,7 @@ index e5038d5af..70f2d0b2b 100644
  
      private val ALIASES: Map<String, String> = DESKTOP_IDS.toMap()
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
-index 0cb38b347..bf242f02b 100644
+index a55174d19..f86c3ec8d 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
 @@ -757,6 +757,8 @@ object TeleTextRu {
@@ -726,7 +1202,7 @@ index 0cb38b347..bf242f02b 100644
          "Hide photo and video thumbnails on calendar days." to "Скрывает миниатюры фото и видео на днях календаря.",
          "Clear cached data" to "Очистить кэш данных",
 diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
-index 83200e154..1915bab8a 100644
+index c43afe453..2da62ba07 100644
 --- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
 +++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
 @@ -757,6 +757,8 @@ object TeleTextUk {
@@ -752,10 +1228,10 @@ index edcacedd5..456c3cc90 100644
      @JvmStatic
      fun onTextChanged(message: MessageObject) {
 diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-index bdbfcce0a..13bd41b43 100644
+index 77f96d88f..cae442af5 100644
 --- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
 +++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
-@@ -1270,6 +1270,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+@@ -1273,6 +1273,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
              "Show names instead of phone numbers in chat headers" to "The header shows a person's name, not their number.",
              "Reveal spoilers automatically" to "Show spoilers without a tap.",
              "Hide mention and reaction badges" to "No jump buttons or badges; mentions stay unread.",
@@ -763,7 +1239,7 @@ index bdbfcce0a..13bd41b43 100644
              "Plain search calendar" to "Hide photo and video thumbnails on calendar days.",
              "Turn off AI features" to "Hides the AI editor, summaries and AI styles; voice transcription stays.",
              "Reactions in the menu" to "Pin your reactions and choose how many show above the message menu.",
-@@ -1772,6 +1773,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+@@ -1776,6 +1777,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
                  Row(TYPE_SHADOW),
                  Row(TYPE_HEADER, "Quotes"),
                  toggle("Multiple quotes in one reply", TeleConfig.MULTI_QUOTE),

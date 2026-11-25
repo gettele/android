@@ -5,80 +5,367 @@ Subject: [PATCH] feat: hide story posting
 
 ---
  .../messenger/MessagesController.java         |  3 ++
- .../java/org/telegram/ui/ChatActivity.java    |  3 ++
- .../java/org/telegram/ui/LaunchActivity.java  |  3 ++
+ .../java/org/telegram/ui/ChatActivity.java    |  5 ++-
+ .../ui/Components/SharedMediaLayout.java      | 19 +++++++--
+ .../java/org/telegram/ui/DialogsActivity.java | 29 ++++++++++----
+ .../java/org/telegram/ui/LaunchActivity.java  |  5 ++-
  .../java/org/telegram/ui/LinkManager.java     |  3 ++
- .../org/telegram/ui/Stars/StarGiftSheet.java  |  8 ++++--
- .../ui/Stories/StoriesController.java         | 10 +++++++
- .../ui/Stories/recorder/StoryRecorder.java    | 28 ++++++++++++++++++-
- TMessagesProj/src/main/java/tele/TeleHooks.kt |  1 +
- 8 files changed, 56 insertions(+), 3 deletions(-)
+ .../java/org/telegram/ui/ProfileActivity.java | 40 ++++++++++++++++---
+ .../org/telegram/ui/Stars/StarGiftSheet.java  |  8 +++-
+ .../ui/Stories/StoriesController.java         | 10 +++++
+ .../ui/Stories/recorder/StoryRecorder.java    | 28 ++++++++++++-
+ .../telegram/ui/web/BotWebViewContainer.java  |  3 ++
+ .../src/main/java/tele/TeleConfig.kt          |  4 ++
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |  3 +-
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |  4 +-
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |  4 +-
+ .../main/java/tele/ui/settings/TeleSearch.kt  | 11 +++++
+ .../tele/ui/settings/TeleSettingsActivity.kt  |  7 +++-
+ 17 files changed, 162 insertions(+), 24 deletions(-)
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 0de684d3c..0f08944aa 100644
+index 0de684d3c..26d848160 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 @@ -24005,6 +24005,9 @@ public class MessagesController extends BaseController implements NotificationCe
      }
  
      public boolean storiesEnabled() {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return false;
 +        }
          switch (storiesPosting) {
              case "premium":
                  return getUserConfig().isPremium();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 1d29dfe91..7a250c126 100644
+index 1d29dfe91..b2b10415a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -41786,7 +41786,7 @@ public class ChatActivity extends BaseFragment implements
+                     arrayList = new ArrayList<>();
+                     arrayList.add(messageObject);
+                 }
+-                final boolean includeStory = !tele.TeleConfig.HIDE_STORIES.getValue() && getMessagesController().storiesEnabled() && StoryEntry.canRepostMessage(messageObject);
++                final boolean includeStory = !tele.TeleConfig.hideStoryPosting() && getMessagesController().storiesEnabled() && StoryEntry.canRepostMessage(messageObject);
+                 showDialog(new ShareAlert(getContext(), ChatActivity.this, arrayList, null, null, ChatObject.isChannel(currentChat), null, null, false, false, includeStory, null, themeDelegate) {
+                     { includeStoryFromMessage = includeStory; }
+                     @Override
 @@ -41800,6 +41800,9 @@ public class ChatActivity extends BaseFragment implements
  
                      @Override
                      protected void onShareStory(View cell) {
-+                        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++                        if (tele.TeleConfig.hideStoryPosting()) {
 +                            return;
 +                        }
                          StoryRecorder.SourceView sourceView = null;
                          if (cell instanceof ShareDialogCell) {
                              sourceView = StoryRecorder.SourceView.fromShareCell((ShareDialogCell) cell);
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+index 3a24c09d7..a27eefd8a 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/SharedMediaLayout.java
+@@ -1741,6 +1741,7 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+             .add(NotificationCenter.messagePlayingDidStart)
+             .add(NotificationCenter.storiesListUpdated)
+             .add(NotificationCenter.storiesUpdated)
++            .add(NotificationCenter.storiesEnabledUpdate)
+             .add(NotificationCenter.channelRecommendationsLoaded)
+             .add(NotificationCenter.savedMessagesDialogsUpdate)
+             .add(NotificationCenter.dialogsNeedReload)
+@@ -6297,7 +6298,10 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+             if (delegate != null) {
+                 delegate.updateSelectedMediaTabText();
+             }
+-        } else if (id == NotificationCenter.storiesUpdated) {
++        } else if (id == NotificationCenter.storiesUpdated || id == NotificationCenter.storiesEnabledUpdate) {
++            if (id == NotificationCenter.storiesEnabledUpdate && mediaPages != null && mediaPages.length > 0 && mediaPages[0] != null && isAnyStoryPageType(mediaPages[0].selectedType)) {
++                switchToCurrentSelectedMode(false);
++            }
+             for (MediaPage mediaPage : mediaPages) {
+                 if (mediaPage != null && mediaPage.listView != null && isAnyStoryPageType(mediaPage.selectedType)) {
+                     if (isBot() && mediaPage.listView.getAdapter() != null) {
+@@ -7355,7 +7359,7 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+                     emptyView.button.setVisibility(View.GONE);
+                 } else {
+                     emptyView.setStickerType(StickerEmptyView.STICKER_TYPE_ALBUM);
+-                    emptyView.button.setVisibility(!isSearchingStories() ? View.VISIBLE : View.GONE);
++                    emptyView.button.setVisibility(!isSearchingStories() && !tele.TeleConfig.hideStoryPosting() ? View.VISIBLE : View.GONE);
+                     emptyView.button.setText(addPostText(), false);
+                 }
+ 
+@@ -7368,6 +7372,9 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+                 }
+ 
+                 emptyView.button.setOnClickListener(v -> {
++                    if (!isAlbum && tele.TeleConfig.hideStoryPosting()) {
++                        return;
++                    }
+                     if (isAlbum) {
+                         openAddStoriesToAlbumSheet(profileActivity, dialog_id, albumId);
+                     } else {
+@@ -7382,12 +7389,15 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+                 } else {
+                     mediaPages[a].emptyView.stickerView.setVisibility(View.VISIBLE);
+                     mediaPages[a].emptyView.setStickerType(StickerEmptyView.STICKER_TYPE_ALBUM);
+-                    mediaPages[a].emptyView.button.setVisibility(View.VISIBLE);
++                    mediaPages[a].emptyView.button.setVisibility(!tele.TeleConfig.hideStoryPosting() ? View.VISIBLE : View.GONE);
+                     mediaPages[a].emptyView.button.setText(addPostText(), false);
+                 }
+                 mediaPages[a].emptyView.title.setText(getString(R.string.NoArchivedStoriesTitle));
+                 mediaPages[a].emptyView.subtitle.setText(isStoriesView() ? getString(R.string.NoArchivedStoriesSubtitle) : "");
+                 mediaPages[a].emptyView.button.setOnClickListener(v -> {
++                    if (tele.TeleConfig.hideStoryPosting()) {
++                        return;
++                    }
+                     profileActivity.getMessagesController().getMainSettings().edit().putBoolean("story_keep", true).apply();
+                     StoryRecorder.getInstance(profileActivity.getParentActivity(), profileActivity.getCurrentAccount()).open(null);
+                 });
+@@ -11553,6 +11563,9 @@ public class SharedMediaLayout extends FrameLayout implements Theme.Colorable, N
+         if (mediaPages == null || mediaPages[0] == null || mediaPages[1] == null || mediaPages[0].emptyView == null || mediaPages[1].emptyView == null) {
+             return 1;
+         }
++        if (tele.TeleConfig.hideStoryPosting() && !isActionModeShown()) {
++            return 0;
++        }
+ 
+         int typeA = mediaPages[0].selectedType;
+         int typeB = mediaPages[1].selectedType;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 4fcd70f9b..67525d446 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -5191,14 +5191,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 } catch (Exception ignored) {}
+                 if (dialogId == UserConfig.getInstance(currentAccount).getClientUserId()) {
+                     if (!storiesEnabled) {
+-                        if (dialogStoriesCell != null) {
++                        if (!tele.TeleConfig.hideStoryPosting() && dialogStoriesCell != null) {
+                             dialogStoriesCell.showPremiumHint();
+                         }
+                         return;
+                     }
+-                    filterOptions.add(R.drawable.msg_stories_add, LocaleController.getString(R.string.AddStory), Theme.key_actionBarDefaultSubmenuItemIcon, Theme.key_actionBarDefaultSubmenuItem, () -> {
+-                        dialogStoriesCell.openStoryRecorder();
+-                    });
++                    if (!tele.TeleConfig.hideStoryPosting()) {
++                        filterOptions.add(R.drawable.msg_stories_add, LocaleController.getString(R.string.AddStory), Theme.key_actionBarDefaultSubmenuItemIcon, Theme.key_actionBarDefaultSubmenuItem, () -> {
++                            dialogStoriesCell.openStoryRecorder();
++                        });
++                    }
+                     filterOptions.add(R.drawable.msg_stories_archive, LocaleController.getString(R.string.ArchivedStories), Theme.key_actionBarDefaultSubmenuItemIcon, Theme.key_actionBarDefaultSubmenuItem, () -> {
+                         Bundle args = new Bundle();
+                         args.putLong("dialog_id", UserConfig.getInstance(currentAccount).getClientUserId());
+@@ -7521,7 +7523,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 showArchiveHelp();
+             }
+         }
+-        if (canShowStoryHint && !storyHintShown && storyHint != null && storiesEnabled) {
++        if (canShowStoryHint && !storyHintShown && storyHint != null && storiesEnabled && !tele.TeleConfig.hideStoryPosting()) {
+             storyHintShown = true;
+             canShowStoryHint = false;
+             storyHint.show();
+@@ -9028,7 +9030,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             floatingButton3.setButtonVisible(isVisible, animated);
+         }
+         if (floatingButtonStories != null) {
+-            floatingButtonStories.setButtonVisible(isVisible, animated);
++            floatingButtonStories.setButtonVisible(isVisible && !tele.TeleConfig.hideStoryPosting(), animated);
+         }
+     }
+ 
+@@ -9050,14 +9052,24 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+ 
+     public boolean storiesEnabled = true;
+     private void updateStoriesPosting() {
++        final boolean hideStoryPosting = tele.TeleConfig.hideStoryPosting();
++        if (hideStoryPosting) {
++            if (storyHint != null && storyHint.shown()) {
++                storyHint.hide();
++            }
++            if (storyPremiumHint != null && storyPremiumHint.shown()) {
++                storyPremiumHint.hide();
++            }
++        }
+         final boolean storiesEnabled = getMessagesController().storiesEnabled();
+         if (this.storiesEnabled != storiesEnabled) {
+             updateFloatingButtonOffset();
+-            if (!this.storiesEnabled && storiesEnabled && storyHint != null) {
++            if (!this.storiesEnabled && storiesEnabled && storyHint != null && !isPaused && !hideStoryPosting) {
+                 storyHint.show();
+             }
+             this.storiesEnabled = storiesEnabled;
+         }
++        updateFloatingButtonVisibility(false);
+ 
+         if (floatingButton3 == null) {
+             return;
+@@ -13437,6 +13449,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+     }
+ 
+     private void openStoriesRecorder() {
++        if (tele.TeleConfig.hideStoryPosting()) {
++            return;
++        }
+         if (!storiesEnabled) {
+             if (storyPremiumHint != null) {
+                 if (storyPremiumHint.shown()) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-index 3439186cb..63b00c307 100644
+index 3439186cb..0aa58e4e6 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-@@ -6361,6 +6361,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+@@ -6356,11 +6356,14 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+ 
+     @Override
+     public boolean canSelectStories() {
+-        return !tele.TeleConfig.HIDE_STORIES.getValue() && (photoPathsArray != null && photoPathsArray.size() == 1 || videoPath != null);
++        return !tele.TeleConfig.hideStoryPosting() && (photoPathsArray != null && photoPathsArray.size() == 1 || videoPath != null);
+     }
  
      @Override
      public boolean didSelectStories(DialogsActivity dialogsFragment) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return false;
 +        }
          StoryEntry entry = null;
          if (photoPathsArray != null && !photoPathsArray.isEmpty()) {
              entry = StoryEntry.fromMedia(photoPathsArray);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
-index 0f8020a6b..8093d0da1 100644
+index 0f8020a6b..f2ea09941 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/LinkManager.java
 @@ -264,6 +264,9 @@ public class LinkManager {
          }
  
          if ("post".equalsIgnoreCase(first)) {
-+            if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++            if (tele.TeleConfig.hideStoryPosting()) {
 +                return true;
 +            }
              int mode = StoryRecorder.MODE_PHOTO;
              if ("video".equalsIgnoreCase(second))
                  mode = StoryRecorder.MODE_VIDEO;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+index dfaed967d..f11b8d702 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java
+@@ -2249,6 +2249,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         getNotificationCenter().addWeakObserver(this, NotificationCenter.updateSearchSettings);
+         getNotificationCenter().addWeakObserver(this, NotificationCenter.reloadDialogPhotos);
+         getNotificationCenter().addWeakObserver(this, NotificationCenter.storiesUpdated);
++        getNotificationCenter().addWeakObserver(this, NotificationCenter.storiesEnabledUpdate);
+         getNotificationCenter().addWeakObserver(this, NotificationCenter.storiesReadUpdated);
+         getNotificationCenter().addWeakObserver(this, NotificationCenter.userIsPremiumBlockedUpadted);
+         getNotificationCenter().addWeakObserver(this, NotificationCenter.currentUserPremiumStatusChanged);
+@@ -2406,6 +2407,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+         getNotificationCenter().removeObserver(this, NotificationCenter.updateSearchSettings);
+         getNotificationCenter().removeObserver(this, NotificationCenter.reloadDialogPhotos);
+         getNotificationCenter().removeObserver(this, NotificationCenter.storiesUpdated);
++        getNotificationCenter().removeObserver(this, NotificationCenter.storiesEnabledUpdate);
+         getNotificationCenter().removeObserver(this, NotificationCenter.storiesReadUpdated);
+         getNotificationCenter().removeObserver(this, NotificationCenter.userIsPremiumBlockedUpadted);
+         getNotificationCenter().removeObserver(this, NotificationCenter.currentUserPremiumStatusChanged);
+@@ -3614,6 +3616,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                             int albumId = sharedMediaLayout.storyAlbums_getAlbumIdByTabType(sharedMediaLayout.getClosestTab());
+                             sharedMediaLayout.openAddStoriesToAlbumSheet(this, getDialogId(), albumId);
+                         } else {
++                            if (tele.TeleConfig.hideStoryPosting()) {
++                                return;
++                            }
+                             if (!getMessagesController().storiesEnabled()) {
+                                 showDialog(new PremiumFeatureBottomSheet(this, PremiumPreviewFragment.PREMIUM_FEATURE_STORIES, true));
+                                 return;
+@@ -3742,7 +3747,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 button2.addView(bottomButton[a], LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT, Gravity.CENTER));
+                 bottomButtonContainer[a].addView(button2, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, 60, Gravity.CENTER_HORIZONTAL));
+                 bottomButtonsContainer.addView(bottomButtonContainer[a], LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.BOTTOM | Gravity.FILL_HORIZONTAL));
+-                if (a == 1 || !getMessagesController().storiesEnabled()) {
++                if (a == 1 || !getMessagesController().storiesEnabled() || tele.TeleConfig.hideStoryPosting()) {
+                     setBottomButtonHidden(bottomButtonContainer[a], 1f);
+                 }
+             }
+@@ -3823,7 +3828,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                     int a = getSelectedTab() - SharedMediaLayout.TAB_STORIES;
+                     if (a < 0 || a > 1) return;
+                     final FrameLayout container = bottomButtonContainer[a];
+-                    final boolean hidden = !(show || a == 0 && MessagesController.getInstance(currentAccount).storiesEnabled());
++                    final boolean hidden = !(show || a == 0 && MessagesController.getInstance(currentAccount).storiesEnabled() && !tele.TeleConfig.hideStoryPosting());
+                     container.setVisibility(View.VISIBLE);
+                     container
+                             .animate()
+@@ -3862,7 +3867,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             protected void onBottomButtonVisibilityChange() {
+                 super.onBottomButtonVisibilityChange();
+                 if (myProfile && bottomButtonContainer[0] != null && sharedMediaLayout != null) {
+-                    setBottomButtonHidden(bottomButtonContainer[0], 1f - sharedMediaLayout.getBottomButtonStoriesVisibility());
++                    setBottomButtonHidden(bottomButtonContainer[0], tele.TeleConfig.hideStoryPosting() && !sharedMediaLayout.isActionModeShown() ? 1f : 1f - sharedMediaLayout.getBottomButtonStoriesVisibility());
+                 }
+             }
+ 
+@@ -9724,6 +9729,27 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+             }
+         } else if (id == NotificationCenter.reloadDialogPhotos) {
+             updateProfileData(false);
++        } else if (id == NotificationCenter.storiesEnabledUpdate) {
++            if (myProfile && bottomButtonContainer != null && bottomButtonContainer.length > 0 && bottomButtonContainer[0] != null) {
++                final boolean hidden = sharedMediaLayout != null && sharedMediaLayout.isActionModeShown()
++                    ? false
++                    : !getMessagesController().storiesEnabled() || tele.TeleConfig.hideStoryPosting();
++                if (hidden) {
++                    setBottomButtonHidden(bottomButtonContainer[0], 1f);
++                } else {
++                    setBottomButtonHidden(bottomButtonContainer[0], sharedMediaLayout != null ? 1f - sharedMediaLayout.getBottomButtonStoriesVisibility() : 0f);
++                    if (bottomButton != null && bottomButton.length > 0 && bottomButton[0] != null) {
++                        checkStoriesButtonText(lastStoriesSelectedCount, false);
++                    }
++                }
++            }
++            if (currentChat != null) {
++                createActionBarMenu(false);
++                updateRowsIds();
++                if (listAdapter != null) {
++                    listAdapter.notifyDataSetChanged();
++                }
++            }
+         } else if (id == NotificationCenter.storiesUpdated || id == NotificationCenter.storiesReadUpdated) {
+             if (avatarImage != null) {
+                 avatarImage.setHasStories(needInsetForStories());
+@@ -17119,14 +17145,18 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+ 
+     private int lastStoriesSelectedCount;
+     private boolean lastStoriesIsInAlbum;
++    private boolean tele_lastStoriesEnabled = true;
+     private void checkStoriesButtonText(int count, boolean animated) {
++        if (bottomButton == null || bottomButton.length == 0 || bottomButton[0] == null || sharedMediaLayout == null) return;
+         final boolean inAlbum = SharedMediaLayout.isStoryAlbumPageType(sharedMediaLayout.getClosestTab());
+-        if (count == lastStoriesSelectedCount && inAlbum == lastStoriesIsInAlbum) {
++        final boolean storiesEnabled = getMessagesController().storiesEnabled() && !tele.TeleConfig.hideStoryPosting();
++        if (count == lastStoriesSelectedCount && inAlbum == lastStoriesIsInAlbum && storiesEnabled == tele_lastStoriesEnabled) {
+             return;
+         }
+ 
+         lastStoriesSelectedCount = count;
+         lastStoriesIsInAlbum = inAlbum;
++        tele_lastStoriesEnabled = storiesEnabled;
+         if (inAlbum) {
+             if (count > 0) {
+                 bottomButton[0].setText(formatPluralString("HideStoriesFromAlbum", count), animated);
+@@ -17134,7 +17164,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
+                 bottomButton[0].setText(bottomButtonPostTextAlbum, animated);
+             }
+         } else {
+-            if (count > 0 || !MessagesController.getInstance(currentAccount).storiesEnabled()) {
++            if (count > 0 || !storiesEnabled) {
+                 bottomButton[0].setText(formatPluralString("ArchiveStories", count), animated);
+             } else {
+                 bottomButton[0].setText(bottomButtonPostText, animated);
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
-index b92e1db75..2dd90c984 100644
+index b92e1db75..f4d11ca10 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Stars/StarGiftSheet.java
 @@ -1427,9 +1427,10 @@ public class StarGiftSheet extends BottomSheetWithRecyclerListView implements No
          if (shareAlert != null && shareAlert.isShown()) {
              shareAlert.dismiss();
          }
-+        final boolean includeStory = !tele.TeleConfig.HIDE_STORIES.getValue();
++        final boolean includeStory = !tele.TeleConfig.hideStoryPosting();
          final String link = getLink();
 -        shareAlert = new ShareAlert(getContext(), null, null, link, null, false, link, null, false, false, true, null, resourcesProvider) {
 -            { includeStoryFromMessage = true; }
@@ -91,21 +378,21 @@ index b92e1db75..2dd90c984 100644
      }
  
      private void repostStory(View cell) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return;
 +        }
          Activity activity = LaunchActivity.instance;
          if (activity == null) {
              return;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
-index 14ceb51c7..7481da055 100644
+index 14ceb51c7..38b05c79a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
 @@ -4559,6 +4559,10 @@ public class StoriesController {
      }
  
      public void canSendStoryFor(long dialogId, Utilities.Callback<Boolean> consumer, boolean showLimitsBottomSheet, Theme.ResourcesProvider resourcesProvider) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            consumer.run(false);
 +            return;
 +        }
@@ -116,7 +403,7 @@ index 14ceb51c7..7481da055 100644
      }
  
      public boolean canPostStories(TLRPC.Chat chat) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return false;
 +        }
          if (chat == null || !ChatObject.isBoostSupported(chat)) {
@@ -126,14 +413,14 @@ index 14ceb51c7..7481da055 100644
      }
  
      public boolean canPostStories(long dialogId) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return false;
 +        }
          if (dialogId < 0) {
              TLRPC.Chat chat = MessagesController.getInstance(currentAccount).getChat(-dialogId);
              if (chat == null || !ChatObject.isBoostSupported(chat)) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stories/recorder/StoryRecorder.java b/TMessagesProj/src/main/java/org/telegram/ui/Stories/recorder/StoryRecorder.java
-index 7aeffac67..f3917235a 100644
+index 7aeffac67..c2d427d46 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Stories/recorder/StoryRecorder.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Stories/recorder/StoryRecorder.java
 @@ -485,7 +485,12 @@ public class StoryRecorder implements NotificationCenter.NotificationCenterDeleg
@@ -154,7 +441,7 @@ index 7aeffac67..f3917235a 100644
      }
  
      public void open(SourceView sourceView) {
-+        if (!tele_openingBot && tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (!tele_openingBot && tele.TeleConfig.hideStoryPosting()) {
 +            return;
 +        }
 +
@@ -162,7 +449,7 @@ index 7aeffac67..f3917235a 100644
      }
  
      public void open(SourceView sourceView, boolean animated) {
-+        if (!tele_openingBot && tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (!tele_openingBot && tele.TeleConfig.hideStoryPosting()) {
 +            return;
 +        }
 +
@@ -173,7 +460,7 @@ index 7aeffac67..f3917235a 100644
      }
  
      public void openEdit(SourceView sourceView, StoryEntry entry, long time, boolean animated) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return;
 +        }
 +
@@ -184,7 +471,7 @@ index 7aeffac67..f3917235a 100644
      }
  
      public void openForward(SourceView sourceView, StoryEntry entry, long time, boolean animated) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return;
 +        }
 +
@@ -195,7 +482,7 @@ index 7aeffac67..f3917235a 100644
  
      private static boolean firstOpen = true;
      public void openRepost(SourceView sourceView, StoryEntry entry) {
-+        if (tele.TeleConfig.HIDE_STORIES.getValue()) {
++        if (tele.TeleConfig.hideStoryPosting()) {
 +            return;
 +        }
 +
@@ -210,15 +497,132 @@ index 7aeffac67..f3917235a 100644
      private long botId;
      private String botLang;
      private TLRPC.InputMedia botEdit;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/web/BotWebViewContainer.java b/TMessagesProj/src/main/java/org/telegram/ui/web/BotWebViewContainer.java
+index 4863e9957..df2ab8ccc 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/web/BotWebViewContainer.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/web/BotWebViewContainer.java
+@@ -2489,6 +2489,9 @@ public abstract class BotWebViewContainer extends FrameLayout implements Notific
+                 break;
+             }
+             case "web_app_share_to_story": {
++                if (tele.TeleConfig.hideStoryPosting()) {
++                    return;
++                }
+                 if (isRequestingPageOpen || System.currentTimeMillis() - lastClickMs > 10_000 || System.currentTimeMillis() - lastPostStoryMs < 2000) {
+                     return;
+                 }
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index a7bc15939..eb7cee72e 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -71,6 +71,10 @@ object TeleConfig {
+     @JvmField
+     val HIDE_STORIES = BoolItem("hide_stories", false)
+     @JvmField
++    val HIDE_STORY_POSTING = BoolItem("hide_story_posting", false)
++    @JvmStatic
++    fun hideStoryPosting(): Boolean = HIDE_STORIES.value && HIDE_STORY_POSTING.value
++    @JvmField
+     val INVISIBLE_STORIES = BoolItem("invisible_stories", false)
+     @JvmField
+     val GHOST_ONLINE = BoolItem("ghost_online", true)
 diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
-index 357e95346..3d51a29bc 100644
+index 357e95346..c46f632d0 100644
 --- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
 +++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
-@@ -139,6 +139,7 @@ object TeleHooks {
-         if (item === TeleConfig.HIDE_STORIES) {
+@@ -136,9 +136,10 @@ object TeleHooks {
+         if (item === TeleConfig.HIDE_COUNTERS || item === TeleConfig.HIDE_FOLDER_COUNTERS || item === TeleConfig.HIDE_APP_COUNTER || item === TeleConfig.COUNTER_SKIP_ARCHIVE) {
+             tele.helpers.TeleCounters.onToggled()
+         }
+-        if (item === TeleConfig.HIDE_STORIES) {
++        if (item === TeleConfig.HIDE_STORIES || item === TeleConfig.HIDE_STORY_POSTING) {
              for (account in 0 until UserConfig.MAX_ACCOUNT_COUNT) {
                  AccountInstance.getInstance(account).getNotificationCenter().postNotificationName(NotificationCenter.storiesUpdated)
 +                AccountInstance.getInstance(account).getNotificationCenter().postNotificationName(NotificationCenter.storiesEnabledUpdate)
              }
          }
          if (item === TeleConfig.QUEUE_BEHIND_MEDIA) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index de67dfc99..e99f5b1cd 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -850,7 +850,9 @@ object TeleTextRu {
+         "Hide similar channels" to "Скрывать похожие каналы",
+         "Hide sponsored messages" to "Скрывать спонсорские сообщения",
+         "Hide stories" to "Скрывать истории",
+-        "Hide stories and their entry points." to "Скрывать истории и точки входа в них.",
++        "Hide other people's stories and their entry points." to "Скрывать чужие истории и точки входа в них.",
++        "Hide story posting" to "Скрывать публикацию историй",
++        "Removes the story camera button and story posting entry points." to "Убирает кнопку камеры для историй и точки входа для публикации.",
+         "Hide the all chats folder" to "Скрывать папку «Все чаты»",
+         "Hide the camera in the gallery" to "Скрывать камеру в галерее",
+         "The photo picker starts with your photos instead of a live camera preview." to "Выбор фото начинается с ваших фото, без предпросмотра камеры.",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 1a18c945f..08b2f1f6b 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -850,7 +850,9 @@ object TeleTextUk {
+         "Hide similar channels" to "Приховувати схожі канали",
+         "Hide sponsored messages" to "Приховувати спонсорські повідомлення",
+         "Hide stories" to "Приховувати історії",
+-        "Hide stories and their entry points." to "Приховує історії та точки входу до них.",
++        "Hide other people's stories and their entry points." to "Приховує чужі історії та точки входу до них.",
++        "Hide story posting" to "Приховувати публікацію історій",
++        "Removes the story camera button and story posting entry points." to "Прибирає кнопку камери для історій та точки входу для публікації.",
+         "Hide the all chats folder" to "Приховувати папку «Усі чати»",
+         "Hide the camera in the gallery" to "Приховувати камеру в галереї",
+         "The photo picker starts with your photos instead of a live camera preview." to "Вибір фото починається з ваших фото, без попереднього перегляду камери.",
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index 74091e20e..f6d4d817a 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -100,6 +100,17 @@ object TeleSearch {
+             }
+         }
+ 
++        if (rowsOf(TeleSettingsActivity.MODE_PRIVACY).none { it.second == "Hide story posting" }) {
++            results.add(ProfileActivity.SearchAdapter.SearchResult(generatedGuid++, lc("Hide story posting"), "teleSearchRow", "tele", lc("privacy"), icon) {
++                fragment.presentFragment(TeleSettingsActivity(TeleSettingsActivity.MODE_PRIVACY, "Hide story posting"))
++            })
++        }
++        for (alias in listOf("story camera", "post stories")) {
++            results.add(ProfileActivity.SearchAdapter.SearchResult(generatedGuid++, lc(alias), "teleSearchRow", "tele", lc("privacy"), icon) {
++                fragment.presentFragment(TeleSettingsActivity(TeleSettingsActivity.MODE_PRIVACY, "Hide story posting"))
++            }.also { it.displayTitle = lc("Hide story posting") })
++        }
++
+         results.addAll(listOfNotNull(
+             section(GUID_INTERFACE + 1, "Show seconds in message times", "messages", TeleSettingsActivity.MODE_MESSAGES),
+             section(GUID_INTERFACE + 2, "Hide the all chats folder", "chats", TeleSettingsActivity.MODE_CHATS),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index bd6554eb9..d31f1b12c 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1095,6 +1095,9 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 TeleConfig.DELETED_REPLY.key,
+                 TeleConfig.DELETED_QUOTE_NAME.key
+             ),
++            TeleConfig.HIDE_STORIES.key to listOf(
++                TeleConfig.HIDE_STORY_POSTING.key
++            ),
+             TeleConfig.SHOW_PEER_ID.key to listOf(
+                 TeleConfig.PEER_IDS_WITHOUT_SPACES.key,
+                 TeleConfig.BOT_API_PEER_IDS.key,
+@@ -1286,7 +1289,8 @@ class TeleSettingsActivity @JvmOverloads constructor(
+             "No edited mark on bot messages" to "Bot messages don't show the edited mark.",
+             "Show the start parameter" to "Show what a bot's start button sends.",
+             "Pick brush colors from the image" to "Pick a color from the edited image.",
+-            "Hide stories" to "Hide stories and their entry points.",
++            "Hide stories" to "Hide other people's stories and their entry points.",
++            "Hide story posting" to "Removes the story camera button and story posting entry points.",
+             "Watch stories invisibly" to "Don't appear among story viewers.",
+             "Hide online status" to "Don't send your online status.",
+             "Hide typing status" to "Don't send typing status.",
+@@ -2074,6 +2078,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 rows.add(Row(TYPE_HEADER, "privacy"))
+                 rows.add(Row(TYPE_HEADER, "Stories"))
+                 rows.add(toggle("Hide stories", TeleConfig.HIDE_STORIES))
++                rows.add(toggle("Hide story posting", TeleConfig.HIDE_STORY_POSTING))
+                 rows.add(toggle("Watch stories invisibly", TeleConfig.INVISIBLE_STORIES))
+                 rows.add(Row(TYPE_SHADOW))
+                 rows.add(Row(TYPE_HEADER, "Screen capture"))
