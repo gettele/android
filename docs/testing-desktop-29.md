@@ -1,6 +1,6 @@
 # Testing the desktop tele 29 ports
 
-This is the manual test plan for Android patches `0371`–`0381`. Use a secondary account; wallet and on-chain tests can spend real funds.
+This is the manual test plan for Android patches `0371`–`0380`. Use a secondary account; wallet and on-chain tests can spend real funds.
 
 ## Build and install
 
@@ -54,21 +54,14 @@ Expected: same DC, same slot, same request token and chunk offset; only address/
 3. Verify the preview tab and its media-count contribution disappear.
 4. Disable it and verify the tab returns without an app restart.
 
-### 0375 — sharp folder emoji icons
-
-1. Use an icon-only folder with an emoji title.
-2. Compare the emoji at normal and enlarged font/display scales.
-3. Change the theme and return to the folder tabs.
-4. Verify the emoji is redrawn sharply, not scaled from a stale layout.
-
-### 0376 — plain search calendar
+### 0375 — plain search calendar
 
 1. Open a chat/search calendar that has photo and video days.
 2. Enable **tele → interface → lists → Plain search calendar**.
 3. Verify day thumbnails disappear while day numbers, message marks and selection remain.
 4. Disable it and verify thumbnails return.
 
-### 0377 — matching blockquotes in reply headers
+### 0376 — matching blockquotes in reply headers
 
 1. Create an ordinary source message beginning with a blockquote containing bold text, a standard emoji and a custom emoji.
 2. Reply with a message beginning with the identical raw blockquote and entities, followed by different reply text.
@@ -78,7 +71,7 @@ Expected: same DC, same slot, same request token and chunk offset; only address/
 6. Disable the toggle and verify the header returns to stock.
 7. Repeat with mismatched text/entities, a rich message, media, an album and an existing manual quote; all must stay stock.
 
-### 0378 — hide incoming gift offers
+### 0377 — hide incoming gift offers
 
 1. Receive an incoming on-chain gift offer.
 2. Enable **tele → profiles and ids → Hide gift offers**.
@@ -86,14 +79,14 @@ Expected: same DC, same slot, same request token and chunk offset; only address/
 4. Send an outgoing offer and verify it remains visible.
 5. Disable the toggle and verify incoming offers return.
 
-### 0379 — no Money also hides gift offers
+### 0378 — no Money also hides gift offers
 
 1. Enable **tele → money → Turn off Money**.
 2. Verify the gift-offer action is absent from a collectible gift menu.
 3. Verify incoming gift offers are hidden even if **Hide gift offers** is off.
 4. Disable **Turn off Money** and verify both return.
 
-### 0380 — incoming Money notices and badge
+### 0379 — incoming Money notices and badge
 
 1. Use a wallet-enabled test account. Leave both new toggles off and receive a transfer; establish the baseline.
 2. Enable **tele → money → transactions → Incoming transfers in notifications**.
@@ -104,7 +97,7 @@ Expected: same DC, same slot, same request token and chunk offset; only address/
 7. Restart the app and verify old transfers are not announced again.
 8. Enable **Turn off Money** and verify tracking, notices and badge stop.
 
-### 0381 — on-chain gift password guards
+### 0380 — on-chain gift password guards
 
 1. Set a local password in **tele → privacy → local password** and enable the relevant buy/sell actions.
 2. Try to make a purchase offer, buy a resale gift, list/change the price of a gift, accept an incoming offer, and bulk-unlist gifts.

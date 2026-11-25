@@ -559,7 +559,7 @@ A display-only Android adaptation: when a reply and the ordinary text message it
 
 | patch |
 |---|
-| [`0377-feat-promote-matching-reply-quotes.patch`](../patches/android/0377-feat-promote-matching-reply-quotes.patch) |
+| [`0376-feat-promote-matching-reply-quotes.patch`](../patches/android/0376-feat-promote-matching-reply-quotes.patch) |
 
 <a id="a027"></a>
 
@@ -573,7 +573,7 @@ Tracks inbound wallet transactions per account with a bounded, persisted seen-id
 
 | patch |
 |---|
-| [`0380-feat-notify-incoming-money-transfers.patch`](../patches/android/0380-feat-notify-incoming-money-transfers.patch) |
+| [`0379-feat-notify-incoming-money-transfers.patch`](../patches/android/0379-feat-notify-incoming-money-transfers.patch) |
 
 <a id="a028"></a>
 
