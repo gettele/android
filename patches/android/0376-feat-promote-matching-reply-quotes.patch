@@ -4,23 +4,23 @@ Date: Wed, 25 Nov 2026 08:33:37 +0300
 Subject: [PATCH] feat: promote matching reply quotes
 
 ---
- .../org/telegram/messenger/MessageObject.java | 144 ++++-
+ .../org/telegram/messenger/MessageObject.java | 172 ++++-
  .../telegram/ui/Cells/ChatMessageCell.java    |  77 ++-
  .../java/org/telegram/ui/ChatActivity.java    |  26 +-
  .../ui/Components/ChatActivityEnterView.java  |   4 +-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
- .../java/tele/helpers/ReplyQuotePromotion.kt  | 595 ++++++++++++++++++
+ .../java/tele/helpers/ReplyQuotePromotion.kt  | 613 ++++++++++++++++++
  .../java/tele/helpers/TeleSettingsLinks.kt    |   3 +-
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   2 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   2 +
  .../main/java/tele/scripting/ScriptDisplay.kt |   2 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
- 12 files changed, 834 insertions(+), 28 deletions(-)
+ 12 files changed, 865 insertions(+), 43 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
-index 281b85733..11b233b39 100644
+index 281b85733..ca3c9aa1c 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
 @@ -362,6 +362,12 @@ public class MessageObject {
@@ -185,7 +185,71 @@ index 281b85733..11b233b39 100644
      public String getMimeType() {
          TLRPC.Document document = getDocument();
          if (document != null) {
-@@ -9041,8 +9146,9 @@ public class MessageObject {
+@@ -8431,9 +8536,8 @@ public class MessageObject {
+             TLRPC.MessageEntity entity = entitiesCopy.get(a);
+             if (entity.length <= 0 || entity.offset < 0 || entity.offset >= text.length()) {
+                 continue;
+-            } else if (entity.offset + entity.length > text.length()) {
+-                entity.length = text.length() - entity.offset;
+             }
++            final int entityEnd = entity.offset + Math.min(entity.length, text.length() - entity.offset);
+ 
+             if (!useManualParse ||
+                     entity instanceof TLRPC.TL_messageEntityBold ||
+@@ -8459,7 +8563,7 @@ public class MessageObject {
+                         }
+                         int start = spannable.getSpanStart(spans[b]);
+                         int end = spannable.getSpanEnd(spans[b]);
+-                        if (entity.offset <= start && entity.offset + entity.length >= start || entity.offset <= end && entity.offset + entity.length >= end) {
++                        if (entity.offset <= start && entityEnd >= start || entity.offset <= end && entityEnd >= end) {
+                             spannable.removeSpan(spans[b]);
+                             spans[b] = null;
+                         }
+@@ -8481,7 +8585,7 @@ public class MessageObject {
+ 
+             TextStyleSpan.TextStyleRun newRun = new TextStyleSpan.TextStyleRun();
+             newRun.start = entity.offset;
+-            newRun.end = newRun.start + entity.length;
++            newRun.end = entityEnd;
+             TLRPC.MessageEntity urlEntity = null;
+             if (entity instanceof TLRPC.TL_messageEntitySpoiler && (!TeleConfig.REVEAL_SPOILERS.getValue() || entity instanceof tele.helpers.ScreenshotCut)) {
+                 newRun.flags = TextStyleSpan.FLAG_STYLE_SPOILER;
+@@ -8609,7 +8713,7 @@ public class MessageObject {
+                 continue;
+ 
+             boolean setRun = false;
+-            String url = run.urlEntity != null ? TextUtils.substring(text, run.urlEntity.offset, run.urlEntity.offset + run.urlEntity.length) : null;
++            String url = run.urlEntity != null && run.urlEntity.offset < text.length() ? TextUtils.substring(text, run.urlEntity.offset, run.urlEntity.offset + Math.min(run.urlEntity.length, text.length() - run.urlEntity.offset)) : null;
+             if (run.urlEntity instanceof TLRPC.TL_messageEntityBotCommand) {
+                 if (linksCount >= MediaDataController.MAX_LINKS_COUNT) continue;
+                 linksCount++;
+@@ -8679,21 +8783,20 @@ public class MessageObject {
+             TLRPC.MessageEntity entity = entitiesCopy.get(a);
+             if (entity.length <= 0 || entity.offset < 0 || entity.offset >= text.length()) {
+                 continue;
+-            } else if (entity.offset + entity.length > text.length()) {
+-                entity.length = text.length() - entity.offset;
+             }
++            final int entityEnd = entity.offset + Math.min(entity.length, text.length() - entity.offset);
+ 
+             if (entity instanceof TLRPC.TL_messageEntityBlockquote) {
+-                QuoteSpan.putQuote(spannable, entity.offset, entity.offset + entity.length, entity.collapsed);
++                QuoteSpan.putQuote(spannable, entity.offset, entityEnd, entity.collapsed);
+             } else if (entity instanceof TLRPC.TL_messageEntityPre) {
+                 if (codesCount >= 50) continue;
+                 codesCount++;
+                 final int start = entity.offset;
+-                final int end = entity.offset + entity.length;
++                final int end = entityEnd;
+                 spannable.setSpan(new CodeHighlighting.Span(true, 0, null, entity.language, spannable.subSequence(start, end).toString()), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+             } else if (entity instanceof TLRPC.TL_messageEntityDiffReplace) {
+                 final int start = entity.offset;
+-                final int end = entity.offset + entity.length;
++                final int end = entityEnd;
+                 spannable.setSpan(new SquigglyLinesSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+             }
+         }
+@@ -9041,8 +9144,9 @@ public class MessageObject {
          generateLayout(null);
          forceUpdate = true;
      }
@@ -196,7 +260,7 @@ index 281b85733..11b233b39 100644
          if (tele.TeleConfig.SCRIPTING.getValue() && (type == TYPE_TEXT || type == TYPE_EMOJIS)) {
              tele.scripting.ScriptDisplay.apply(currentAccount, this);
          }
-@@ -9060,7 +9166,37 @@ public class MessageObject {
+@@ -9060,7 +9164,37 @@ public class MessageObject {
          if (type != TYPE_TEXT && type != TYPE_EMOJIS && type != TYPE_STORY_MENTION || messageOwner.peer_id == null || TextUtils.isEmpty(messageText) && !isBotPendingDraft) {
              return;
          }
@@ -235,6 +299,24 @@ index 281b85733..11b233b39 100644
          boolean noforwards = messageOwner != null && messageOwner.noforwards;
          if (!noforwards) {
              final long dialogId = getDialogId();
+@@ -12569,12 +12703,12 @@ public class MessageObject {
+             }
+             highlightedWords = foundWords;
+             if (messageOwner.message != null) {
+-                applyEntities();
+-                CharSequence text = null;
+-                if (!TextUtils.isEmpty(caption)) {
+-                    text = caption;
++                CharSequence text;
++                if (TextUtils.isEmpty(caption) && tele_replyQuoteBodyPrefix > 0 && tele_fullPromotedMessageText != null) {
++                    text = new SpannableStringBuilder(tele_fullPromotedMessageText);
+                 } else {
+-                    text = messageText;
++                    applyEntities();
++                    text = !TextUtils.isEmpty(caption) ? caption : messageText;
+                 }
+                 CharSequence charSequence = AndroidUtilities.replaceMultipleCharSequence("\n", text, " ");
+                 if (inQuote && messageOwner != null && messageOwner.reply_to != null && messageOwner.reply_to.quote_text != null) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 index 0b23a918e..fb9bed0fa 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
@@ -575,10 +657,10 @@ index 3dc004baf..13fc6281a 100644
          }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
 new file mode 100644
-index 000000000..8c8823f92
+index 000000000..1113465ea
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
-@@ -0,0 +1,595 @@
+@@ -0,0 +1,613 @@
 +package tele.helpers
 +
 +import android.text.SpannableStringBuilder
@@ -1142,12 +1224,30 @@ index 000000000..8c8823f92
 +        val owner = item.messageOwner as? TLRPC.TL_message ?: return null
 +        val text = owner.message ?: return null
 +        val entities = owner.entities ?: return null
-+        val outer = entities.firstOrNull {
++        val sortedEntities = entities.sortedWith(entityComparator)
++        val outer = sortedEntities.firstOrNull {
 +            it.offset == 0 && it is TLRPC.TL_messageEntityBlockquote
 +        } ?: return null
-+        val end = outer.length
++        var end = outer.length
++        val mergedBlockquotes = mutableSetOf<TLRPC.MessageEntity>(outer)
++        for (next in sortedEntities) {
++            if (next === outer || next !is TLRPC.TL_messageEntityBlockquote || next.offset != end) {
++                continue
++            }
++            if (end <= 0 || end >= text.length || text[end - 1] == '\n') {
++                break
++            }
++            if (next.collapsed != outer.collapsed || next.length <= 0 || next.length > text.length - end) {
++                return null
++            }
++            end += next.length
++            mergedBlockquotes.add(next)
++        }
 +        val limit = MessagesController.getInstance(item.currentAccount).quoteLengthMax
-+        if (end <= 0 || end > text.length || end > limit || text.substring(0, end).isBlank()) {
++        if (end <= 0 || end > text.length || end > limit ||
++            end < text.length && Character.isHighSurrogate(text[end - 1]) && Character.isLowSurrogate(text[end]) ||
++            text.substring(0, end).isBlank()
++        ) {
 +            return null
 +        }
 +        var prefix = end
@@ -1157,8 +1257,8 @@ index 000000000..8c8823f92
 +        val result = TLRPC.TL_textWithEntities().apply {
 +            this.text = text.substring(0, end)
 +        }
-+        for (entity in entities) {
-+            if (entity === outer || entity.offset >= prefix) {
++        for (entity in sortedEntities) {
++            if (entity in mergedBlockquotes || entity.offset >= prefix) {
 +                continue
 +            }
 +            if (entity is TLRPC.TL_messageEntityBlockquote ||
@@ -1169,7 +1269,7 @@ index 000000000..8c8823f92
 +            ) {
 +                return null
 +            }
-+            result.entities.add(entity)
++            result.entities.add(copyEntitySlice(entity, 0, end) ?: return null)
 +        }
 +        return LeadingQuote(result, prefix)
 +    }
