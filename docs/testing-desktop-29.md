@@ -67,10 +67,11 @@ Expected: same DC, same slot, same request token and chunk offset; only address/
 1. Create an ordinary text source message with formatted text (bold, emoji, custom emoji, formatted date, or plain text in the middle) and reply with a leading blockquote matching a unique substring anywhere in that source, followed by reply text.
 2. Repeat against a rich message (`TYPE_ARTICLE`) source with an unambiguous mid-message blockquote match.
 3. Enable **tele → messages → quotes → Show matching blockquotes as reply quotes**.
-4. Verify both reply headers show the source quote with quote chrome and inline formatting.
-5. Tap each header and verify the source is scrolled to and the matched offset (not only offset 0) is highlighted.
-6. Disable the toggle and verify headers return to stock.
-7. Repeat with duplicate/ambiguous substrings, mismatched entities, media, an album, and an existing manual quote; all must stay stock.
+4. Verify both reply headers show the source quote with quote chrome and inline formatting, without leaving blockquote styling on the remaining body text.
+5. Verify a reply from the same author as the quoted message omits the repeated author name in the promoted quote header while replies to other authors keep the quote author name.
+6. Tap each header and verify the source is scrolled to and the matched offset (not only offset 0) is highlighted.
+7. Disable the toggle and verify headers and body blockquotes return to stock.
+8. Repeat with duplicate/ambiguous substrings, mismatched entities, media, an album, and an existing manual quote; all must stay stock.
 
 ### 0377 — hide incoming gift offers
 

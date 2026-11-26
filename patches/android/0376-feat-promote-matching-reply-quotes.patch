@@ -5,18 +5,19 @@ Subject: [PATCH] feat: promote matching reply quotes
 
 ---
  .../org/telegram/messenger/MessageObject.java | 172 ++++-
- .../telegram/ui/Cells/ChatMessageCell.java    |  77 ++-
+ .../telegram/ui/Cells/ChatMessageCell.java    | 134 +++-
  .../java/org/telegram/ui/ChatActivity.java    |  26 +-
  .../ui/Components/ChatActivityEnterView.java  |   4 +-
+ .../ui/TextMessageEnterTransition.java        |  16 +-
  .../src/main/java/tele/TeleConfig.kt          |   2 +
  TMessagesProj/src/main/java/tele/TeleHooks.kt |   3 +
- .../java/tele/helpers/ReplyQuotePromotion.kt  | 613 ++++++++++++++++++
+ .../java/tele/helpers/ReplyQuotePromotion.kt  | 693 ++++++++++++++++++
  .../java/tele/helpers/TeleSettingsLinks.kt    |   3 +-
  .../src/main/java/tele/helpers/TeleTextRu.kt  |   2 +
  .../src/main/java/tele/helpers/TeleTextUk.kt  |   2 +
  .../main/java/tele/scripting/ScriptDisplay.kt |   2 +-
  .../tele/ui/settings/TeleSettingsActivity.kt  |   2 +
- 12 files changed, 865 insertions(+), 43 deletions(-)
+ 13 files changed, 999 insertions(+), 62 deletions(-)
  create mode 100644 TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
 
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java
@@ -318,19 +319,20 @@ index 281b85733..ca3c9aa1c 100644
                  CharSequence charSequence = AndroidUtilities.replaceMultipleCharSequence("\n", text, " ");
                  if (inQuote && messageOwner != null && messageOwner.reply_to != null && messageOwner.reply_to.quote_text != null) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-index 0b23a918e..fb9bed0fa 100644
+index 0b23a918e..7b932811f 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-@@ -1574,6 +1574,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -1574,6 +1574,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      public int quoteArrowColor;
      public boolean hasReplyQuote;
      public boolean isReplyQuote;
 +    private boolean tele_highlightReplyQuote;
++    public boolean tele_hideReplyName;
 +    private Paint tele_replyQuoteHighlightPaint;
      public boolean isReplyTaskOrPollOption;
      public CheckBoxBase replyTaskCheckbox;
      public StaticLayout replyNameLayout;
-@@ -6293,6 +6295,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -6293,6 +6296,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          teleKeptDeleted = messageObject != null && tele.helpers.DeletedMessages.isKept(messageObject);
          teleBookmarked = messageObject != null && tele.helpers.Bookmarks.isBookmarked(messageObject, groupedMessages);
          teleIgnoreMode = messageObject != null ? tele.helpers.PrivacyRules.messageMode(currentAccount, messageObject.getDialogId(), messageObject) : null;
@@ -340,7 +342,7 @@ index 0b23a918e..fb9bed0fa 100644
          if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
              currentMessageObject = null;
          }
-@@ -6416,6 +6421,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -6416,6 +6422,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
              lastTime = -2;
              lastPostAuthor = messageObject.messageOwner.post_author;
              if (messageIdChanged || groupChanged) {
@@ -348,7 +350,15 @@ index 0b23a918e..fb9bed0fa 100644
                  isHighlightedAnimated = false;
                  wasTranscriptionOpen = false;
                  if (highlightedQuote) {
-@@ -11495,6 +11501,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -6535,6 +6542,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             hasEmbed = false;
+             autoPlayingMedia = false;
+             replyNameWidth = 0;
++            tele_hideReplyName = false;
+             replyTextWidth = 0;
+             replyTextHeight = 0;
+             viaWidth = 0;
+@@ -11495,6 +11503,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          } else {
              newLineForTime = !linkPreviewAbove && (hasLinkPreview && !currentMessageObject.isSponsored() || hasFactCheck() || hasOldCaptionPreview || hasGamePreview || hasInvoicePreview) || maxWidth - lastLineWidth < timeMore || currentMessageObject.hasRtl;
          }
@@ -358,7 +368,7 @@ index 0b23a918e..fb9bed0fa 100644
  
          int newLineForTimeDp = 14;
          if (currentMessageObject.isUnsupported()) {
-@@ -11544,6 +11553,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -11544,6 +11555,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          if (highlightedQuote && !quote && TextUtils.isEmpty(text)) {
              return false;
          }
@@ -370,7 +380,7 @@ index 0b23a918e..fb9bed0fa 100644
          MessageObject messageObject = messageObjectToSet != null ? messageObjectToSet : currentMessageObject;
          highlightedQuote = quote;
          if (messageObject == null || TextUtils.isEmpty(text)) {
-@@ -11582,6 +11596,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -11582,6 +11598,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          String message;
          if (currentCaption != null) {
              message = currentCaption.toString();
@@ -381,7 +391,7 @@ index 0b23a918e..fb9bed0fa 100644
          } else {
              message = messageObject.messageOwner.message;
          }
-@@ -11603,6 +11621,21 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -11603,6 +11623,21 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          if (quote) {
              start = MessageObject.findQuoteStart(message, text, quote_offset);
              length = text.length();
@@ -403,7 +413,7 @@ index 0b23a918e..fb9bed0fa 100644
          } else {
              for (int a = 0, N1 = message.length(); a < N1; a++) {
                  int currentLen = 0;
-@@ -11645,6 +11678,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -11645,6 +11680,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          }
          highlightedQuote = quote;
          int end = start + length;
@@ -414,7 +424,11 @@ index 0b23a918e..fb9bed0fa 100644
          if (quote && currentMessagesGroup == null && groupedMessagesToSet == null) {
              final boolean hadQuoteHighlight = quoteHighlight == null || !quoteHighlight.done();
              if (quoteHighlight == null || quoteHighlight.todo || quoteHighlight.poll || quoteHighlight.id != messageObject.getId() || quoteHighlight.start != start || quoteHighlight.end != end) {
-@@ -16573,9 +16610,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16570,12 +16609,20 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+ 
+                 CharSequence stringFinalText = null;
+ 
++                tele_hideReplyName = false;
                  CharSequence name = null;
                  tele.ui.TeleNameBadges.HeaderBadges teleReplyBadges = null;
                  boolean teleReplyForwarded = false;
@@ -423,6 +437,10 @@ index 0b23a918e..fb9bed0fa 100644
 -                final boolean showQuote = isReplyQuote && messageObject.messageOwner.reply_to.quote;
 +                final tele.helpers.ReplyQuotePromotion.PromotedQuote promotedQuote = tele.helpers.ReplyQuotePromotion.promote(messageObject);
 +                final TLRPC.TL_textWithEntities promotedReplyQuote = promotedQuote != null ? promotedQuote.quote : null;
++                tele_hideReplyName = promotedReplyQuote != null && tele.helpers.ReplyQuotePromotion.shouldHideDuplicateAuthor(messageObject);
++                if (tele_hideReplyName && (isSideMenued && !drawBackground || !messageObject.isAnyKindOfSticker() && messageObject.type != MessageObject.TYPE_ROUND_VIDEO || messageObject.type == MessageObject.TYPE_EMOJIS)) {
++                    namesOffset -= Theme.chat_replyNamePaint.getTextSize() + dp(4);
++                }
 +                final boolean hasServerReplyQuote = messageObject.messageOwner.reply_to != null && (messageObject.messageOwner.reply_to.flags & 64) != 0 && messageObject.messageOwner.reply_to.quote_text != null;
 +                hasReplyQuote = hasServerReplyQuote || promotedReplyQuote != null;
 +                isReplyQuote = hasServerReplyQuote && messageObject.messageOwner.reply_to.quote || promotedReplyQuote != null;
@@ -430,7 +448,25 @@ index 0b23a918e..fb9bed0fa 100644
                  if (isReplyQuote && showQuote && replyQuoteDrawable == null) {
                      replyQuoteDrawable = getContext().getResources().getDrawable(R.drawable.mini_quote).mutate();
                      replyQuoteDrawableColor = Color.WHITE;
-@@ -16816,7 +16856,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16678,7 +16725,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                             currentReplyPhoto = photoSize;
+                             replyImageReceiver.setImage(ImageLocation.getForObject(photoSize, photoObject), hasReplySpoiler ? "5_5_b" : "50_50", ImageLocation.getForObject(thumbPhotoSize, photoObject), hasReplySpoiler ? "50_50_b4" : "50_50_b", size, null, messageObject, cacheType);
+                             needReplyImage = true;
+-                            maxWidth -= dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize();
++                            maxWidth -= tele_hideReplyName ? dp(1) + Theme.chat_replyTextPaint.getTextSize() : dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize();
+                         }
+                     } else if (photoSize == null && photoImageLocation == null || messageObject.replyMessageObject == null || messageObject.replyMessageObject.isAnyKindOfSticker() || messageObject.isAnyKindOfSticker() && !AndroidUtilities.isTablet() || messageObject.replyMessageObject.isSecretMedia() || messageObject.replyMessageObject.isWebpageDocument()) {
+                         replyImageReceiver.setImageBitmap((Drawable) null);
+@@ -16696,7 +16743,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                             replyImageReceiver.setImage(ImageLocation.getForObject(photoSize, photoObject), hasReplySpoiler ? "5_5_b" : "50_50", ImageLocation.getForObject(thumbPhotoSize, photoObject), hasReplySpoiler ? "50_50_b4" : "50_50_b", size, null, messageObject.replyMessageObject, cacheType);
+                         }
+                         needReplyImage = true;
+-                        maxWidth -= dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize();
++                        maxWidth -= tele_hideReplyName ? dp(1) + Theme.chat_replyTextPaint.getTextSize() : dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize();
+                     }
+ 
+                     if (DialogObject.isEncryptedDialog(messageObject.getDialogId())) {
+@@ -16816,7 +16863,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                                  stringFinalText = MessageObject.formatTextWithEntities(mediaTodo.poll.question, messageObject.isOutOwner(), textPaint);
                              }
                          }
@@ -439,7 +475,7 @@ index 0b23a918e..fb9bed0fa 100644
                          String mess = messageObject.messageOwner.reply_to.quote_text;
                          mess = mess.replace('\n', ' ');
                          stringFinalText = new SpannableStringBuilder(mess);
-@@ -16825,6 +16865,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16825,6 +16872,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                              stringFinalText = MessageObject.replaceAnimatedEmoji(stringFinalText, messageObject.messageOwner.reply_to.quote_entities, textPaint.getFontMetricsInt(), true);
                              MessageObject.addEntitiesToText(stringFinalText, messageObject.messageOwner.reply_to.quote_entities, currentMessageObject.isOutOwner(), false, false, false);
                          }
@@ -452,7 +488,7 @@ index 0b23a918e..fb9bed0fa 100644
                      } else if (messageObject.messageOwner.reply_to != null && messageObject.replyMessageObject != null && MessageObject.getMedia(messageObject.replyMessageObject) instanceof TLRPC.TL_messageMediaPoll) {
                          TLRPC.TL_messageMediaPoll poll = (TLRPC.TL_messageMediaPoll) MessageObject.getMedia(messageObject.replyMessageObject);
                          SpannableStringBuilder ssb = new SpannableStringBuilder();
-@@ -16857,14 +16903,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16857,14 +16910,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                              MediaDataController.addTextStyleRuns(messageObject.replyMessageObject.messageOwner.entities, messageObject.replyMessageObject.caption, (Spannable) stringFinalText);
                              stringFinalText = TextUtils.ellipsize(stringFinalText, textPaint, maxWidth, TextUtils.TruncateAt.END);
                          }
@@ -471,7 +507,7 @@ index 0b23a918e..fb9bed0fa 100644
                          mess = AndroidUtilities.removeSpans(mess, QuoteSpan.class);
                          mess = AndroidUtilities.removeSpans(mess, QuoteSpan.QuoteStyleSpan.class);
                          mess = AndroidUtilities.replaceNewLines(mess);
-@@ -16873,8 +16918,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16873,8 +16925,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                              stringFinalText = MessageObject.replaceAnimatedEmoji(stringFinalText, messageObject.replyMessageObject.messageOwner.entities, textPaint.getFontMetricsInt(), true);
                          }
                          stringFinalText = TextUtils.ellipsize(stringFinalText, textPaint, maxWidth, TextUtils.TruncateAt.END);
@@ -482,7 +518,52 @@ index 0b23a918e..fb9bed0fa 100644
                              stringFinalText = TextUtils.ellipsize(stringFinalText, textPaint, maxWidth, TextUtils.TruncateAt.END);
                          }
                      }
-@@ -17635,6 +17680,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16968,11 +17020,14 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                     if (replyLine.hasSticker()) {
+                         replyNameWidth += dp(38);
+                     }
++                    if (tele_hideReplyName) {
++                        replyNameWidth = 0;
++                    }
+                 } catch (Exception e) {
+                     FileLog.e(e);
+                 }
+                 try {
+-                    replyTextWidth = dp(4) + (needReplyImage ? dp(33) : 0);
++                    replyTextWidth = dp(4) + (needReplyImage ? (int) (tele_hideReplyName ? dp(1) + Theme.chat_replyTextPaint.getTextSize() : dp(33)) : 0);
+                     if (stringFinalText != null) {
+                         SpannableStringBuilder sb = new SpannableStringBuilder(stringFinalText);
+                         boolean changed = false;
+@@ -16984,11 +17039,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                         }
+                         replyTextRTL = AndroidUtilities.isRTL(sb);
+                         if (isReplyQuote && !currentMessageObject.shouldDrawWithoutBackground()) {
+-                            maxWidth += dp(24 + 12);
++                            maxWidth += dp(tele_hideReplyName ? 12 : 24 + 12);
+ //                            replyTextWidth += dp(24);
+                         }
+                         if (isReplyQuote && needReplyImage && !replyTextRTL) {
+-                            final float sz = dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize();
++                            final float sz = tele_hideReplyName ? dp(1) + Theme.chat_replyTextPaint.getTextSize() : dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize();
+                             sb.setSpan(new LeadingMarginSpan.Standard((int) sz + dp(4), 0), 0, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                             replyTextWidth -= sz;
+                             maxWidth += sz;
+@@ -17039,6 +17094,14 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                             }
+                             replyTextWidth += width + dp(18);
+                         }
++                        if (tele_hideReplyName) {
++                            if (isReplyQuote && showQuote && replyQuoteDrawable != null) {
++                                replyTextWidth += replyQuoteDrawable.getIntrinsicWidth();
++                            }
++                            if (replyLine.hasSticker()) {
++                                replyTextWidth += dp(38);
++                            }
++                        }
+                         if (isReplyTaskOrPollOption) {
+                             replyTextWidth += dp(16);
+                         }
+@@ -17635,6 +17698,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
              lastHighlightProgressTime = newTime;
              if (highlightProgress <= 0) {
                  highlightProgress = 0;
@@ -490,7 +571,37 @@ index 0b23a918e..fb9bed0fa 100644
                  isHighlightedAnimated = false;
                  if (highlightedQuote) {
                      resetUrlPaths();
-@@ -20332,6 +20378,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -17706,7 +17770,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+             if (transitionParams != null && transitionParams.animateReplyTextLayout != null) {
+                 replyTextHeight = AndroidUtilities.lerp(transitionParams.animateFromReplyTextHeight, replyTextHeight, transitionParams.animateChangeProgress);
+             }
+-            replyHeight = dp(9) + Theme.chat_replyNamePaint.getTextSize() + Math.max(replyTextHeight - dp(3.66f), Theme.chat_replyTextPaint.getTextSize());
++            replyHeight = dp(tele_hideReplyName ? 5 : 9) + (tele_hideReplyName ? 0 : Theme.chat_replyNamePaint.getTextSize()) + Math.max(replyTextHeight - dp(3.66f), Theme.chat_replyTextPaint.getTextSize());
+             if (currentMessageObject.shouldDrawWithoutBackground() && currentMessageObject.type != MessageObject.TYPE_EMOJIS && !isSideMenued) {
+                 if (currentMessageObject.isOutOwner()) {
+                     replyStartX = dp(23);
+@@ -19483,6 +19547,20 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         return !TextUtils.equals(lastPostAuthor, currentMessageObject.messageOwner.post_author);
+     }
+ 
++    public float tele_replyRightInset() {
++        if (!tele_hideReplyName) {
++            return 0;
++        }
++        float inset = 0;
++        if (isReplyQuote && replyQuoteDrawable != null) {
++            inset += replyQuoteDrawable.getIntrinsicWidth() + dp(4);
++        }
++        if (replyLine != null && replyLine.hasSticker()) {
++            inset += dp(38);
++        }
++        return inset;
++    }
++
+     public void drawNamesLayout(Canvas canvas, float alpha) {
+         long newAnimationTime = SystemClock.elapsedRealtime();
+         long dt = newAnimationTime - lastNamesAnimationTime;
+@@ -20332,6 +20410,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                  leftRad = bottomRad; // line redesign
                  replyLine.setLoading(loading);
                  replyLine.drawBackground(canvas, replySelectorRect, leftRad, rightRad, bottomRad, alpha, isReplyQuote, currentMessageObject.shouldDrawWithoutBackground());
@@ -504,7 +615,17 @@ index 0b23a918e..fb9bed0fa 100644
  
                  if (replySelector == null) {
                      replySelector = Theme.createRadSelectorDrawable(replySelectorColor = rippleColor, 0, 0);
-@@ -20391,7 +20444,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -20357,7 +20442,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                 float replyImageSz = 0;
+                 if (needReplyImage) {
+                     replyImageReceiver.setAlpha(replyForwardAlpha);
+-                    replyImageSz = Math.min(replySelectorRect.height() - dp(10), dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize());
++                    final float maxReplyImageSz = tele_hideReplyName ? dp(1) + Theme.chat_replyTextPaint.getTextSize() : dp(isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize();
++                    replyImageSz = Math.min(replySelectorRect.height() - dp(10), maxReplyImageSz);
+                     replyImageReceiver.setImageCoords(replySelectorRect.left + dp(8), replySelectorRect.top + dp((isReplyQuote && replyTextLayout != null && replyTextLayout.getLineCount() <= 1 ? 2 : 0) + 5), replyImageSz, replyImageSz);
+                     replyImageReceiver.draw(canvas);
+ 
+@@ -20391,7 +20477,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                  final float offsetX = currentMessageObject != null && currentMessageObject.shouldDrawWithoutBackground() ? -dp(6) : -dp(1);
                  final float offsetY = currentMessageObject != null && currentMessageObject.shouldDrawWithoutBackground() ? dp(1) : dp(3);
  
@@ -513,6 +634,45 @@ index 0b23a918e..fb9bed0fa 100644
                  if (isReplyQuote && showQuote && replyQuoteDrawable != null) {
                      if (replyLine.getColor() != replyQuoteDrawableColor) {
                          replyQuoteDrawable.setColorFilter(new PorterDuffColorFilter(replyQuoteDrawableColor = replyLine.getColor(), PorterDuff.Mode.SRC_IN));
+@@ -20405,7 +20491,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                     replyQuoteDrawable.draw(canvas);
+                 }
+ 
+-                if (replyNameLayout != null) {
++                if (replyNameLayout != null && !tele_hideReplyName) {
+                     canvas.save();
+                     canvas.translate(replyStartX + offsetX - replyNameOffset + offset + (needReplyImage ? replyImageSz + dp(3) : 0), replyStartY + offsetY);
+                     replyNameLayout.draw(canvas);
+@@ -20430,9 +20516,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                         left += replyImageSz + dp(3);
+                     }
+                     if (replyTextRTL && transitionParams.animateReplyTextOffset > 0) {
+-                        left = replySelectorRect.right - dp(8) - transitionParams.animateReplyTextLayout.getWidth();
++                        left = replySelectorRect.right - dp(8) - transitionParams.animateReplyTextLayout.getWidth() - tele_replyRightInset();
+                     }
+-                    canvas.translate(left, replyStartY + offsetY - dp(1) + Theme.chat_replyNamePaint.getTextSize() + dp(5));
++                    canvas.translate(left, replyStartY + offsetY + (tele_hideReplyName ? 0 : Theme.chat_replyNamePaint.getTextSize() + dp(4)));
+                     final TextPaint paint = transitionParams.animateReplyTextLayout.getPaint();
+                     int wasAlpha2 = paint.getAlpha();
+                     paint.setAlpha((int) (wasAlpha2 * (1f - transitionParams.animateChangeProgress)));
+@@ -20444,7 +20530,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                 if (replyTextLayout != null) {
+                     canvas.save();
+                     float left = replyStartX + offset + offsetX;
+-                    float top = replyStartY + offsetY - dp(1) + Theme.chat_replyNamePaint.getTextSize() + dp(5);
++                    float top = replyStartY + offsetY + (tele_hideReplyName ? 0 : Theme.chat_replyNamePaint.getTextSize() + dp(4));
+                     if (isReplyQuote && needReplyImage) {
+                         left -= dp(2);
+                     }
+@@ -20463,7 +20549,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+                         left += dp(16);
+                     }
+                     if (replyTextRTL && replyTextOffset > 0) {
+-                        left = replySelectorRect.right - dp(8) - replyTextLayout.getWidth();
++                        left = replySelectorRect.right - dp(8) - replyTextLayout.getWidth() - tele_replyRightInset();
+                     }
+                     canvas.translate(left, top);
+                     final TextPaint paint = replyTextLayout.getPaint();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 index b2b10415a..555be4fb3 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
@@ -628,6 +788,54 @@ index 46f85b5c5..d011bc267 100644
              }
              if (editingText != null) {
                  final Paint.FontMetricsInt fontMetricsInt;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/TextMessageEnterTransition.java b/TMessagesProj/src/main/java/org/telegram/ui/TextMessageEnterTransition.java
+index d56a8e26b..10a2dd40e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/TextMessageEnterTransition.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/TextMessageEnterTransition.java
+@@ -654,7 +654,7 @@ public class TextMessageEnterTransition implements MessageEnterTransitionContain
+             float replyImageSz = 0;
+             if (messageView.needReplyImage) {
+                 canvas.save();
+-                final float sz = Math.min(replySelectorRect.height() - dp(10), dp(messageView.isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize());
++                final float sz = Math.min(replySelectorRect.height() - dp(10), messageView.tele_hideReplyName ? dp(1) + Theme.chat_replyTextPaint.getTextSize() : dp(messageView.isReplyQuote ? 3 : 7) + Theme.chat_replyNamePaint.getTextSize() + Theme.chat_replyTextPaint.getTextSize());
+                 replyImageSz = lerp(dp(35), sz, progressX);
+                 messageView.replyImageReceiver.setImageCoords(
+                     lerp(replyX, replySelectorRect.left + dp(8), progressX),
+@@ -680,10 +680,12 @@ public class TextMessageEnterTransition implements MessageEnterTransitionContain
+             if (messageView.replyNameLayout != null) {
+                 canvas.save();
+                 canvas.translate(replyNameX, replyY + offsetY * progressX);
+-                int wasAlpha = Theme.chat_replyNamePaint.getAlpha();
+-                Theme.chat_replyNamePaint.setAlpha((int) (wasAlpha * progressX));
+-                messageView.replyNameLayout.draw(canvas);
+-                Theme.chat_replyNamePaint.setAlpha(wasAlpha);
++                if (!messageView.tele_hideReplyName) {
++                    int wasAlpha = Theme.chat_replyNamePaint.getAlpha();
++                    Theme.chat_replyNamePaint.setAlpha((int) (wasAlpha * progressX));
++                    messageView.replyNameLayout.draw(canvas);
++                    Theme.chat_replyNamePaint.setAlpha(wasAlpha);
++                }
+                 final SimpleTextView uiText = chatActivity.getReplyNameTextView();
+                 canvas.saveLayerAlpha(0, 0, uiText.getWidth(), uiText.getHeight(), (int) (0xFF * (1f - progressX)), Canvas.ALL_SAVE_FLAG);
+                 uiText.setAlpha(1f);
+@@ -710,7 +712,7 @@ public class TextMessageEnterTransition implements MessageEnterTransitionContain
+             if (messageView.replyTextLayout != null) {
+                 canvas.save();
+                 float left = replyToMessageX;
+-                final float top = replyY + lerp(dp(19), Theme.chat_replyNamePaint.getTextSize() + dp(4) + offsetY,progressX);
++                final float top = replyY + lerp(dp(19), (messageView.tele_hideReplyName ? 0 : Theme.chat_replyNamePaint.getTextSize() + dp(4)) + offsetY, progressX);
+                 if (messageView.isReplyQuote && messageView.needReplyImage) {
+                     left -= dp(2);
+                 }
+@@ -731,7 +733,7 @@ public class TextMessageEnterTransition implements MessageEnterTransitionContain
+                     left += dp(16);
+                 }
+                 if (messageView.replyTextRTL && messageView.replyTextOffset > 0) {
+-                    left = replySelectorRect.right - dp(8) - messageView.replyTextLayout.getWidth() - offset * progressX;
++                    left = replySelectorRect.right - dp(8) - messageView.replyTextLayout.getWidth() - offset * progressX - messageView.tele_replyRightInset();
+                 }
+                 canvas.translate(
+                     lerp(fromReplayX - messageView.replyTextOffset, left, progressX),
 diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
 index 484a20855..cc6e52cbd 100644
 --- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
@@ -657,17 +865,21 @@ index 3dc004baf..13fc6281a 100644
          }
 diff --git a/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
 new file mode 100644
-index 000000000..1113465ea
+index 000000000..8424aeeb7
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/tele/helpers/ReplyQuotePromotion.kt
-@@ -0,0 +1,613 @@
+@@ -0,0 +1,693 @@
 +package tele.helpers
 +
++import android.text.NoCopySpan
 +import android.text.SpannableStringBuilder
++import android.text.Spanned
 +import android.text.TextUtils
++import org.telegram.messenger.DialogObject
 +import org.telegram.messenger.MessageObject
 +import org.telegram.messenger.MessagesController
 +import org.telegram.messenger.RichQuote
++import org.telegram.messenger.UserConfig
 +import org.telegram.tgnet.TLObject
 +import org.telegram.tgnet.TLRPC
 +import org.telegram.tgnet.tl.TL_iv
@@ -1193,6 +1405,58 @@ index 000000000..1113465ea
 +    }
 +
 +    @JvmStatic
++    fun shouldHideDuplicateAuthor(messageObject: MessageObject?): Boolean {
++        if (messageObject == null) {
++            return false
++        }
++        val owner = messageObject.messageOwner ?: return false
++        val replyTo = owner.reply_to ?: return false
++        val source = messageObject.replyMessageObject ?: return false
++        val sourceOwner = source.messageOwner ?: return false
++        if (DialogObject.isEncryptedDialog(messageObject.dialogId)) {
++            return false
++        }
++        if (messageObject.hideSendersName || messageObject.customName != null || messageObject.customReplyName != null) {
++            return false
++        }
++        if (source.hideSendersName || source.customName != null || source.dialogId != messageObject.dialogId) {
++            return false
++        }
++        if (owner.fwd_from != null || sourceOwner.fwd_from != null) {
++            return false
++        }
++        if (replyTo.story_id != 0 || replyTo.reply_from != null) {
++            return false
++        }
++        val replyToPeer = replyTo.reply_to_peer_id
++        if (replyToPeer != null && DialogObject.getPeerDialogId(replyToPeer) != messageObject.dialogId) {
++            return false
++        }
++        if (!TextUtils.equals(owner.post_author, sourceOwner.post_author)) {
++            return false
++        }
++        val a = effectiveAuthorId(messageObject)
++        val b = effectiveAuthorId(source)
++        return a != 0L && a == b
++    }
++
++    private fun effectiveAuthorId(msg: MessageObject): Long {
++        val owner = msg.messageOwner ?: return 0L
++        val fromId = msg.fromChatId
++        if (fromId != 0L) {
++            return fromId
++        }
++        val dialogId = msg.dialogId
++        if (owner.post) {
++            return dialogId
++        }
++        if (msg.isOut && dialogId > 0L) {
++            return UserConfig.getInstance(msg.currentAccount).clientUserId
++        }
++        return if (dialogId > 0L) dialogId else 0L
++    }
++
++    @JvmStatic
 +    fun withoutBodyPrefix(text: CharSequence, bodyPrefix: Int): CharSequence {
 +        if (bodyPrefix <= 0) {
 +            return text
@@ -1200,7 +1464,31 @@ index 000000000..1113465ea
 +        if (bodyPrefix >= text.length) {
 +            return ""
 +        }
-+        return SpannableStringBuilder(text).apply { delete(0, bodyPrefix) }
++        if (text !is Spanned) {
++            return text.subSequence(bodyPrefix, text.length)
++        }
++        val builder = SpannableStringBuilder(text)
++        for (span in builder.getSpans(0, builder.length, Any::class.java)) {
++            if (span is NoCopySpan) {
++                continue
++            }
++            val spanStart = builder.getSpanStart(span)
++            val spanEnd = builder.getSpanEnd(span)
++            if (span is org.telegram.ui.Components.QuoteSpan || span is org.telegram.ui.Components.QuoteSpan.QuoteStyleSpan) {
++                if (spanStart < bodyPrefix) {
++                    builder.removeSpan(span)
++                }
++            } else if (spanEnd <= bodyPrefix) {
++                builder.removeSpan(span)
++            }
++        }
++        builder.delete(0, bodyPrefix)
++        for (span in builder.getSpans(0, builder.length, Any::class.java)) {
++            if (span !is NoCopySpan && builder.getSpanEnd(span) <= builder.getSpanStart(span)) {
++                builder.removeSpan(span)
++            }
++        }
++        return builder
 +    }
 +
 +    private fun isOrdinaryText(item: MessageObject): Boolean {
