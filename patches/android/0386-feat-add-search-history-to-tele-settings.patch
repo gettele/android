@@ -1,0 +1,204 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Thu, 26 Nov 2026 18:34:11 +0300
+Subject: [PATCH] feat: add search history to tele settings
+
+---
+ .../tele/ui/settings/TeleSettingsActivity.kt  | 114 +++++++++++++++---
+ 1 file changed, 99 insertions(+), 15 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 090b9dc29..7a8750fa8 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1,7 +1,9 @@
+ package tele.ui.settings
+ 
+ import android.content.Context
++import android.content.DialogInterface
+ import android.content.Intent
++import android.content.SharedPreferences
+ import android.net.Uri
+ import android.util.TypedValue
+ import android.view.MotionEvent
+@@ -12,6 +14,7 @@ import java.util.ArrayList
+ import androidx.recyclerview.widget.LinearLayoutManager
+ import androidx.recyclerview.widget.RecyclerView
+ import androidx.core.view.ViewCompat
++import org.telegram.messenger.ApplicationLoader
+ import org.telegram.messenger.Utilities
+ import org.telegram.messenger.AndroidUtilities
+ import org.telegram.messenger.BuildVars
+@@ -24,6 +27,7 @@ import org.telegram.ui.ActionBar.AlertDialog
+ import org.telegram.ui.ActionBar.BaseFragment
+ import org.telegram.ui.ActionBar.BottomSheet
+ import org.telegram.ui.ActionBar.Theme
++import org.telegram.ui.ActionBar.ThemeBind
+ import org.telegram.ui.Cells.TextCheckCell2
+ import org.telegram.ui.Components.BulletinFactory
+ import org.telegram.ui.Components.ColorPicker
+@@ -78,8 +82,9 @@ class TeleSettingsActivity @JvmOverloads constructor(
+ 
+     private var listView: UniversalRecyclerView? = null
+     private var searchQuery: String? = null
++    private var searchActive = false
+     private var rows: List<Row> = emptyList()
+-    private data class SearchHit(val mode: String, val title: String, val row: Row)
++    private data class SearchHit(val mode: String, val title: String, val row: Row, val identity: String, val text: String)
+     private var searchHits: List<SearchHit> = emptyList()
+ 
+     override fun getListViewForSimpleGlass(): RecyclerListView? = listView
+@@ -662,24 +667,32 @@ class TeleSettingsActivity @JvmOverloads constructor(
+         val query = searchQuery.orEmpty()
+         if (query.isNotEmpty()) {
+             val words = query.lowercase(java.util.Locale.ROOT).split(Regex("\\s+"))
+-            val hits = ArrayList<SearchHit>()
+-            val seen = HashSet<String>()
+-            for (section in SECTION_SPECS + listOf(Section(MODE_MENU, "Message menu", R.drawable.msg2_permissions), Section(MODE_ROOT, "tele", R.drawable.tele_settings_icon))) {
+-                for (row in buildRows(section.mode, true)) {
+-                    if (row.type != TYPE_TOGGLE && row.type != TYPE_VALUE && row.type != TYPE_LINK && row.type != TYPE_LINK_ICON) continue
+-                    val title = row.title ?: continue
+-                    val identity = idOf(row) ?: "${section.mode}:$title"
+-                    val text = listOf(title, lc(displayTitle(title)), row.subtitle.orEmpty(), row.subtitle?.let { lc(it) }.orEmpty(), section.title, lc(section.title)).joinToString(" ").lowercase(java.util.Locale.ROOT)
+-                    if (words.all { text.contains(it) } && seen.add(identity)) hits.add(SearchHit(section.mode, section.title, row))
+-                }
+-            }
++            val hits = allSearchHits().filter { hit -> words.all { word -> hit.text.contains(word) } }
+             searchHits = hits
+             if (hits.isEmpty()) items.add(UItem.asShadow(LocaleController.getString(R.string.NoResult)))
+             hits.forEachIndexed { index, hit ->
+-                items.add(UItem.asButton(index, lc(displayTitle(hit.row.title.orEmpty())), lc(hit.title)))
++                items.add(UItem.asButton(index, lc(displayTitle(hit.row.title.orEmpty())), lc(hit.title)).apply {
++                    hideDivider = index == hits.lastIndex
++                })
+             }
+             return
+         }
++        if (searchActive) {
++            val hits = recentSearchHits()
++            if (hits.isNotEmpty()) {
++                searchHits = hits
++                items.add(UItem.asGraySection(
++                    LocaleController.getString(R.string.Recent),
++                    LocaleController.getString(R.string.ClearHistory)
++                ) { showClearSearchHistoryDialog() }.apply { id = -1 })
++                hits.forEachIndexed { index, hit ->
++                    items.add(UItem.asButton(index, lc(displayTitle(hit.row.title.orEmpty())), lc(hit.title)).apply {
++                        hideDivider = index == hits.lastIndex
++                    })
++                }
++                return
++            }
++        }
+         searchHits = emptyList()
+         rows = pageRows()
+         rows.forEachIndexed { position, row ->
+@@ -752,9 +765,71 @@ class TeleSettingsActivity @JvmOverloads constructor(
+         }
+     }
+ 
++    private fun allSearchHits(): List<SearchHit> {
++        val hits = ArrayList<SearchHit>()
++        val seen = HashSet<String>()
++        for (section in SECTION_SPECS + listOf(Section(MODE_MENU, "Message menu", R.drawable.msg2_permissions), Section(MODE_ROOT, "tele", R.drawable.tele_settings_icon))) {
++            for (row in buildRows(section.mode, true)) {
++                if (row.type != TYPE_TOGGLE && row.type != TYPE_VALUE && row.type != TYPE_LINK && row.type != TYPE_LINK_ICON) continue
++                val title = row.title ?: continue
++                val identity = idOf(row) ?: "${section.mode}:$title"
++                if (!seen.add(identity)) continue
++                val text = listOf(title, lc(displayTitle(title)), row.subtitle.orEmpty(), row.subtitle?.let { lc(it) }.orEmpty(), section.title, lc(section.title)).joinToString(" ").lowercase(java.util.Locale.ROOT)
++                hits.add(SearchHit(section.mode, section.title, row, identity, text))
++            }
++        }
++        return hits
++    }
++
++    private fun searchPreferences(): SharedPreferences =
++        ApplicationLoader.applicationContext.getSharedPreferences("tele_settings_search", Context.MODE_PRIVATE)
++
++    private fun recentSearchIds(): List<String> =
++        searchPreferences().getString(KEY_RECENT_SEARCHES, "").orEmpty()
++            .split(RECENT_SEARCH_SEPARATOR)
++            .filter { it.isNotEmpty() }
++
++    private fun recentSearchHits(): List<SearchHit> {
++        val byIdentity = allSearchHits().associateBy { it.identity }
++        val seen = HashSet<String>()
++        val hits = ArrayList<SearchHit>()
++        for (identity in recentSearchIds()) {
++            val hit = byIdentity[identity] ?: continue
++            if (seen.add(identity)) hits.add(hit)
++        }
++        return hits
++    }
++
++    private fun saveRecentSearch(identity: String) {
++        val ids = ArrayList(recentSearchIds())
++        ids.remove(identity)
++        ids.add(0, identity)
++        while (ids.size > MAX_RECENT_SEARCHES) ids.removeAt(ids.size - 1)
++        searchPreferences().edit().putString(KEY_RECENT_SEARCHES, ids.joinToString(RECENT_SEARCH_SEPARATOR)).apply()
++    }
++
++    private fun clearRecentSearches() {
++        searchPreferences().edit().remove(KEY_RECENT_SEARCHES).apply()
++        refresh()
++    }
++
++    private fun showClearSearchHistoryDialog() {
++        val activity = parentActivity ?: return
++        val builder = if (resourceProvider != null) AlertDialog.Builder(activity, resourceProvider) else AlertDialog.Builder(activity)
++        builder.setTitle(LocaleController.getString(R.string.ClearSearchAlertTitle))
++        builder.setMessage(LocaleController.getString(R.string.ClearSearchAlert))
++        builder.setPositiveButton(LocaleController.getString(R.string.ClearButton)) { _, _ -> clearRecentSearches() }
++        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null)
++        val dialog = builder.create()
++        showDialog(dialog)
++        val button = dialog.getButton(DialogInterface.BUTTON_POSITIVE) as? android.widget.TextView
++        if (button != null) ThemeBind.textColor(button, Theme.key_text_RedBold)
++    }
++
+     private fun onItemClick(item: UItem, view: View, position: Int, x: Float, y: Float) {
+-        if (!searchQuery.isNullOrEmpty()) {
++        if (!searchQuery.isNullOrEmpty() || (searchActive && searchHits.isNotEmpty())) {
+             val hit = searchHits.getOrNull(item.id) ?: return
++            saveRecentSearch(hit.identity)
+             presentFragment(TeleSettingsActivity(hit.mode, hit.row.title, idOf(hit.row)))
+             return
+         }
+@@ -883,7 +958,11 @@ class TeleSettingsActivity @JvmOverloads constructor(
+ 
+     /** Long-press on a row with an id: copy its link. */
+     private fun onItemLongClick(item: UItem, view: View, position: Int, x: Float, y: Float): Boolean {
+-        if (!searchQuery.isNullOrEmpty()) return false
++        if (searchActive && !searchQuery.isNullOrEmpty()) return false
++        if (searchActive && searchHits.getOrNull(item.id) != null) {
++            showClearSearchHistoryDialog()
++            return true
++        }
+         val row = rows.getOrNull(item.id) ?: return false
+         if (row.type == TYPE_HEADER || row.type == TYPE_SHADOW || row.type == TYPE_CUSTOM) return false
+         val url = linkOf(row) ?: return false
+@@ -937,10 +1016,12 @@ class TeleSettingsActivity @JvmOverloads constructor(
+         searchItem.setIsSearchField(true, false)
+             .setActionBarMenuItemSearchListener(object : ActionBarMenuItem.ActionBarMenuItemSearchListener() {
+                 override fun onSearchExpand() {
++                    searchActive = true
+                     searchQuery = searchItem.searchField.text.toString().trim()
+                     refresh()
+                 }
+                 override fun onSearchCollapse() {
++                    searchActive = false
+                     searchQuery = null
+                     refresh()
+                 }
+@@ -1237,6 +1318,9 @@ class TeleSettingsActivity @JvmOverloads constructor(
+         private const val TYPE_LINK = 4
+         private const val TYPE_LINK_ICON = 5
+         private const val TYPE_CUSTOM = 6
++        private const val KEY_RECENT_SEARCHES = "recent"
++        private const val RECENT_SEARCH_SEPARATOR = "\n"
++        private const val MAX_RECENT_SEARCHES = 20
+ 
+ 
+         private val DESCRIPTIONS = mapOf(
