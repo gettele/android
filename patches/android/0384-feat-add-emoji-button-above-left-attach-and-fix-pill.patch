@@ -1,0 +1,474 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: test <test@example.com>
+Date: Thu, 26 Nov 2026 18:18:04 +0300
+Subject: [PATCH] feat: add emoji button above left attach and fix pill inset
+
+---
+ .../ui/Components/ChatActivityEnterView.java  | 181 +++++++++++++-----
+ .../src/main/java/tele/TeleConfig.kt          |   2 +
+ TMessagesProj/src/main/java/tele/TeleHooks.kt |   2 +-
+ .../main/java/tele/helpers/ComposerAttach.kt  |   3 +
+ .../src/main/java/tele/helpers/TeleTextRu.kt  |   2 +
+ .../src/main/java/tele/helpers/TeleTextUk.kt  |   2 +
+ .../main/java/tele/ui/settings/TeleSearch.kt  |   3 +
+ .../tele/ui/settings/TeleSettingsActivity.kt  |   4 +
+ 8 files changed, 154 insertions(+), 45 deletions(-)
+
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+index d011bc267..16f03c796 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java
+@@ -653,6 +653,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+     private BlurredBackgroundColorProvider tele_attachGlassColorProvider;
+     private boolean tele_attachOuterApplied;
+     private boolean tele_attachButtonShown;
++    private ChatActivityBlurredRoundPageDownButton tele_emojiButton;
++    private ChatActivityEnterViewAnimatedIconView tele_emojiIcon;
++    private boolean tele_emojiButtonShown;
+     private int tele_attachBaseLeftMargin = -1;
+     private AiButtonDrawable aiButtonIcon;
+     private ImageView aiButton;
+@@ -6365,6 +6368,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+             MessagesController.getInstance(currentAccount).getTonesController().load();
+         }
+         shownAiButton = show;
++        tele_updateAiButtonLayout();
+         aiButton.setVisibility(View.VISIBLE);
+         aiButton.animate()
+             .alpha(show ? 1.0f : 0.0f)
+@@ -6393,7 +6397,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 aiHint.setMultilineText(true);
+                 aiHint.setText(getString(R.string.AIEditorHint));
+                 setHintGlass(aiHint);
+-                aiHint.setJointPx(0f, aiButton.getWidth() / 2f + dp(4));
++                tele_updateAiHintJoint();
+                 addView(aiHint, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 200, Gravity.TOP, 0, -200 + 4, 0, 0));
+                 aiHint.setOnHiddenListener(() -> removeView(thisHint));
+                 aiHint.setDuration(4000L);
+@@ -6416,6 +6420,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+ 
+         if (shownRichButton == show) return;
+         shownRichButton = show;
++        tele_updateAiButtonLayout();
+         richButton.setVisibility(View.VISIBLE);
+         richButton.animate()
+             .alpha(show ? 1.0f : 0.0f)
+@@ -7036,9 +7041,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+         if (messageEditText != null) {
+             messageEditText.setEnabled(messageEditTextEnabled);
+         }
+-        if (tele_attachOuterApplied) {
+-            tele_syncAttachButton(false);
+-        }
++        tele_syncAttachButton(false);
+     }
+ 
+     public void setDialogId(long id, int account) {
+@@ -11063,6 +11066,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+         if (tele_attachButton != null) {
+             tele_attachButton.updateColors();
+         }
++        if (tele_emojiButton != null) {
++            tele_emojiButton.updateColors();
++        }
+         if (messageSendPreview != null) {
+             messageSendPreview.updateColors();
+         }
+@@ -11555,6 +11561,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+             deleteRichDraftButton.setVisibility(View.GONE);
+             sendButton.setLocked(false);
+         }
++        tele_syncAttachButton(false);
+         updateButtons();
+         if (wasActive != richDraftActive) {
+             checkSendButton(true);
+@@ -13709,6 +13716,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+         updateFieldHint(false);
+         checkBotMenu();
++        tele_syncAttachButton(allowAnimation);
+     }
+ 
+     private void attachEmojiView() {
+@@ -13736,6 +13744,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+         final boolean show = parentFragment != null && messageEditText != null && messageEditText.getSelectionEnd() != messageEditText.getSelectionStart();
+         emojiButton.setFormatMode(show, animated);
++        if (tele_emojiIcon != null) {
++            tele_emojiIcon.setFormatMode(show, animated);
++        }
+         if (!show && formatOptions != null) {
+             formatOptions.dismiss();
+             formatOptions = null;
+@@ -13752,7 +13763,8 @@ public class ChatActivityEnterView extends FrameLayout implements
+             return;
+         }
+         messageEditText.hideActionMode();
+-        final ItemOptions options = ItemOptions.makeOptions(sizeNotifierLayout != null ? sizeNotifierLayout : this, resourcesProvider, emojiButton, false, false, true);
++        final View formatAnchor = tele_outerEmojiVisible() && tele_emojiButton != null ? tele_emojiButton : emojiButton;
++        final ItemOptions options = ItemOptions.makeOptions(sizeNotifierLayout != null ? sizeNotifierLayout : this, resourcesProvider, formatAnchor, false, false, true);
+         options.setMaxHeight(dp(280));
+         ChatActivity.fillActionModeMenu(new MenuToItemOptions(options, messageEditText), parentFragment.getCurrentEncryptedChat(), true, true);
+         options.forceTop(true);
+@@ -13807,6 +13819,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+         }
+ 
+         emojiButton.setState(nextIcon, animated);
++        if (tele_emojiIcon != null) {
++            tele_emojiIcon.setState(nextIcon, animated);
++        }
+         onEmojiIconChanged(nextIcon);
+     }
+ 
+@@ -14020,6 +14035,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+             lastSizeChangeValue2 = isWidthGreater;
+             keyboardVisible = height > 0;
+             checkBotMenu();
++            tele_syncAttachButton(true);
+             return;
+         }
+         if (height > dp(50) && keyboardVisible && !AndroidUtilities.isInMultiwindow) {
+@@ -14117,6 +14133,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+         boolean oldValue = keyboardVisible;
+         keyboardVisible = height > 0;
+         checkBotMenu();
++        tele_syncAttachButton(true);
+         if (keyboardVisible && isPopupShowing() && stickersExpansionAnim == null) {
+             showPopup(0, currentPopupContentType);
+         } else if (!keyboardVisible && !isPopupShowing() && botButtonsMessageObject != null && replyingMessageObject != botButtonsMessageObject && (!hasBotWebView() && !botCommandsMenuIsShowing() && !BaseFragment.hasSheets(parentFragment)) && (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && botReplyMarkup != null && !botReplyMarkup.rows.isEmpty()) {
+@@ -15364,42 +15381,36 @@ public class ChatActivityEnterView extends FrameLayout implements
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+         int wasHeight = textFieldContainer.getMeasuredHeight();
++        int emojiMargin;
++        int textMargin;
+         if (botCommandsMenuButton != null && botCommandsMenuButton.getTag() != null) {
+             botCommandsMenuButton.measure(widthMeasureSpec, heightMeasureSpec);
+-            ((MarginLayoutParams) emojiButton.getLayoutParams()).leftMargin = dp(10) + (botCommandsMenuButton == null ? 0 : botCommandsMenuButton.getMeasuredWidth());
+-            if (deleteRichDraftButton != null) {
+-                ((MarginLayoutParams) deleteRichDraftButton.getLayoutParams()).leftMargin = dp(10) + (botCommandsMenuButton == null ? 0 : botCommandsMenuButton.getMeasuredWidth());
+-            }
+-            if (messageEditText != null) {
+-                ((MarginLayoutParams) messageEditText.getLayoutParams()).leftMargin = dp(57) + (botCommandsMenuButton == null ? 0 : botCommandsMenuButton.getMeasuredWidth());
+-            }
+-            if (richDraftPreview != null) {
+-                ((MarginLayoutParams) richDraftPreview.getLayoutParams()).leftMargin = dp(57) + (botCommandsMenuButton == null ? 0 : botCommandsMenuButton.getMeasuredWidth());
+-            }
++            int width = botCommandsMenuButton.getMeasuredWidth();
++            emojiMargin = dp(10) + width;
++            textMargin = dp(57) + width;
+         } else if (senderSelectView != null && senderSelectView.getVisibility() == View.VISIBLE) {
+             int width = senderSelectView.getLayoutParams().width, height = senderSelectView.getLayoutParams().height;
+             senderSelectView.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+-            ((MarginLayoutParams) emojiButton.getLayoutParams()).leftMargin = dp(7) + width;
+-            if (deleteRichDraftButton != null) {
+-                ((MarginLayoutParams) deleteRichDraftButton.getLayoutParams()).leftMargin = dp(7) + width;
+-            }
+-            if (messageEditText != null) {
+-                ((MarginLayoutParams) messageEditText.getLayoutParams()).leftMargin = dp(54) + width;
+-            }
+-            if (richDraftPreview != null) {
+-                ((MarginLayoutParams) richDraftPreview.getLayoutParams()).leftMargin = dp(54) + width;
+-            }
++            emojiMargin = dp(7) + width;
++            textMargin = dp(54) + width;
+         } else {
+-            ((MarginLayoutParams) emojiButton.getLayoutParams()).leftMargin = dp(3);
+-            if (deleteRichDraftButton != null) {
+-                ((MarginLayoutParams) deleteRichDraftButton.getLayoutParams()).leftMargin = dp(3);
+-            }
+-            if (messageEditText != null) {
+-                ((MarginLayoutParams) messageEditText.getLayoutParams()).leftMargin = dp(50);
+-            }
+-            if (richDraftPreview != null) {
+-                ((MarginLayoutParams) richDraftPreview.getLayoutParams()).leftMargin = dp(50);
+-            }
++            emojiMargin = dp(3);
++            textMargin = dp(50);
++        }
++        if (tele_outerEmojiVisible()) {
++            textMargin = (botCommandsMenuButton != null && botCommandsMenuButton.getTag() != null
++                || senderSelectView != null && senderSelectView.getVisibility() == View.VISIBLE)
++                ? emojiMargin : dp(15);
++        }
++        ((MarginLayoutParams) emojiButton.getLayoutParams()).leftMargin = emojiMargin;
++        if (deleteRichDraftButton != null) {
++            ((MarginLayoutParams) deleteRichDraftButton.getLayoutParams()).leftMargin = emojiMargin;
++        }
++        if (messageEditText != null) {
++            ((MarginLayoutParams) messageEditText.getLayoutParams()).leftMargin = textMargin;
++        }
++        if (richDraftPreview != null) {
++            ((MarginLayoutParams) richDraftPreview.getLayoutParams()).leftMargin = textMargin;
+         }
+         updateBotCommandsMenuContainerTopPadding();
+         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+@@ -15656,6 +15667,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+ 
+     private static final int TELE_ATTACH_SIZE = 56;
+     private static final int TELE_ATTACH_INSET = 47;
++    private static final int TELE_ATTACH_EMOJI_BOTTOM_MARGIN = 44;
+ 
+     public void tele_setOuterAttachHost(ChatInputViewsContainer host, BlurredBackgroundDrawableViewFactory glassFactory, BlurredBackgroundColorProvider colorProvider) {
+         tele_attachHost = host;
+@@ -15669,6 +15681,41 @@ public class ChatActivityEnterView extends FrameLayout implements
+             && tele_attachHost != null && tele_attachGlassFactory != null && getParent() instanceof ViewGroup;
+     }
+ 
++    private boolean tele_wantsOuterEmoji() {
++        return tele_wantsOuterAttach() && tele.helpers.ComposerAttach.emojiAbove();
++    }
++
++    private boolean tele_outerEmojiVisible() {
++        return tele_attachOuterApplied && tele_wantsOuterEmoji() && tele_emojiButton != null
++            && tele_attachAllowed() && getVisibility() == VISIBLE && !richDraftActive
++            && (keyboardVisible || isPopupShowing());
++    }
++
++    private void tele_updateAiHintJoint() {
++        if (aiHint == null || aiButton == null) {
++            return;
++        }
++        final boolean aiOnRight = tele_outerEmojiVisible();
++        final float aiJointOffset = (aiOnRight && shownRichButton ? dp(36) : 0) + aiButton.getWidth() / 2f + dp(4);
++        aiHint.setJointPx(aiOnRight ? 1f : 0f, aiOnRight ? -aiJointOffset : aiJointOffset);
++    }
++
++    private void tele_updateAiButtonLayout() {
++        if (aiButton == null || !(aiButton.getLayoutParams() instanceof FrameLayout.LayoutParams)) {
++            return;
++        }
++        final FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) aiButton.getLayoutParams();
++        final boolean onRight = tele_outerEmojiVisible();
++        final int targetGravity = Gravity.TOP | (onRight ? Gravity.RIGHT : Gravity.LEFT);
++        final int targetRight = onRight && shownRichButton ? dp(36) : 0;
++        if (params.gravity != targetGravity || params.rightMargin != targetRight) {
++            params.gravity = targetGravity;
++            params.rightMargin = targetRight;
++            aiButton.setLayoutParams(params);
++        }
++        tele_updateAiHintJoint();
++    }
++
+     public boolean tele_attachButtonActive() {
+         return tele_attachOuterApplied;
+     }
+@@ -15693,33 +15740,67 @@ public class ChatActivityEnterView extends FrameLayout implements
+     }
+ 
+     private void tele_syncAttachButton(boolean animated) {
+-        if (!tele_attachOuterApplied || tele_attachButton == null) {
+-            return;
++        final boolean visible = getVisibility() == VISIBLE;
++        final boolean showAttach = tele_attachOuterApplied && visible && tele_attachAllowed();
++        if (tele_attachButton != null && showAttach != tele_attachButtonShown) {
++            tele_attachButtonShown = showAttach;
++            AndroidUtilities.updateViewVisibilityAnimated(tele_attachButton, showAttach, 0.5f, true, animated);
+         }
+-        final boolean show = tele_attachAllowed() && getVisibility() == VISIBLE;
+-        if (show == tele_attachButtonShown) {
+-            return;
++        final boolean showEmoji = tele_outerEmojiVisible();
++        if (tele_emojiButton != null && showEmoji != tele_emojiButtonShown) {
++            tele_emojiButtonShown = showEmoji;
++            AndroidUtilities.updateViewVisibilityAnimated(tele_emojiButton, showEmoji, 0.5f, true, animated);
+         }
+-        tele_attachButtonShown = show;
+-        AndroidUtilities.updateViewVisibilityAnimated(tele_attachButton, show, 0.5f, true, animated);
++        if (emojiButton != null && !richDraftActive) {
++            final int visibility = showEmoji ? GONE : VISIBLE;
++            if (emojiButton.getVisibility() != visibility) {
++                emojiButton.setVisibility(visibility);
++                requestLayout();
++            }
++        }
++        tele_updateAiButtonLayout();
++        tele_layoutOuterAttach();
+     }
+ 
+     private void tele_layoutOuterAttach() {
++        final boolean insetVisible = tele_attachOuterApplied && getVisibility() == VISIBLE
++            && (tele_attachButtonShown || tele_emojiButtonShown);
++        final int inset = insetVisible ? dp(TELE_ATTACH_INSET) : 0;
+         ViewGroup.LayoutParams params = getLayoutParams();
+         if (params instanceof ViewGroup.MarginLayoutParams) {
+             ViewGroup.MarginLayoutParams enterParams = (ViewGroup.MarginLayoutParams) params;
+             if (tele_attachBaseLeftMargin < 0) {
+                 tele_attachBaseLeftMargin = enterParams.leftMargin;
+             }
+-            final int target = tele_attachBaseLeftMargin + (tele_attachOuterApplied ? dp(TELE_ATTACH_INSET) : 0);
++            final int target = tele_attachBaseLeftMargin + inset;
+             if (enterParams.leftMargin != target) {
+                 enterParams.leftMargin = target;
+                 setLayoutParams(enterParams);
+             }
+         }
+         if (tele_attachHost != null) {
+-            tele_attachHost.tele_setAttachInsetLeft(tele_attachOuterApplied ? dp(TELE_ATTACH_INSET) : 0);
++            tele_attachHost.tele_setAttachInsetLeft(inset);
++        }
++    }
++
++    private void tele_ensureOuterEmojiButton() {
++        if (!tele_wantsOuterEmoji() || tele_emojiButton != null || !(getParent() instanceof ViewGroup)) {
++            return;
++        }
++        tele_emojiButton = ChatActivityBlurredRoundPageDownButton.create(getContext(), TELE_ATTACH_SIZE, 32, resourcesProvider, tele_attachGlassFactory, tele_attachGlassColorProvider, 0);
++        tele_emojiIcon = new ChatActivityEnterViewAnimatedIconView(getContext());
++        ThemeBind.colorFilter(tele_emojiIcon, Theme.key_glass_defaultIcon, resourcesProvider, PorterDuff.Mode.SRC_IN);
++        tele_emojiButton.addView(tele_emojiIcon, LayoutHelper.createFrame(32, 32, Gravity.CENTER));
++        if (emojiButton.getCurrentState() != null) {
++            tele_emojiIcon.setState(emojiButton.getCurrentState(), false);
+         }
++        tele_emojiIcon.setFormatMode(emojiButton.isFormatMode(), false);
++        tele_emojiButton.setContentDescription(emojiButton.getContentDescription());
++        tele_emojiButton.setOnClickListener(v -> emojiButton.performClick());
++        tele_emojiButton.setOnLongClickListener(v -> emojiButton.performLongClick());
++        ((ViewGroup) getParent()).addView(tele_emojiButton, 0, LayoutHelper.createFrame(TELE_ATTACH_SIZE, TELE_ATTACH_SIZE, Gravity.LEFT | Gravity.BOTTOM, 0, 0, 0, TELE_ATTACH_EMOJI_BOTTOM_MARGIN));
++        tele_emojiButtonShown = false;
++        AndroidUtilities.updateViewVisibilityAnimated(tele_emojiButton, false, 0.5f, true, false);
+     }
+ 
+     public void tele_applyAttachPlacement() {
+@@ -15734,6 +15815,10 @@ public class ChatActivityEnterView extends FrameLayout implements
+             }
+         }
+         if (tele_attachOuterApplied == outer) {
++            if (outer) {
++                tele_ensureOuterEmojiButton();
++                tele_syncAttachButton(false);
++            }
+             return;
+         }
+         tele_attachOuterApplied = outer;
+@@ -15742,6 +15827,9 @@ public class ChatActivityEnterView extends FrameLayout implements
+             tele_attachButton.setContentDescription(getString(R.string.AccDescrAttachButton));
+             tele_attachButton.setOnClickListener(v -> tele_pressAttachButton());
+         }
++        if (outer) {
++            tele_ensureOuterEmojiButton();
++        }
+         attachButton.setVisibility(outer ? GONE : VISIBLE);
+         FrameLayout.LayoutParams attachLayoutParams = (FrameLayout.LayoutParams) attachLayout.getLayoutParams();
+         attachLayoutParams.rightMargin = outer ? 0 : DEFAULT_HEIGHT;
+@@ -15750,6 +15838,10 @@ public class ChatActivityEnterView extends FrameLayout implements
+             tele_attachButtonShown = false;
+             AndroidUtilities.updateViewVisibilityAnimated(tele_attachButton, false, 0.5f, true, false);
+         }
++        if (tele_emojiButton != null) {
++            tele_emojiButtonShown = false;
++            AndroidUtilities.updateViewVisibilityAnimated(tele_emojiButton, false, 0.5f, true, false);
++        }
+         if (scheduledButton != null) {
+             scheduledButton.setTranslationX(scheduledButton.getTranslationX());
+         }
+@@ -15764,6 +15856,7 @@ public class ChatActivityEnterView extends FrameLayout implements
+                 delegate.onAttachButtonShow();
+             }
+         } else {
++            tele_syncAttachButton(false);
+             checkSendButton(false);
+         }
+         requestLayout();
+diff --git a/TMessagesProj/src/main/java/tele/TeleConfig.kt b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+index a42dccee6..86ce6df31 100644
+--- a/TMessagesProj/src/main/java/tele/TeleConfig.kt
++++ b/TMessagesProj/src/main/java/tele/TeleConfig.kt
+@@ -549,6 +549,8 @@ object TeleConfig {
+     @JvmField
+     val ATTACH_BUTTON_LEFT = BoolItem("attach_button_left", false)
+     @JvmField
++    val EMOJI_ABOVE_ATTACH = BoolItem("emoji_above_attach", false)
++    @JvmField
+     val CHATS_TAB_DOUBLE_TAP_ALL = BoolItem("chats_tab_double_tap_all", false)
+     @JvmField
+     val CUSTOM_MAIN_TABS = BoolItem("custom_main_tabs", false)
+diff --git a/TMessagesProj/src/main/java/tele/TeleHooks.kt b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+index 9c49e3d1e..c55978984 100644
+--- a/TMessagesProj/src/main/java/tele/TeleHooks.kt
++++ b/TMessagesProj/src/main/java/tele/TeleHooks.kt
+@@ -158,7 +158,7 @@ object TeleHooks {
+         if (item === TeleConfig.DOCKED_MEDIA || item === TeleConfig.DOCKED_GRID) {
+             tele.helpers.DockedMedia.onToggled()
+         }
+-        if (item === TeleConfig.ATTACH_BUTTON_LEFT) {
++        if (item === TeleConfig.ATTACH_BUTTON_LEFT || item === TeleConfig.EMOJI_ABOVE_ATTACH) {
+             tele.helpers.ComposerAttach.onToggled()
+         }
+         if (item === TeleConfig.INLINE_VOLUME_CONTROLS) {
+diff --git a/TMessagesProj/src/main/java/tele/helpers/ComposerAttach.kt b/TMessagesProj/src/main/java/tele/helpers/ComposerAttach.kt
+index 41c66de37..5e2a0d13a 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/ComposerAttach.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/ComposerAttach.kt
+@@ -11,6 +11,9 @@ object ComposerAttach {
+     @JvmStatic
+     fun left(): Boolean = TeleConfig.ATTACH_BUTTON_LEFT.value
+ 
++    @JvmStatic
++    fun emojiAbove(): Boolean = TeleConfig.ATTACH_BUTTON_LEFT.value && TeleConfig.EMOJI_ABOVE_ATTACH.value
++
+     @JvmStatic
+     fun register(view: ChatActivityEnterView) {
+         views.add(view)
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+index 7218bef84..58438d582 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextRu.kt
+@@ -1784,6 +1784,8 @@ object TeleTextRu {
+         "Turn off swipe to unarchive" to "Отключить смахивание для разархивации",
+         "Volume keys don't unmute videos" to "Кнопки громкости не включают звук видео",
+         "Attach button on the left" to "Кнопка вложения слева",
++        "Emoji button above attach" to "Кнопка эмодзи над вложением",
++        "Moves the emoji button above the left attach button to widen the message field." to "Переносит кнопку эмодзи над левую кнопку вложения, чтобы расширить поле сообщения.",
+         "Double tap the chats tab for all chats" to "Двойное нажатие на вкладку чатов открывает все чаты",
+         "When the all chats folder is hidden, opens your first folder instead." to "Если папка «Все чаты» скрыта, открывает первую папку.",
+         "Material theme" to "Тема Material",
+diff --git a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+index 68a4e1a76..5aaa53007 100644
+--- a/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
++++ b/TMessagesProj/src/main/java/tele/helpers/TeleTextUk.kt
+@@ -1784,6 +1784,8 @@ object TeleTextUk {
+         "Turn off swipe to unarchive" to "Вимкнути змахування для розархівування",
+         "Volume keys don't unmute videos" to "Кнопки гучності не вмикають звук відео",
+         "Attach button on the left" to "Кнопка вкладення ліворуч",
++        "Emoji button above attach" to "Кнопка емодзі над вкладенням",
++        "Moves the emoji button above the left attach button to widen the message field." to "Переносить кнопку емодзі над ліву кнопку вкладення, щоб розширити поле повідомлення.",
+         "Double tap the chats tab for all chats" to "Подвійне натискання на вкладку чатів відкриває всі чати",
+         "When the all chats folder is hidden, opens your first folder instead." to "Якщо папку «Усі чати» приховано, відкриває першу папку.",
+         "Material theme" to "Тема Material",
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+index f6d4d817a..695873762 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSearch.kt
+@@ -523,6 +523,9 @@ object TeleSearch {
+             section(1637, "paperclip", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left"),
+             section(1638, "attachment", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left"),
+             section(1639, "left side", "messages", TeleSettingsActivity.MODE_MESSAGES, "Attach button on the left"),
++            section(1680, "emoji above attach", "messages", TeleSettingsActivity.MODE_MESSAGES, "Emoji button above attach"),
++            section(1681, "emoji over attachment", "messages", TeleSettingsActivity.MODE_MESSAGES, "Emoji button above attach"),
++            section(1682, "widen message field", "messages", TeleSettingsActivity.MODE_MESSAGES, "Emoji button above attach"),
+             section(1640, "open all chats by double tap", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
+             section(1641, "switch folder by double tap", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
+             section(1642, "chats tab shortcut", "chats", TeleSettingsActivity.MODE_CHATS, "Double tap the chats tab for all chats"),
+diff --git a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+index 70ad24303..090b9dc29 100644
+--- a/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
++++ b/TMessagesProj/src/main/java/tele/ui/settings/TeleSettingsActivity.kt
+@@ -1460,6 +1460,7 @@ class TeleSettingsActivity @JvmOverloads constructor(
+             "AMOLED black" to "True black in dark mode; light mode is unchanged.",
+             "Customize the bottom tabs" to "Order and hide the pages, or add Saved Messages and any chat as buttons with their unread counts.",
+             "Edit tabs" to "The order, the icons and the shortcuts of the bar; every change applies at once.",
++            "Emoji button above attach" to "Moves the emoji button above the left attach button to widen the message field.",
+         )
+ 
+         private fun toggle(title: String, item: Item<*>) = Row(TYPE_TOGGLE, title = title, subtitle = DESCRIPTIONS[title], item = item)
+@@ -1837,6 +1838,9 @@ class TeleSettingsActivity @JvmOverloads constructor(
+                 toggle("Close brackets and quotes as you type", TeleConfig.COMPOSER_AUTOPAIRS),
+                 toggle("Keep indentation on a new line", TeleConfig.COMPOSER_AUTOINDENT),
+                 toggle("Attach button on the left", TeleConfig.ATTACH_BUTTON_LEFT),
++                *(if (all || TeleConfig.ATTACH_BUTTON_LEFT.value) arrayOf(
++                    toggle("Emoji button above attach", TeleConfig.EMOJI_ABOVE_ATTACH)
++                ) else emptyArray<Row>()),
+                 Row(TYPE_SHADOW)
+             )
+             MODE_SENDING -> listOf(
