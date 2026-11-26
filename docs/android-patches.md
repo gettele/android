@@ -42,7 +42,7 @@ The JSON file is an object with one top-level `entries` array; each array elemen
 |---|---|---|---|---|
 | [A001](#a001) | Android build credentials and runtime skeleton | original | active | 2 |
 | [A002](#a002) | Android packaging, branding and launcher icons | adaptation | active | 8 |
-| [A003](#a003) | Native tele settings, navigation and search | adaptation | active | 17 |
+| [A003](#a003) | Native tele settings, navigation and search | adaptation | active | 19 |
 | [A004](#a004) | Local names and aliases with shared native editors | adaptation | active | 3 |
 | [A005](#a005) | Retained deleted messages, edit history and saved drafts | adaptation | active | 7 |
 | [A006](#a006) | Public tele server, Argon2 and crash bridge | adaptation | active | 12 |
@@ -134,6 +134,8 @@ Builds the Android tele settings tree: section pages, grouped rows, collapsible 
 | [`0306-fix-point-the-settings-search-at-real-rows.patch`](../patches/android/0306-fix-point-the-settings-search-at-real-rows.patch) |
 | [`0330-fix-keep-other-changes-inside-their-settings-group.patch`](../patches/android/0330-fix-keep-other-changes-inside-their-settings-group.patch) |
 | [`0336-feat-refresh-tele-settings.patch`](../patches/android/0336-feat-refresh-tele-settings.patch) — tele-only search and stock glass headers |
+| [`0382-feat-add-search-history-to-tele-settings.patch`](../patches/android/0382-feat-add-search-history-to-tele-settings.patch) |
+| [`0383-feat-animate-tele-settings-search-bar-expansion.patch`](../patches/android/0383-feat-animate-tele-settings-search-bar-expansion.patch) |
 
 <a id="a004"></a>
 
