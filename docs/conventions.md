@@ -89,7 +89,7 @@ every tele setting is a `TeleConfig` item. adding a switch touches:
 - in the telegram tree use `feat:`, `fix:`, `debloat:` and `misc:`. in this repository use `docs:`, `chore:`, `feat:` and `fix:`.
 - no body, no trailers, no co-author lines, no tool or ai attribution.
 - the subject becomes the patch subject and its file name. describe what the user gets, and don't rename a released patch without a reason: a new subject shows up as one dropped and one new patch in the release notes.
-- a fix or follow-up to an unreleased patch goes into that patch's commit (`git commit --fixup`, `git rebase -i --autosquash`). keep it separate only when it cannot be squashed without conflicts or touches several patches at once.
+- a fix, polish or follow-up to an existing patch goes into that patch's commit, released or not (`git commit --fixup`, `git rebase -i --autosquash <UPSTREAM>`), instead of appending a standalone `fix:` patch. keep it separate only when it cannot be squashed without conflicts or touches several unrelated patches at once; verify `git diff <old tip> <new tip>` is empty before exporting.
 
 ## patch hygiene
 
